@@ -13,13 +13,14 @@ The architecture — end-to-end flow, decisions D1–D10, package layout, and th
 phased delivery plan — lives in **[`docs/PLAN.md`](docs/PLAN.md)**. Read it
 before reading the code.
 
-> Status: early scaffold. No SSH handling yet; see `docs/PLAN.md` §10 for the
-> phase order.
+> Status: early. The management API contract and its mock server exist; no SSH
+> handling yet. See `docs/PLAN.md` §10 for the phase order.
 
 ## Requirements
 
 - Go **1.24** or newer
 - [`golangci-lint`](https://golangci-lint.run) v2 (for `make lint`)
+- Python 3 with `openapi-spec-validator` (for `make openapi-check` only)
 
 ## Build and run
 
@@ -42,6 +43,15 @@ make run-bastion CONFIG=config.yaml
 make run-mock LISTEN=127.0.0.1:8080
 ```
 
+## Management API
+
+The contract between the bastion and the management server lives in
+[`api/`](api/README.md): `api/management.yaml` (OpenAPI 3, the source of truth)
+and a human-readable companion. `internal/mgmt` is the typed Go client — the
+only package that talks to the management server — and `cmd/mock-management`
+serves the contract from a fixture file for development and tests. `make
+openapi-check` validates the document.
+
 ## Configuration
 
 The bastion reads a YAML bootstrap file; see
@@ -57,7 +67,7 @@ per connection (`docs/PLAN.md`, D2).
 | `cmd/bastion`       | the proxy daemon                                              |
 | `cmd/mock-management` | reference/mock management API for dev and CI                |
 | `internal/`         | the implementation packages (see `docs/PLAN.md` §3)           |
-| `api/`              | management API contract — source of truth (phase 0002)        |
+| `api/`              | management API contract — source of truth                     |
 | `deploy/`           | docker-compose e2e topology and fixtures (phase 0010)         |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
 | `prompts/`          | queued and implemented phase prompts                          |

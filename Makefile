@@ -3,13 +3,14 @@
 
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
+PYTHON ?= python3
 BIN_DIR := bin
 CONFIG ?= config.yaml
 LISTEN ?= 127.0.0.1:8080
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build test vet lint fmt license-check tidy run-bastion run-mock clean
+.PHONY: all build test vet lint fmt license-check openapi-check tidy run-bastion run-mock clean
 
 all: build vet test lint
 
@@ -47,6 +48,15 @@ license-check:
 		exit 1; \
 	fi; \
 	echo "license headers OK"
+
+## openapi-check: validate the management API contract as an OpenAPI 3 document
+## (needs `pip install openapi-spec-validator`; CI installs it)
+openapi-check:
+	$(PYTHON) -c 'from openapi_spec_validator import validate; \
+	from openapi_spec_validator.readers import read_from_filename; \
+	spec, _ = read_from_filename("api/management.yaml"); \
+	validate(spec); \
+	print("api/management.yaml is a valid OpenAPI 3 document")'
 
 ## tidy: tidy and verify go.mod/go.sum
 tidy:
