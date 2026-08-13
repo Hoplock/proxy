@@ -1,0 +1,22 @@
+# SecureCommandProxy — bastion bootstrap configuration (example).
+#
+# Copy to config.yaml and edit. This file holds only what the bastion needs to
+# start and reach the management server: every authentication, authorization,
+# routing, and filtering decision is made by the management server per
+# connection (see docs/PLAN.md, D2).
+
+bastion:
+  # host:port the SSH listener binds to.
+  listen_addr: "0.0.0.0:2222"
+  # Path to this bastion's SSH host private key. Never commit a real key.
+  host_key_path: "/etc/securecommandproxy/host_key"
+
+management:
+  # Root URL of the management API (the policy decision point).
+  base_url: "https://management.example.com"
+
+routing:
+  # Single character separating the login from the target hostname in the SSH
+  # username, e.g. "alice#host.company.com" (docs/PLAN.md, D1).
+  # Optional; defaults to "#".
+  target_delimiter: "#"
