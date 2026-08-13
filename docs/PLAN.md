@@ -51,7 +51,7 @@ Policy Decision Point (PDP).
 Each decision has an ID so prompts and learnings can reference it. Decisions
 marked **(confirm)** are recommendations pending explicit user confirmation.
 
-- **D1 — Target identity transport (confirm).** SSH has no SNI/Host header, so
+- **D1 — Target identity transport (confirmed).** SSH has no SNI/Host header, so
   the target hostname the user typed is not on the wire after DNS resolution.
   The target is therefore **encoded in the SSH username** using a configurable
   delimiter (default `#`): `alice#host.company.com`. The bastion parses and
