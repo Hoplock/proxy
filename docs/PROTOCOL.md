@@ -8,6 +8,8 @@ This protocol exists to keep sessions consistent, keep context windows small
 (target **< 60% context per session**), and reduce hallucination by grounding
 every session in the same durable artifacts.
 
+To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
+
 ---
 
 ## 0. TL;DR of a session
