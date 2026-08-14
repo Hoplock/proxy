@@ -2,7 +2,8 @@
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
-- `docs/PLAN.md` — especially §2 (D2, D8), §6.4 (caching & revocation), §7.
+- `docs/PLAN.md` — especially §2 (D2, D8), §4.3 (what the user is told), §6.4
+  (caching & revocation), §7.
 - `docs/learnings/0002-...-learnings.md` — the contract, the `mgmt.Client`
   interface, the error sentinels (a deny is **only** `ErrUnauthorized`), and how
   the mock's fixtures work. You are extending all three.
@@ -35,7 +36,10 @@ implements.
   bastion, because bastions sit behind firewalls and must not need an inbound
   listener (PLAN §1). Event envelope: `event_id`, `type`, `timestamp`, plus:
   - `session_kill` — `session_ids[]` **or** `subject` **or** `all`, plus
-    `reason` (carried into the audit log).
+    `reason`. The reason is carried into the audit log **and** shown to the user
+    before teardown (PLAN §4.3) — a revoked session must not look like a crash.
+    Define `reason` as operator-authored text safe to display, and say so in the
+    contract so a server author does not put policy internals in it.
   - `cache_invalidate` — `keys[]` **or** `subject` **or** `all`.
   - `heartbeat` — so a silently dead stream is detectable.
   - `resync` — "you missed events": the bastion drops its entire cache and
@@ -77,6 +81,9 @@ implements.
   }
   ```
   Ship a no-op implementation so the stream is usable before 0005 lands.
+  Document that an implementation MUST deliver the `reason` to the user before
+  closing the connection (PLAN §4.3); that obligation is on the proxy in 0005,
+  and this phase's job is to carry the reason to it intact.
 
 ### 3. Mock server (`cmd/mock-management`)
 - Serve the events stream, including heartbeats at a fixture-set interval.

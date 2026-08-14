@@ -48,6 +48,11 @@ gate for the prototype.
 - `docker compose` topology comes up cleanly and the full scenario suite passes
   locally and in CI.
 - The target is not reachable except through the bastion chain.
+- A scenario covers the disclosure rule (PLAN §4.3) end to end: with the
+  management server stopped, a connecting user gets a message saying this is an
+  outage rather than a permissions problem, carrying the session id — not a
+  silent disconnect. A denied user gets the generic "access denied" and nothing
+  that reveals the target or the policy. Assert on the client's actual output.
 - No ephemeral users/keys leak after the suite.
 - `docs/PLAN.md` §9 matches what was built; README documents local e2e run.
 

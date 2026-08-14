@@ -146,6 +146,22 @@ authentication calls are the wrong thing to cache). Phase **0003** was queued
 out of this review to add it, together with the server-driven session-kill
 mechanism that makes a cached allow safe to hold.
 
+### User-facing feedback (asked during review of this PR)
+The error taxonomy above has a user-visible half that was unspecified anywhere:
+what the person at the SSH prompt is told when setup fails. Failing closed is
+not the same as failing silently, and a bare disconnect makes a denial
+indistinguishable from an outage. PLAN §4.3 now states the disclosure rule — a
+deny is deliberately vague ("access denied", never naming login, target, or
+policy, because a precise message is an oracle); every other failure is explicit
+that it is an outage and carries the session id as a support reference — and
+maps the four SSH mechanisms available (auth banner, keyboard-interactive
+`instruction`, session-channel stderr, disconnect reason) onto the phases that
+own them. Two consequences are design rather than wording: MFA must ride
+keyboard-interactive (the only flow with an `instruction` field), and the proxy
+must accept the client's session channel *before* the target leg exists or it
+has nowhere to write progress. Requirements and tests were folded into 0003,
+0004, 0005, 0009, and 0011 rather than made a phase of their own.
+
 ### Deviations
 - Branch name is `claude/queued-prompt-implementation-vl5dhe` rather than
   PROTOCOL §2's `claude/NNNN-short-description`, because the session was started
@@ -162,6 +178,9 @@ mechanism that makes a cached allow safe to hold.
   were renumbered to 0004–0011 (queued only — `implemented/` is untouched) and
   their cross-references rewritten, so the PROTOCOL §6 invariants still hold.
   `docs/PLAN.md` gained §6.4, an amended D2, and a new phase-table row.
+- A second review question (what the user sees when setup fails) added PLAN §4.3
+  and folded user-feedback requirements + tests into the queued 0003, 0004,
+  0005, 0009, and 0011. No new phase, and no code change in this PR.
 - `internal/identity` (0004) should own the bastion's identity model and convert
   to/from `mgmt.Identity`; `mgmt.Identity.Claims` is `map[string]string` on the
   wire, so a richer internal claims type must serialise into that shape or the

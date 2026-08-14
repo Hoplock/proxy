@@ -214,6 +214,50 @@ end-to-end proxying works before the full provisioner lands.
 Both interfaces take/return `identity.Identity` (not booleans) so that AD/Okta
 claims flow through unchanged (D4/D8-answers question 8).
 
+### 4.3 What the user is told (disclosure rule)
+
+A policy proxy that fails silently is indistinguishable from a broken network,
+and a user who cannot tell "I am not allowed" from "the service is down" files
+the wrong ticket — or retries a denial forever. The bastion therefore **always
+says something before it closes a connection**, and what it says splits along
+one line:
+
+- **Deny** (`401` from any endpoint) → deliberately vague: "access denied". It
+  never reveals whether the login, the target, or the policy was the problem,
+  and never whether the target exists. Anything more precise turns the bastion
+  into an oracle for probing the estate.
+- **Everything else** (management server unreachable, `5xx`, contract violation,
+  target unreachable, provisioning failure) → explicit and honest: this is not a
+  permissions problem, it is an outage, plus the **session id as a support
+  reference**. That text is safe to disclose and turns a mystery disconnect into
+  a ticket that can be answered from the logs.
+
+The same rule covers policy actions mid-session: a blocked command says it was
+blocked, and a session killed by the management server prints the server's
+`reason` before teardown (§6.4). Never a bare drop.
+
+SSH gives four places to speak, and each phase owns the ones it touches:
+
+| Moment | Mechanism | Owner |
+| --- | --- | --- |
+| Before/during auth | `SSH_MSG_USERAUTH_BANNER` | 0004 |
+| Waiting on MFA | keyboard-interactive `instruction` + zero-prompt info requests | 0004 |
+| After auth, before the target leg is up | session channel **stderr** | 0005 |
+| Any hard failure | `SSH_MSG_DISCONNECT` (reason code + description), or channel stderr + non-zero `exit-status` | 0005 |
+
+Two consequences that are design, not wording:
+
+- **MFA rides keyboard-interactive, not plain password auth**, because that is
+  the only flow with an `instruction` field in which to explain the wait and
+  repeat "still waiting" while polling (§4.1).
+- **The proxy must accept the client's session channel before the target leg
+  exists**, or there is nothing to write progress to. That ordering belongs to
+  the proxy engine (§3, 0005).
+
+Feedback is written to stderr, never stdout, and suppressed for non-interactive
+channels (no pty — `scp`, `sftp`, `exec`) beyond what a failure requires, so
+tooling that parses the stream is not corrupted.
+
 ---
 
 ## 5. Ephemeral target provisioning (D6)

@@ -2,8 +2,9 @@
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
-- `docs/PLAN.md` — especially §2 (D5), §6.3 (filtering: whitelist/blacklist +
-  actions; exec-enforced vs interactive best-effort).
+- `docs/PLAN.md` — especially §2 (D5), §4.3 (what the user is told), §6.3
+  (filtering: whitelist/blacklist + actions; exec-enforced vs interactive
+  best-effort).
 - `docs/learnings/` — read summaries; open `0008` (how to attach an inspector),
   `0002` (filter policy shape in the route response).
 
@@ -20,10 +21,17 @@ interactive `shell`.
 - An **exec inspector** (attached via 0008): extracts the full command from the
   `exec` request and applies the policy **before** forwarding. This path is
   **enforced**.
-  - `block_command`: refuse the exec (clean error to the client).
-  - `kill_session`: terminate the whole session.
+  - `block_command`: refuse the exec with a message on stderr saying it was
+    **blocked by policy** and a non-zero exit status — never a silent failure or
+    a bare close, which is indistinguishable from a broken command (PLAN §4.3).
+  - `kill_session`: tell the user the session is being terminated by policy,
+    then terminate it.
   - `warn_and_continue`: send a warning back to the user, allow the command.
   - `allow_and_log`: allow, emit an audit event.
+
+  Per PLAN §4.3 the user learns **that** policy stopped them, never the policy's
+  contents: no echoing of the list, the mode, or which pattern matched. That
+  detail belongs in the audit event, not on the user's terminal.
 - A **shell/pty inspector**: best-effort inspection of the interactive stream for
   audit/alerting. Must be clearly documented as **not hard enforcement**
   (line-editing, encodings, and shell tricks can bypass it). Reasonable heuristics
@@ -41,6 +49,9 @@ interactive `shell`.
 
 ## Acceptance criteria
 - Unit tests for the policy engine across both modes and all four actions.
+- A test asserts a blocked command produces user-visible text plus a non-zero
+  exit status, and that neither the matched pattern nor the rest of the list
+  appears in what the user sees.
 - Integration tests: a blacklisted `exec` is blocked; a whitelisted-only `exec`
   outside the list is blocked; `warn_and_continue` warns but runs;
   `kill_session` ends the session; `allow_and_log` emits an audit event.

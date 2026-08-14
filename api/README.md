@@ -28,7 +28,10 @@ companion. If the two disagree, the OpenAPI document wins.
   that cost matters, it is a contract change — see "Caching" below.
 - **`401` is a decision, not a failure.** It means *deny*. Transport failures,
   timeouts, and `5xx` are different, and a caller must never treat them as
-  either a deny or an allow — it fails the session closed.
+  either a deny or an allow — it fails the session closed. The two are also
+  reported to the end user differently, and never collapsed into one message: a
+  deny is deliberately vague, an outage says plainly that it is an outage
+  (PLAN §4.3). Failing closed is not the same as failing silently.
 - **Bastion→server authentication** is a bearer token
   (`Authorization: Bearer <token>`), deliberately a thin seam: a deployment can
   move to mTLS or a signed assertion without changing any payload.
