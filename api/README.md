@@ -15,8 +15,17 @@ companion. If the two disagree, the OpenAPI document wins.
 
 - **JSON over HTTPS**, one POST per decision (D9). All paths are absolute from
   the server's base URL and versioned with a `/v1` prefix.
-- **The bastion decides nothing.** Every authentication, authorization, route,
-  channel, and filter decision in a session comes from this API (D2).
+- **The bastion originates no policy, but it does not re-ask per action.** Every
+  authentication, authorization, route, channel, and filter decision is *made*
+  by the server (D2) — and `POST /v1/authorize` returns the **whole policy for
+  the connection** in one response: route, channel allow-list, and the complete
+  filter policy. The bastion holds that snapshot for the connection's lifetime
+  and enforces it locally, so opening a channel, running a command, and pumping
+  a stream cost **zero** calls to this API. The round trips are at session
+  setup (auth, authorize, host-key report), not on the data path.
+- **The snapshot does not outlive the connection.** There is no cross-connection
+  policy cache in the prototype (D2), so a second SSH session re-runs setup. If
+  that cost matters, it is a contract change — see "Caching" below.
 - **`401` is a decision, not a failure.** It means *deny*. Transport failures,
   timeouts, and `5xx` are different, and a caller must never treat them as
   either a deny or an allow — it fails the session closed.
@@ -96,6 +105,52 @@ recorded.
 Records carry a client-assigned `record_id`; the server de-duplicates on it, so
 retrying a batch after a timeout or draining the local disk buffer is safe.
 `accepted` counts records actually stored.
+
+## Caching and the latency budget
+
+Where the round trips actually are, for one session:
+
+| Phase | Calls | On the critical path? |
+| --- | --- | --- |
+| Authenticate (cert) | 1 | yes |
+| Authenticate (password + MFA) | 1 + one per poll | yes, and bounded by the user |
+| Authorize + route | 1 | yes |
+| Host-key report | 1 per target host key | yes, before the target handshake |
+| Channel open / command / stream data | **0** | — |
+| Logs | batched, off the data path | no (priority records excepted, by design) |
+
+So the **session stream carries no management-server latency**: `/v1/authorize`
+delivers the channel allow-list and the full command filter policy up front, and
+the bastion enforces both against that connection-scoped snapshot. A blocked
+command costs a local match. The one deliberate exception is D8's priority log
+path — a critical security event is shipped synchronously so the bastion knows
+it was recorded before acting on it — which trades latency for auditability
+exactly when that trade is worth making.
+
+What this does **not** do is amortise setup across connections. Today a session
+costs ~3 sequential round trips before the first byte flows, every time, and a
+next-hop chain pays that per hop. A user opening several sessions (an `scp`
+alongside a shell, a tool that reconnects) pays it each time. That is D2's
+deliberate prototype choice — "the bastion caches nothing security-relevant
+beyond the lifetime of a connection" — not an oversight, and the contract
+currently has **no field to express a cache lifetime**.
+
+When that cost needs addressing, the seam is here, in this document, and the
+shape matters more than the mechanism:
+
+- **Cache the authorize decision, not the authentication.** An MFA approval is a
+  per-session assertion; caching it defeats the second factor. Certificate
+  validation is where revocation is enforced, so it is the wrong thing to skip.
+  The authorize decision — route + channels + filter policy for
+  (subject, target, auth method) — is the reusable part.
+- **The server sets the lifetime, not the bastion.** The natural addition is an
+  optional cache hint on `AuthorizeResponse` (a TTL, plus a key the server
+  controls), so the PDP keeps ownership of its own risk appetite and can return
+  a zero TTL for sensitive targets. A bastion-side TTL would let the PEP decide
+  policy, which is precisely the inversion D2 exists to prevent.
+- **Revocation is the hard half.** Any cached allow outlives a revocation for up
+  to its TTL. That bounds the acceptable TTL (seconds to low minutes), or needs
+  a server→bastion invalidation path, which is a bigger change than a TTL field.
 
 ## Go types
 

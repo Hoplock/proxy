@@ -132,6 +132,19 @@ the client disconnect after the body is consumed, so the handler hangs and
 `httptest.Server.Close` deadlocks. Use a release channel closed in `t.Cleanup`
 (see `newBlockingTestClient`).
 
+### Latency model (asked during review of this PR)
+`/v1/authorize` is a **per-connection snapshot, not a per-action question**: it
+returns route + channel allow-list + the complete filter policy in one response,
+and 0007/0008 enforce that locally. The data path therefore makes **zero** calls
+to the management server — a blocked command is a local list match. Setup costs
+~3 sequential round trips (auth, authorize, host-key report), multiplied per hop
+on a chain, and nothing is amortised across connections (D2's prototype choice).
+The contract has **no cache-lifetime field**; `api/README.md` §"Caching and the
+latency budget" records the cost table and the intended seam (optional
+server-set TTL on `AuthorizeResponse`, never a bastion-side TTL, and why the
+authentication calls are the wrong thing to cache). A phase that adds it should
+start there.
+
 ### Deviations
 - Branch name is `claude/queued-prompt-implementation-vl5dhe` rather than
   PROTOCOL §2's `claude/NNNN-short-description`, because the session was started
