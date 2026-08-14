@@ -111,9 +111,18 @@ type fixtureRoute struct {
 
 // fixtureFilterPolicy mirrors mgmt.FilterPolicy in YAML form.
 type fixtureFilterPolicy struct {
-	Mode     string   `yaml:"mode"`
-	Commands []string `yaml:"commands"`
-	Action   string   `yaml:"action"`
+	// Mode decides commands no rule matched: "whitelist" blocks them,
+	// "blacklist" allows them.
+	Mode string `yaml:"mode"`
+	// Rules are evaluated in order; the first match wins.
+	Rules []fixtureFilterRule `yaml:"rules"`
+}
+
+// fixtureFilterRule mirrors mgmt.FilterRule in YAML form.
+type fixtureFilterRule struct {
+	Match   string `yaml:"match"`
+	Action  string `yaml:"action"`
+	Message string `yaml:"message"`
 }
 
 // fixtureHostKeys configures host-key reporting.
@@ -205,9 +214,6 @@ func (f *fixtures) applyDefaults() {
 		if r.FilterPolicy.Mode == "" {
 			r.FilterPolicy.Mode = string(mgmt.FilterModeBlacklist)
 		}
-		if r.FilterPolicy.Action == "" {
-			r.FilterPolicy.Action = string(mgmt.FilterActionAllowAndLog)
-		}
 	}
 }
 
@@ -269,11 +275,19 @@ func (f *fixtures) validate() error {
 			add("routes[%d].filter_policy.mode %q must be %q or %q", i, r.FilterPolicy.Mode,
 				mgmt.FilterModeWhitelist, mgmt.FilterModeBlacklist)
 		}
-		switch mgmt.FilterAction(r.FilterPolicy.Action) {
-		case mgmt.FilterActionAllowAndLog, mgmt.FilterActionBlockCommand,
-			mgmt.FilterActionWarnAndContinue, mgmt.FilterActionKillSession:
-		default:
-			add("routes[%d].filter_policy.action %q is not a known action", i, r.FilterPolicy.Action)
+		for j, rule := range r.FilterPolicy.Rules {
+			if rule.Match == "" {
+				add("routes[%d].filter_policy.rules[%d] has no match pattern", i, j)
+			}
+			switch mgmt.FilterAction(rule.Action) {
+			case mgmt.FilterActionAllowAndLog, mgmt.FilterActionBlockCommand,
+				mgmt.FilterActionWarnAndContinue, mgmt.FilterActionKillSession:
+			default:
+				// No default action: every rule states its own, or the policy is
+				// ambiguous about how severely to treat that command.
+				add("routes[%d].filter_policy.rules[%d] (%q): %q is not a known action",
+					i, j, rule.Match, rule.Action)
+			}
 		}
 	}
 

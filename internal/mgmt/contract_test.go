@@ -137,7 +137,7 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 			string(RouteTypeDirect), string(RouteTypeNextHop)}},
 		{"FilterPolicy", "mode", []string{
 			string(FilterModeWhitelist), string(FilterModeBlacklist)}},
-		{"FilterPolicy", "action", []string{
+		{"FilterRule", "action", []string{
 			string(FilterActionAllowAndLog), string(FilterActionBlockCommand),
 			string(FilterActionWarnAndContinue), string(FilterActionKillSession)}},
 		{"HostKeyReportResponse", "decision", []string{

@@ -10,14 +10,19 @@
 
 ## Objective
 Implement command filtering as inspectors on the 0008 pipeline. The management
-server supplies, per connection, the **mode** (`whitelist` | `blacklist`), the
-**list**, and the **action on match** (`allow_and_log`, `block_command`,
-`warn_and_continue`, `kill_session`). Enforce reliably on `exec`; best-effort on
-interactive `shell`.
+server supplies, per connection, an **ordered rule list** — each rule a `match`
+pattern with **its own action** (`allow_and_log`, `block_command`,
+`warn_and_continue`, `kill_session`) and an optional operator `message` — plus a
+**mode** (`whitelist` | `blacklist`) deciding commands no rule matched. Enforce
+reliably on `exec`; best-effort on interactive `shell`.
 
 ## In scope
-- `internal/filter`: pure policy engine — given (mode, list, command string) →
-  match decision; given (action, match) → effect. Well-unit-tested in isolation.
+- `internal/filter`: pure policy engine — given (policy, command string) → the
+  matched rule and its action, or the mode's default when nothing matched.
+  **First match wins**, so evaluation order is part of the contract, not an
+  implementation detail: `rm -rf /` placed before `rm *` must decide. Mode is
+  the fallback for an unmatched command (`whitelist` blocks, `blacklist`
+  allows), so there is always a defined answer. Well-unit-tested in isolation.
 - An **exec inspector** (attached via 0008): extracts the full command from the
   `exec` request and applies the policy **before** forwarding. This path is
   **enforced**.
@@ -40,15 +45,21 @@ interactive `shell`.
   (the logging pipeline in 0010 consumes this; until then, emit through the
   existing basic logging with a clear "critical/immediate" marker and a stable
   event shape 0010 can pick up).
-- Filter policy is read from the authorize+route response (0002 shape); no
-  hard-coded lists.
+- Filter policy is read from the authorize+route response (`mgmt.FilterPolicy`
+  / `mgmt.FilterRule`, 0002 shape); no hard-coded lists. A rule's `message`, when
+  set, is the text shown to the user on a match — it is operator-authored and
+  displayed verbatim.
 
 ## Out of scope
 - The batching/priority/buffer transport for logs (0010) — just produce the
   events with the right shape and priority flag.
 
 ## Acceptance criteria
-- Unit tests for the policy engine across both modes and all four actions.
+- Unit tests for the policy engine across both modes and all four actions,
+  including: a policy whose rules carry **different** actions applies each one
+  to its own command; the first matching rule wins when two patterns overlap;
+  and an unmatched command falls to the mode's default (blocked under
+  `whitelist`, allowed under `blacklist`).
 - A test asserts a blocked command produces user-visible text plus a non-zero
   exit status, and that neither the matched pattern nor the rest of the list
   appears in what the user sees.

@@ -200,14 +200,17 @@ type AuthorizeResponse struct {
 	DecisionID string `json:"decision_id,omitempty"`
 }
 
-// FilterMode selects how FilterPolicy.Commands is interpreted.
+// FilterMode decides what happens to a command that matches no rule. It exists
+// so that a policy always has a defined default and cannot fail open by
+// omission.
 type FilterMode string
 
 const (
-	// FilterModeWhitelist allows only listed commands.
+	// FilterModeWhitelist blocks any command no rule matched: the rules are the
+	// permitted set.
 	FilterModeWhitelist FilterMode = "whitelist"
-	// FilterModeBlacklist applies the action to listed commands; an empty list
-	// means no filtering.
+	// FilterModeBlacklist allows any command no rule matched: the rules are the
+	// caught set. A blacklist with no rules means no filtering.
 	FilterModeBlacklist FilterMode = "blacklist"
 )
 
@@ -226,10 +229,32 @@ const (
 )
 
 // FilterPolicy is the per-connection command filter policy (PLAN §6.3).
+//
+// Rules are evaluated in order and the FIRST MATCH WINS, so a specific rule
+// placed before a broad one decides the outcome — "rm -rf /" can kill the
+// session while "rm *" only warns. A command that matches no rule is decided by
+// Mode, which is why Mode is required: there is always a defined default.
 type FilterPolicy struct {
-	Mode     FilterMode   `json:"mode"`
-	Commands []string     `json:"commands,omitempty"`
-	Action   FilterAction `json:"action"`
+	Mode FilterMode `json:"mode"`
+	// Rules are the ordered pattern→action list. Empty leaves every command to
+	// Mode: an empty whitelist blocks everything, an empty blacklist filters
+	// nothing.
+	Rules []FilterRule `json:"rules,omitempty"`
+}
+
+// FilterRule pairs one command pattern with the action to take when it matches.
+// Per-rule actions are the point: a single action for a whole list would force
+// every command in a policy down to the same severity.
+type FilterRule struct {
+	// Match is the command pattern. Matching semantics belong to the filter
+	// engine and are the same regardless of Mode.
+	Match string `json:"match"`
+	// Action is what the bastion does when Match matches.
+	Action FilterAction `json:"action"`
+	// Message is optional operator-authored text shown to the user when this
+	// rule fires (e.g. "use the deploy pipeline instead"). It is displayed
+	// verbatim, so a server must not put policy internals in it (PLAN §4.3).
+	Message string `json:"message,omitempty"`
 }
 
 // HopMetadata carries the chaining constraints for a next-hop route.

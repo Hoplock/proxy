@@ -376,7 +376,10 @@ func TestAuthorizeRejectsUnknownEnumValues(t *testing.T) {
 		RouteType:         RouteTypeDirect,
 		Target:            "host.company.com",
 		PermittedChannels: []string{"session"},
-		FilterPolicy:      FilterPolicy{Mode: FilterModeBlacklist, Action: FilterActionAllowAndLog},
+		FilterPolicy: FilterPolicy{
+			Mode:  FilterModeBlacklist,
+			Rules: []FilterRule{{Match: "rm -rf /", Action: FilterActionKillSession}},
+		},
 	}
 
 	tests := []struct {
@@ -386,7 +389,14 @@ func TestAuthorizeRejectsUnknownEnumValues(t *testing.T) {
 		{name: "route type", patch: func(r *AuthorizeResponse) { r.RouteType = "teleport" }},
 		{name: "missing target", patch: func(r *AuthorizeResponse) { r.Target = "" }},
 		{name: "filter mode", patch: func(r *AuthorizeResponse) { r.FilterPolicy.Mode = "greylist" }},
-		{name: "filter action", patch: func(r *AuthorizeResponse) { r.FilterPolicy.Action = "shrug" }},
+		{
+			name:  "filter rule action",
+			patch: func(r *AuthorizeResponse) { r.FilterPolicy.Rules[0].Action = "shrug" },
+		},
+		{
+			name:  "filter rule without a pattern",
+			patch: func(r *AuthorizeResponse) { r.FilterPolicy.Rules[0].Match = "" },
+		},
 	}
 
 	for _, tc := range tests {
@@ -414,7 +424,10 @@ func TestAuthorizeAcceptsANextHopRoute(t *testing.T) {
 			RouteType:         RouteTypeNextHop,
 			Target:            "bastion-2.company.com",
 			PermittedChannels: []string{"session"},
-			FilterPolicy:      FilterPolicy{Mode: FilterModeWhitelist, Action: FilterActionKillSession},
+			FilterPolicy: FilterPolicy{
+				Mode:  FilterModeWhitelist,
+				Rules: []FilterRule{{Match: "deploy", Action: FilterActionAllowAndLog}},
+			},
 			Hop: &HopMetadata{
 				FinalTarget: "deep.internal.company.com",
 				MaxHops:     3,

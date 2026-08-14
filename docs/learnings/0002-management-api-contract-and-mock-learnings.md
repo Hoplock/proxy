@@ -24,15 +24,17 @@
   `AuthenticateResponse`, `AuthorizeRequest`, `AuthorizeResponse`,
   `HostKeyReportRequest/Response`, `LogBatchRequest/Response`,
   `LogPriorityRequest/Response`; shared `ConnMeta`, `Identity`,
-  `PublicKeyMaterial`, `MFAChallenge`, `FilterPolicy`, `HopMetadata`,
-  `LogRecord`; errors `ErrUnauthorized`/`ErrBadRequest`/`ErrServer`/
+  `PublicKeyMaterial`, `MFAChallenge`, `FilterPolicy`, `FilterRule`,
+  `HopMetadata`, `LogRecord`; errors `ErrUnauthorized`/`ErrBadRequest`/`ErrServer`/
   `ErrTransport`/`ErrProtocol` + `*APIError` + `IsUnauthorized(err)`.
 - Decisions made/affected: D2, D3, D7, D8 (priority logs are a **separate
   endpoint**, decision recorded in `api/README.md`), D9. No PLAN changes needed.
 - Gotchas: **a deny is `ErrUnauthorized` only** — every other error means
   "unknown", so callers must fail closed and never treat an outage as a deny.
-  `AuthorizeResponse.PermittedChannels == []` denies *all* channels. Mock
-  fixtures decode strictly (unknown key = startup failure).
+  `AuthorizeResponse.PermittedChannels == []` denies *all* channels.
+  `FilterPolicy.Rules` is **ordered and first-match-wins**, and each rule owns
+  its action — do not collapse a policy to a single action. Mock fixtures decode
+  strictly (unknown key = startup failure).
 - What the NEXT session (0004) must know: use `mgmt.Client`, never HTTP; build
   `internal/identity` from `mgmt.Identity` (the wire DTO) and convert at the
   mgmt boundary; the cert-first-then-password+MFA order and the MFA polling loop
@@ -86,8 +88,10 @@ re-checking the contract.
 ### Session-shaping call
 `Authorize` returns the *whole* policy: `RouteType` (`direct` | `nexthop`),
 `Target`/`TargetPort`, `Permissions`, `PermittedChannels`, `FilterPolicy`
-(`Mode` whitelist/blacklist, `Commands`, `Action` allow_and_log/block_command/
-warn_and_continue/kill_session), optional `Hop` (`FinalTarget`, `MaxHops`,
+(`Mode` whitelist/blacklist + ordered `Rules []FilterRule`, each `Match` +
+`Action` allow_and_log/block_command/warn_and_continue/kill_session + optional
+`Message`; **first match wins**, `Mode` decides the unmatched), optional `Hop`
+(`FinalTarget`, `MaxHops`,
 `HopTrail`), and a `DecisionID` for audit correlation. For `nexthop`, `Target`
 is the **next bastion** and the user's host travels in `Hop.FinalTarget`; the
 server returns the hop trail with the calling bastion appended, which is what

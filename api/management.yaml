@@ -583,27 +583,54 @@ components:
 
     FilterPolicy:
       type: object
-      description: Command filter policy for the connection (PLAN §6.3).
-      required: [mode, action]
+      description: |
+        Command filter policy for the connection (PLAN §6.3).
+
+        `rules` are evaluated **in order and the first match wins**, so a
+        specific rule placed before a broad one decides the outcome: `rm -rf /`
+        can kill the session while `rm *` only warns. A command matching no rule
+        is decided by `mode`, which is required so a policy always has a defined
+        default and cannot fail open by omission.
+      required: [mode]
       properties:
         mode:
           type: string
           enum: [whitelist, blacklist]
           description: |
-            `whitelist` — only listed commands are allowed. `blacklist` — listed
-            commands match the policy action. A `blacklist` with an empty
-            `commands` list means "no filtering".
-        commands:
+            What happens to a command **no rule matched**. `whitelist` — block
+            it; the rules are the permitted set. `blacklist` — allow it; the
+            rules are the caught set. A `blacklist` with no rules means "no
+            filtering"; a `whitelist` with no rules blocks everything.
+        rules:
           type: array
           description: |
-            Command patterns. Matching semantics are defined by the filter
-            engine (phase 0009) and are the same for both modes.
+            Ordered pattern→action rules. Each rule carries its own action, so
+            one policy can warn on one command and kill the session on another.
           items:
-            type: string
+            $ref: '#/components/schemas/FilterRule'
+
+    FilterRule:
+      type: object
+      description: One command pattern and the action taken when it matches.
+      required: [match, action]
+      properties:
+        match:
+          type: string
+          description: |
+            Command pattern. Matching semantics are defined by the filter engine
+            (phase 0009) and do not depend on `mode`.
+          example: rm -rf /
         action:
           type: string
           enum: [allow_and_log, block_command, warn_and_continue, kill_session]
-          description: What the bastion does when the policy matches.
+          description: What the bastion does when this rule matches.
+        message:
+          type: string
+          description: |
+            Optional operator-authored text shown to the user when this rule
+            fires. Displayed verbatim, so it MUST NOT contain policy internals
+            (PLAN §4.3).
+          example: Destructive command. Raise a change request instead.
 
     HopMetadata:
       type: object

@@ -297,12 +297,28 @@ func TestAuthorize(t *testing.T) {
 		if len(resp.PermittedChannels) != 1 || resp.PermittedChannels[0] != "session" {
 			t.Errorf("permitted_channels = %v, want [session]", resp.PermittedChannels)
 		}
-		if resp.FilterPolicy.Mode != mgmt.FilterModeBlacklist ||
-			resp.FilterPolicy.Action != mgmt.FilterActionBlockCommand {
-			t.Errorf("filter policy = %+v, want a blocking blacklist", resp.FilterPolicy)
+		if resp.FilterPolicy.Mode != mgmt.FilterModeBlacklist {
+			t.Errorf("filter mode = %q, want %q", resp.FilterPolicy.Mode, mgmt.FilterModeBlacklist)
 		}
-		if len(resp.FilterPolicy.Commands) != 2 {
-			t.Errorf("filter commands = %v, want the two from the fixture", resp.FilterPolicy.Commands)
+		// The whole point of per-rule actions: one policy, three severities, in
+		// the fixture's order.
+		wantRules := []mgmt.FilterRule{
+			{Match: "rm -rf /", Action: mgmt.FilterActionKillSession},
+			{Match: "shutdown", Action: mgmt.FilterActionBlockCommand},
+			{Match: "sudo *", Action: mgmt.FilterActionWarnAndContinue},
+		}
+		if len(resp.FilterPolicy.Rules) != len(wantRules) {
+			t.Fatalf("filter rules = %+v, want %d rules", resp.FilterPolicy.Rules, len(wantRules))
+		}
+		for i, want := range wantRules {
+			got := resp.FilterPolicy.Rules[i]
+			if got.Match != want.Match || got.Action != want.Action {
+				t.Errorf("rule %d = %s→%s, want %s→%s (order is significant: first match wins)",
+					i, got.Match, got.Action, want.Match, want.Action)
+			}
+			if got.Message == "" {
+				t.Errorf("rule %d (%s) lost its operator message", i, got.Match)
+			}
 		}
 		if resp.Hop != nil {
 			t.Errorf("hop = %+v, want none on a direct route", resp.Hop)
@@ -355,9 +371,15 @@ func TestAuthorize(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Authorize: %v", err)
 		}
-		if resp.FilterPolicy.Mode != mgmt.FilterModeWhitelist ||
-			resp.FilterPolicy.Action != mgmt.FilterActionKillSession {
-			t.Errorf("filter policy = %+v, want a session-killing whitelist", resp.FilterPolicy)
+		if resp.FilterPolicy.Mode != mgmt.FilterModeWhitelist {
+			t.Errorf("filter mode = %q, want %q", resp.FilterPolicy.Mode, mgmt.FilterModeWhitelist)
+		}
+		if len(resp.FilterPolicy.Rules) != 3 {
+			t.Fatalf("filter rules = %+v, want the three from the fixture", resp.FilterPolicy.Rules)
+		}
+		if last := resp.FilterPolicy.Rules[2]; last.Action != mgmt.FilterActionKillSession {
+			t.Errorf("last rule action = %q, want a whitelist that still escalates on %q",
+				last.Action, last.Match)
 		}
 		if len(resp.PermittedChannels) != 2 {
 			t.Errorf("permitted_channels = %v, want session and direct-tcpip", resp.PermittedChannels)
@@ -663,8 +685,16 @@ func TestFixtureValidation(t *testing.T) {
 		{
 			name: "unknown filter action",
 			yaml: "users:\n  - login: alice\n    password: pw\n" +
-				"routes:\n  - target: h\n    filter_policy:\n      mode: blacklist\n      action: shrug\n",
+				"routes:\n  - target: h\n    filter_policy:\n      mode: blacklist\n" +
+				"      rules:\n        - match: rm\n          action: shrug\n",
 			wantErrs: []string{"not a known action"},
+		},
+		{
+			name: "filter rule without a match pattern",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    filter_policy:\n      mode: whitelist\n" +
+				"      rules:\n        - action: allow_and_log\n",
+			wantErrs: []string{"has no match pattern"},
 		},
 		{
 			name:     "unknown host key decision",
@@ -719,9 +749,12 @@ routes:
 	if r.RouteType != string(mgmt.RouteTypeDirect) {
 		t.Errorf("route_type = %q, want %q", r.RouteType, mgmt.RouteTypeDirect)
 	}
-	if r.FilterPolicy.Mode != string(mgmt.FilterModeBlacklist) ||
-		r.FilterPolicy.Action != string(mgmt.FilterActionAllowAndLog) {
-		t.Errorf("filter defaults = %+v, want a logging blacklist", r.FilterPolicy)
+	if r.FilterPolicy.Mode != string(mgmt.FilterModeBlacklist) {
+		t.Errorf("filter mode default = %q, want %q", r.FilterPolicy.Mode, mgmt.FilterModeBlacklist)
+	}
+	if len(r.FilterPolicy.Rules) != 0 {
+		t.Errorf("filter rules = %+v, want none by default (a blacklist with no rules filters nothing)",
+			r.FilterPolicy.Rules)
 	}
 	if fx.HostKeys.Decision != string(mgmt.HostKeyAccept) {
 		t.Errorf("host_keys.decision = %q, want %q", fx.HostKeys.Decision, mgmt.HostKeyAccept)

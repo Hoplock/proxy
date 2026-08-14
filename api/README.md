@@ -80,9 +80,12 @@ One call shapes the whole session. The response carries:
 - `permissions`: opaque permission-set name, carried into logs;
 - `permitted_channels`: the SSH channel allow-list; **an empty list denies every
   channel** (D5);
-- `filter_policy`: `mode` (`whitelist`/`blacklist`), `commands`, and `action`
-  (`allow_and_log`, `block_command`, `warn_and_continue`, `kill_session`) —
-  PLAN §6.3;
+- `filter_policy`: an ordered `rules` list, each rule a `match` pattern with
+  **its own** `action` (`allow_and_log`, `block_command`, `warn_and_continue`,
+  `kill_session`) and an optional operator `message`, plus a `mode`
+  (`whitelist`/`blacklist`) deciding commands no rule matched. **First match
+  wins**; per-rule actions let one policy warn on `sudo`, block `shutdown`, and
+  kill the session on `rm -rf /` (PLAN §6.3);
 - `hop` (next-hop routes only): `final_target`, `max_hops`, and the `hop_trail`
   to forward, which is how loops and runaway chains are caught.
 
@@ -163,7 +166,8 @@ Requests/responses: `AuthenticateCertRequest`, `AuthenticatePasswordRequest`,
 `AuthorizeResponse`, `HostKeyReportRequest`, `HostKeyReportResponse`,
 `LogBatchRequest`, `LogBatchResponse`, `LogPriorityRequest`,
 `LogPriorityResponse`. Shared types: `ConnMeta`, `Identity`,
-`PublicKeyMaterial`, `MFAChallenge`, `FilterPolicy`, `HopMetadata`, `LogRecord`.
+`PublicKeyMaterial`, `MFAChallenge`, `FilterPolicy`, `FilterRule`, `HopMetadata`,
+`LogRecord`.
 Enum values have named constants (`RouteTypeDirect`, `FilterActionKillSession`,
 `SeverityCritical`, …); a test asserts they match the enums in this document.
 
@@ -192,7 +196,7 @@ startup, and every problem in a file is reported at once.
 | `bastion_token` | Bearer token required on every `/v1` request. Empty disables bastion auth. |
 | `users[]` | `login`, `identity` (`subject`, `display_name`, `source`, `principals`, `groups`, `claims`), `key_fingerprints` (accepted for cert auth), `password`, and `mfa`. |
 | `users[].mfa` | `required`, `decision` (`approve`/`deny`), `pending_polls` (how many polls stay pending before resolving — this is what makes MFA deterministic), `poll_after_ms`, `ttl_ms`, `prompt`. |
-| `routes[]` | Matched in order, first match wins; no match is a `401`. `login` and `target` accept `*`. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` (nexthop only), `target_port`, `permissions`, `permitted_channels`, `filter_policy`. |
+| `routes[]` | Matched in order, first match wins; no match is a `401`. `login` and `target` accept `*`. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` (nexthop only), `target_port`, `permissions`, `permitted_channels`, and `filter_policy` (`mode` plus ordered `rules`, each `match` + `action` + optional `message`). |
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, and `known[]` (`target` + `fingerprint`) to pre-seed trusted keys. |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to

@@ -158,10 +158,15 @@ func (c *RESTClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*Aut
 	default:
 		return nil, protocolError(op, fmt.Errorf("unknown filter mode %q", resp.FilterPolicy.Mode))
 	}
-	switch resp.FilterPolicy.Action {
-	case FilterActionAllowAndLog, FilterActionBlockCommand, FilterActionWarnAndContinue, FilterActionKillSession:
-	default:
-		return nil, protocolError(op, fmt.Errorf("unknown filter action %q", resp.FilterPolicy.Action))
+	for i, rule := range resp.FilterPolicy.Rules {
+		if rule.Match == "" {
+			return nil, protocolError(op, fmt.Errorf("filter rule %d has no match pattern", i))
+		}
+		switch rule.Action {
+		case FilterActionAllowAndLog, FilterActionBlockCommand, FilterActionWarnAndContinue, FilterActionKillSession:
+		default:
+			return nil, protocolError(op, fmt.Errorf("filter rule %d (%q): unknown action %q", i, rule.Match, rule.Action))
+		}
 	}
 	return resp, nil
 }

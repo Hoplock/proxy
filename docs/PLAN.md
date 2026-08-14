@@ -312,9 +312,17 @@ Robustness requirements:
 
 ### 6.3 Command filtering (`internal/filter`, D5-answers 12–14)
 
-- The management server tells the bastion, per connection, the **mode**
-  (`whitelist` or `blacklist`), the **list**, and the **action on match**:
-  `allow_and_log`, `block_command`, `warn_and_continue`, or `kill_session`.
+- The management server tells the bastion, per connection, an **ordered rule
+  list** — each rule a `match` pattern with **its own action** (`allow_and_log`,
+  `block_command`, `warn_and_continue`, `kill_session`) and an optional operator
+  message — plus a **mode** (`whitelist` or `blacklist`) that decides commands
+  no rule matched. Per-rule actions matter: one policy has to be able to warn on
+  `sudo`, block `shutdown`, and kill the session on `rm -rf /`; a single action
+  for the whole list would flatten all three to the same severity.
+- **First match wins**, so a specific rule placed before a broad one decides the
+  outcome. Mode is required, so an unmatched command always has a defined
+  answer: `whitelist` blocks it, `blacklist` allows it. A `blacklist` with no
+  rules filters nothing; a `whitelist` with no rules blocks everything.
 - **`exec`** requests: the full command is available up front — filtering is
   **enforced** reliably.
 - **Interactive `shell`/pty**: keystroke streams are inspected **best-effort**

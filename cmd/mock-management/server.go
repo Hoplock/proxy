@@ -272,9 +272,8 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		Permissions:       route.Permissions,
 		PermittedChannels: route.PermittedChannels,
 		FilterPolicy: mgmt.FilterPolicy{
-			Mode:     mgmt.FilterMode(route.FilterPolicy.Mode),
-			Commands: route.FilterPolicy.Commands,
-			Action:   mgmt.FilterAction(route.FilterPolicy.Action),
+			Mode:  mgmt.FilterMode(route.FilterPolicy.Mode),
+			Rules: filterRules(route.FilterPolicy.Rules),
 		},
 		DecisionID: decisionID,
 	}
@@ -496,6 +495,23 @@ func (c *mfaChallenge) wire(token string) *mgmt.MFAChallenge {
 }
 
 func hostKeyID(target, fingerprint string) string { return target + "\x00" + fingerprint }
+
+// filterRules converts fixture rules into their contract form, preserving order
+// because the first match wins.
+func filterRules(in []fixtureFilterRule) []mgmt.FilterRule {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mgmt.FilterRule, 0, len(in))
+	for _, r := range in {
+		out = append(out, mgmt.FilterRule{
+			Match:   r.Match,
+			Action:  mgmt.FilterAction(r.Action),
+			Message: r.Message,
+		})
+	}
+	return out
+}
 
 // mirror appends a record to a JSONL file when -log-dir is set. The caller
 // holds s.mu. A mirroring failure is reported but never fails the request: the
