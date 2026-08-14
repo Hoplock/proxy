@@ -33,7 +33,7 @@
   "unknown", so callers must fail closed and never treat an outage as a deny.
   `AuthorizeResponse.PermittedChannels == []` denies *all* channels. Mock
   fixtures decode strictly (unknown key = startup failure).
-- What the NEXT session (0003) must know: use `mgmt.Client`, never HTTP; build
+- What the NEXT session (0004) must know: use `mgmt.Client`, never HTTP; build
   `internal/identity` from `mgmt.Identity` (the wire DTO) and convert at the
   mgmt boundary; the cert-first-then-password+MFA order and the MFA polling loop
   are already specified below; run the mock with
@@ -63,14 +63,14 @@ All client methods return `*APIError` wrapping a sentinel:
 | response violates the contract | `ErrProtocol` | Don't trust it. Fail closed. |
 
 Transport failures wrap the underlying cause too (`%w: %w`), so
-`errors.Is(err, context.DeadlineExceeded)` works — 0009 can use that to decide
+`errors.Is(err, context.DeadlineExceeded)` works — 0010 can use that to decide
 whether to retry a log shipment. The client validates responses before returning
 them: unknown enum values, `authenticated` without an identity, `mfa_required`
 without a token, a route without a target, and a priority ack with
 `accepted: false` are all `ErrProtocol`, so callers can dereference without
 re-checking the contract.
 
-### Auth flow the bastion (0003) implements
+### Auth flow the bastion (0004) implements
 1. `AuthenticateCert` — cert/public key first. A success is always
    `AuthStatusAuthenticated`; a cert response asking for MFA is a protocol
    error, by design.
@@ -91,9 +91,9 @@ warn_and_continue/kill_session), optional `Hop` (`FinalTarget`, `MaxHops`,
 `HopTrail`), and a `DecisionID` for audit correlation. For `nexthop`, `Target`
 is the **next bastion** and the user's host travels in `Hop.FinalTarget`; the
 server returns the hop trail with the calling bastion appended, which is what
-0006 uses for loop detection and the hop limit.
+0007 uses for loop detection and the hop limit.
 
-### Logging paths (0009)
+### Logging paths (0010)
 Batch → `202` + `accepted` count; priority → `200` and the ack means durable, so
 a `kill_session` can be actioned knowing the event was recorded. `RecordID` is
 client-assigned and the server de-duplicates on it, so retrying a batch after a
@@ -115,7 +115,7 @@ loads, so it can never rot). Notable behaviours:
 - Mock-only (not in the contract): `GET /debug/logs` returns everything ingested,
   `POST /debug/reset` clears logs, MFA challenges, and learned host keys.
   `-log-dir` also mirrors records into `batch.jsonl`/`priority.jsonl`. Phase
-  0010 should drive scenario assertions through these.
+  0011 should drive scenario assertions through these.
 - `-fixtures` defaults to `fixtures.example.yaml` in the working directory; the
   compose topology will need to mount a fixture file and pass the flag.
 
@@ -135,15 +135,16 @@ the client disconnect after the body is consumed, so the handler hangs and
 ### Latency model (asked during review of this PR)
 `/v1/authorize` is a **per-connection snapshot, not a per-action question**: it
 returns route + channel allow-list + the complete filter policy in one response,
-and 0007/0008 enforce that locally. The data path therefore makes **zero** calls
+and 0008/0009 enforce that locally. The data path therefore makes **zero** calls
 to the management server — a blocked command is a local list match. Setup costs
 ~3 sequential round trips (auth, authorize, host-key report), multiplied per hop
 on a chain, and nothing is amortised across connections (D2's prototype choice).
-The contract has **no cache-lifetime field**; `api/README.md` §"Caching and the
-latency budget" records the cost table and the intended seam (optional
+The contract shipped here has **no cache-lifetime field**; `api/README.md`
+§"Caching and the latency budget" records the cost table and the seam (optional
 server-set TTL on `AuthorizeResponse`, never a bastion-side TTL, and why the
-authentication calls are the wrong thing to cache). A phase that adds it should
-start there.
+authentication calls are the wrong thing to cache). Phase **0003** was queued
+out of this review to add it, together with the server-driven session-kill
+mechanism that makes a cached allow safe to hold.
 
 ### Deviations
 - Branch name is `claude/queued-prompt-implementation-vl5dhe` rather than
@@ -156,9 +157,12 @@ start there.
   "dedicated priority path", so `docs/PLAN.md` needed no change.
 
 ### Follow-ups (not done here, not blocking)
-- No new prompts added; numbering invariants hold (0002 moved to
-  `implemented/`, 0003–0010 still queued).
-- `internal/identity` (0003) should own the bastion's identity model and convert
+- One new prompt was added out of this PR's review:
+  `0003-policy-caching-and-session-revocation`. The previously queued 0003–0010
+  were renumbered to 0004–0011 (queued only — `implemented/` is untouched) and
+  their cross-references rewritten, so the PROTOCOL §6 invariants still hold.
+  `docs/PLAN.md` gained §6.4, an amended D2, and a new phase-table row.
+- `internal/identity` (0004) should own the bastion's identity model and convert
   to/from `mgmt.Identity`; `mgmt.Identity.Claims` is `map[string]string` on the
   wire, so a richer internal claims type must serialise into that shape or the
   contract changes with it.

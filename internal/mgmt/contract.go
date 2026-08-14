@@ -43,7 +43,7 @@ type ConnMeta struct {
 // It is a claims model, not a boolean, so AD/Okta/OIDC sources can be added
 // without changing any caller (D4).
 //
-// This is the wire representation. Phase 0003 introduces the bastion's internal
+// This is the wire representation. Phase 0004 introduces the bastion's internal
 // identity model in internal/identity and converts to and from this type at the
 // mgmt boundary.
 type Identity struct {

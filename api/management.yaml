@@ -6,9 +6,12 @@ info:
     The contract between a **bastion** (Policy Enforcement Point) and the
     **management server** (Policy Decision Point).
 
-    The bastion is stateless about policy (PLAN D2): it authenticates nothing
-    locally, decides no routes, and holds no filter lists. Every decision in a
-    session comes from this API.
+    The bastion originates no policy (PLAN D2): it authenticates nothing
+    locally, decides no routes, and invents no filter lists. It does not,
+    however, re-ask per action — `/v1/authorize` returns the whole policy for a
+    connection (route, channel allow-list, filter policy), which the bastion
+    then enforces locally for that connection's lifetime. The round trips are at
+    session setup; the session's data path makes no calls to this API.
 
     All requests are JSON over HTTPS (PLAN D9). The bastion authenticates itself
     to the management server with a bearer token (see `bastionToken`); that is a
@@ -594,7 +597,7 @@ components:
           type: array
           description: |
             Command patterns. Matching semantics are defined by the filter
-            engine (phase 0008) and are the same for both modes.
+            engine (phase 0009) and are the same for both modes.
           items:
             type: string
         action:

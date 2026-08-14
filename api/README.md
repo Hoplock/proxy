@@ -135,8 +135,8 @@ deliberate prototype choice — "the bastion caches nothing security-relevant
 beyond the lifetime of a connection" — not an oversight, and the contract
 currently has **no field to express a cache lifetime**.
 
-When that cost needs addressing, the seam is here, in this document, and the
-shape matters more than the mechanism:
+Phase 0003 addresses it (`prompts/queued/0003-policy-caching-and-session-revocation.md`,
+PLAN §6.4). The shape matters more than the mechanism:
 
 - **Cache the authorize decision, not the authentication.** An MFA approval is a
   per-session assertion; caching it defeats the second factor. Certificate

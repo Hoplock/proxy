@@ -61,10 +61,15 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   wrapper delivers the clean `ssh host.company.com.<brand>.proxy` UX by
   rewriting it into the encoded form. The delimiter and parsing rules live in
   the bastion bootstrap config.
-- **D2 — The bastion is stateless about policy.** Every authn/authz/route/policy
-  decision comes from the management server per-connection. The bastion caches
-  nothing security-relevant beyond the lifetime of a connection (later versions
-  may add short TTL caches; not in the prototype).
+- **D2 — The bastion originates no policy.** Every authn/authz/route/policy
+  decision is *made* by the management server. A decision is fetched **once per
+  connection** and enforced locally for that connection's lifetime, so the data
+  path (channel opens, commands, stream bytes) makes no calls to the server at
+  all — the latency is at session setup, not in the stream (§6.4).
+  The bastion may reuse an authorize decision across connections **only** when
+  the server explicitly authorises it with a server-set TTL, and only while it
+  can still hear revocations (§6.4). It never caches authentication results, and
+  it never widens a decision it was given.
 - **D3 — Management server is a separate component.** This repo defines the
   **API contract** and ships a **mock/reference management server**
   (`cmd/mock-management`) used for development and CI. The production management
@@ -275,6 +280,40 @@ Robustness requirements:
 
 ---
 
+### 6.4 Policy caching & session revocation (D2)
+
+The authorize+route response is a **per-connection policy snapshot**, not a
+per-action question: it carries the route, the channel allow-list, and the whole
+filter policy, and the bastion enforces all three locally. Nothing on the data
+path talks to the management server.
+
+Setup, however, is not amortised: each connection costs ~3 sequential round
+trips (authenticate, authorize, host-key report), paid again per hop on a chain.
+Two mechanisms address that, and they only make sense together:
+
+- **Server-authorised caching.** The server may attach a cache hint (an opaque
+  key + a TTL) to an authorize decision. Absent hint means do not cache. The
+  **server** owns the lifetime — a bastion may clamp it shorter but never
+  longer, and may never invent one — so the PDP keeps ownership of its own risk
+  appetite and can refuse caching per target. **Authentication is never cached**:
+  an MFA approval is a per-session assertion, and certificate validation is
+  where revocation is enforced.
+- **Server-driven revocation.** The bastion holds a long-lived outbound
+  subscription to the management server (bastions are behind firewalls and must
+  not need an inbound listener) and receives: kill a named session, kill every
+  session for a subject, invalidate cached decisions, or resync. This is what
+  bounds the damage of a cached allow, and it is the only way the server can end
+  a session that is already in flight.
+
+Fail-closed rule: if the bastion cannot hear revocations (the subscription has
+been down beyond a short threshold), it stops serving cached decisions and
+re-authorizes every connection. It does **not** kill live sessions — losing the
+revocation channel is a reason to distrust the cache, not to drop users
+mid-command.
+
+Phase 0003 delivers the contract, the client-side cache, and the subscription;
+the session-kill hook it defines is implemented by the proxy in 0005.
+
 ## 7. Logging & telemetry (`internal/logging`, D8)
 
 - **What**: session metadata (session id, user identity + source, target, route
@@ -340,14 +379,15 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | ---- | --------------------------------------- | ------------------------------------------------------------------ |
 | 0001 | Project scaffold & conventions          | module, layout, license+headers, Makefile, CI skeleton, config stub |
 | 0002 | Management API contract + mock server   | `api/` contract, `internal/mgmt` client, `cmd/mock-management`      |
-| 0003 | Identity model + user→bastion auth      | `internal/identity`, `internal/auth/user`, cert-first + password/MFA |
-| 0004 | Core proxy engine + direct route        | `internal/proxy`, generic channel passthrough, E2E with static-key target auth |
-| 0005 | Ephemeral target provisioning           | `internal/auth/target` ephemeral provisioner + orphan reaper       |
-| 0006 | Multi-hop / next-hop routing            | `internal/routing` chaining, loop/hop-limit protection             |
-| 0007 | Channel allow-list + inspection pipeline| `internal/channel` enforcement + pluggable inspector framework     |
-| 0008 | Command filtering + policy actions      | `internal/filter`, exec-enforced + interactive best-effort         |
-| 0009 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
-| 0010 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
+| 0003 | Policy caching + session revocation     | cache hint + revocation stream in the contract, `internal/mgmt` cache + subscription, `SessionRegistry` hook |
+| 0004 | Identity model + user→bastion auth      | `internal/identity`, `internal/auth/user`, cert-first + password/MFA |
+| 0005 | Core proxy engine + direct route        | `internal/proxy`, generic channel passthrough, E2E with static-key target auth; implements `SessionRegistry` |
+| 0006 | Ephemeral target provisioning           | `internal/auth/target` ephemeral provisioner + orphan reaper       |
+| 0007 | Multi-hop / next-hop routing            | `internal/routing` chaining, loop/hop-limit protection             |
+| 0008 | Channel allow-list + inspection pipeline| `internal/channel` enforcement + pluggable inspector framework     |
+| 0009 | Command filtering + policy actions      | `internal/filter`, exec-enforced + interactive best-effort         |
+| 0010 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
+| 0011 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

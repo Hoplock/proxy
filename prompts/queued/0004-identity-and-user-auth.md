@@ -1,4 +1,4 @@
-# 0003 — Identity model & user→bastion authentication
+# 0004 — Identity model & user→bastion authentication
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -26,11 +26,11 @@ to the management server.
     **certificate-first, password+MFA fallback** ordering (per user answers).
 - Wire these into the SSH server auth callbacks in a small, testable way
   (`ssh.ServerConfig` `PublicKeyCallback` / keyboard-interactive), but **do not**
-  build the full proxy yet — expose functions the proxy phase (0004) will call.
+  build the full proxy yet — expose functions the proxy phase (0005) will call.
 - Config additions (in `internal/config`) to enable/disable methods.
 
 ## Out of scope
-- Target-side auth (0005). Proxying/channels (0004). Real AD/Okta backends.
+- Target-side auth (0006). Proxying/channels (0005). Real AD/Okta backends.
 
 ## Acceptance criteria
 - `UserAuthenticator` interface + both implementations compile and are unit-
@@ -42,6 +42,6 @@ to the management server.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move this prompt to `implemented/`; add
-`docs/learnings/0003-identity-and-user-auth-learnings.md`. Summary block MUST
+`docs/learnings/0004-identity-and-user-auth-learnings.md`. Summary block MUST
 give the exact `Identity`/`Claims` type shapes, the `UserAuthenticator`
 signature, the factory/config keys, and how the proxy phase should invoke auth.

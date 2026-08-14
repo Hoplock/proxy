@@ -68,7 +68,7 @@ per connection (`docs/PLAN.md`, D2).
 | `cmd/mock-management` | reference/mock management API for dev and CI                |
 | `internal/`         | the implementation packages (see `docs/PLAN.md` §3)           |
 | `api/`              | management API contract — source of truth                     |
-| `deploy/`           | docker-compose e2e topology and fixtures (phase 0010)         |
+| `deploy/`           | docker-compose e2e topology and fixtures (final phase)        |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
 | `prompts/`          | queued and implemented phase prompts                          |
 

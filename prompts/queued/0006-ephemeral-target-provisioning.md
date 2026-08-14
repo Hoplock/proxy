@@ -1,16 +1,16 @@
-# 0005 — Ephemeral target credential provisioning
+# 0006 — Ephemeral target credential provisioning
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
 - `docs/PLAN.md` — especially §2 (D6), §4.2 (TargetAuthenticator), **§5 (full
   lifecycle & robustness requirements)**.
-- `docs/learnings/` — read summaries; open `0004` (proxy seam for target auth)
+- `docs/learnings/` — read summaries; open `0005` (proxy seam for target auth)
   and `0002` (mgmt client).
 
 ## Objective
 Implement the real **bastion→target** authenticator: just-in-time ephemeral user
 provisioning via a management certificate, with **guaranteed teardown** and
-**orphan cleanup**. This replaces the `static-key` placeholder from 0004.
+**orphan cleanup**. This replaces the `static-key` placeholder from 0005.
 
 ## In scope
 - `internal/auth/target`: an ephemeral `TargetAuthenticator` (PLAN §4.2, D6):
@@ -34,12 +34,12 @@ provisioning via a management certificate, with **guaranteed teardown** and
     coordination). Document the chosen approach.
   - Provisioning failure denies the session cleanly, leaving nothing behind.
 - Wire it in as the default target authenticator (config-selectable), superseding
-  the placeholder, without changing the proxy's call site (0004's seam).
+  the placeholder, without changing the proxy's call site (0005's seam).
 - Config: management-cert location/identity, provisioning account, reaper
   interval, naming convention.
 
 ## Out of scope
-- Multi-hop (0006). Channel inspection/filtering (0007/0008).
+- Multi-hop (0007). Channel inspection/filtering (0008/0009).
 
 ## Acceptance criteria
 - Integration test against a real `sshd` target (container) proving: user is
@@ -52,7 +52,7 @@ provisioning via a management certificate, with **guaranteed teardown** and
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0005-ephemeral-target-provisioning-learnings.md`. Summary block
+`docs/learnings/0006-ephemeral-target-provisioning-learnings.md`. Summary block
 MUST document the exact teardown guarantees, the orphan-reaper mechanism and
 naming convention, the concurrency approach, and any target-side prerequisites
-(the mgmt cert / provisioning account) that the e2e topology (0010) must set up.
+(the mgmt cert / provisioning account) that the e2e topology (0011) must set up.
