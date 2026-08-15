@@ -1,10 +1,10 @@
-# 0006 — Multi-hop / next-hop routing
+# 0007 — Multi-hop / next-hop routing
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
 - `docs/PLAN.md` — especially §1 (nexthop flow), §2 (D2), §6.1 (multi-hop, loop
   detection, hop limits).
-- `docs/learnings/` — read summaries; open `0004` (routing entry points + proxy
+- `docs/learnings/` — read summaries; open `0005` (routing entry points + proxy
   seam for nexthop) and `0002` (route payload shape).
 
 ## Objective
@@ -27,7 +27,7 @@ chain. Each hop independently authenticates, authorizes, and routes.
   to downstream hops.
 
 ## Out of scope
-- Channel inspection/filtering internals (0007/0008). Full logging pipeline (0009).
+- Channel inspection/filtering internals (0008/0009). Full logging pipeline (0010).
 
 ## Acceptance criteria
 - Integration test with two bastions: user → bastion A (nexthop) → bastion B
@@ -38,6 +38,6 @@ chain. Each hop independently authenticates, authorizes, and routes.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0006-multi-hop-routing-learnings.md`. Summary block MUST document
+`docs/learnings/0007-multi-hop-routing-learnings.md`. Summary block MUST document
 the chain trust model, how identity is propagated between hops, the loop/hop-limit
-mechanism, and what the e2e topology (0010) needs to configure two chained hops.
+mechanism, and what the e2e topology (0011) needs to configure two chained hops.

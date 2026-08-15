@@ -1,0 +1,782 @@
+openapi: 3.0.3
+
+info:
+  title: SecureCommandProxy Management API
+  description: |
+    The contract between a **bastion** (Policy Enforcement Point) and the
+    **management server** (Policy Decision Point).
+
+    The bastion originates no policy (PLAN D2): it authenticates nothing
+    locally, decides no routes, and invents no filter lists. It does not,
+    however, re-ask per action — `/v1/authorize` returns the whole policy for a
+    connection (route, channel allow-list, filter policy), which the bastion
+    then enforces locally for that connection's lifetime. The round trips are at
+    session setup; the session's data path makes no calls to this API.
+
+    All requests are JSON over HTTPS (PLAN D9). The bastion authenticates itself
+    to the management server with a bearer token (see `bastionToken`); that is a
+    deliberate seam — production deployments are expected to replace it with
+    mTLS or a signed assertion without changing the payloads.
+
+    A `401` from any endpoint is a **decision**, not a failure: it means "deny
+    this user/session". Transport failures and `5xx` responses are separate and
+    must never be interpreted as a deny.
+  version: 1.0.0
+  license:
+    name: LicenseRef-Proprietary — all rights reserved
+
+servers:
+  - url: https://management.example.com
+    description: Management server root; all paths below are absolute from here.
+
+security:
+  - bastionToken: []
+
+tags:
+  - name: authentication
+    description: user → bastion authentication, delegated to the server.
+  - name: authorization
+    description: authorize + route decisions.
+  - name: host-keys
+    description: target host-key reporting (TOFU-with-report, D7).
+  - name: logs
+    description: session log ingestion (D8).
+
+paths:
+  /v1/auth/cert:
+    post:
+      tags: [authentication]
+      operationId: authenticateCert
+      summary: Authenticate a client that offered a public key or certificate.
+      description: |
+        Called when the SSH client offers a public key or certificate. The
+        bastion has already stripped the target segment from the SSH username
+        (D1) and sends the bare `login`.
+
+        The bastion performs no local key validation: it relays the offered key
+        material and the server decides.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthenticateCertRequest'
+      responses:
+        '200':
+          description: |
+            The key is accepted. `status` is `authenticated` and `identity` is
+            present. Certificate authentication never returns `mfa_required`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/auth/password:
+    post:
+      tags: [authentication]
+      operationId: authenticatePassword
+      summary: Authenticate a password, optionally starting out-of-band MFA.
+      description: |
+        Called for password / keyboard-interactive flows, which the bastion
+        attempts only after certificate authentication was not accepted.
+
+        MFA is entirely the server's concern. If the server requires a second
+        factor it returns `200` with `status: mfa_required` and an
+        `mfa` challenge; the bastion then polls `/v1/auth/mfa/poll` until the
+        challenge resolves. The bastion never contacts the MFA provider itself.
+
+        The submitted password MUST NOT be logged by either side (PLAN §7).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthenticatePasswordRequest'
+      responses:
+        '200':
+          description: |
+            The password was accepted. Either `status` is `authenticated` and
+            `identity` is present, or `status` is `mfa_required` and `mfa`
+            carries the challenge to poll.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/auth/mfa/poll:
+    post:
+      tags: [authentication]
+      operationId: pollMFA
+      summary: Poll an outstanding out-of-band MFA challenge.
+      description: |
+        Polled by the bastion after `/v1/auth/password` returned
+        `status: mfa_required`, no more often than the challenge's
+        `poll_after_ms`.
+
+        While the user has not answered, the server repeats `200` with
+        `status: mfa_required` and a refreshed `mfa` challenge (the token stays
+        valid until `expires_at`). Approval returns `status: authenticated` with
+        the identity; denial, expiry, or an unknown token return `401`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MFAPollRequest'
+      responses:
+        '200':
+          description: The challenge is either still pending or has been approved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/authorize:
+    post:
+      tags: [authorization]
+      operationId: authorize
+      summary: Authorize an authenticated identity for a target and return a route.
+      description: |
+        The single decision that shapes the whole session (PLAN §1 step 4). The
+        response tells the bastion where to connect (`direct` to the target, or
+        `nexthop` to another bastion), which SSH channel types it may open, and
+        which command filter policy to enforce.
+
+        The bastion MUST treat the response as the complete policy for the
+        connection: anything not permitted here is denied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizeRequest'
+      responses:
+        '200':
+          description: Access is granted; the body is the route and policy to enforce.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/hostkeys/report:
+    post:
+      tags: [host-keys]
+      operationId: reportHostKey
+      summary: Report a target host key and get the trust decision for it.
+      description: |
+        Called before the bastion completes the target handshake, for every
+        target host key it sees. In the prototype the server implements
+        trust-on-first-use and records the key (D7); the response still carries
+        an explicit decision so a later, stricter policy needs no bastion change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostKeyReportRequest'
+      responses:
+        '200':
+          description: The report was recorded; `decision` says whether to proceed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostKeyReportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/logs/batch:
+    post:
+      tags: [logs]
+      operationId: ingestLogBatch
+      summary: Ingest a batch of session log records.
+      description: |
+        The throughput path (D8). The bastion accumulates records and ships them
+        in batches; the server acknowledges how many it accepted. Batches are
+        the default for everything that is not a critical security event.
+
+        Records carry a client-assigned `record_id` so a retried batch (after a
+        timeout or a drained disk buffer) can be de-duplicated by the server.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogBatchRequest'
+      responses:
+        '202':
+          description: The batch was accepted for storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/logs/priority:
+    post:
+      tags: [logs]
+      operationId: ingestPriorityLog
+      summary: Ingest a single critical record immediately.
+      description: |
+        The low-latency path for blocked commands and other critical security
+        events (D8). It is a **separate endpoint**, not a flag on
+        `/v1/logs/batch`, so that a priority event is never queued behind a
+        large batch, can use its own timeout and connection, and is easy to
+        prioritise separately in the server and in any middlebox.
+
+        Unlike the batch endpoint this responds `200`: the acknowledgement means
+        the record is durable, so the bastion can act (e.g. kill the session)
+        knowing the event was recorded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogPriorityRequest'
+      responses:
+        '200':
+          description: The record is durable on the server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogPriorityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    bastionToken:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token identifying the bastion to the management server. This is
+        the bastion→server channel credential and is unrelated to the end user's
+        SSH credentials.
+
+  responses:
+    BadRequest:
+      description: The request body was malformed or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: |
+        Deny decision. For the auth endpoints the credential was rejected; for
+        `/v1/authorize` the identity may not reach the requested target; for the
+        remaining endpoints the bastion's own token was rejected. Clients MUST
+        distinguish this from transport errors and never fail open.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServerError:
+      description: The server failed to process an otherwise valid request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable code, e.g. `unauthorized`.
+              example: unauthorized
+            message:
+              type: string
+              description: Human-readable detail. MUST NOT contain credentials.
+              example: no identity matches the offered key
+
+    ConnMeta:
+      type: object
+      description: |
+        Metadata about the SSH connection a request is made on behalf of. Sent
+        with every call so the server can make decisions on, and correlate logs
+        by, the connection rather than just the identity.
+      required: [session_id, bastion_id, client_addr, timestamp]
+      properties:
+        session_id:
+          type: string
+          description: Bastion-assigned id, stable for the whole session.
+          example: 01HQ2Z3K4M5N6P7Q8R9S0T1V2W
+        bastion_id:
+          type: string
+          description: Identifier of the bastion making the call.
+          example: bastion-eu-west-1
+        client_addr:
+          type: string
+          description: Remote address of the SSH client, `host:port`.
+          example: 203.0.113.7:52344
+        server_addr:
+          type: string
+          description: Local address the client connected to, `host:port`.
+          example: 10.0.0.5:2222
+        client_version:
+          type: string
+          description: SSH client identification string, as offered.
+          example: SSH-2.0-OpenSSH_9.6
+        hop_trail:
+          type: array
+          description: |
+            Bastion ids already traversed, oldest first, for loop detection on
+            next-hop routes (PLAN §6.1). Empty on a user's first hop.
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: When the bastion made the call (RFC 3339, UTC).
+
+    Identity:
+      type: object
+      description: |
+        The authenticated principal. Modelled as claims rather than a boolean so
+        AD/Okta/OIDC sources can be added without changing any caller (D4).
+      required: [subject, login, source]
+      properties:
+        subject:
+          type: string
+          description: Stable unique id of the principal at its source.
+          example: alice@example.com
+        login:
+          type: string
+          description: The SSH login name, target segment already stripped (D1).
+          example: alice
+        display_name:
+          type: string
+          example: Alice Example
+        source:
+          type: string
+          description: |
+            Identity source that made the decision, for audit: `fixture` (mock),
+            `ad`, `okta`, `oidc`, ...
+          example: fixture
+        principals:
+          type: array
+          description: Principals the identity may assume on targets.
+          items:
+            type: string
+        groups:
+          type: array
+          description: Group memberships used by policy.
+          items:
+            type: string
+        claims:
+          type: object
+          description: Additional source-specific claims.
+          additionalProperties:
+            type: string
+
+    PublicKeyMaterial:
+      type: object
+      description: An SSH public key or certificate as offered on the wire.
+      required: [type, blob, fingerprint]
+      properties:
+        type:
+          type: string
+          description: SSH key algorithm name.
+          example: ssh-ed25519
+        blob:
+          type: string
+          format: byte
+          description: Base64 (standard, padded) of the SSH wire encoding.
+        fingerprint:
+          type: string
+          description: OpenSSH-style SHA256 fingerprint of the key.
+          example: SHA256:2Fd8mLZ0S7oB0Cq0oQF0T5xN6yQ3wq6Kk1r0m0mHqxU
+        is_certificate:
+          type: boolean
+          description: True when the material is a certificate, not a bare key.
+          default: false
+
+    AuthenticateCertRequest:
+      type: object
+      required: [login, public_key, conn]
+      properties:
+        login:
+          type: string
+          description: SSH login, target segment already stripped (D1).
+          example: alice
+        target:
+          type: string
+          description: |
+            Target parsed from the SSH username, informational at this stage.
+            Authorization for it happens at `/v1/authorize`.
+          example: host.company.com
+        public_key:
+          $ref: '#/components/schemas/PublicKeyMaterial'
+        conn:
+          $ref: '#/components/schemas/ConnMeta'
+
+    AuthenticatePasswordRequest:
+      type: object
+      required: [login, password, conn]
+      properties:
+        login:
+          type: string
+          example: alice
+        target:
+          type: string
+          example: host.company.com
+        password:
+          type: string
+          format: password
+          description: |
+            The password as typed. MUST NOT be logged, echoed in an error
+            message, or stored by either side (PLAN §7 redaction).
+        conn:
+          $ref: '#/components/schemas/ConnMeta'
+
+    MFAPollRequest:
+      type: object
+      required: [token, conn]
+      properties:
+        token:
+          type: string
+          description: The `mfa.token` from the challenge being polled.
+        conn:
+          $ref: '#/components/schemas/ConnMeta'
+
+    MFAChallenge:
+      type: object
+      description: An out-of-band second factor the server is waiting on.
+      required: [token, poll_after_ms, expires_at]
+      properties:
+        token:
+          type: string
+          description: Opaque handle to poll with; single connection, single use.
+        prompt:
+          type: string
+          description: Text the bastion may show the user while waiting.
+          example: Approve the sign-in request on your phone.
+        poll_after_ms:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Minimum delay before the next poll, in milliseconds.
+          example: 1000
+        expires_at:
+          type: string
+          format: date-time
+          description: After this instant the token is dead and polling returns 401.
+
+    AuthenticateResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [authenticated, mfa_required]
+          description: |
+            `authenticated` — `identity` is present and the flow is complete.
+            `mfa_required` — `mfa` is present and must be polled.
+        identity:
+          $ref: '#/components/schemas/Identity'
+        mfa:
+          $ref: '#/components/schemas/MFAChallenge'
+
+    AuthorizeRequest:
+      type: object
+      required: [identity, target, conn]
+      properties:
+        identity:
+          $ref: '#/components/schemas/Identity'
+        target:
+          type: string
+          description: Target hostname parsed from the SSH username (D1).
+          example: host.company.com
+        target_port:
+          type: integer
+          format: int32
+          description: Target port if the user requested a non-default one.
+          example: 22
+        auth_method:
+          type: string
+          description: How the identity was authenticated, for policy and audit.
+          enum: [cert, password-mfa]
+        conn:
+          $ref: '#/components/schemas/ConnMeta'
+
+    AuthorizeResponse:
+      type: object
+      required: [route_type, target, permitted_channels, filter_policy]
+      properties:
+        route_type:
+          type: string
+          enum: [direct, nexthop]
+          description: |
+            `direct` — `target` is the end host; the bastion provisions target
+            credentials and proxies. `nexthop` — `target` is the next bastion;
+            the bastion chains to it and that bastion repeats the flow.
+        target:
+          type: string
+          description: Host to connect to, meaning per `route_type`.
+          example: host.company.com
+        target_port:
+          type: integer
+          format: int32
+          description: Port to connect to. Defaults to 22 when absent.
+          example: 22
+        permissions:
+          type: string
+          description: Opaque permission set name, carried into logs.
+          example: readOnlyGroup
+        permitted_channels:
+          type: array
+          description: |
+            SSH channel types the session may open. The bastion denies every
+            channel not on this list (D5). An empty list denies all channels.
+          items:
+            type: string
+          example: [session, direct-tcpip]
+        filter_policy:
+          $ref: '#/components/schemas/FilterPolicy'
+        hop:
+          $ref: '#/components/schemas/HopMetadata'
+        decision_id:
+          type: string
+          description: Server-assigned id for this decision, for audit correlation.
+
+    FilterPolicy:
+      type: object
+      description: |
+        Command filter policy for the connection (PLAN §6.3).
+
+        `rules` are evaluated **in order and the first match wins**, so a
+        specific rule placed before a broad one decides the outcome: `rm -rf /`
+        can kill the session while `rm *` only warns. A command matching no rule
+        is decided by `mode`, which is required so a policy always has a defined
+        default and cannot fail open by omission.
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [whitelist, blacklist]
+          description: |
+            What happens to a command **no rule matched**. `whitelist` — block
+            it; the rules are the permitted set. `blacklist` — allow it; the
+            rules are the caught set. A `blacklist` with no rules means "no
+            filtering"; a `whitelist` with no rules blocks everything.
+        rules:
+          type: array
+          description: |
+            Ordered pattern→action rules. Each rule carries its own action, so
+            one policy can warn on one command and kill the session on another.
+          items:
+            $ref: '#/components/schemas/FilterRule'
+
+    FilterRule:
+      type: object
+      description: One command pattern and the action taken when it matches.
+      required: [match, action]
+      properties:
+        match:
+          type: string
+          description: |
+            Command pattern. Matching semantics are defined by the filter engine
+            (phase 0009) and do not depend on `mode`.
+          example: rm -rf /
+        action:
+          type: string
+          enum: [allow_and_log, block_command, warn_and_continue, kill_session]
+          description: What the bastion does when this rule matches.
+        message:
+          type: string
+          description: |
+            Optional operator-authored text shown to the user when this rule
+            fires. Displayed verbatim, so it MUST NOT contain policy internals
+            (PLAN §4.3).
+          example: Destructive command. Raise a change request instead.
+
+    HopMetadata:
+      type: object
+      description: Chaining constraints, present when `route_type` is `nexthop`.
+      properties:
+        final_target:
+          type: string
+          description: |
+            The end host the chain is being built toward; forwarded to the next
+            bastion so it can re-run the flow for the same target.
+          example: host.company.com
+        max_hops:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            Maximum total hops allowed for this session. The bastion refuses to
+            chain further once `conn.hop_trail` reaches this length.
+          example: 3
+        hop_trail:
+          type: array
+          description: |
+            Hop trail to forward to the next bastion, this bastion appended.
+            Used for loop detection (PLAN §6.1).
+          items:
+            type: string
+
+    HostKeyReportRequest:
+      type: object
+      required: [target, host_key, conn]
+      properties:
+        target:
+          type: string
+          example: host.company.com
+        target_port:
+          type: integer
+          format: int32
+          example: 22
+        host_key:
+          $ref: '#/components/schemas/PublicKeyMaterial'
+        conn:
+          $ref: '#/components/schemas/ConnMeta'
+
+    HostKeyReportResponse:
+      type: object
+      required: [decision, known]
+      properties:
+        decision:
+          type: string
+          enum: [accept, reject]
+          description: Whether the bastion may continue the target handshake.
+        known:
+          type: boolean
+          description: |
+            False when the server had not seen this key for this target before
+            (first use). The prototype accepts and records it (D7); a stricter
+            policy can reject while keeping the same shape.
+        reason:
+          type: string
+          description: Human-readable explanation, for logs.
+
+    LogRecord:
+      type: object
+      description: One structured session log record (PLAN §7).
+      required: [record_id, session_id, timestamp, kind, severity]
+      properties:
+        record_id:
+          type: string
+          description: |
+            Client-assigned unique id, used by the server to de-duplicate
+            retried batches.
+        session_id:
+          type: string
+          description: Ties the record to a session; matches `ConnMeta.session_id`.
+        timestamp:
+          type: string
+          format: date-time
+        kind:
+          type: string
+          description: |
+            Record type: `session_start`, `session_end`, `auth`, `authorize`,
+            `channel_open`, `channel_close`, `command`, `policy_decision`,
+            `host_key`, `stream`, `provisioning`, `error`.
+          example: command
+        severity:
+          type: string
+          enum: [info, warn, critical]
+          description: |
+            `critical` records are the ones shipped via `/v1/logs/priority`.
+        message:
+          type: string
+          description: Human-readable summary. MUST NOT contain credentials.
+        subject:
+          type: string
+          description: Identity subject the record concerns.
+        login:
+          type: string
+        target:
+          type: string
+        attributes:
+          type: object
+          description: Structured detail, e.g. the matched command and action.
+          additionalProperties:
+            type: string
+        payload:
+          type: string
+          format: byte
+          description: |
+            Base64 stream capture for replay-oriented records (`stream`).
+            Omitted for everything else.
+
+    LogBatchRequest:
+      type: object
+      required: [records]
+      properties:
+        records:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/LogRecord'
+
+    LogBatchResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: integer
+          format: int32
+          description: |
+            How many records the server stored. Fewer than sent means the rest
+            were duplicates; the bastion may drop them.
+
+    LogPriorityRequest:
+      type: object
+      required: [record]
+      properties:
+        record:
+          $ref: '#/components/schemas/LogRecord'
+
+    LogPriorityResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          description: True once the record is durable.
+        receipt_id:
+          type: string
+          description: Server-side id of the stored record, for audit.

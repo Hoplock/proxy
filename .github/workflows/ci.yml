@@ -47,6 +47,22 @@ jobs:
         with:
           version: v2.5.0
 
+  openapi:
+    name: openapi contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install the OpenAPI validator
+        run: pip install openapi-spec-validator==0.9.0
+
+      - name: validate api/management.yaml
+        run: make openapi-check
+
   license:
     name: license headers
     runs-on: ubuntu-latest

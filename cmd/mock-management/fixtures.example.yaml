@@ -1,0 +1,123 @@
+# Example fixtures for the mock management server (cmd/mock-management).
+#
+# Everything the mock decides comes from this file: who exists, what they may
+# reach, and how target host keys are treated. The format is documented in
+# api/README.md. Unknown keys are rejected at startup.
+#
+# The credentials below are test data. Never put a real secret in a fixture.
+
+# Bearer token every /v1 request must present. Remove or leave empty to serve
+# without bastion authentication (convenient for curl during development).
+bastion_token: "dev-bastion-token"
+
+users:
+  # Certificate + password user whose MFA is approved after one pending poll.
+  - login: alice
+    identity:
+      subject: alice@example.com
+      display_name: Alice Example
+      source: fixture
+      principals: [alice]
+      groups: [engineering, sre]
+      claims:
+        department: platform
+    key_fingerprints:
+      - "SHA256:AAAA1111alice1111AAAA1111alice1111AAAA111111"
+    password: "alice-dev-password"
+    mfa:
+      required: true
+      decision: approve
+      pending_polls: 1
+      poll_after_ms: 10
+      ttl_ms: 60000
+      prompt: "Approve the SecureCommandProxy sign-in on your phone."
+
+  # Password-only user whose MFA is always denied — the deny path for tests.
+  - login: mallory
+    identity:
+      subject: mallory@example.com
+      source: fixture
+    password: "mallory-dev-password"
+    mfa:
+      required: true
+      decision: deny
+      pending_polls: 0
+
+  # Key-only service account with no MFA and no password.
+  - login: svc-deploy
+    identity:
+      subject: svc-deploy@example.com
+      source: fixture
+      groups: [deployers]
+    key_fingerprints:
+      - "SHA256:BBBB2222svc2222BBBB2222svc2222BBBB22222222"
+
+routes:
+  # Direct route: alice reaches this host read-only, under a blacklist whose
+  # rules each carry their own severity — kill, block, and warn in one policy.
+  - login: alice
+    target: host.company.com
+    route_type: direct
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      # Rules are evaluated in order, first match wins, and each carries its own
+      # action — so one policy can warn on one command and kill on another.
+      mode: blacklist
+      rules:
+        - match: "rm -rf /"
+          action: kill_session
+          message: "Destructive command. This session has been terminated."
+        - match: "shutdown"
+          action: block_command
+          message: "Reboots go through the change process."
+        - match: "sudo *"
+          action: warn_and_continue
+          message: "Privileged command — this is recorded."
+
+  # Next-hop route: the far segment is reachable only through another bastion.
+  # The response returns next_hop as the target and carries the host the user
+  # asked for in hop metadata.
+  - login: alice
+    target: deep.internal.company.com
+    route_type: nexthop
+    next_hop: bastion-2.company.com
+    max_hops: 3
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      # No rules on a blacklist means no filtering.
+      mode: blacklist
+
+  # Whitelist: anything not matched by a rule is blocked by the mode. Port
+  # forwarding is permitted for the deploy account.
+  - login: svc-deploy
+    target: "*"
+    route_type: direct
+    permissions: deployGroup
+    permitted_channels: [session, direct-tcpip]
+    filter_policy:
+      # Whitelist: anything no rule matched is blocked. These two are allowed,
+      # and reaching for the one dangerous neighbour kills the session outright.
+      mode: whitelist
+      rules:
+        - match: "deploy"
+          action: allow_and_log
+        - match: "systemctl restart app"
+          action: allow_and_log
+        - match: "systemctl stop *"
+          action: kill_session
+          message: "Stopping services is not permitted from this account."
+
+  # Anything not matched above is denied (401). There is no catch-all here on
+  # purpose: fixtures should have to say yes explicitly.
+
+host_keys:
+  # Decision applied to a host key the server has not seen before. "accept" is
+  # the prototype's trust-on-first-use behaviour (D7); "reject" exercises the
+  # stricter path.
+  decision: accept
+  known:
+    - target: host.company.com
+      fingerprint: "SHA256:CCCC3333hostkey3333CCCC3333hostkey3333CCCC"
