@@ -21,7 +21,10 @@
   invalidation *and* sharing scope; a bastion never builds, parses, or extends
   one, and a key must never span identities (the client also refuses to serve an
   entry to another subject). No hint, `ttl_seconds: 0`, or a TTL without a key
-  ⇒ not cached. `CacheOptions.MaxTTL` clamps **down only**.
+  ⇒ not cached. `CacheOptions.MaxTTL` clamps **down only**, is **off by
+  default** (the server's lifetime is honoured exactly), and every decision it
+  shortens is counted in `CacheStats.Clamped` and logged via
+  `CacheOptions.Logger` — see "Making the clamp observable" below.
 - **Fail-closed rule:** while the revocation stream has been unheard for longer
   than `CacheOptions.StaleAfter` (**default 30s**, `DefaultStaleAfter`) the
   cache serves nothing and stores nothing — every connection re-authorizes.
@@ -125,6 +128,29 @@ had is normal.
   replay_buffer}`. `heartbeat_ms: -1` disables heartbeats, which is how the
   bastion's missed-heartbeat path is exercised. Decoding is still strict, so
   every new field had to reach `fixtures.example.yaml` too.
+
+### Making the clamp observable (added after 0003 merged)
+
+Review question on the merged PR: why is a bastion allowed to shorten the
+server's TTL at all, when that means two bastions in a fleet behave differently?
+
+The objection is right about the cost and wrong about the default. `MaxTTL` is
+zero unless an operator sets it, so out of the box the server's `ttl_seconds` is
+honoured exactly. The clamp survives because it can only ever cause *more* calls
+to the PDP — it cannot widen access, extend a decision, or invent one, so it does
+not invert D2 the way a bastion-side TTL *floor* would — and it is the only lever
+for turning caching down on one bastion during an incident without a management
+server deploy.
+
+What changed is that it is no longer silent: a clamp that actually shortens a
+stored decision increments `CacheStats.Clamped` and logs the key and both
+lifetimes through the new `CacheOptions.Logger`. Both fire **only when the entry
+was really stored**, so the count matches the decisions it applied to rather than
+the calls it was merely configured for. `docs/PLAN.md` §6.4 now requires this:
+off by default, observable when set.
+
+If evidence later shows nobody uses the clamp, deleting `MaxTTL` outright is the
+next step — the counter is what will tell you.
 
 ### Test notes
 

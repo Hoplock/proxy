@@ -4,10 +4,13 @@
 package mgmt
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,6 +276,92 @@ func TestCachingClientClampsTheTTLDownwardOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCachingClientReportsAClamp: shortening the server's lifetime is the one
+// place a local setting overrides the PDP, and a fleet where one bastion is
+// configured differently is unexplainable from the outside if that is silent.
+func TestCachingClientReportsAClamp(t *testing.T) {
+	newCache := func(t *testing.T, maxTTL time.Duration, serverTTL int) (*CachingClient, *bytes.Buffer) {
+		t.Helper()
+		var logs bytes.Buffer
+		clock := newTestClock()
+		inner := newFakeClient()
+		inner.authorize = func(*AuthorizeRequest) (*AuthorizeResponse, error) {
+			return testAuthorizeResponse("authz:alice:host", serverTTL), nil
+		}
+		c := NewCachingClient(inner, CacheOptions{
+			MaxTTL: maxTTL,
+			Now:    clock.Now,
+			Logger: log.New(&logs, "", 0),
+		})
+		c.StreamAlive(clock.Now())
+		if _, err := c.Authorize(context.Background(), testAuthorizeRequest("alice@example.com", "host")); err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		return c, &logs
+	}
+
+	t.Run("a clamp that shortens is counted and logged", func(t *testing.T) {
+		c, logs := newCache(t, 30*time.Second, 300)
+
+		if got := c.Stats().Clamped; got != 1 {
+			t.Errorf("Clamped = %d, want 1", got)
+		}
+		line := logs.String()
+		for _, want := range []string{"authz:alice:host", "5m0s", "30s"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("log %q does not mention %q; it must name the key and both lifetimes", line, want)
+			}
+		}
+	})
+
+	t.Run("a clamp longer than the server's changes nothing and says nothing", func(t *testing.T) {
+		c, logs := newCache(t, 10*time.Minute, 60)
+
+		if got := c.Stats().Clamped; got != 0 {
+			t.Errorf("Clamped = %d, want 0: the server's lifetime already fitted", got)
+		}
+		if logs.Len() != 0 {
+			t.Errorf("logged %q, want silence when nothing was overridden", logs.String())
+		}
+	})
+
+	t.Run("no clamp configured is the default and stays quiet", func(t *testing.T) {
+		c, logs := newCache(t, 0, 300)
+
+		if got := c.Stats().Clamped; got != 0 {
+			t.Errorf("Clamped = %d, want 0: the default honours the server exactly", got)
+		}
+		if logs.Len() != 0 {
+			t.Errorf("logged %q, want silence", logs.String())
+		}
+	})
+
+	t.Run("a decision that was not stored is not counted", func(t *testing.T) {
+		// The stream is stale, so nothing is cached — and a clamp that applied
+		// to nothing must not show up in the count.
+		var logs bytes.Buffer
+		clock := newTestClock()
+		inner := newFakeClient()
+		inner.authorize = func(*AuthorizeRequest) (*AuthorizeResponse, error) {
+			return testAuthorizeResponse("authz:alice:host", 300), nil
+		}
+		c := NewCachingClient(inner, CacheOptions{
+			MaxTTL: 30 * time.Second,
+			Now:    clock.Now,
+			Logger: log.New(&logs, "", 0),
+		})
+		if _, err := c.Authorize(context.Background(), testAuthorizeRequest("alice@example.com", "host")); err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		if got := c.Stats(); got.Clamped != 0 || got.Stored != 0 {
+			t.Errorf("stats = %+v, want no store and no clamp", got)
+		}
+		if logs.Len() != 0 {
+			t.Errorf("logged %q for a decision that was never cached", logs.String())
+		}
+	})
 }
 
 func TestCachingClientInvalidation(t *testing.T) {

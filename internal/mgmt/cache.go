@@ -5,6 +5,7 @@ package mgmt
 
 import (
 	"context"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,7 +28,15 @@ const (
 type CacheOptions struct {
 	// MaxTTL clamps the server's ttl_seconds DOWNWARD ONLY: an operator may be
 	// more conservative than the management server, never more permissive.
-	// Zero means "no local clamp" — the server's lifetime is used as given.
+	// Zero — the default — means "no local clamp": the server's lifetime is
+	// honoured exactly.
+	//
+	// Setting it makes this bastion behave differently from its peers, which is
+	// a real operational cost: the same policy is then reused for less time
+	// here than there, and "why does this bastion re-authorize more often?"
+	// becomes a per-host question. That divergence must never be silent, so a
+	// clamp that actually shortens a lifetime is counted in CacheStats.Clamped
+	// and reported to Logger.
 	MaxTTL time.Duration
 	// StaleAfter is how long the revocation stream may go unheard before cached
 	// decisions stop being served. Zero means DefaultStaleAfter.
@@ -37,6 +46,10 @@ type CacheOptions struct {
 	MaxEntries int
 	// Now overrides the clock, so expiry is testable without sleeping.
 	Now func() time.Time
+	// Logger receives notice when a local setting overrides what the server
+	// asked for — today, only a MaxTTL clamp. Nil discards them. It is never
+	// given policy contents, only the key and the two lifetimes.
+	Logger *log.Logger
 }
 
 // CacheStats counts what the cache did, for metrics and tests.
@@ -54,6 +67,13 @@ type CacheStats struct {
 	// StaleSkips counts lookups refused because the revocation stream was
 	// unheard for longer than StaleAfter — the fail-closed rule firing.
 	StaleSkips uint64
+	// Clamped counts stored decisions whose server lifetime was shortened by
+	// CacheOptions.MaxTTL. Anything but zero means this bastion is deliberately
+	// caching for less time than the management server authorised: expect a
+	// lower hit rate and more authorize calls here than on a peer without the
+	// clamp. It is the number to look at before blaming the server or the
+	// network for a bastion that re-authorizes "too often".
+	Clamped uint64
 	// Entries is the number of decisions held right now.
 	Entries int
 }
@@ -112,6 +132,7 @@ type CachingClient struct {
 	staleAfter time.Duration
 	maxEntries int
 	now        func() time.Time
+	logger     *log.Logger
 
 	mu sync.Mutex
 	// shapes maps a request shape to the server key its decision was returned
@@ -139,6 +160,7 @@ func NewCachingClient(inner Client, opts CacheOptions) *CachingClient {
 		staleAfter: opts.StaleAfter,
 		maxEntries: opts.MaxEntries,
 		now:        opts.Now,
+		logger:     opts.Logger,
 		shapes:     make(map[string]string),
 		entries:    make(map[string]*cacheEntry),
 	}
@@ -322,8 +344,10 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 	if hint == nil || hint.TTLSeconds <= 0 || hint.Key == "" {
 		return
 	}
-	ttl := hint.TTL()
-	if c.maxTTL > 0 && ttl > c.maxTTL {
+	serverTTL := hint.TTL()
+	ttl := serverTTL
+	clamped := c.maxTTL > 0 && ttl > c.maxTTL
+	if clamped {
 		ttl = c.maxTTL // clamp down; never up
 	}
 
@@ -355,6 +379,22 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 	}
 	c.shapes[shape] = hint.Key
 	c.stats.Stored++
+	if clamped {
+		// Counted and said out loud only when the entry was actually stored, so
+		// the number matches the decisions this really applied to. This is the
+		// one place the bastion holds a decision for less time than the server
+		// asked; leaving it silent would make a fleet where one bastion is
+		// configured differently impossible to explain from the outside.
+		c.stats.Clamped++
+		c.logf("mgmt: cache: local MaxTTL shortened the server's lifetime for key %q from %s to %s",
+			hint.Key, serverTTL, ttl)
+	}
+}
+
+func (c *CachingClient) logf(format string, args ...any) {
+	if c.logger != nil {
+		c.logger.Printf(format, args...)
+	}
 }
 
 // removeLocked drops every entry match reports, plus the shape mappings that

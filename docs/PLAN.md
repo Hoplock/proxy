@@ -347,7 +347,11 @@ Two mechanisms address that, and they only make sense together:
   key + a TTL) to an authorize decision. Absent hint means do not cache. The
   **server** owns the lifetime — a bastion may clamp it shorter but never
   longer, and may never invent one — so the PDP keeps ownership of its own risk
-  appetite and can refuse caching per target. **Authentication is never cached**:
+  appetite and can refuse caching per target. A local clamp is **off by
+  default** and, where set, must be **observable** (counted and logged per
+  affected decision): it is the one place a bastion's behaviour diverges from
+  what the server asked for, and an unannounced divergence across a fleet is
+  indistinguishable from a server or network fault. **Authentication is never cached**:
   an MFA approval is a per-session assertion, and certificate validation is
   where revocation is enforced.
 - **Server-driven revocation.** The bastion holds a long-lived outbound
