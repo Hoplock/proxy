@@ -75,6 +75,13 @@ routes:
         - match: "sudo *"
           action: warn_and_continue
           message: "Privileged command — this is recorded."
+    # The server authorises the bastion to reuse this decision for a minute, so
+    # a second session (an scp beside a shell) skips the authorize round trip.
+    # Omit `cache` — as every other route here does — to forbid reuse entirely.
+    # The key defaults to one per (subject, target) and is opaque to the
+    # bastion; it is what a cache_invalidate event names.
+    cache:
+      ttl_seconds: 60
 
   # Next-hop route: the far segment is reachable only through another bastion.
   # The response returns next_hop as the target and carries the host the user
@@ -112,6 +119,18 @@ routes:
 
   # Anything not matched above is denied (401). There is no catch-all here on
   # purpose: fixtures should have to say yes explicitly.
+
+# The server → bastion revocation stream (GET /v1/bastions/{id}/events), which
+# is what makes the cache above safe to hold: it can kill a live session or drop
+# a cached decision at any moment.
+events:
+  # How often to emit a heartbeat. It must stay comfortably inside the bastion's
+  # heartbeat timeout (20s by default), or a healthy stream looks dead. A
+  # negative value disables heartbeats, to exercise that detection.
+  heartbeat_ms: 5000
+  # How many events are retained for replay after a reconnect. A bastion
+  # resuming from before the retained history is answered with `resync`.
+  replay_buffer: 128
 
 host_keys:
   # Decision applied to a host key the server has not seen before. "accept" is

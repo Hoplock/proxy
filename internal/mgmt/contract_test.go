@@ -88,21 +88,54 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 		if _, ok := op["requestBody"]; !ok {
 			t.Errorf("post %q has no requestBody", path)
 		}
-		responses, ok := op["responses"].(map[string]any)
-		if !ok {
-			t.Errorf("post %q has no responses", path)
-			continue
+		checkResponses(t, "post "+path, op, success)
+	}
+
+	// The revocation stream is the one endpoint that is a long-lived GET rather
+	// than a POST, so it is checked separately: no request body, and the gap
+	// recovery parameter the client sends on reconnect must be documented.
+	item, ok := paths[PathBastionEvents].(map[string]any)
+	if !ok {
+		t.Fatalf("%s documents no path %q", specPath, PathBastionEvents)
+	}
+	op, ok := item["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("path %q has no get operation", PathBastionEvents)
+	}
+	checkResponses(t, "get "+PathBastionEvents, op, "200")
+	params, _ := op["parameters"].([]any)
+	documented := make(map[string]bool, len(params))
+	for _, p := range params {
+		if m, ok := p.(map[string]any); ok {
+			name, _ := m["name"].(string)
+			documented[name] = true
 		}
-		if _, ok := responses[success]; !ok {
-			t.Errorf("post %q does not document the %s success response the client expects", path, success)
-		}
-		if _, ok := responses["401"]; !ok {
-			t.Errorf("post %q does not document the 401 deny response", path)
+	}
+	for _, name := range []string{"bastion_id", QueryLastEventID} {
+		if !documented[name] {
+			t.Errorf("get %q does not document the %q parameter", PathBastionEvents, name)
 		}
 	}
 
-	if got, want := len(paths), len(wantStatus); got != want {
+	if got, want := len(paths), len(wantStatus)+1; got != want {
 		t.Errorf("spec documents %d paths, client knows %d; keep them in step", got, want)
+	}
+}
+
+// checkResponses asserts an operation documents both the success status the
+// client expects and the deny response every endpoint can answer.
+func checkResponses(t *testing.T, op string, operation map[string]any, success string) {
+	t.Helper()
+	responses, ok := operation["responses"].(map[string]any)
+	if !ok {
+		t.Errorf("%s has no responses", op)
+		return
+	}
+	if _, ok := responses[success]; !ok {
+		t.Errorf("%s does not document the %s success response the client expects", op, success)
+	}
+	if _, ok := responses["401"]; !ok {
+		t.Errorf("%s does not document the 401 deny response", op)
 	}
 }
 
@@ -142,6 +175,9 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 			string(FilterActionWarnAndContinue), string(FilterActionKillSession)}},
 		{"HostKeyReportResponse", "decision", []string{
 			string(HostKeyAccept), string(HostKeyReject)}},
+		{"RevocationEvent", "type", []string{
+			string(EventTypeSessionKill), string(EventTypeCacheInvalidate),
+			string(EventTypeHeartbeat), string(EventTypeResync)}},
 		{"LogRecord", "severity", []string{
 			string(SeverityInfo), string(SeverityWarn), string(SeverityCritical)}},
 	}
