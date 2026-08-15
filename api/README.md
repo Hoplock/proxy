@@ -152,11 +152,18 @@ default for every route that does not opt in.
   approval is a per-session assertion, and certificate validation is where
   revocation bites. `mgmt.CachingClient` passes every other call straight
   through.
-- **The server owns the lifetime.** A bastion may hold a decision for less time
-  than `ttl_seconds` (`CacheOptions.MaxTTL` clamps **downward only**) but never
-  longer, and never invents a hint. That keeps the PDP in charge of its own risk
+- **The server owns the lifetime.** By default the bastion honours
+  `ttl_seconds` exactly. An operator may set a local ceiling
+  (`CacheOptions.MaxTTL`), which clamps **downward only** — never longer, and
+  the bastion never invents a hint. That keeps the PDP in charge of its own risk
   appetite: omit `cache` for a sensitive target and every connection is
   re-decided.
+
+  A clamp is off unless configured, and never silent when it is: every decision
+  whose lifetime it shortens is counted in `CacheStats.Clamped` and logged with
+  the key and both lifetimes. A bastion caching for less time than its peers is
+  otherwise indistinguishable from a server or network problem, and that is the
+  real cost of setting one.
 - **The key is opaque and chooses the sharing scope.** The bastion never
   constructs or parses one; it only echoes it back in a `cache_invalidate`
   event. Two requests answered with the same key are one cached decision,
