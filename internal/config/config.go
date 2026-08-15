@@ -13,9 +13,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/mauroasilva/securecommandproxy/internal/identity"
 )
 
 // DefaultTargetDelimiter separates the login from the target hostname in the
@@ -29,6 +32,7 @@ type Config struct {
 	Bastion    Bastion    `yaml:"bastion"`
 	Management Management `yaml:"management"`
 	Routing    Routing    `yaml:"routing"`
+	Auth       Auth       `yaml:"auth"`
 }
 
 // Bastion describes the local SSH listener and this bastion's own identity.
@@ -51,6 +55,54 @@ type Routing struct {
 	// TargetDelimiter is the single character separating login from target in
 	// the SSH username. Defaults to DefaultTargetDelimiter.
 	TargetDelimiter string `yaml:"target_delimiter"`
+}
+
+// Auth holds the bastion's authentication planes. Each plane is a pluggable
+// interface with swappable implementations (D4); config chooses which ones run,
+// never what they decide.
+type Auth struct {
+	// User configures the user→bastion plane (PLAN §4.1).
+	User UserAuth `yaml:"user"`
+}
+
+// UserAuth enables and tunes the user→bastion authenticators.
+type UserAuth struct {
+	// Methods is the set of enabled authentication methods, by name
+	// ("cert", "password-mfa"). Defaults to DefaultUserAuthMethods.
+	//
+	// It is a set, not an order: the bastion always tries certificates first and
+	// falls back to password+MFA (PLAN §4.1). Listing them the other way round
+	// would prompt every user for a password before looking at the key their
+	// client already offered, so the order is not the operator's to change.
+	// An explicitly empty list is rejected — a bastion with no enabled method
+	// can authenticate nobody.
+	Methods []string `yaml:"methods"`
+	// MFA tunes the wait for an out-of-band second factor.
+	MFA MFA `yaml:"mfa"`
+}
+
+// MFA tunes how the bastion waits on an out-of-band second factor. None of it
+// decides anything: the management server states the pacing and the expiry, and
+// these settings only bound how the bastion behaves while it obeys them.
+type MFA struct {
+	// MinPollInterval floors the server's poll_after_ms, so a challenge with a
+	// tiny or absent interval cannot turn into a polling hot loop. Zero means
+	// the package default.
+	MinPollInterval time.Duration `yaml:"min_poll_interval"`
+	// ProgressInterval is the minimum gap between "still waiting" messages
+	// shown to the user while the approval is outstanding. Zero means the
+	// package default.
+	ProgressInterval time.Duration `yaml:"progress_interval"`
+	// MaxWait caps the total wait for an approval. The server's expiry still
+	// wins whenever it is sooner: the bastion may give up earlier than the
+	// server, never later. Zero means the package default.
+	MaxWait time.Duration `yaml:"max_wait"`
+}
+
+// DefaultUserAuthMethods is the enabled set when auth.user.methods is omitted:
+// both methods, which is the flow PLAN §4.1 describes end to end.
+func DefaultUserAuthMethods() []string {
+	return []string{string(identity.MethodCert), string(identity.MethodPasswordMFA)}
 }
 
 // Sentinel causes, wrapped by FieldError so callers can classify a failure with
@@ -147,6 +199,12 @@ func (c *Config) applyDefaults() {
 	if c.Routing.TargetDelimiter == "" {
 		c.Routing.TargetDelimiter = DefaultTargetDelimiter
 	}
+	// A nil slice means the key was absent; an empty one means the operator
+	// wrote "methods: []" and meant it. Only the first gets a default, so
+	// disabling every method fails validation instead of being silently undone.
+	if c.Auth.User.Methods == nil {
+		c.Auth.User.Methods = DefaultUserAuthMethods()
+	}
 }
 
 // Validate reports every problem with c as a *ValidationError.
@@ -181,10 +239,49 @@ func (c *Config) Validate() error {
 		v.add("routing.target_delimiter", ErrInvalid, err.Error())
 	}
 
+	c.validateAuth(&v)
+
 	if len(v.Fields) > 0 {
 		return &v
 	}
 	return nil
+}
+
+// validateAuth checks the authentication planes. Method names are validated
+// against the identity model rather than against a list local to this package,
+// so a name can only ever be spelled one way across config, logs, and the
+// authenticated identity.
+func (c *Config) validateAuth(v *ValidationError) {
+	if len(c.Auth.User.Methods) == 0 {
+		v.add("auth.user.methods", ErrMissing, "at least one method must be enabled")
+	}
+
+	seen := make(map[string]bool, len(c.Auth.User.Methods))
+	for i, name := range c.Auth.User.Methods {
+		field := fmt.Sprintf("auth.user.methods[%d]", i)
+		switch {
+		case !identity.Method(name).Valid():
+			v.add(field, ErrInvalid, fmt.Sprintf("unknown method %q", name))
+		case seen[name]:
+			v.add(field, ErrInvalid, fmt.Sprintf("method %q is listed twice", name))
+		default:
+			seen[name] = true
+		}
+	}
+
+	mfa := c.Auth.User.MFA
+	for _, d := range []struct {
+		field string
+		value time.Duration
+	}{
+		{"auth.user.mfa.min_poll_interval", mfa.MinPollInterval},
+		{"auth.user.mfa.progress_interval", mfa.ProgressInterval},
+		{"auth.user.mfa.max_wait", mfa.MaxWait},
+	} {
+		if d.value < 0 {
+			v.add(d.field, ErrInvalid, "must not be negative")
+		}
+	}
 }
 
 func (v *ValidationError) add(field string, cause error, detail string) {

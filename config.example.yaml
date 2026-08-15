@@ -20,3 +20,22 @@ routing:
   # username, e.g. "alice#host.company.com" (docs/PLAN.md, D1).
   # Optional; defaults to "#".
   target_delimiter: "#"
+
+auth:
+  # user -> bastion authentication (docs/PLAN.md §4.1).
+  user:
+    # Enabled methods. This is a set, not an order: the bastion always tries
+    # certificates first and falls back to password + out-of-band MFA. Drop
+    # "password-mfa" for a certificate-only bastion; an empty list is rejected.
+    # Optional; defaults to both.
+    methods: ["cert", "password-mfa"]
+    # How the bastion waits for an out-of-band second factor. The management
+    # server states the polling interval and the expiry; these only bound how
+    # the bastion behaves while obeying them. All optional.
+    mfa:
+      # Floor on the server's requested polling interval.
+      min_poll_interval: 500ms
+      # How often the user is told the bastion is still waiting.
+      progress_interval: 5s
+      # Cap on the total wait. The server's expiry wins when it is sooner.
+      max_wait: 2m
