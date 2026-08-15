@@ -3,7 +3,10 @@
 
 package mgmt
 
-import "time"
+import (
+	"net/url"
+	"time"
+)
 
 // API paths, absolute from the management server's base URL. They are exported
 // so the mock server and the contract test can route/verify against the same
@@ -16,7 +19,20 @@ const (
 	PathReportHostKey        = "/v1/hostkeys/report"
 	PathIngestLogBatch       = "/v1/logs/batch"
 	PathIngestPriorityLog    = "/v1/logs/priority"
+	// PathBastionEvents is the revocation stream, templated on the bastion id.
+	// Build a concrete path with BastionEventsPath rather than by formatting
+	// this constant, so the escaping stays in one place.
+	PathBastionEvents = "/v1/bastions/{bastion_id}/events"
 )
+
+// QueryLastEventID is the query parameter carrying the last event the bastion
+// processed, so the server can replay the gap after a reconnect (PLAN §6.4).
+const QueryLastEventID = "last_event_id"
+
+// BastionEventsPath returns the revocation stream path for one bastion.
+func BastionEventsPath(bastionID string) string {
+	return "/v1/bastions/" + url.PathEscape(bastionID) + "/events"
+}
 
 // ConnMeta describes the SSH connection a call is made on behalf of. It travels
 // with every request so the server can decide on, and correlate logs by, the
@@ -198,6 +214,102 @@ type AuthorizeResponse struct {
 	Hop *HopMetadata `json:"hop,omitempty"`
 	// DecisionID correlates this decision with the server's audit trail.
 	DecisionID string `json:"decision_id,omitempty"`
+	// Cache is the server's permission to reuse this decision for a bounded
+	// time. Absent means do not cache (PLAN §6.4).
+	Cache *CacheHint `json:"cache,omitempty"`
+}
+
+// CacheHint is the management server authorising the bastion to reuse this
+// authorize decision for later connections (PLAN §6.4, D2).
+//
+// The lifetime belongs to the server: a bastion may hold the decision for less
+// time than TTLSeconds, never longer, and never invents a hint of its own. That
+// keeps the PDP in charge of its own risk appetite — it can return no hint at
+// all for a sensitive target.
+type CacheHint struct {
+	// Key identifies the decision for invalidation and decides how widely it
+	// may be shared. It is OPAQUE: the bastion never constructs, parses, or
+	// derives meaning from it. A server must never issue one key to two
+	// identities — the bastion refuses to serve an entry to a different subject,
+	// but the contract, not that check, is what makes sharing safe.
+	Key string `json:"key,omitempty"`
+	// TTLSeconds is how long the decision may be reused. Absent or zero means
+	// do not cache; there is no default lifetime.
+	TTLSeconds int `json:"ttl_seconds"`
+}
+
+// TTL returns TTLSeconds as a duration. A zero TTL means "do not cache".
+func (h *CacheHint) TTL() time.Duration {
+	if h == nil {
+		return 0
+	}
+	return time.Duration(h.TTLSeconds) * time.Second
+}
+
+// EventType names an event on the revocation stream.
+type EventType string
+
+const (
+	// EventTypeSessionKill orders the bastion to tear sessions down now.
+	EventTypeSessionKill EventType = "session_kill"
+	// EventTypeCacheInvalidate drops cached authorize decisions.
+	EventTypeCacheInvalidate EventType = "cache_invalidate"
+	// EventTypeHeartbeat is the server proving the stream is still alive, so a
+	// silently dead connection is detectable.
+	EventTypeHeartbeat EventType = "heartbeat"
+	// EventTypeResync says the bastion missed events it cannot be given: it
+	// drops its entire cache and re-authorizes from scratch.
+	EventTypeResync EventType = "resync"
+)
+
+// RevocationEvent is one line of the server→bastion event stream
+// (GET /v1/bastions/{bastion_id}/events). The payload field that is set is the
+// one named by Type; every other one is absent.
+//
+// The stream is what makes a cached decision safe to hold (PLAN §6.4): it is
+// the server's only way to withdraw access it has already granted, and the only
+// way to end a session that is already in flight.
+type RevocationEvent struct {
+	// EventID is server-assigned and opaque. The bastion stores the last one it
+	// processed and echoes it back on reconnect (QueryLastEventID) so the server
+	// can replay the gap; it never parses or orders by it itself.
+	EventID string `json:"event_id"`
+	// Type says which payload below applies.
+	Type EventType `json:"type"`
+	// Timestamp is when the server emitted the event.
+	Timestamp time.Time `json:"timestamp"`
+	// SessionKill is set when Type is EventTypeSessionKill.
+	SessionKill *SessionKillEvent `json:"session_kill,omitempty"`
+	// CacheInvalidate is set when Type is EventTypeCacheInvalidate.
+	CacheInvalidate *CacheInvalidateEvent `json:"cache_invalidate,omitempty"`
+}
+
+// SessionKillEvent ends sessions that are already running. Exactly one of
+// SessionIDs, Subject, or All selects what dies.
+type SessionKillEvent struct {
+	// SessionIDs names individual sessions by their bastion-assigned id.
+	SessionIDs []string `json:"session_ids,omitempty"`
+	// Subject kills every session belonging to one authenticated subject.
+	Subject string `json:"subject,omitempty"`
+	// All kills every session on this bastion.
+	All bool `json:"all,omitempty"`
+	// Reason is operator-authored text, shown to the user before the connection
+	// closes and carried into the audit log (PLAN §4.3). A revoked session must
+	// not look like a crash, so a server should always set it — and must keep
+	// policy internals out of it, because it is displayed verbatim.
+	Reason string `json:"reason,omitempty"`
+}
+
+// CacheInvalidateEvent drops cached authorize decisions. Exactly one of Keys,
+// Subject, or All selects what is dropped. It never affects live sessions:
+// those already hold their policy snapshot and are ended with a session_kill.
+type CacheInvalidateEvent struct {
+	// Keys are CacheHint.Key values, as the server issued them.
+	Keys []string `json:"keys,omitempty"`
+	// Subject drops every decision cached for one subject.
+	Subject string `json:"subject,omitempty"`
+	// All drops the whole cache.
+	All bool `json:"all,omitempty"`
 }
 
 // FilterMode decides what happens to a command that matches no rule. It exists

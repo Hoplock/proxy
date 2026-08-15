@@ -18,6 +18,14 @@ import (
 // wildcard matches any login or target in a route rule.
 const wildcard = "*"
 
+// Revocation stream defaults. The heartbeat is well inside the bastion's
+// default timeout (mgmt.DefaultHeartbeatTimeout), so a healthy stream is never
+// mistaken for a dead one.
+const (
+	defaultHeartbeatMS  = 5_000
+	defaultReplayBuffer = 128
+)
+
 // fixtures is the mock server's entire world: who exists, what they may reach,
 // and how host keys are treated. It is static and declarative so a test (or the
 // e2e topology) gets the same answers on every run.
@@ -34,6 +42,20 @@ type fixtures struct {
 	Routes []fixtureRoute `yaml:"routes"`
 	// HostKeys configures the trust-on-first-use behaviour (D7).
 	HostKeys fixtureHostKeys `yaml:"host_keys"`
+	// Events configures the revocation stream (PLAN §6.4).
+	Events fixtureEvents `yaml:"events"`
+}
+
+// fixtureEvents tunes the server→bastion event stream.
+type fixtureEvents struct {
+	// HeartbeatMS is the interval between heartbeat events. Zero uses
+	// defaultHeartbeatMS; a negative value disables heartbeats entirely, which
+	// is how a test drives a bastion's missed-heartbeat detection.
+	HeartbeatMS int `yaml:"heartbeat_ms"`
+	// ReplayBuffer is how many events are retained for replay after a
+	// reconnect. A bastion resuming from before the retained history is told to
+	// resync. Zero uses defaultReplayBuffer.
+	ReplayBuffer int `yaml:"replay_buffer"`
 }
 
 // fixtureUser is one principal the mock knows about.
@@ -107,6 +129,20 @@ type fixtureRoute struct {
 	PermittedChannels []string `yaml:"permitted_channels"`
 	// FilterPolicy is the command filter policy for the connection.
 	FilterPolicy fixtureFilterPolicy `yaml:"filter_policy"`
+	// Cache authorises the bastion to reuse this decision. Absent (or a zero
+	// ttl_seconds) means the decision is not cacheable.
+	Cache fixtureCacheHint `yaml:"cache"`
+}
+
+// fixtureCacheHint mirrors mgmt.CacheHint in YAML form.
+type fixtureCacheHint struct {
+	// TTLSeconds is how long the bastion may reuse the decision. Zero means do
+	// not cache.
+	TTLSeconds int `yaml:"ttl_seconds"`
+	// Key overrides the cache key. Empty derives one per (subject, target),
+	// which is the narrowest useful scope; set it explicitly to model a server
+	// that shares one decision across targets.
+	Key string `yaml:"key"`
 }
 
 // fixtureFilterPolicy mirrors mgmt.FilterPolicy in YAML form.
@@ -179,6 +215,12 @@ func parseFixtures(r io.Reader) (*fixtures, error) {
 func (f *fixtures) applyDefaults() {
 	if f.HostKeys.Decision == "" {
 		f.HostKeys.Decision = string(mgmt.HostKeyAccept)
+	}
+	if f.Events.HeartbeatMS == 0 {
+		f.Events.HeartbeatMS = defaultHeartbeatMS
+	}
+	if f.Events.ReplayBuffer == 0 {
+		f.Events.ReplayBuffer = defaultReplayBuffer
 	}
 	for i := range f.Users {
 		u := &f.Users[i]
@@ -269,6 +311,14 @@ func (f *fixtures) validate() error {
 		if r.TargetPort < 0 || r.TargetPort > 65535 {
 			add("routes[%d].target_port %d is out of range", i, r.TargetPort)
 		}
+		if r.Cache.TTLSeconds < 0 {
+			add("routes[%d].cache.ttl_seconds must not be negative", i)
+		}
+		if r.Cache.TTLSeconds == 0 && r.Cache.Key != "" {
+			// A key without a lifetime caches nothing; saying so at startup
+			// beats wondering later why the decision is never reused.
+			add("routes[%d].cache.key is set but ttl_seconds is 0 (nothing is cached)", i)
+		}
 		switch mgmt.FilterMode(r.FilterPolicy.Mode) {
 		case mgmt.FilterModeWhitelist, mgmt.FilterModeBlacklist:
 		default:
@@ -301,6 +351,10 @@ func (f *fixtures) validate() error {
 		if k.Target == "" || k.Fingerprint == "" {
 			add("host_keys.known[%d] needs both target and fingerprint", i)
 		}
+	}
+
+	if f.Events.ReplayBuffer < 0 {
+		add("events.replay_buffer must not be negative")
 	}
 
 	if len(problems) > 0 {

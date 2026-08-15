@@ -23,9 +23,11 @@ companion. If the two disagree, the OpenAPI document wins.
   and enforces it locally, so opening a channel, running a command, and pumping
   a stream cost **zero** calls to this API. The round trips are at session
   setup (auth, authorize, host-key report), not on the data path.
-- **The snapshot does not outlive the connection.** There is no cross-connection
-  policy cache in the prototype (D2), so a second SSH session re-runs setup. If
-  that cost matters, it is a contract change — see "Caching" below.
+- **The snapshot outlives the connection only if the server says so.** An
+  authorize decision may carry a `cache` hint (an opaque key plus a TTL the
+  *server* sets), and the bastion may then reuse it for later connections — but
+  only while it can still hear the revocation stream. No hint means no reuse.
+  See "Caching and the latency budget" below.
 - **`401` is a decision, not a failure.** It means *deny*. Transport failures,
   timeouts, and `5xx` are different, and a caller must never treat them as
   either a deny or an allow — it fails the session closed. The two are also
@@ -49,6 +51,7 @@ companion. If the two disagree, the OpenAPI document wins.
 | `POST /v1/hostkeys/report` | Report a target host key, get the trust decision | `200` | `ReportHostKey` |
 | `POST /v1/logs/batch` | Ingest a batch of log records | `202` | `IngestLogBatch` |
 | `POST /v1/logs/priority` | Ingest one critical record, immediately | `200` | `IngestPriorityLog` |
+| `GET /v1/bastions/{bastion_id}/events` | Subscribe to the revocation stream (NDJSON) | `200` | `StreamEvents` |
 
 Every endpoint can also answer `400` (malformed request), `401` (deny), and
 `500` (server failure).
@@ -114,7 +117,7 @@ retrying a batch after a timeout or draining the local disk buffer is safe.
 
 ## Caching and the latency budget
 
-Where the round trips actually are, for one session:
+Where the round trips are for one session, before any caching:
 
 | Phase | Calls | On the critical path? |
 | --- | --- | --- |
@@ -133,30 +136,65 @@ path — a critical security event is shipped synchronously so the bastion knows
 it was recorded before acting on it — which trades latency for auditability
 exactly when that trade is worth making.
 
-What this does **not** do is amortise setup across connections. Today a session
-costs ~3 sequential round trips before the first byte flows, every time, and a
-next-hop chain pays that per hop. A user opening several sessions (an `scp`
-alongside a shell, a tool that reconnects) pays it each time. That is D2's
-deliberate prototype choice — "the bastion caches nothing security-relevant
-beyond the lifetime of a connection" — not an oversight, and the contract
-currently has **no field to express a cache lifetime**.
+What that does not do by itself is amortise setup **across** connections: ~3
+sequential round trips per session, again per hop on a chain, and again for
+every `scp` beside a shell. Two mechanisms address it, and they only make sense
+together — a cached allow with no way to withdraw it is just a slower
+revocation.
 
-Phase 0003 addresses it (`prompts/queued/0003-policy-caching-and-session-revocation.md`,
-PLAN §6.4). The shape matters more than the mechanism:
+### Reusing an authorize decision (`cache`)
 
-- **Cache the authorize decision, not the authentication.** An MFA approval is a
-  per-session assertion; caching it defeats the second factor. Certificate
-  validation is where revocation is enforced, so it is the wrong thing to skip.
-  The authorize decision — route + channels + filter policy for
-  (subject, target, auth method) — is the reusable part.
-- **The server sets the lifetime, not the bastion.** The natural addition is an
-  optional cache hint on `AuthorizeResponse` (a TTL, plus a key the server
-  controls), so the PDP keeps ownership of its own risk appetite and can return
-  a zero TTL for sensitive targets. A bastion-side TTL would let the PEP decide
-  policy, which is precisely the inversion D2 exists to prevent.
-- **Revocation is the hard half.** Any cached allow outlives a revocation for up
-  to its TTL. That bounds the acceptable TTL (seconds to low minutes), or needs
-  a server→bastion invalidation path, which is a bigger change than a TTL field.
+`AuthorizeResponse` may carry a `cache` object: an opaque `key` and a
+`ttl_seconds`. **Absent, or `ttl_seconds: 0`, means do not cache** — that is the
+default for every route that does not opt in.
+
+- **Only the authorize decision is cacheable.** Authentication never is: an MFA
+  approval is a per-session assertion, and certificate validation is where
+  revocation bites. `mgmt.CachingClient` passes every other call straight
+  through.
+- **The server owns the lifetime.** A bastion may hold a decision for less time
+  than `ttl_seconds` (`CacheOptions.MaxTTL` clamps **downward only**) but never
+  longer, and never invents a hint. That keeps the PDP in charge of its own risk
+  appetite: omit `cache` for a sensitive target and every connection is
+  re-decided.
+- **The key is opaque and chooses the sharing scope.** The bastion never
+  constructs or parses one; it only echoes it back in a `cache_invalidate`
+  event. Two requests answered with the same key are one cached decision,
+  invalidated together — so a key may be per subject+target, per subject, per
+  permission set. A key **must never be shared across identities**: it would let
+  one user be served another's policy. (`CachingClient` also refuses to serve an
+  entry to a different subject, but that is a backstop, not the contract.)
+
+### Revoking (`GET /v1/bastions/{bastion_id}/events`)
+
+A long-lived NDJSON response, one `RevocationEvent` per line. It is **outbound
+from the bastion** because bastions sit behind firewalls and must not need an
+inbound listener, which makes this the server's only route to a running bastion:
+the kill switch for a session already in flight, and the thing that bounds the
+damage of a cached allow. A server that issues cache hints must serve it.
+
+| `type` | Effect |
+| --- | --- |
+| `session_kill` | End the named `session_ids`, or every session for a `subject`, or `all`. The `reason` is **shown to the user** before the connection closes and copied into the audit log (PLAN §4.3) — a revoked session must not look like a crash — so it must be safe to disclose. |
+| `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. Running sessions are untouched: they already hold their snapshot. |
+| `heartbeat` | Liveness only. A silent stream is indistinguishable from a healthy idle one, so a bastion that stops hearing these reconnects (default timeout 20s). |
+| `resync` | "You missed events that cannot be replayed": the bastion drops its entire cache and re-authorizes from scratch. |
+
+**Gap recovery.** On reconnect the bastion sends the last `event_id` it
+processed as `?last_event_id=`. The **server** decides what happens: replay
+everything after that id before resuming live delivery, or — when the id is too
+old, unknown, or no history is kept — emit `resync` as the first line and
+nothing older. No `last_event_id` means a fresh subscription starting from now.
+
+**Fail-closed rule.** While the bastion has not heard the stream for longer than
+`CacheOptions.StaleAfter` (default 30s) it serves **nothing** from cache and
+stores nothing new: every connection is re-authorized. It does **not** kill live
+sessions — losing the ability to hear about a revocation is a reason to distrust
+the cache, not to drop users mid-command. Both halves are deliberate.
+
+The window in which a withdrawn authorization can still be honoured is therefore
+the entry's remaining TTL, and only while the stream is also down — which is why
+`ttl_seconds` belongs in seconds to low minutes.
 
 ## Go types
 
@@ -167,7 +205,13 @@ Requests/responses: `AuthenticateCertRequest`, `AuthenticatePasswordRequest`,
 `LogBatchRequest`, `LogBatchResponse`, `LogPriorityRequest`,
 `LogPriorityResponse`. Shared types: `ConnMeta`, `Identity`,
 `PublicKeyMaterial`, `MFAChallenge`, `FilterPolicy`, `FilterRule`, `HopMetadata`,
-`LogRecord`.
+`LogRecord`, `CacheHint`, `RevocationEvent`, `SessionKillEvent`,
+`CacheInvalidateEvent`.
+
+Caching and revocation live in the same package: `CachingClient` (a `Client`
+decorator, `Authorize` only), `RevocationStream` (the subscription loop), and
+`SessionRegistry` — the interface the proxy implements in phase 0005 to actually
+tear a session down, with `NopSessionRegistry` standing in until then.
 Enum values have named constants (`RouteTypeDirect`, `FilterActionKillSession`,
 `SeverityCritical`, …); a test asserts they match the enums in this document.
 
@@ -196,13 +240,17 @@ startup, and every problem in a file is reported at once.
 | `bastion_token` | Bearer token required on every `/v1` request. Empty disables bastion auth. |
 | `users[]` | `login`, `identity` (`subject`, `display_name`, `source`, `principals`, `groups`, `claims`), `key_fingerprints` (accepted for cert auth), `password`, and `mfa`. |
 | `users[].mfa` | `required`, `decision` (`approve`/`deny`), `pending_polls` (how many polls stay pending before resolving — this is what makes MFA deterministic), `poll_after_ms`, `ttl_ms`, `prompt`. |
-| `routes[]` | Matched in order, first match wins; no match is a `401`. `login` and `target` accept `*`. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` (nexthop only), `target_port`, `permissions`, `permitted_channels`, and `filter_policy` (`mode` plus ordered `rules`, each `match` + `action` + optional `message`). |
+| `routes[]` | Matched in order, first match wins; no match is a `401`. `login` and `target` accept `*`. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` (nexthop only), `target_port`, `permissions`, `permitted_channels`, `filter_policy` (`mode` plus ordered `rules`, each `match` + `action` + optional `message`), and `cache`. |
+| `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, and `known[]` (`target` + `fingerprint`) to pre-seed trusted keys. |
+| `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a bastion's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to
 `fixture`; a route defaults to `login: "*"`, `target: "*"`, `route_type:
-direct`, and an `allow_and_log` blacklist; `host_keys.decision` defaults to
-`accept` (TOFU). Fixtures are test data — never put a real secret in one.
+direct`, an `allow_and_log` blacklist, and **no** cache hint;
+`host_keys.decision` defaults to `accept` (TOFU); `events.heartbeat_ms` to
+`5000` and `events.replay_buffer` to `128`. Fixtures are test data — never put a
+real secret in one.
 
 ### Mock-only endpoints
 
@@ -211,7 +259,8 @@ These are **not** part of the contract; no production server implements them.
 | Path | Purpose |
 | --- | --- |
 | `GET /debug/logs` | Returns `{"batched":[…],"priority":[…]}` — everything ingested so far, for assertions. |
-| `POST /debug/reset` | Clears ingested logs, MFA challenges, and learned host keys. |
+| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, and the retained event history. |
+| `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. |
 
 With `-log-dir`, ingested records are also mirrored to `batch.jsonl` and
 `priority.jsonl` in that directory, so a scenario can inspect them after the

@@ -41,6 +41,8 @@ tags:
     description: target host-key reporting (TOFU-with-report, D7).
   - name: logs
     description: session log ingestion (D8).
+  - name: revocation
+    description: server → bastion revocation stream (PLAN §6.4).
 
 paths:
   /v1/auth/cert:
@@ -272,6 +274,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LogPriorityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/bastions/{bastion_id}/events:
+    get:
+      tags: [revocation]
+      operationId: streamBastionEvents
+      summary: Subscribe to the bastion's revocation event stream.
+      description: |
+        A long-lived response of **newline-delimited JSON**: one
+        `RevocationEvent` per line, written as the server decides them, until
+        either side closes the connection.
+
+        The subscription is **outbound from the bastion**, and deliberately so:
+        bastions sit behind firewalls and must not need an inbound listener
+        (PLAN §1). This stream is therefore the server's only way to reach a
+        running bastion — to end a session that is already in flight, or to
+        withdraw an authorize decision the bastion is allowed to reuse
+        (`AuthorizeResponse.cache`). Caching without it would let a revoked
+        allow survive for the length of its TTL, so a server that issues cache
+        hints MUST serve this endpoint.
+
+        The bastion keeps one subscription open per bastion id and reconnects
+        with bounded exponential backoff. A stream that goes silent is
+        indistinguishable from a healthy idle one, so the server MUST emit
+        `heartbeat` events at a steady interval (comfortably inside the
+        bastion's timeout, which defaults to 20s); a bastion that misses them
+        drops the connection and reconnects. While the bastion cannot hear this
+        stream it stops serving cached decisions and re-authorizes every
+        connection — it does **not** kill live sessions.
+
+        **Gap recovery.** On reconnect the bastion sends the last `event_id` it
+        processed as `last_event_id`. **The server decides** what happens next:
+        it either replays every event after that id, in order, before resuming
+        live delivery, or — when the id is too old to replay, unknown, or the
+        server keeps no history — it emits a `resync` event as the **first**
+        line of the stream and nothing older. `resync` tells the bastion it has
+        missed events it cannot be given, so it drops its entire decision cache
+        and re-authorizes from scratch. An absent `last_event_id` means a fresh
+        subscription: the server starts from now and replays nothing.
+      parameters:
+        - name: bastion_id
+          in: path
+          required: true
+          description: The bastion whose events are being subscribed to.
+          schema:
+            type: string
+          example: bastion-eu-west-1
+        - name: last_event_id
+          in: query
+          required: false
+          description: |
+            The last `event_id` the bastion processed. Absent on a fresh
+            subscription. It is opaque to the bastion, which only echoes it
+            back.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            The stream is open. The body is newline-delimited `RevocationEvent`
+            objects and does not end until the connection does.
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/RevocationEvent'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -580,6 +652,142 @@ components:
         decision_id:
           type: string
           description: Server-assigned id for this decision, for audit correlation.
+        cache:
+          $ref: '#/components/schemas/CacheHint'
+
+    CacheHint:
+      type: object
+      description: |
+        The server authorising the bastion to **reuse this decision** for later
+        connections (PLAN §6.4, D2). Absent means: do not cache. There is no
+        default lifetime and the bastion never invents one.
+
+        The lifetime belongs to the server. A bastion may hold the decision for
+        less time than `ttl_seconds` (an operator may configure a stricter local
+        clamp) but never longer, so the PDP keeps ownership of its own risk
+        appetite and can decline caching for a sensitive target by omitting this
+        object.
+
+        A cached allow outlives a withdrawal of access for up to `ttl_seconds`,
+        which is what `GET /v1/bastions/{bastion_id}/events` exists to bound. A
+        server that issues cache hints must serve that stream; a bastion that
+        cannot hear it stops using its cache.
+      required: [ttl_seconds]
+      properties:
+        key:
+          type: string
+          description: |
+            Opaque handle for this decision. The bastion MUST NOT construct,
+            parse, or derive meaning from it — it only echoes the key back in a
+            `cache_invalidate` event.
+
+            The server's choice of key decides the **sharing scope**: two
+            requests answered with the same key are one cached decision and are
+            invalidated together, so a key may be per subject+target, per
+            subject, per permission set, and so on. A key MUST NEVER be shared
+            across identities: it would let one user be served another user's
+            policy. Required whenever `ttl_seconds` is greater than zero.
+          example: authz:alice@example.com:host.company.com:v7
+        ttl_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How long the decision may be reused, in seconds. `0` (or an absent
+            `cache` object) means do not cache. Keep it short — seconds to low
+            minutes — because it is the window in which a revoked authorization
+            can still be honoured if the event stream is also down.
+          example: 60
+
+    RevocationEvent:
+      type: object
+      description: |
+        One line of `GET /v1/bastions/{bastion_id}/events`. The payload property
+        named by `type` is present; the others are absent.
+      required: [event_id, type, timestamp]
+      properties:
+        event_id:
+          type: string
+          description: |
+            Server-assigned, opaque id. The bastion stores the last one it
+            processed and sends it back as `last_event_id` on reconnect; it
+            never parses or orders by it itself.
+          example: evt-00000042
+        type:
+          type: string
+          enum: [session_kill, cache_invalidate, heartbeat, resync]
+          description: |
+            `session_kill` — end sessions that are running now.
+            `cache_invalidate` — drop cached authorize decisions.
+            `heartbeat` — liveness only, so a silently dead stream is
+            detectable.
+            `resync` — the bastion missed events that cannot be replayed: it
+            drops its entire cache and re-authorizes from scratch.
+
+            A bastion ignores a type it does not recognise, so the server may
+            add types without breaking older bastions.
+        timestamp:
+          type: string
+          format: date-time
+          description: When the server emitted the event.
+        session_kill:
+          $ref: '#/components/schemas/SessionKillEvent'
+        cache_invalidate:
+          $ref: '#/components/schemas/CacheInvalidateEvent'
+
+    SessionKillEvent:
+      type: object
+      description: |
+        Ends sessions that are already in flight. Exactly one of `session_ids`,
+        `subject`, or `all` selects what dies. Killing sessions for a subject
+        also drops that subject's cached decisions on the bastion, so the user
+        cannot immediately reconnect through a decision that is on its way out.
+      properties:
+        session_ids:
+          type: array
+          description: Sessions to end, by the bastion-assigned `session_id`.
+          items:
+            type: string
+          example: [01HQ2Z3K4M5N6P7Q8R9S0T1V2W]
+        subject:
+          type: string
+          description: End every session belonging to this subject.
+          example: alice@example.com
+        all:
+          type: boolean
+          description: End every session on this bastion.
+        reason:
+          type: string
+          description: |
+            Operator-authored text explaining the termination. It is **shown to
+            the user** before the connection closes and copied into the audit
+            log (PLAN §4.3), so that a revoked session is never mistaken for a
+            crash or a network fault. Because it is displayed verbatim, it must
+            be safe to disclose: no policy internals, no other users, no
+            infrastructure detail. A server should always set it; a bastion that
+            receives none shows a generic message instead.
+          example: Access withdrawn by the security team; contact #security.
+
+    CacheInvalidateEvent:
+      type: object
+      description: |
+        Drops cached authorize decisions. Exactly one of `keys`, `subject`, or
+        `all` selects what goes. It does not touch running sessions — those hold
+        their own policy snapshot and are ended with `session_kill`.
+      properties:
+        keys:
+          type: array
+          description: Cache keys to drop, exactly as the server issued them.
+          items:
+            type: string
+          example: [authz:alice@example.com:host.company.com:v7]
+        subject:
+          type: string
+          description: Drop every decision cached for this subject.
+          example: alice@example.com
+        all:
+          type: boolean
+          description: Drop the bastion's entire decision cache.
 
     FilterPolicy:
       type: object

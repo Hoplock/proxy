@@ -168,7 +168,60 @@ func (c *RESTClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*Aut
 			return nil, protocolError(op, fmt.Errorf("filter rule %d (%q): unknown action %q", i, rule.Match, rule.Action))
 		}
 	}
+	if c := resp.Cache; c != nil {
+		// A cache hint the bastion cannot honour exactly is refused rather than
+		// guessed at: it may not invent a key, and a negative lifetime has no
+		// meaning. Either would put the PEP in charge of the decision's
+		// lifetime, which is what the server-set TTL exists to prevent.
+		if c.TTLSeconds < 0 {
+			return nil, protocolError(op, fmt.Errorf("cache.ttl_seconds %d is negative", c.TTLSeconds))
+		}
+		if c.TTLSeconds > 0 && c.Key == "" {
+			return nil, protocolError(op, errors.New("cache.ttl_seconds is set but cache.key is empty"))
+		}
+	}
 	return resp, nil
+}
+
+// StreamEvents opens the bastion's revocation stream and returns the events as
+// they arrive. It implements EventStreamer.
+//
+// The call is deliberately outside the per-call timeout: the response is
+// long-lived by design, so its only bound is ctx. lastEventID is the last event
+// the bastion processed, echoed back so the server can replay the gap; pass ""
+// on a first subscription.
+func (c *RESTClient) StreamEvents(ctx context.Context, bastionID, lastEventID string) (EventStream, error) {
+	const op = "StreamEvents"
+	if bastionID == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: bastion id is required", ErrBadRequest)}
+	}
+
+	u := c.baseURL.String() + BastionEventsPath(bastionID)
+	if lastEventID != "" {
+		u += "?" + url.Values{QueryLastEventID: []string{lastEventID}}.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: build request: %v", ErrTransport, err)}
+	}
+	httpReq.Header.Set("Accept", contentTypeNDJSON)
+	httpReq.Header.Set("User-Agent", c.userAgent)
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	httpResp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: %w", ErrTransport, err)}
+	}
+	if httpResp.StatusCode != http.StatusOK {
+		defer func() {
+			_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxErrorBodyBytes))
+			_ = httpResp.Body.Close()
+		}()
+		return nil, statusError(op, httpResp)
+	}
+	return newNDJSONEventStream(httpResp.Body), nil
 }
 
 // ReportHostKey implements Client.

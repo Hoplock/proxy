@@ -21,8 +21,9 @@ import (
 // exist so tests and the e2e topology can assert on what the bastion shipped,
 // and no production server implements them.
 const (
-	pathDebugLogs  = "/debug/logs"
-	pathDebugReset = "/debug/reset"
+	pathDebugLogs   = "/debug/logs"
+	pathDebugReset  = "/debug/reset"
+	pathDebugRevoke = "/debug/revoke"
 )
 
 // serverOptions are the knobs main passes to the server.
@@ -45,13 +46,18 @@ type server struct {
 	logger *log.Logger
 	now    func() time.Time
 
-	mu        sync.Mutex
-	mfa       map[string]*mfaChallenge
-	hostKeys  map[string]bool // "target\x00fingerprint" -> seen
-	batched   []mgmt.LogRecord
-	priority  []mgmt.LogRecord
-	seenLogs  map[string]bool // record_id -> stored, for de-duplication
-	idCounter int
+	mu       sync.Mutex
+	mfa      map[string]*mfaChallenge
+	hostKeys map[string]bool // "target\x00fingerprint" -> seen
+	batched  []mgmt.LogRecord
+	priority []mgmt.LogRecord
+	seenLogs map[string]bool // record_id -> stored, for de-duplication
+	// subs are the open revocation streams; events are the retained history a
+	// reconnecting bastion replays from, trimmed to the fixture's buffer size.
+	subs           map[*subscriber]bool
+	events         []mgmt.RevocationEvent
+	evictedThrough int
+	idCounter      int
 }
 
 // mfaChallenge is one outstanding out-of-band factor.
@@ -73,6 +79,7 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 		mfa:      make(map[string]*mfaChallenge),
 		hostKeys: make(map[string]bool),
 		seenLogs: make(map[string]bool),
+		subs:     make(map[*subscriber]bool),
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -96,8 +103,12 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+mgmt.PathReportHostKey, s.handleReportHostKey)
 	mux.HandleFunc("POST "+mgmt.PathIngestLogBatch, s.handleIngestLogBatch)
 	mux.HandleFunc("POST "+mgmt.PathIngestPriorityLog, s.handleIngestPriorityLog)
+	// The path constant is already a net/http wildcard pattern, so the bastion
+	// and the mock agree on the shape of the route as well as the string.
+	mux.HandleFunc("GET "+mgmt.PathBastionEvents, s.handleBastionEvents)
 	mux.HandleFunc("GET "+pathDebugLogs, s.handleDebugLogs)
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
+	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
 	return mux
 }
 
@@ -276,6 +287,7 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			Rules: filterRules(route.FilterPolicy.Rules),
 		},
 		DecisionID: decisionID,
+		Cache:      cacheHint(route, req.Identity.Subject, req.Target),
 	}
 	if resp.PermittedChannels == nil {
 		// An absent allow-list must serialise as [] (deny all), not null.
@@ -425,6 +437,12 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.seenLogs = make(map[string]bool)
 	s.mfa = make(map[string]*mfaChallenge)
 	s.hostKeys = make(map[string]bool)
+	// Open subscriptions survive a reset; only the replayable history is
+	// cleared, so a reconnect after this point starts from now.
+	s.events = nil
+	// Everything published so far is gone, so a bastion resuming from any of it
+	// is told to resync rather than silently missing what it asked for.
+	s.evictedThrough = s.idCounter
 	for _, k := range s.fx.HostKeys.Known {
 		s.hostKeys[hostKeyID(k.Target, k.Fingerprint)] = true
 	}
@@ -495,6 +513,24 @@ func (c *mfaChallenge) wire(token string) *mgmt.MFAChallenge {
 }
 
 func hostKeyID(target, fingerprint string) string { return target + "\x00" + fingerprint }
+
+// cacheHint converts a route's cache fixture into the contract's hint. A route
+// without a ttl returns nil: no hint means "do not cache", which is the default
+// for every route that does not opt in.
+//
+// The derived key is per (subject, target) — the narrowest scope, and never
+// shared across identities, which the contract forbids. A fixture can set the
+// key explicitly to model a server that shares one decision more widely.
+func cacheHint(route *fixtureRoute, subject, target string) *mgmt.CacheHint {
+	if route.Cache.TTLSeconds <= 0 {
+		return nil
+	}
+	key := route.Cache.Key
+	if key == "" {
+		key = "authz:" + subject + ":" + target
+	}
+	return &mgmt.CacheHint{Key: key, TTLSeconds: route.Cache.TTLSeconds}
+}
 
 // filterRules converts fixture rules into their contract form, preserving order
 // because the first match wins.
