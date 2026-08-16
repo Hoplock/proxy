@@ -1,0 +1,462 @@
+// Copyright (c) 2026 Mauro Silva. All rights reserved.
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
+package proxy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"runtime/debug"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/mauroasilva/securecommandproxy/internal/auth/target"
+	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
+	"github.com/mauroasilva/securecommandproxy/internal/identity"
+	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/mauroasilva/securecommandproxy/internal/routing"
+)
+
+// failureDeliveryGrace is how long a failed session waits for the client to
+// open a channel it can explain itself on, before closing the connection.
+//
+// It is needed because the client and the bastion work in parallel after
+// authentication: the client opens its session channel while the bastion is
+// still authorizing, and either can win. Closing the moment setup fails would
+// lose the message for a client that was a millisecond behind; waiting forever
+// would strand a client that opens no channel at all (`ssh -N`).
+const failureDeliveryGrace = 3 * time.Second
+
+// failureLinger is how long a failed session waits for the client to hang up
+// after being told why, before closing the connection itself.
+const failureLinger = time.Second
+
+// teardownTimeout bounds the credential teardown that runs when a session ends.
+// Teardown removes what was provisioned on the target (D6), so it must not be
+// abandoned instantly on a cancelled context — but it also cannot hold the
+// session open indefinitely.
+const teardownTimeout = 30 * time.Second
+
+// session is one client connection and the target leg it is proxied onto.
+//
+// Its lifecycle is deliberately ordered so that the bastion can always speak to
+// the user (PLAN §4.3): the client's session channel is accepted *before* the
+// target leg exists, so authorize, provisioning, and the dial all happen with
+// somewhere to write progress and failures to. Everything else here follows
+// from that ordering.
+type session struct {
+	srv   *Server
+	id    string
+	conn  *ssh.ServerConn
+	chans <-chan ssh.NewChannel
+	greqs <-chan *ssh.Request
+
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started time.Time
+
+	// ready is closed when setup has finished, successfully or not. route,
+	// setupErr, and the target leg are written before it closes and only read
+	// after, which is what makes them safe to read without a lock.
+	ready    chan struct{}
+	route    *routing.Route
+	setupErr error
+	access   *target.ProvisionedAccess
+
+	// login, target, and identity are established by setup, before ready.
+	login    string
+	target   string
+	identity *identity.Identity
+
+	// hostKeyErr records why the host-key callback refused, because the
+	// handshake error that carries it back is x/crypto's to format, not ours.
+	hostKeyErr error
+
+	mu       sync.Mutex
+	leg      ssh.Conn
+	channels map[ssh.Channel]struct{}
+	killed   bool
+
+	failedOnce sync.Once
+	failure    chan struct{}
+
+	wg sync.WaitGroup
+}
+
+func (s *Server) newSession(ctx context.Context, id string, conn *ssh.ServerConn, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request) *session {
+	ctx, cancel := context.WithCancel(ctx)
+	return &session{
+		srv:      s,
+		id:       id,
+		conn:     conn,
+		chans:    chans,
+		greqs:    reqs,
+		ctx:      ctx,
+		cancel:   cancel,
+		started:  s.now(),
+		ready:    make(chan struct{}),
+		channels: make(map[ssh.Channel]struct{}),
+		failure:  make(chan struct{}),
+	}
+}
+
+// run drives the session until the client connection ends.
+func (s *session) run() {
+	defer s.close()
+
+	go s.setup()
+	go func() {
+		defer s.recoverPanic("global requests")
+		s.serveGlobalRequests(s.greqs, s.legConnWhenReady)
+	}()
+
+	for newChannel := range s.chans {
+		s.wg.Add(1)
+		go func(nc ssh.NewChannel) {
+			defer s.wg.Done()
+			defer s.recoverPanic("client channel")
+			s.handleClientChannel(nc)
+		}(newChannel)
+	}
+	s.wg.Wait()
+}
+
+// recoverPanic ends this session on a panic instead of taking the process — and
+// every other user's session — with it. It also keeps PLAN §5's guarantee that
+// teardown runs on a crash: closing the client connection unwinds run, whose
+// deferred close removes whatever was provisioned.
+func (s *session) recoverPanic(where string) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	s.logf("proxy: session=%s panic in %s: %v\n%s", s.id, where, r, debug.Stack())
+	s.cancel()
+	_ = s.conn.Close()
+}
+
+// setup resolves the route and brings up the target leg, while the client is
+// already connected and possibly already waiting on an open channel.
+//
+// Every failure it can produce is classified by stage, because what the user is
+// told depends on it: a deny from the management server is "access denied" and
+// nothing more, while everything else says plainly which part of the service
+// failed (PLAN §4.3).
+func (s *session) setup() {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logf("proxy: session=%s panic during setup: %v\n%s", s.id, r, debug.Stack())
+			// Reported as a failure rather than swallowed: a session that
+			// crashed while being set up must still tell the user something.
+			s.failSetup(&setupError{stage: stageRoute, err: fmt.Errorf("panic during setup: %v", r)})
+		}
+		close(s.ready)
+	}()
+
+	if err := s.identify(); err != nil {
+		s.failSetup(err)
+		return
+	}
+
+	s.logf("proxy: session=%s start subject=%s login=%s target=%s client=%s method=%s",
+		s.id, s.identity.Subject, s.login, s.target, s.conn.RemoteAddr(), s.identity.Method)
+
+	route, err := s.srv.resolver.Resolve(s.ctx, routing.Request{
+		Identity: s.identity,
+		Target:   s.target,
+		Conn:     s.connMeta(),
+	})
+	if err != nil {
+		s.failSetup(&setupError{stage: stageAuthorize, err: err})
+		return
+	}
+	// Next-hop routing is phase 0007; the route is resolved and logged either
+	// way so that the seam is a refusal with a reason, not a silent gap.
+	if err := route.RequireDirect(); err != nil {
+		s.failSetup(&setupError{stage: stageRoute, err: err})
+		return
+	}
+	s.route = route
+
+	access, err := s.srv.targetAuth.Provision(s.ctx, s.identity, target.Target{Host: route.Host, Port: route.Port})
+	if err != nil {
+		s.failSetup(&setupError{stage: stageProvision, err: err})
+		return
+	}
+	s.access = access
+
+	if err := s.dialTarget(access); err != nil {
+		s.failSetup(err)
+		return
+	}
+
+	s.logf("proxy: session=%s target leg up target=%s route=%s permissions=%s channels=%v",
+		s.id, s.route.Addr(), s.route.Type, s.route.Permissions, s.route.PermittedChannels)
+}
+
+// identify recovers who the connection belongs to and what it asked for.
+func (s *session) identify() error {
+	id, err := user.IdentityFromPermissions(s.conn.Permissions)
+	if err != nil {
+		// The connection authenticated but carries no readable identity: a
+		// session that cannot be attributed cannot be authorized or audited.
+		return &setupError{stage: stageIdentity, err: err}
+	}
+	s.setIdentity(id)
+
+	login, tgt, err := routing.ParseUsername(s.conn.User(), s.srv.delimiter)
+	if err != nil {
+		return &setupError{stage: stageUsername, err: err}
+	}
+	s.login, s.target = login, tgt
+	return nil
+}
+
+// dialTarget opens the second SSH leg with the provisioned credentials.
+func (s *session) dialTarget(access *target.ProvisionedAccess) error {
+	if access.ClientConfig == nil {
+		return &setupError{stage: stageProvision, err: errors.New("target authenticator returned no client configuration")}
+	}
+	// Copy: the authenticator may reuse its configuration across sessions, and
+	// the host-key callback below is this session's.
+	cfg := *access.ClientConfig
+	cfg.HostKeyCallback = s.hostKeyCallback
+	cfg.Timeout = s.srv.dialTimeout
+
+	addr := s.route.Addr()
+	dialer := net.Dialer{Timeout: s.srv.dialTimeout}
+	conn, err := dialer.DialContext(s.ctx, "tcp", addr)
+	if err != nil {
+		return &setupError{stage: stageDial, err: err}
+	}
+
+	// The handshake includes the host-key report round trip, so it gets the
+	// same bound as the dial rather than running unbounded.
+	_ = conn.SetDeadline(s.srv.now().Add(s.srv.dialTimeout))
+	legConn, legChans, legReqs, err := ssh.NewClientConn(conn, addr, &cfg)
+	if err != nil {
+		_ = conn.Close()
+		if hostKeyErr := s.takeHostKeyErr(); hostKeyErr != nil {
+			// The host key is why the handshake failed; report that rather than
+			// x/crypto's rendering of it.
+			return &setupError{stage: stageHostKey, err: hostKeyErr}
+		}
+		return &setupError{stage: stageDial, err: err}
+	}
+	_ = conn.SetDeadline(time.Time{})
+
+	s.setLeg(legConn)
+
+	// The target can open channels too (forwarded-tcpip, x11, auth-agent), and
+	// its global requests have to be answered or the connection hangs.
+	go s.serveTargetChannels(legChans)
+	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil })
+	return nil
+}
+
+// failSetup records why the session cannot proceed and makes sure the user
+// hears about it.
+func (s *session) failSetup(err error) {
+	s.setupErr = err
+	s.logf("proxy: session=%s setup failed: %v", s.id, err)
+
+	// Whoever delivers the message (an open session channel, or a channel the
+	// client opens moments later) signals it; if nobody can, the connection is
+	// closed anyway rather than left hanging. A bare TCP drop is never the
+	// intended outcome, but an unexplained close beats an unbounded wait.
+	go func() {
+		select {
+		case <-s.failure:
+			// The explanation is on the wire. Let the client read it and close
+			// on its own; pulling the socket out from under a client that has
+			// not read the message yet would waste it.
+			s.lingerUntilClosed()
+		case <-s.ctx.Done():
+		case <-time.After(failureDeliveryGrace):
+			s.logf("proxy: session=%s closing without a channel to report the failure on", s.id)
+		}
+		s.disconnect(s.failureText(err))
+	}()
+}
+
+// lingerUntilClosed waits for the client to hang up, or briefly, whichever is
+// first.
+func (s *session) lingerUntilClosed() {
+	closed := make(chan struct{})
+	go func() {
+		_ = s.conn.Wait()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(failureLinger):
+	case <-s.ctx.Done():
+	}
+}
+
+// failureDelivered marks the failure as explained to the user.
+func (s *session) failureDelivered() {
+	s.failedOnce.Do(func() { close(s.failure) })
+}
+
+// waitReady blocks until setup has finished, returning its error.
+func (s *session) waitReady() error {
+	select {
+	case <-s.ready:
+		return s.setupErr
+	case <-s.ctx.Done():
+		return &setupError{stage: stageRoute, err: s.ctx.Err()}
+	}
+}
+
+// legConnWhenReady returns the target connection once setup has finished.
+func (s *session) legConnWhenReady() (ssh.Conn, error) {
+	if err := s.waitReady(); err != nil {
+		return nil, err
+	}
+	leg := s.legConn()
+	if leg == nil {
+		return nil, &setupError{stage: stageDial, err: errors.New("target connection is not available")}
+	}
+	return leg, nil
+}
+
+func (s *session) legConn() ssh.Conn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leg
+}
+
+func (s *session) setLeg(conn ssh.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.leg = conn
+}
+
+func (s *session) addChannel(ch ssh.Channel) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.channels[ch] = struct{}{}
+}
+
+func (s *session) removeChannel(ch ssh.Channel) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.channels, ch)
+}
+
+// connMeta is the connection metadata every management call carries.
+func (s *session) connMeta() mgmt.ConnMeta {
+	return mgmt.ConnMeta{
+		SessionID:     s.id,
+		BastionID:     s.srv.bastionID,
+		ClientAddr:    s.conn.RemoteAddr().String(),
+		ServerAddr:    s.conn.LocalAddr().String(),
+		ClientVersion: string(s.conn.ClientVersion()),
+		Timestamp:     s.srv.now(),
+	}
+}
+
+// kill ends the session on the management server's orders, telling the user why
+// first (PLAN §4.3, §6.4). A revoked session must never look like a crash.
+func (s *session) kill(reason string) {
+	s.mu.Lock()
+	if s.killed {
+		s.mu.Unlock()
+		return
+	}
+	s.killed = true
+	channels := make([]ssh.Channel, 0, len(s.channels))
+	for ch := range s.channels {
+		channels = append(channels, ch)
+	}
+	s.mu.Unlock()
+
+	s.logf("proxy: session=%s killed: %s", s.id, reason)
+	text := bannerPrefix + reason
+	for _, ch := range channels {
+		writeUser(ch, text)
+		sendExitStatus(ch, exitBastionFailure)
+		_ = ch.Close()
+	}
+	s.disconnect(text)
+}
+
+// disconnect ends the client connection.
+//
+// SSH_MSG_DISCONNECT carries a reason code and a description, and that is what
+// PLAN §4.3 asks for here — but golang.org/x/crypto/ssh does not expose it
+// (ssh.Conn deliberately offers only Close; sending a disconnect is on its
+// TODO list). The duck-typed assertion below uses it if a future version does,
+// and the engine's real answer to the gap is structural: the client's session
+// channel is accepted before anything can fail, so the explanation reaches the
+// user over that channel and this path is the last resort for a client that
+// never opened one.
+func (s *session) disconnect(message string) {
+	type disconnecter interface {
+		Disconnect(reason uint32, message string) error
+	}
+	if d, ok := s.conn.Conn.(disconnecter); ok {
+		// 11 is SSH_DISCONNECT_BY_APPLICATION (RFC 4253 §11.1).
+		_ = d.Disconnect(11, message)
+	}
+	_ = s.conn.Close()
+}
+
+// close tears the session down. It runs on every exit path — normal close,
+// error, kill, and panic in a channel goroutine — because the credentials the
+// target authenticator provisioned must not outlive the session that used them
+// (D6, PLAN §5).
+func (s *session) close() {
+	s.cancel()
+	_ = s.conn.Close()
+	if leg := s.legConn(); leg != nil {
+		_ = leg.Close()
+	}
+
+	// Setup may still be in flight (a client that hung up mid-dial); waiting
+	// for it is what stops teardown from racing the provisioning it undoes.
+	<-s.ready
+
+	if s.access != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), teardownTimeout)
+		defer cancel()
+		if err := s.access.Close(ctx); err != nil {
+			s.logf("proxy: session=%s teardown failed: %v", s.id, err)
+		}
+	}
+
+	subject := ""
+	if s.identity != nil {
+		subject = s.identity.Subject
+	}
+	s.logf("proxy: session=%s end subject=%s target=%s duration=%s",
+		s.id, subject, s.target, s.srv.now().Sub(s.started).Round(time.Millisecond))
+}
+
+func (s *session) logf(format string, args ...any) { s.srv.logf(format, args...) }
+
+// subjectID is the subject this session belongs to, or "" before setup has read
+// the identity back off the connection.
+//
+// It is locked because the revocation stream calls it (KillSubject) on its own
+// goroutine, concurrently with setup establishing the identity.
+func (s *session) subjectID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.identity == nil {
+		return ""
+	}
+	return s.identity.Subject
+}
+
+// setIdentity records who the connection belongs to.
+func (s *session) setIdentity(id *identity.Identity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.identity = id
+}
