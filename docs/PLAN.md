@@ -100,10 +100,15 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   security events are sent immediately** (flush the in-flight batch or use a
   dedicated priority channel). Local disk is only a **resilience buffer** for
   when the network is unavailable; logs drain to the server when it recovers.
-- **D9 — Tech choices.** Go (min **1.24**, target latest stable). SSH plumbing:
+- **D9 — Tech choices.** Go (min **1.25**, target latest stable). SSH plumbing:
   `golang.org/x/crypto/ssh`. Bastion bootstrap config: **YAML**. API + policy +
   log payloads: **JSON over HTTPS (REST)** for the prototype; a streaming/gRPC
   transport may be added later behind the same client interface.
+  The floor is set by `golang.org/x/crypto`, which *is* this project's SSH
+  implementation and so is the dependency least worth holding back: current
+  releases require Go ≥ 1.25.0, and pinning an older Go pins an older SSH
+  stack. The floor was 1.24 through phase 0004; it moves when x/crypto moves
+  it, and CI tracks the latest stable release rather than the floor.
 - **D10 — Proprietary/closed source.** Private repo, all rights reserved. A
   proprietary `LICENSE` and per-file SPDX + copyright headers are added in the
   scaffold phase (Section 8).
@@ -391,7 +396,12 @@ the session-kill hook it defines is implemented by the proxy in 0005.
 ## 8. Cross-cutting conventions
 
 - **Module path**: `github.com/mauroasilva/securecommandproxy`.
-- **Go**: min 1.24; CI pins the toolchain.
+- **Go**: min 1.25 (the `go` directive in `go.mod`); CI pins the toolchain to the
+  latest stable minor (`GO_VERSION` in `.github/workflows/ci.yml`). Keep the two
+  distinct: the floor rises only when a dependency forces it, while CI moves with
+  each Go release. `golangci-lint` type-checks with the Go it was built against,
+  so its pin in the `lint` job must be bumped alongside `GO_VERSION` or it panics
+  on the newer stdlib.
 - **Config**: YAML bootstrap (`internal/config`), documented with an example file.
 - **License (D10)**: proprietary `LICENSE` ("All rights reserved / confidential"),
   plus a per-file header:
