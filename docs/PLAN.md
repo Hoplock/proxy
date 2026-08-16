@@ -399,9 +399,12 @@ the session-kill hook it defines is implemented by the proxy in 0005.
 - **Go**: min 1.25 (the `go` directive in `go.mod`); CI pins the toolchain to the
   latest stable minor (`GO_VERSION` in `.github/workflows/ci.yml`). Keep the two
   distinct: the floor rises only when a dependency forces it, while CI moves with
-  each Go release. `golangci-lint` type-checks with the Go it was built against,
-  so its pin in the `lint` job must be bumped alongside `GO_VERSION` or it panics
-  on the newer stdlib.
+  each Go release. The `build-test` job runs on **both**, with
+  `GOTOOLCHAIN: local`, so the floor is enforced rather than merely asserted —
+  raising the `go` directive past the matrix fails that leg loudly instead of
+  being papered over by an automatic toolchain download. `golangci-lint`
+  type-checks with the Go it was built against, so its pin in the `lint` job must
+  be bumped alongside `GO_VERSION` or it panics on the newer stdlib.
 - **Config**: YAML bootstrap (`internal/config`), documented with an example file.
 - **License (D10)**: proprietary `LICENSE` ("All rights reserved / confidential"),
   plus a per-file header:

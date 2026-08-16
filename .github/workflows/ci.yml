@@ -9,18 +9,39 @@ permissions:
   contents: read
 
 env:
+  # Latest stable Go: what the project develops against, and the only version
+  # the lint job runs on. The *minimum* supported version is the `go` directive
+  # in go.mod, which is a lower number on purpose (PLAN §8).
   GO_VERSION: "1.26"
 
 jobs:
   build-test:
-    name: build, vet, test
+    name: build, vet, test (go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    strategy:
+      # Report both legs. A floor-only failure and a latest-only failure mean
+      # very different things, so never hide one behind the other.
+      fail-fast: false
+      matrix:
+        # 1.25 is the floor declared by go.mod; 1.26 is GO_VERSION above.
+        # Building on the floor is the only thing that keeps that directive
+        # honest — without this leg, "min 1.25" is an untested claim, and the
+        # first use of a 1.26-only API would break consumers silently.
+        go: ["1.25", "1.26"]
+    env:
+      # Pin the toolchain to the matrix version. With the default (auto), a
+      # go.mod floor newer than the installed Go is silently satisfied by
+      # downloading a newer toolchain — both legs would then test the same
+      # version and the floor leg would prove nothing. With `local`, raising
+      # the go directive past 1.25 fails this job loudly, which is the
+      # reminder to update the matrix.
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ matrix.go }}
           check-latest: true
 
       - name: go build
