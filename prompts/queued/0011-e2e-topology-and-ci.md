@@ -9,8 +9,8 @@
 
 ## Objective
 Assemble the complete **5-node integration topology** and a CI job that exercises
-the whole system, then do prototype hardening/cleanup. This is the acceptance
-gate for the prototype.
+the whole system, add the supply-chain gate (`govulncheck`), then do prototype
+hardening/cleanup. This is the acceptance gate for the prototype.
 
 ## In scope
 - `deploy/`: a `docker compose` topology with the five nodes (PLAN §9):
@@ -36,6 +36,34 @@ gate for the prototype.
     buffering + drain.
 - **CI**: a GitHub Actions job that builds images, brings the topology up, runs
   the scenario suite, and tears it down. Gate PRs on it (keep it reasonably fast).
+- **CI: a `govulncheck` job** (`golang.org/x/vuln/cmd/govulncheck`), running
+  `govulncheck ./...` over the module and **failing the build** on any finding.
+  - *Why this project specifically:* `golang.org/x/crypto/ssh` is not an
+    incidental dependency, it is the bastion's SSH implementation, and its
+    advisory rate is high. The v0.44.0 → v0.55.0 bump alone (see the Go 1.26
+    chore, `main` history) crossed **15** fixed advisories, of which roughly six
+    were server-side DoS/panic issues in `x/crypto/ssh` itself — unbounded
+    memory growth, a leak when rejecting channels, a client-triggered server
+    deadlock, an infinite loop on large channel writes. Those land in exactly
+    the paths 0005–0008 build on, so "is our SSH stack currently vulnerable?"
+    must be a CI answer, not a periodic human chore.
+  - Prefer `govulncheck`'s default symbol-level analysis over a plain dependency
+    scan: it reports only vulnerabilities **reachable** from this module's code,
+    which keeps the gate from crying wolf about (say) `ssh/agent` advisories
+    that the bastion never calls into.
+  - **Network requirement, and the trap it sets:** govulncheck downloads the
+    vulnerability database from `https://vuln.go.dev` at run time. GitHub-hosted
+    runners can reach it; some development sandboxes cannot, and the failure is
+    an opaque `Forbidden`/403 that reads like a broken tool. So: add a
+    `make vulncheck` target, have it print an explicit "cannot reach
+    vuln.go.dev — this check runs in CI" message on a fetch failure rather than
+    a raw error, and do **not** make it a required local step in
+    `docs/PROTOCOL.md`'s Definition of Done. CI is where it must pass.
+  - Note in the job (a comment) that this check can go red with **no code
+    change**, when a new advisory lands against an existing dependency. That is
+    the intended signal, not a flake: the fix is to upgrade the dependency, or —
+    if no fix exists yet — to record an explicit, dated justification rather
+    than deleting the job.
 - **Hardening/cleanup**: address TODOs left by earlier phases that block a
   coherent prototype; tidy configs; ensure `README`/`docs/PLAN.md` reflect the
   final prototype state and how to run the topology locally.
@@ -54,11 +82,20 @@ gate for the prototype.
   silent disconnect. A denied user gets the generic "access denied" and nothing
   that reveals the target or the policy. Assert on the client's actual output.
 - No ephemeral users/keys leak after the suite.
-- `docs/PLAN.md` §9 matches what was built; README documents local e2e run.
+- The `govulncheck` job runs on every PR, passes on the tree as it stands, and
+  demonstrably fails on a known-vulnerable input — verify once by temporarily
+  downgrading `golang.org/x/crypto` to v0.44.0 and confirming the job reports
+  the `x/crypto/ssh` findings, then revert. A gate nobody has seen fail is not
+  known to be a gate.
+- `docs/PLAN.md` §9 matches what was built; §8's CI list names every job that
+  now gates a PR, including `govulncheck`; README documents local e2e run and
+  `make vulncheck` (including that it needs network access to `vuln.go.dev`).
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
 `docs/learnings/0011-e2e-topology-and-ci-learnings.md`. Summary block MUST
 document how to run the topology locally, the fixture layout, each scenario and
-what it proves, and any remaining known gaps to seed the next set of prompts
-(e.g. host-key pinning policy, AD/Okta, tamper-evident logs, real distribution).
+what it proves, how the `govulncheck` gate is wired (and what to do when it goes
+red without a code change), and any remaining known gaps to seed the next set of
+prompts (e.g. host-key pinning policy, AD/Okta, tamper-evident logs, real
+distribution).
