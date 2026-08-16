@@ -25,6 +25,13 @@ import (
 // SSH username, e.g. "alice#host.company.com" (D1).
 const DefaultTargetDelimiter = "#"
 
+// TargetAuthMethodStaticKey names the placeholder bastion→target
+// authentication method (PLAN §4.2). It lives here, rather than in
+// internal/auth/target, for the same reason the user-plane method names live in
+// internal/identity: config has to validate the name, and a name spelled in two
+// places eventually gets spelled two ways.
+const TargetAuthMethodStaticKey = "static-key"
+
 // Config is the bastion's bootstrap configuration. It holds only what the
 // bastion needs to start and reach the management server; every policy decision
 // is made remotely (D2), so nothing policy-related belongs here.
@@ -33,10 +40,16 @@ type Config struct {
 	Management Management `yaml:"management"`
 	Routing    Routing    `yaml:"routing"`
 	Auth       Auth       `yaml:"auth"`
+	Proxy      Proxy      `yaml:"proxy"`
 }
 
 // Bastion describes the local SSH listener and this bastion's own identity.
 type Bastion struct {
+	// ID identifies this bastion to the management server. It is on every
+	// management call and is the address of this bastion's revocation stream
+	// (PLAN §6.4), so it is deployment-assigned and required: a bastion that
+	// cannot be named cannot be told to kill a session.
+	ID string `yaml:"id"`
 	// ListenAddr is the "host:port" the SSH listener binds to.
 	ListenAddr string `yaml:"listen_addr"`
 	// HostKeyPath is the path to the bastion's SSH host private key.
@@ -48,6 +61,38 @@ type Management struct {
 	// BaseURL is the root URL of the management API, e.g.
 	// "https://mgmt.example.com".
 	BaseURL string `yaml:"base_url"`
+	// Token authenticates this bastion to the management server as a bearer
+	// token. Empty is allowed so a development topology can run without one;
+	// a real deployment sets it (or supplies mTLS at the transport instead).
+	Token string `yaml:"token"`
+	// Cache tunes reuse of authorize decisions the server permitted (PLAN §6.4).
+	Cache Cache `yaml:"cache"`
+}
+
+// Cache tunes the bastion's side of server-authorised policy caching. Nothing
+// here can widen a decision: the server owns the lifetime, and these settings
+// only ever make the bastion ask more often than it was allowed to.
+type Cache struct {
+	// MaxTTL clamps the server's cache lifetime downwards. Zero — the default —
+	// honours the server exactly. Every decision a clamp actually shortens is
+	// counted and logged, because a bastion quietly diverging from what the
+	// server asked for is indistinguishable from a fault (PLAN §6.4).
+	MaxTTL time.Duration `yaml:"max_ttl"`
+	// StaleAfter is how long the revocation stream may be unheard before the
+	// cache stops serving and storing decisions. Zero means the package
+	// default.
+	StaleAfter time.Duration `yaml:"stale_after"`
+}
+
+// Proxy tunes the SSH proxy engine. None of it decides anything; it bounds how
+// long a user waits for a failure they cannot see.
+type Proxy struct {
+	// DialTimeout bounds dialling and handshaking the target leg. Zero means
+	// the package default.
+	DialTimeout time.Duration `yaml:"dial_timeout"`
+	// DefaultTargetPort is used when the management server's route names no
+	// port. Zero means the package default (22).
+	DefaultTargetPort int `yaml:"default_target_port"`
 }
 
 // Routing holds the rules for deriving the target from the SSH username (D1).
@@ -63,6 +108,29 @@ type Routing struct {
 type Auth struct {
 	// User configures the user→bastion plane (PLAN §4.1).
 	User UserAuth `yaml:"user"`
+	// Target configures the bastion→target plane (PLAN §4.2).
+	Target TargetAuth `yaml:"target"`
+}
+
+// TargetAuth chooses how the bastion logs into targets.
+type TargetAuth struct {
+	// Method names the implementation. Defaults to
+	// TargetAuthMethodStaticKey, the phase-0005 placeholder; the ephemeral
+	// just-in-time provisioner (D6) is added in phase 0006.
+	Method string `yaml:"method"`
+	// StaticKey configures the placeholder implementation.
+	StaticKey StaticKeyAuth `yaml:"static_key"`
+}
+
+// StaticKeyAuth configures the placeholder target authenticator: one preloaded
+// key for every session on every target. It provisions nothing and expires
+// nothing, so it belongs in development topologies only (PLAN §4.2).
+type StaticKeyAuth struct {
+	// KeyPath is the private key the bastion logs into targets with.
+	KeyPath string `yaml:"key_path"`
+	// Username logs into every target as this account instead of the
+	// authenticated login. Empty — the default — uses the login.
+	Username string `yaml:"username"`
 }
 
 // UserAuth enables and tunes the user→bastion authenticators.
@@ -205,11 +273,18 @@ func (c *Config) applyDefaults() {
 	if c.Auth.User.Methods == nil {
 		c.Auth.User.Methods = DefaultUserAuthMethods()
 	}
+	if c.Auth.Target.Method == "" {
+		c.Auth.Target.Method = TargetAuthMethodStaticKey
+	}
 }
 
 // Validate reports every problem with c as a *ValidationError.
 func (c *Config) Validate() error {
 	var v ValidationError
+
+	if c.Bastion.ID == "" {
+		v.add("bastion.id", ErrMissing, "")
+	}
 
 	if c.Bastion.ListenAddr == "" {
 		v.add("bastion.listen_addr", ErrMissing, "")
@@ -233,6 +308,23 @@ func (c *Config) Validate() error {
 		case u.Host == "":
 			v.add("management.base_url", ErrInvalid, "missing host")
 		}
+	}
+
+	for _, d := range []struct {
+		field string
+		value time.Duration
+	}{
+		{"management.cache.max_ttl", c.Management.Cache.MaxTTL},
+		{"management.cache.stale_after", c.Management.Cache.StaleAfter},
+		{"proxy.dial_timeout", c.Proxy.DialTimeout},
+	} {
+		if d.value < 0 {
+			v.add(d.field, ErrInvalid, "must not be negative")
+		}
+	}
+
+	if p := c.Proxy.DefaultTargetPort; p < 0 || p > 65535 {
+		v.add("proxy.default_target_port", ErrInvalid, "must be between 1 and 65535")
 	}
 
 	if err := validateDelimiter(c.Routing.TargetDelimiter); err != nil {
@@ -281,6 +373,24 @@ func (c *Config) validateAuth(v *ValidationError) {
 		if d.value < 0 {
 			v.add(d.field, ErrInvalid, "must not be negative")
 		}
+	}
+
+	c.validateTargetAuth(v)
+}
+
+// validateTargetAuth checks the bastion→target plane. Only the settings of the
+// selected method are checked: phase 0006 adds a method that needs no static
+// key, and a config that still carries one must not be forced to keep it valid.
+func (c *Config) validateTargetAuth(v *ValidationError) {
+	switch c.Auth.Target.Method {
+	case TargetAuthMethodStaticKey:
+		if c.Auth.Target.StaticKey.KeyPath == "" {
+			v.add("auth.target.static_key.key_path", ErrMissing,
+				"the static-key method logs into targets with this key")
+		}
+	default:
+		v.add("auth.target.method", ErrInvalid,
+			fmt.Sprintf("unknown method %q", c.Auth.Target.Method))
 	}
 }
 

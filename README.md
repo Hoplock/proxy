@@ -13,8 +13,13 @@ The architecture — end-to-end flow, decisions D1–D10, package layout, and th
 phased delivery plan — lives in **[`docs/PLAN.md`](docs/PLAN.md)**. Read it
 before reading the code.
 
-> Status: early. The management API contract and its mock server exist; no SSH
-> handling yet. See `docs/PLAN.md` §10 for the phase order.
+> Status: early, but end to end. The bastion authenticates a user, authorizes
+> the connection against the management server, and proxies a **direct** route
+> to a target, passing every SSH channel through generically. Target
+> credentials are still a placeholder (one preloaded key — see
+> `auth.target.method` in `config.example.yaml`); ephemeral just-in-time
+> provisioning, next-hop chaining, inspection, filtering, and the logging
+> pipeline are the phases that follow. See `docs/PLAN.md` §10 for the order.
 
 ## Requirements
 

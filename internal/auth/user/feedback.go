@@ -42,11 +42,32 @@ func BannerMessage(sessionID string) string {
 	return fmt.Sprintf("SecureCommandProxy: checking your access with the policy service. Session %s.\r\n", sessionID)
 }
 
+// OutageDetailPolicyService is the failure OutageMessage describes: the
+// management server could not be reached or could not answer.
+const OutageDetailPolicyService = "the policy service is unavailable"
+
 // OutageMessage is shown when no decision could be obtained. It states plainly
 // that this is not a permissions problem, so the user does not retry a denial
 // that was never a denial, and quotes the session id as the support reference.
 func OutageMessage(sessionID string) string {
-	msg := "The bastion could not reach a decision because the policy service is unavailable. " +
+	return OutageMessageFor(OutageDetailPolicyService, sessionID)
+}
+
+// OutageMessageFor is OutageMessage naming which dependency failed, for the
+// failures that happen after authentication: the target leg, its host key, and
+// credential provisioning all fail without the policy service being down at all
+// (PLAN §4.3, phase 0005).
+//
+// detail completes "could not complete your connection because …" and must stay
+// non-disclosing: it says what broke on the bastion's side, never which target,
+// which policy, or whether either exists. The invariant that matters is the
+// same in every branch — the user is told this is not a permissions problem, so
+// they stop retrying credentials, and is given the session id to quote.
+func OutageMessageFor(detail, sessionID string) string {
+	if detail == "" {
+		detail = OutageDetailPolicyService
+	}
+	msg := "The bastion could not complete your connection because " + detail + ". " +
 		"This is a service problem, not a permissions problem — retrying with different credentials will not help."
 	if sessionID != "" {
 		msg += fmt.Sprintf(" Quote session id %s when reporting this.", sessionID)
@@ -63,10 +84,22 @@ func OutageMessage(sessionID string) string {
 // reached a failure path without an error has a bug, and the safe rendering of
 // "I do not know why this failed" is never "you are not allowed".
 func FailureMessage(err error, sessionID string) string {
+	return FailureMessageFor(err, OutageDetailPolicyService, sessionID)
+}
+
+// FailureMessageFor is FailureMessage for a failure that is not the policy
+// service's: it applies the identical deny/outage split and only varies the
+// outage branch's detail (see OutageMessageFor).
+//
+// A deny renders as DenyMessage whatever detail is passed. That is the point of
+// routing every failure through one function: a caller cannot accidentally make
+// one denial more informative than another, however specific its own knowledge
+// of what went wrong.
+func FailureMessageFor(err error, detail, sessionID string) string {
 	if IsDenied(err) {
 		return DenyMessage
 	}
-	return OutageMessage(sessionID)
+	return OutageMessageFor(detail, sessionID)
 }
 
 // IsDenied reports whether err is a deny decision — the only classification

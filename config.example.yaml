@@ -6,6 +6,10 @@
 # connection (see docs/PLAN.md, D2).
 
 bastion:
+  # Identifier the management server knows this bastion by. It is on every
+  # management call and addresses this bastion's revocation stream, so it must
+  # match what the management server was told to expect.
+  id: "bastion-1"
   # host:port the SSH listener binds to.
   listen_addr: "0.0.0.0:2222"
   # Path to this bastion's SSH host private key. Never commit a real key.
@@ -14,6 +18,26 @@ bastion:
 management:
   # Root URL of the management API (the policy decision point).
   base_url: "https://management.example.com"
+  # Bearer token authenticating this bastion to the management server. Optional;
+  # supply it from the deployment's secret store, never from a committed file.
+  token: ""
+  # Reuse of authorize decisions the management server explicitly permitted.
+  # Nothing here can widen a decision — the server sets the lifetime and can
+  # withdraw it at any time over the revocation stream. All optional.
+  cache:
+    # Clamp on the server's lifetime. 0 (the default) honours it exactly; any
+    # other value only makes this bastion ask more often than it was allowed to,
+    # and every decision it shortens is counted and logged.
+    max_ttl: 0s
+    # How long the revocation stream may be unheard before the cache stops
+    # serving anything and every connection is re-authorized.
+    stale_after: 30s
+
+proxy:
+  # How long to wait for the target leg (dial plus SSH handshake). Optional.
+  dial_timeout: 15s
+  # Port used when the management server's route names none. Optional.
+  default_target_port: 22
 
 routing:
   # Single character separating the login from the target hostname in the SSH
@@ -39,3 +63,16 @@ auth:
       progress_interval: 5s
       # Cap on the total wait. The server's expiry wins when it is sooner.
       max_wait: 2m
+  # bastion -> target authentication (docs/PLAN.md §4.2).
+  target:
+    # Implementation. "static-key" is the phase-0005 PLACEHOLDER: one preloaded
+    # key for every session on every target, provisioning nothing and expiring
+    # nothing. It is for development topologies only; the ephemeral just-in-time
+    # provisioner (D6) replaces it in phase 0006.
+    method: "static-key"
+    static_key:
+      # Private key the bastion logs into targets with. Never commit a real key.
+      key_path: "/etc/securecommandproxy/target_key"
+      # Log into every target as this account instead of the authenticated
+      # login. Optional; empty uses the login.
+      username: ""

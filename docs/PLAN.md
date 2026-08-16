@@ -133,7 +133,8 @@ securecommandproxy/
 │   ├── proxy/              # core SSH proxy engine, session lifecycle
 │   ├── channel/            # channel allow-listing + inspection pipeline
 │   ├── filter/             # command filtering (whitelist/blacklist + actions)
-│   └── logging/            # session capture, batching, priority flush, buffer
+│   ├── logging/            # session capture, batching, priority flush, buffer
+│   └── sshtest/            # test support: in-process SSH target + key helpers
 ├── api/                    # API contract (OpenAPI/JSON Schema) — source of truth
 ├── deploy/                 # docker-compose e2e topology + fixtures
 ├── .github/workflows/      # CI (build, vet, test, lint, e2e)
@@ -258,6 +259,21 @@ Two consequences that are design, not wording:
 - **The proxy must accept the client's session channel before the target leg
   exists**, or there is nothing to write progress to. That ordering belongs to
   the proxy engine (§3, 0005).
+- **A failure is reported only once the client has asked for something.** An SSH
+  client starts reading a channel's output after it sends its `shell` or `exec`
+  request, so a message written before that is written into a stream nobody is
+  reading. Explaining too early is indistinguishable from not explaining at all.
+
+`SSH_MSG_DISCONNECT` is the row this table cannot fully deliver:
+`golang.org/x/crypto/ssh` does not expose it (`ssh.Conn` offers only `Close`;
+sending a disconnect is on the library's own TODO list), so a bastion built on
+it cannot attach a reason code to a connection close. The engine's answer is the
+ordering above — the session channel exists before anything can fail, so the
+explanation goes over the channel — plus a channel-open **rejection** carrying
+the reason for anything opened after a failure, which is the same information in
+the mechanism SSH does give a server. Only a client that opens no channel at all
+gets an unexplained close. If x/crypto ever exports a disconnect, the engine
+already reaches for it.
 
 Feedback is written to stderr, never stdout, and suppressed for non-interactive
 channels (no pty — `scp`, `sftp`, `exec`) beyond what a failure requires, so
