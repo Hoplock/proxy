@@ -17,9 +17,12 @@ before reading the code.
 > the connection against the management server, and proxies a **direct** route
 > to a target, passing every SSH channel through generically. Target
 > credentials are still a placeholder (one preloaded key — see
-> `auth.target.method` in `config.example.yaml`); ephemeral just-in-time
-> provisioning, next-hop chaining, inspection, filtering, and the logging
-> pipeline are the phases that follow. See `docs/PLAN.md` §10 for the order.
+> `auth.target.method` in `config.example.yaml`). Next is a revision of the
+> management contract (phase 0006) that gives policy the vocabulary the later
+> phases enforce — per-request channel policy, destination-aware forwarding,
+> global requests, server-chosen target credentials, hop connection direction —
+> followed by target credentials, next-hop chaining, inspection, filtering, and
+> the logging pipeline. See `docs/PLAN.md` §10 for the order.
 
 ## Requirements
 
@@ -56,6 +59,12 @@ and a human-readable companion. `internal/mgmt` is the typed Go client — the
 only package that talks to the management server — and `cmd/mock-management`
 serves the contract from a fixture file for development and tests. `make
 openapi-check` validates the document.
+
+**This repo owns the contract; it does not implement the production management
+server.** That component — policy authoring and simulation, identity
+federation, JIT access and approvals, the tamper-evident audit store — lives in
+its own repository, which vendors `api/management.yaml` from here read-only and
+proves conformance against it (D3). A contract change starts here.
 
 ## Configuration
 

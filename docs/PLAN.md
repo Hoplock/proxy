@@ -61,6 +61,17 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   wrapper delivers the clean `ssh host.company.com.<brand>.proxy` UX by
   rewriting it into the encoded form. The delimiter and parsing rules live in
   the bastion bootstrap config.
+
+  **Why not `ssh -J` (ProxyJump), which does put the target on the wire.** A
+  jump host learns the target from the `direct-tcpip` channel the client opens,
+  so no username encoding is needed — and that is exactly why it cannot be used
+  here. Under ProxyJump the client runs its SSH handshake *with the target*
+  through that tunnel, so the inner session stays end-to-end encrypted and the
+  jump host sees ciphertext: no channel policy, no command visibility, no
+  session capture — none of the reasons this product exists. The username
+  encoding is the price of decryption, and only a decrypting bastion has to pay
+  it. This is the first question a technical evaluator asks, so the answer is
+  recorded here as "considered and rejected", not "not considered".
 - **D2 — The bastion originates no policy.** Every authn/authz/route/policy
   decision is *made* by the management server. A decision is fetched **once per
   connection** and enforced locally for that connection's lifetime, so the data
@@ -73,7 +84,11 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 - **D3 — Management server is a separate component.** This repo defines the
   **API contract** and ships a **mock/reference management server**
   (`cmd/mock-management`) used for development and CI. The production management
-  server is out of scope for this repo.
+  server is out of scope for this repo and is specified in its own sibling
+  repository, which vendors `api/management.yaml` from here and treats it as
+  read-only: **this repo owns the contract, that one implements it.** A contract
+  change is made here first, and the sibling repo's conformance suite is what
+  proves the two still agree.
 - **D4 — Auth planes are pluggable interfaces.** `user→bastion` and
   `bastion→target` are separate Go interfaces, each with swappable
   implementations chosen by config, and each segregated into its own package.
@@ -85,12 +100,56 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   The channel layer is built as a **middleware/inspection pipeline** so filters
   can attach to any channel type later without touching the transport core, and
   without adding latency to un-inspected channels.
+- **D5a — The policy vocabulary has three axes, not one (amended, phase 0006).**
+  A flat list of permitted channel *types* is too coarse to express what this
+  product claims to sell, because SSH puts very different operations inside one
+  channel type. `scp`, `sftp`, an interactive shell, and a one-shot command all
+  ride `session`; a port forward's whole meaning is the destination inside its
+  `direct-tcpip` payload; and remote forwarding is not a channel open at all but
+  a connection-level **global request**. So policy is expressed over:
+  1. **channel types** — which channels may exist, in both directions;
+  2. **in-channel requests** — `pty-req`, `shell`, `exec`, `subsystem` (by
+     name, so `sftp` is deniable on its own), `env`, `x11-req`,
+     `auth-agent-req`;
+  3. **destinations and global requests** — permitted host/port targets for
+     `direct-tcpip`, and an allow-list for connection-level requests
+     (`tcpip-forward`, `no-more-sessions`, …).
+
+  Only all three make "may open a shell on production, may not copy files off
+  it, may not tunnel anywhere except the database, and may never open a
+  listener" a policy this bastion can express. Two of these are the difference
+  between a bastion and a firewall, and both are contract shapes rather than
+  engine work: phase 0006 revises `api/management.yaml` before the inspection
+  pipeline (0009) is built against the old vocabulary.
 - **D6 — Ephemeral just-in-time target users.** The bastion holds a
   **management certificate** preloaded on targets. On session start it logs in
   with the management cert, creates a target OS user matching the authenticated
   username, injects a freshly generated short-lived key/cert into that user's
   `authorized_keys`, connects as that user, and on session end logs back in with
   the management cert to remove the user. Orphan cleanup is mandatory (Section 5).
+- **D6a — Two target-credential methods, chosen by the server (amended, phase
+  0006).** D6 is the strongest credential story available on a Linux fleet: no
+  standing accounts, no shared secret, nothing to rotate. It is also the most
+  *target-invasive* model in the field — it needs a privileged provisioning
+  account, a preloaded management certificate, and the ability to create and
+  delete OS users and write `authorized_keys`. A router, a firewall, a storage
+  filer, a hypervisor, or an OT controller can do none of that, and those are
+  exactly the devices that can never run an endpoint agent and therefore gain
+  the most from an inline enforcement point. An architecture that only ships D6
+  is closed to them.
+
+  So `TargetAuthenticator` gets a **second production implementation** —
+  brokered credentials, the grown-up form of the `static-key` placeholder: a
+  per-target credential the bastion holds only for the session's duration and
+  never writes to disk. And the choice between methods belongs to the
+  **management server**, per route, not to bastion-local config: one bastion
+  fronting both a Linux estate and an appliance estate is the normal case, and
+  `auth.target.method` in `config.yaml` cannot express it. The authorize
+  response therefore carries a `target_auth` object (a method name plus
+  method-specific parameters), and the bastion config keeps only the local
+  material each method needs. The object is extensible on purpose: a future
+  management server that mints target credentials itself slots in as another
+  method without a third breaking change.
 - **D7 — Host key policy from the server.** Prototype: **trust-on-first-use**,
   but every newly seen target host key is reported to the management server.
   Later: per-target configurable policy fetched from the management server based
@@ -112,6 +171,52 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 - **D10 — Proprietary/closed source.** Private repo, all rights reserved. A
   proprietary `LICENSE` and per-file SPDX + copyright headers are added in the
   scaffold phase (Section 8).
+- **D11 — A hop is reached over a connection the *downstream* bastion opened
+  (new, phase 0008).** The original next-hop sketch had each bastion dial the
+  next one, and described the result as "a single firewall punch-through per
+  hop". One hole per hop is still a hole per hop: in a segmented estate every
+  one of them is a change request, a review board, and a standing inbound path
+  into a more sensitive zone — which is the objection this architecture exists
+  to remove, not to charge per enclave.
+
+  The bastion already solves this problem once, in the right direction: the
+  revocation stream (§6.4) is outbound from the bastion *because* bastions sit
+  behind firewalls and must not need an inbound listener. That reasoning does
+  not stop being true one layer down. So a bastion in a protected zone
+  **registers an outbound relay connection** with its upstream and the upstream
+  dials the next hop *through* it; the protected zone needs no inbound rule at
+  all. Forward dialling stays supported for the zones where it is genuinely
+  simpler (an upstream that is already reachable), so the route says which
+  applies: the authorize response's hop metadata carries a **connection
+  direction**, and neither bastion infers it.
+
+  This is written down before 0008 rather than after, because connection
+  direction is not a detail inside a hop protocol — it *is* the hop protocol,
+  and retrofitting it later is a rewrite.
+- **D12 — "Enforced" is a claim about the boundary, not about interception
+  (new, phase 0010).** §6.3 splits `exec` (the whole command is visible up
+  front) from interactive shells (keystrokes, best-effort). That split is real,
+  but it describes **interception reliability** and must not be read as a
+  security boundary: pattern-matching the string in an `exec` request is not one
+  either. A rule denying `cat /etc/shadow` is satisfied by `sh -c 'cat
+  /etc/shadow'`, by `base64 -d | sh`, by any interpreter, editor shell escape,
+  or uploaded binary. Reliable interception of an unrestricted shell command is
+  still an unrestricted shell.
+
+  The bastion therefore offers **two exec modes**, and only one of them is sold
+  as enforcement:
+  - **Filtered exec** (the D5 rule list) — a *guardrail*. Better failure mode
+    than the interactive path because the whole command is seen before it runs,
+    and honest about being a guardrail everywhere it is documented.
+  - **Restricted exec** — a genuine boundary: the policy names permitted
+    executables together with the shape of their arguments, the command is
+    parsed rather than pattern-matched, anything unnamed is denied, and no shell
+    is interposed to re-expand what was approved. A default-deny list of
+    approved argv shapes is defensible under adversarial review in a way a
+    blacklist of regexes is not.
+
+  Which mode applies is per connection and comes from the server. Marketing,
+  docs, and the audit record use the same two words for the same two things.
 
 ---
 
@@ -213,9 +318,21 @@ type ProvisionedAccess struct {
 }
 ```
 
-The prototype implementation is the **ephemeral-user provisioner** (D6). A simpler
-`static-key` implementation is used as a placeholder in the first proxy phase so
-end-to-end proxying works before the full provisioner lands.
+There are **two production implementations** (D6a), and the management server
+picks between them per route in its authorize response — never bastion-local
+config, because one bastion routinely fronts estates that need different
+methods:
+
+| Method | What it does | For |
+| --- | --- | --- |
+| `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it afterwards (D6, §5) | Linux/BSD fleets that accept a provisioning account |
+| `brokered-key` | Uses a per-target credential held for the session and never written to disk | Appliances, network and OT gear: anything that cannot create users |
+
+`static-key` remains as the development placeholder from phase 0005 —
+`brokered-key` is what it grows into. A method the bastion does not implement,
+or has no local material for, is a clean session denial (an outage-class
+failure, §4.3): never a silent fallback to a different method, which would
+mean connecting with credentials the server did not choose.
 
 Both interfaces take/return `identity.Identity` (not booleans) so that AD/Okta
 claims flow through unchanged (D4/D8-answers question 8).
@@ -281,7 +398,9 @@ tooling that parses the stream is not corrupted.
 
 ---
 
-## 5. Ephemeral target provisioning (D6)
+## 5. Target credentials (D6, D6a)
+
+### 5.1 `ephemeral-user` — just-in-time provisioning (D6)
 
 Lifecycle per session:
 
@@ -305,9 +424,30 @@ Robustness requirements:
 - **Failure isolation**: a provisioning failure denies the session cleanly; it
   never leaves a half-created user.
 
-> This is the highest-risk feature. Its prompt (0005) covers cleanup/orphan
-> handling and concurrency explicitly, and its learnings file must document the
-> exact teardown guarantees for later sessions.
+> This is the highest-risk feature. Its prompt covers cleanup/orphan handling
+> and concurrency explicitly, and its learnings file must document the exact
+> teardown guarantees for later sessions.
+
+### 5.2 `brokered-key` — a credential held only for the session (D6a)
+
+The target is unchanged: nothing is created, nothing is removed, and the only
+prerequisite is an account that already exists on it. The bastion is handed
+(or fetches) the credential for **this** session, uses it, and drops it.
+
+- The credential **never touches disk on the bastion** and never appears in a
+  log, an error, or a config file. Where it comes from is a seam — a local
+  secret store today, a management server that mints per-session credentials
+  later (the same `target_auth` object grows a method, D6a).
+- `Teardown` still exists and is still guaranteed, but its job is zeroing the
+  in-memory credential and closing the leg — there is no remote state to undo,
+  which is exactly why this method works on a device the bastion cannot
+  administer.
+- Weaker than D6 by construction: the account is standing and shared across
+  sessions, so **the audit trail is the bastion's**, not the target's. The
+  target sees one login from the proxy; who was actually behind it is knowable
+  only from this system's records. That is an honest trade for reaching devices
+  D6 cannot, and it is the reason session capture (§7) is not optional for
+  routes using this method.
 
 ---
 
@@ -319,13 +459,47 @@ Robustness requirements:
   `login` + `target`. Validate/normalize the target hostname.
 - **Route resolution**: call the management server's authorize+route endpoint with
   `(identity, target, conn metadata)`. Handle `direct` and `nexthop`.
-- **Multi-hop**: for `nexthop`, dial the next bastion and re-run the flow.
+- **Multi-hop**: for `nexthop`, reach the next bastion and re-run the flow.
   Enforce a **max hop count** and **loop detection** (carry a hop trail).
+- **Connection direction (D11)**: the hop metadata says how the next bastion is
+  reached, and there are two ways:
+  - `dial` — this bastion opens a TCP/SSH connection to the next one. Simple,
+    and it requires an inbound rule at the next hop.
+  - `relay` — the next bastion has already **registered an outbound relay
+    connection** with this one; this bastion opens a channel over that existing
+    connection instead of dialling. The protected zone needs no inbound rule.
+
+  A bastion that accepts relay registrations authenticates the registering
+  bastion the same way the management server authenticates a bastion, keeps one
+  registration per bastion id, and re-registers with backoff when the link
+  drops. A route naming a `relay` hop with no live registration fails as an
+  outage (§4.3) — it is never silently downgraded to `dial`, which would punch
+  through the boundary the mode exists to preserve.
 
 ### 6.2 Channels (`internal/channel`, D5)
 
 - The authorize+route response includes **permitted channel types**. The channel
-  layer **denies any channel not on the allow-list**.
+  layer **denies any channel not on the allow-list**, in both directions: a
+  channel the session may not open is not one it may be handed by the target.
+- It also carries the other two axes of D5a, and each is enforced where SSH
+  actually decides it:
+  - **In-channel requests.** A `session` channel is opened before anyone knows
+    what it is for; the request that follows (`pty-req`, `shell`, `exec`,
+    `subsystem`) is what makes it an interactive login, a one-shot command, or a
+    file transfer. Enforcement is therefore at the *request*, not the open, and
+    subsystems are named individually so `sftp` can be denied while `shell`
+    stays. This is what expresses "may log in, may not copy files off the box"
+    and "CI may run commands but never gets a PTY".
+  - **Forwarding destinations.** A `direct-tcpip` open carries the host and port
+    it wants; policy matches against them (host/CIDR + port, wildcards allowed)
+    so a route can permit `postgres.prod:5432` and nothing else. Allow/deny on
+    the channel type alone is the difference between a firewall and a toggle.
+  - **Global requests.** Remote forwarding is requested at the connection level
+    (`tcpip-forward`), not by opening a channel, so it is invisible to a
+    channel-type allow-list. Denying the resulting `forwarded-tcpip` channel is
+    not equivalent: the listener is still created on the target and only the
+    connections through it fail. Connection-level requests get their own
+    allow-list, refused with a `false` reply rather than relayed.
 - Inspection pipeline: each channel is wrapped by an ordered list of
   **inspectors**. In v1 the list is empty (pure passthrough) for everything except
   where filtering attaches. Inspectors must be **zero-copy where possible** and add
@@ -344,12 +518,25 @@ Robustness requirements:
   outcome. Mode is required, so an unmatched command always has a defined
   answer: `whitelist` blocks it, `blacklist` allows it. A `blacklist` with no
   rules filters nothing; a `whitelist` with no rules blocks everything.
-- **`exec`** requests: the full command is available up front — filtering is
-  **enforced** reliably.
+- **`exec`** requests: the full command is available up front, so the rule list
+  is applied **reliably** — every command is seen before it runs.
 - **Interactive `shell`/pty**: keystroke streams are inspected **best-effort**
   (audit/alerting), never claimed as hard enforcement. The pipeline is the same;
   only the reliability guarantee differs. This limitation is documented for users.
 - A match produces a **distinct audit event** (D8) sent immediately.
+
+**Three tiers, named honestly (D12).** "Seen reliably" is not "cannot be
+evaded", and the product must not let the two blur:
+
+| Tier | Mechanism | Guarantee |
+| --- | --- | --- |
+| Restricted exec | Server names permitted executables + argument shapes; command is parsed, not matched; unnamed ⇒ denied; no shell interposed | **Enforcement.** Default-deny, defensible under adversarial review |
+| Filtered exec | Ordered rule list against the full `exec` string | **Guardrail.** Every command is seen; `sh -c`, interpreters, and encodings still get past a pattern |
+| Interactive shell | Best-effort keystroke inspection | **Audit signal.** Line editing, encodings, and shell escapes defeat it by construction |
+
+The mode is per connection and comes from the server. The audit event records
+which tier decided, so a later review can tell a boundary from a guardrail
+without re-reading the policy.
 
 ---
 
@@ -467,22 +654,41 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0003 | Policy caching + session revocation     | cache hint + revocation stream in the contract, `internal/mgmt` cache + subscription, `SessionRegistry` hook |
 | 0004 | Identity model + user→bastion auth      | `internal/identity`, `internal/auth/user`, cert-first + password/MFA |
 | 0005 | Core proxy engine + direct route        | `internal/proxy`, generic channel passthrough, E2E with static-key target auth; implements `SessionRegistry` |
-| 0006 | Ephemeral target provisioning           | `internal/auth/target` ephemeral provisioner + orphan reaper       |
-| 0007 | Multi-hop / next-hop routing            | `internal/routing` chaining, loop/hop-limit protection             |
-| 0008 | Channel allow-list + inspection pipeline| `internal/channel` enforcement + pluggable inspector framework     |
-| 0009 | Command filtering + policy actions      | `internal/filter`, exec-enforced + interactive best-effort         |
-| 0010 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
-| 0011 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
+| 0006 | Policy vocabulary — contract v2         | `api/` + `internal/mgmt`: in-channel requests, forwarding destinations, global requests, `target_auth`, hop direction |
+| 0007 | Target credentials                      | `internal/auth/target`: ephemeral provisioner + orphan reaper, and `brokered-key` (D6a) |
+| 0008 | Multi-hop / next-hop routing            | `internal/routing` chaining, relay registration (D11), loop/hop-limit protection |
+| 0009 | Channel allow-list + inspection pipeline| `internal/channel` enforcement of all three axes + pluggable inspector framework |
+| 0010 | Command filtering + policy actions      | `internal/filter`: restricted exec (enforced), filtered exec, interactive best-effort |
+| 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
+| 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
+
+> **Renumbering note (this revision).** Phase 0006 is new: it revises the
+> management contract so the vocabulary in D5a/D6a/D11 exists *before* anything
+> is built against the old one. Under `docs/PROTOCOL.md` §6, queued prompts were
+> renumbered to keep implementation order — **0006→0007, 0007→0008, 0008→0009,
+> 0009→0010, 0010→0011, 0011→0012** — while implemented prompts 0001–0005 keep
+> their frozen names. Learnings files written before this revision refer to
+> phases by their **old** numbers (e.g. 0005's learnings hand the channel
+> allow-list to "0008", now 0009); resolve them through this mapping.
 
 ---
 
 ## 11. Out of scope for the prototype
 
-- Real management server (only the contract + mock live here).
+- Real management server (only the contract + mock live here) — it has its own
+  repository and its own plan (D3).
 - Real geo/anycast DNS and scale/distribution testing.
-- Tamper-evident/append-only log storage (D8 notes the eventual destination).
+- Tamper-evident/append-only log storage (D8 notes the eventual destination);
+  it belongs to the management server, which owns the audit store.
 - AD/Okta/OIDC concrete implementations (interfaces are AD/Okta-ready only).
+  The bastion never talks to an IdP: it authenticates *against the management
+  server*, which is the component that federates. Nothing here changes when
+  that lands.
 - Target host-key pinning policy (prototype is TOFU-with-report, D7).
+- Policy authoring, simulation, JIT access requests and approvals, and the
+  operator/audit surface. These are the product's north-bound features and they
+  live in the management server. The bastion's job is to enforce a decision and
+  to explain a denial well enough to be traced (§4.3) — not to author one.
