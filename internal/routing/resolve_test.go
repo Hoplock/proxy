@@ -241,3 +241,203 @@ func TestNewResolverRequiresAClient(t *testing.T) {
 		t.Error("NewResolver accepted options with no management client")
 	}
 }
+
+// v2Response is an authorize response using the whole phase 0006 vocabulary
+// (D5a, D6a, D11, D12). The tests below prove the route carries every part of
+// it to phases 0007–0010 and shares memory with none of it.
+func v2Response() *control.AuthorizeResponse {
+	return &control.AuthorizeResponse{
+		RouteType:         control.RouteTypeNextHop,
+		Target:            "proxy-2.company.com",
+		PermittedChannels: []string{"session", control.ChannelDirectTCPIP},
+		PermittedRequests: &control.RequestPolicy{
+			Types:      []string{control.RequestPTY, control.RequestShell, control.RequestExec},
+			Subsystems: []string{"sftp"},
+		},
+		PermittedForwards: &control.ForwardPolicy{
+			DirectTCPIP: []control.ForwardDestination{{Host: "postgres.prod", Port: 5432}},
+		},
+		PermittedGlobalRequests: &control.GlobalRequestPolicy{
+			Types: []string{control.GlobalRequestTCPIPForward},
+		},
+		TargetAuth: &control.TargetAuth{
+			Method: control.TargetAuthBrokeredKey,
+			Params: map[string]string{"username": "svc-net"},
+		},
+		FilterPolicy: control.FilterPolicy{
+			Mode:     control.FilterModeWhitelist,
+			ExecMode: control.ExecModeRestricted,
+			RestrictedExec: &control.RestrictedExecPolicy{
+				Commands: []control.RestrictedCommand{
+					{Executable: "show", Form: control.CommandFormExact, Argv: []string{"version"}},
+				},
+			},
+		},
+		Hop: &control.HopMetadata{
+			Connection:  control.HopConnectionRelay,
+			NextProxyID: "proxy-2",
+			FinalTarget: "deep.internal.company.com",
+			MaxHops:     3,
+			HopTrail:    []string{"proxy-1"},
+		},
+	}
+}
+
+// TestResolveCarriesTheV2Vocabulary is the hand-off to phases 0007–0010: this
+// phase enforces none of it, so the only thing that can go wrong here is the
+// route dropping a field on the floor.
+func TestResolveCarriesTheV2Vocabulary(t *testing.T) {
+	client := &fakeClient{resp: v2Response()}
+	r, _ := NewResolver(ResolverOptions{Client: client})
+
+	route, err := r.Resolve(context.Background(), Request{
+		Identity: testIdentity(), Target: "deep.internal.company.com",
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// Axis 2: in-channel requests, with subsystems named individually.
+	if !route.RequestPermitted(control.RequestShell) {
+		t.Error("shell denied though the policy names it")
+	}
+	if route.RequestPermitted(control.RequestX11) {
+		t.Error("x11-req permitted though the policy never named it")
+	}
+	if !route.SubsystemPermitted("sftp") {
+		t.Error("sftp denied though the policy names it")
+	}
+	if route.SubsystemPermitted("netconf") {
+		t.Error("an unnamed subsystem was permitted")
+	}
+
+	// Axis 2, forwarding: the destinations travel; matching them is 0009's job.
+	dests, policed := route.ForwardDestinations(control.ChannelDirectTCPIP)
+	if !policed || len(dests) != 1 || dests[0].Host != "postgres.prod" || dests[0].Port != 5432 {
+		t.Errorf("direct-tcpip destinations = %v (policed=%v), want the server's list", dests, policed)
+	}
+	// The other direction has no list in a present policy, which is a deny.
+	if reverse, policed := route.ForwardDestinations(control.ChannelForwardedTCPIP); !policed || len(reverse) != 0 {
+		t.Errorf("forwarded-tcpip destinations = %v (policed=%v), want policed with none", reverse, policed)
+	}
+
+	// Axis 3: connection-level requests.
+	if !route.GlobalRequestPermitted(control.GlobalRequestTCPIPForward) {
+		t.Error("tcpip-forward denied though the policy names it")
+	}
+	if route.GlobalRequestPermitted(control.GlobalRequestStreamLocalForward) {
+		t.Error("an unnamed global request was permitted")
+	}
+
+	// D6a: the credential method is the server's choice, carried to 0007.
+	if route.TargetAuth == nil || route.TargetAuth.Method != control.TargetAuthBrokeredKey {
+		t.Errorf("target auth = %+v, want the brokered-key method the server chose", route.TargetAuth)
+	}
+	if got := route.TargetAuth.Params["username"]; got != "svc-net" {
+		t.Errorf("target auth username = %q, want the server's parameter", got)
+	}
+
+	// D12: the exec tier, carried to 0010.
+	if got := route.ExecMode(); got != control.ExecModeRestricted {
+		t.Errorf("exec mode = %q, want %q", got, control.ExecModeRestricted)
+	}
+	if route.Filter.RestrictedExec == nil || len(route.Filter.RestrictedExec.Commands) != 1 {
+		t.Errorf("restricted exec = %+v, want the server's command list", route.Filter.RestrictedExec)
+	}
+
+	// D11: the hop direction, carried to 0008.
+	if got := route.HopDirection(); got != control.HopConnectionRelay {
+		t.Errorf("hop direction = %q, want %q", got, control.HopConnectionRelay)
+	}
+	if route.Hop.NextProxyID != "proxy-2" {
+		t.Errorf("next proxy id = %q, want the registration to relay through", route.Hop.NextProxyID)
+	}
+}
+
+// TestResolveCopiesTheWholeV2Policy extends the isolation guarantee to
+// everything phase 0006 added: a cached decision is shared, so a session that
+// mutated what it was handed would be rewriting another session's policy.
+func TestResolveCopiesTheWholeV2Policy(t *testing.T) {
+	resp := v2Response()
+	client := &fakeClient{resp: resp}
+	r, _ := NewResolver(ResolverOptions{Client: client})
+
+	route, err := r.Resolve(context.Background(), Request{
+		Identity: testIdentity(), Target: "deep.internal.company.com",
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	route.PermittedRequests.Types[0] = "mutated"
+	route.PermittedRequests.Subsystems[0] = "mutated"
+	route.PermittedForwards.DirectTCPIP[0].Host = "mutated"
+	route.PermittedGlobalRequests.Types[0] = "mutated"
+	route.TargetAuth.Params["username"] = "mutated"
+	route.Filter.RestrictedExec.Commands[0].Argv[0] = "mutated"
+	route.Hop.HopTrail[0] = "mutated"
+
+	pristine := v2Response()
+	for _, tc := range []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"request types", resp.PermittedRequests.Types[0], pristine.PermittedRequests.Types[0]},
+		{"subsystems", resp.PermittedRequests.Subsystems[0], pristine.PermittedRequests.Subsystems[0]},
+		{"forward host", resp.PermittedForwards.DirectTCPIP[0].Host, pristine.PermittedForwards.DirectTCPIP[0].Host},
+		{"global requests", resp.PermittedGlobalRequests.Types[0], pristine.PermittedGlobalRequests.Types[0]},
+		{"target auth params", resp.TargetAuth.Params["username"], pristine.TargetAuth.Params["username"]},
+		{"restricted argv", resp.FilterPolicy.RestrictedExec.Commands[0].Argv[0], pristine.FilterPolicy.RestrictedExec.Commands[0].Argv[0]},
+		{"hop trail", resp.Hop.HopTrail[0], pristine.Hop.HopTrail[0]},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("mutating the route rewrote the response's %s: got %v, want %v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestRouteFromAV1ServerIsUnpoliced is the compatibility guarantee at the layer
+// the proxy actually reads: a server that never heard of the phase 0006
+// vocabulary still yields a working route, and no axis silently becomes a deny.
+func TestRouteFromAV1ServerIsUnpoliced(t *testing.T) {
+	client := &fakeClient{resp: &control.AuthorizeResponse{
+		RouteType:         control.RouteTypeDirect,
+		Target:            "host.company.com",
+		PermittedChannels: []string{"session"},
+		FilterPolicy:      control.FilterPolicy{Mode: control.FilterModeBlacklist},
+	}}
+	r, _ := NewResolver(ResolverOptions{Client: client})
+
+	route, err := r.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "host.company.com"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	if !route.ChannelPermitted("session") || route.ChannelPermitted("direct-tcpip") {
+		t.Error("the channel allow-list must keep meaning exactly what it meant")
+	}
+	for _, name := range []string{control.RequestPTY, control.RequestShell, control.RequestExec} {
+		if !route.RequestPermitted(name) {
+			t.Errorf("request %q denied by a v1 route: an absent axis is not a deny", name)
+		}
+	}
+	if !route.SubsystemPermitted("sftp") {
+		t.Error("sftp denied by a v1 route")
+	}
+	if !route.GlobalRequestPermitted(control.GlobalRequestTCPIPForward) {
+		t.Error("tcpip-forward denied by a v1 route")
+	}
+	if _, policed := route.ForwardDestinations(control.ChannelDirectTCPIP); policed {
+		t.Error("a v1 route must not police forwarding destinations")
+	}
+	if route.TargetAuth != nil {
+		t.Error("a v1 route must leave the proxy on its locally configured method")
+	}
+	if got := route.ExecMode(); got != control.ExecModeFiltered {
+		t.Errorf("exec mode = %q, want %q", got, control.ExecModeFiltered)
+	}
+	if got := route.HopDirection(); got != control.HopConnectionDial {
+		t.Errorf("hop direction = %q, want %q", got, control.HopConnectionDial)
+	}
+}

@@ -139,46 +139,32 @@ func (c *RESTClient) PollMFA(ctx context.Context, req *MFAPollRequest) (*Authent
 }
 
 // Authorize implements Client.
+//
+// The response is decoded STRICTLY: a field this client does not know is a
+// contract violation, not something to drop. Every field in an authorize
+// response is policy, and an unknown one may be a restriction — ignoring it is
+// how a restriction becomes an allowance. The proxy declares the vocabulary it
+// implements in AuthorizeRequest.PolicyVersion so a newer server can answer
+// within it; a server that answers outside it is caught here rather than having
+// its policy silently thinned.
+//
+// The failure is ErrProtocol, so the session fails closed and the user is told
+// it is an outage rather than a denial (PLAN §4.3).
 func (c *RESTClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*AuthorizeResponse, error) {
 	const op = "Authorize"
-	resp, err := post[AuthorizeResponse](ctx, c, op, PathAuthorize, req, http.StatusOK)
+	if req != nil && req.PolicyVersion == 0 {
+		// Declaring the vocabulary is what licenses the strict decode above, so
+		// it is filled in here rather than left to every caller to remember.
+		reqCopy := *req
+		reqCopy.PolicyVersion = PolicyVersion
+		req = &reqCopy
+	}
+	resp, err := postStrict[AuthorizeResponse](ctx, c, op, PathAuthorize, req, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
-	switch resp.RouteType {
-	case RouteTypeDirect, RouteTypeNextHop:
-	default:
-		return nil, protocolError(op, fmt.Errorf("unknown route_type %q", resp.RouteType))
-	}
-	if resp.Target == "" {
-		return nil, protocolError(op, errors.New("route has no target"))
-	}
-	switch resp.FilterPolicy.Mode {
-	case FilterModeWhitelist, FilterModeBlacklist:
-	default:
-		return nil, protocolError(op, fmt.Errorf("unknown filter mode %q", resp.FilterPolicy.Mode))
-	}
-	for i, rule := range resp.FilterPolicy.Rules {
-		if rule.Match == "" {
-			return nil, protocolError(op, fmt.Errorf("filter rule %d has no match pattern", i))
-		}
-		switch rule.Action {
-		case FilterActionAllowAndLog, FilterActionBlockCommand, FilterActionWarnAndContinue, FilterActionKillSession:
-		default:
-			return nil, protocolError(op, fmt.Errorf("filter rule %d (%q): unknown action %q", i, rule.Match, rule.Action))
-		}
-	}
-	if c := resp.Cache; c != nil {
-		// A cache hint the proxy cannot honour exactly is refused rather than
-		// guessed at: it may not invent a key, and a negative lifetime has no
-		// meaning. Either would put the PEP in charge of the decision's
-		// lifetime, which is what the server-set TTL exists to prevent.
-		if c.TTLSeconds < 0 {
-			return nil, protocolError(op, fmt.Errorf("cache.ttl_seconds %d is negative", c.TTLSeconds))
-		}
-		if c.TTLSeconds > 0 && c.Key == "" {
-			return nil, protocolError(op, errors.New("cache.ttl_seconds is set but cache.key is empty"))
-		}
+	if err := resp.Validate(); err != nil {
+		return nil, protocolError(op, err)
 	}
 	return resp, nil
 }
@@ -290,6 +276,17 @@ func protocolError(op string, err error) error {
 // Resp. Every failure is returned as an *APIError wrapping a sentinel, so a
 // deny is never confused with an outage.
 func post[Resp any](ctx context.Context, c *RESTClient, op, path string, req any, wantStatus int) (*Resp, error) {
+	return doPost[Resp](ctx, c, op, path, req, wantStatus, false)
+}
+
+// postStrict is post with unknown response fields rejected. It is used for the
+// authorize response, where every field is policy and dropping one silently
+// widens the session.
+func postStrict[Resp any](ctx context.Context, c *RESTClient, op, path string, req any, wantStatus int) (*Resp, error) {
+	return doPost[Resp](ctx, c, op, path, req, wantStatus, true)
+}
+
+func doPost[Resp any](ctx context.Context, c *RESTClient, op, path string, req any, wantStatus int, strict bool) (*Resp, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		// Marshalling our own request type failing is a programming error, not
@@ -334,6 +331,9 @@ func post[Resp any](ctx context.Context, c *RESTClient, op, path string, req any
 
 	var out Resp
 	dec := json.NewDecoder(httpResp.Body)
+	if strict {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(&out); err != nil {
 		return nil, protocolError(op, fmt.Errorf("decode response: %v", err))
 	}

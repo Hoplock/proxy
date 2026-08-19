@@ -65,10 +65,16 @@ auth:
       max_wait: 2m
   # proxy -> target authentication (docs/PLAN.md §4.2).
   target:
-    # Implementation. "static-key" is the phase-0005 PLACEHOLDER: one preloaded
-    # key for every session on every target, provisioning nothing and expiring
-    # nothing. It is for development topologies only; the ephemeral just-in-time
-    # provisioner (D6) replaces it in phase 0006.
+    # Since contract v2 (phase 0006) Hoplock Control picks the method per route
+    # in the authorize response's `target_auth` (D6a) — one proxy commonly
+    # fronts hosts that accept just-in-time provisioning and appliances that
+    # cannot. What stays here is the local material each method needs, plus this
+    # FALLBACK, used only when the server sends no `target_auth` at all.
+    #
+    # "static-key" is the phase-0005 PLACEHOLDER: one preloaded key for every
+    # session on every target, provisioning nothing and expiring nothing. It is
+    # for development topologies only; the ephemeral just-in-time provisioner
+    # (D6) and brokered-key (D6a) arrive in phase 0007.
     method: "static-key"
     static_key:
       # Private key the proxy logs into targets with. Never commit a real key.

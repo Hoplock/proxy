@@ -334,6 +334,14 @@ or has no local material for, is a clean session denial (an outage-class
 failure, §4.3): never a silent fallback to a different method, which would
 mean connecting with credentials the server did not choose.
 
+On the wire (contract v2, phase 0006) this is `target_auth`: a `method` from
+the table above plus a method-scoped `params` string map — `username`,
+`key_type`, `lifetime_seconds` for `ephemeral-user`; `username` and an opaque
+`credential_ref` for `brokered-key`. **No credential material travels on the
+API**; `credential_ref` selects material the proxy already holds. An absent
+`target_auth` leaves the proxy on its locally configured method, which is what
+a v1 server implies and what phase 0005 does today.
+
 Both interfaces take/return `identity.Identity` (not booleans) so that AD/Okta
 claims flow through unchanged (D4/D8-answers question 8).
 
@@ -469,6 +477,11 @@ prerequisite is an account that already exists on it. The proxy is handed
     connection** with this one; this proxy opens a channel over that existing
     connection instead of dialling. The protected zone needs no inbound rule.
 
+  On the wire (contract v2, phase 0006) this is `hop.connection`, with
+  `hop.next_proxy_id` naming the registration a `relay` hop opens a channel
+  over. An absent `hop.connection` means `dial`, so a v1 server's route still
+  works. `routing.Route.HopDirection()` resolves that default for callers.
+
   A proxy that accepts relay registrations authenticates the registering
   proxy the same way Hoplock Control authenticates a proxy, keeps one
   registration per proxy id, and re-registers with backoff when the link
@@ -482,24 +495,40 @@ prerequisite is an account that already exists on it. The proxy is handed
   layer **denies any channel not on the allow-list**, in both directions: a
   channel the session may not open is not one it may be handed by the target.
 - It also carries the other two axes of D5a, and each is enforced where SSH
-  actually decides it:
-  - **In-channel requests.** A `session` channel is opened before anyone knows
-    what it is for; the request that follows (`pty-req`, `shell`, `exec`,
-    `subsystem`) is what makes it an interactive login, a one-shot command, or a
-    file transfer. Enforcement is therefore at the *request*, not the open, and
-    subsystems are named individually so `sftp` can be denied while `shell`
-    stays. This is what expresses "may log in, may not copy files off the box"
-    and "CI may run commands but never gets a PTY".
-  - **Forwarding destinations.** A `direct-tcpip` open carries the host and port
-    it wants; policy matches against them (host/CIDR + port, wildcards allowed)
-    so a route can permit `postgres.prod:5432` and nothing else. Allow/deny on
-    the channel type alone is the difference between a firewall and a toggle.
-  - **Global requests.** Remote forwarding is requested at the connection level
-    (`tcpip-forward`), not by opening a channel, so it is invisible to a
-    channel-type allow-list. Denying the resulting `forwarded-tcpip` channel is
-    not equivalent: the listener is still created on the target and only the
-    connections through it fail. Connection-level requests get their own
-    allow-list, refused with a `false` reply rather than relayed.
+  actually decides it. The field names below are the ones the contract ships
+  (`api/control.yaml`, contract v2 from phase 0006); each is **absent by
+  default, and absent means "not policed"** — which is what a v1 server meant —
+  while a *present but empty* object denies everything on its axis, exactly as
+  `permitted_channels: []` does:
+  - **In-channel requests** — `permitted_requests` (`types`, `subsystems`). A
+    `session` channel is opened before anyone knows what it is for; the request
+    that follows (`pty-req`, `shell`, `exec`, `subsystem`) is what makes it an
+    interactive login, a one-shot command, or a file transfer. Enforcement is
+    therefore at the *request*, not the open, and subsystems are named
+    individually — `subsystems`, not a `subsystem` entry in `types` — so `sftp`
+    can be denied while `shell` stays. This is what expresses "may log in, may
+    not copy files off the box" and "CI may run commands but never gets a PTY".
+    Requests that decide nothing (`window-change`, `signal`, `exit-status`,
+    `break`) are outside the policy and always relayed.
+  - **Forwarding destinations** — `permitted_forwards` (`direct_tcpip`,
+    `forwarded_tcpip`; each entry a `host` plus `port` or `port_range`). A
+    `direct-tcpip` open carries the host and port it wants; policy matches
+    against them (exact host, `*.`-wildcard, or CIDR, plus an exact port or an
+    inclusive range) so a route can permit `postgres.prod:5432` and nothing
+    else. Allow/deny on the channel type alone is the difference between a
+    firewall and a toggle. `forwarded-tcpip` is the same channel type in the
+    other direction and gets its own list. The proxy never resolves a name to
+    decide policy: a CIDR matches only IP literals, and a DNS answer is not a
+    decision the PDP made.
+  - **Global requests** — `permitted_global_requests` (`types`). Remote
+    forwarding is requested at the connection level (`tcpip-forward`), not by
+    opening a channel, so it is invisible to a channel-type allow-list. Denying
+    the resulting `forwarded-tcpip` channel is not equivalent: the listener is
+    still created on the target and only the connections through it fail.
+    Connection-level requests get their own allow-list, refused with a `false`
+    reply rather than relayed. Transport hygiene (`keepalive@openssh.com`,
+    `no-more-sessions@openssh.com`, the `hostkeys-*@openssh.com` pair) is
+    outside the policy and always relayed.
 - Inspection pipeline: each channel is wrapped by an ordered list of
   **inspectors**. In v1 the list is empty (pure passthrough) for everything except
   where filtering attaches. Inspectors must be **zero-copy where possible** and add
@@ -534,9 +563,26 @@ evaded", and the product must not let the two blur:
 | Filtered exec | Ordered rule list against the full `exec` string | **Guardrail.** Every command is seen; `sh -c`, interpreters, and encodings still get past a pattern |
 | Interactive shell | Best-effort keystroke inspection | **Audit signal.** Line editing, encodings, and shell escapes defeat it by construction |
 
-The mode is per connection and comes from the server. The audit event records
-which tier decided, so a later review can tell a boundary from a guardrail
-without re-reading the policy.
+The mode is per connection and comes from the server: `filter_policy.exec_mode`
+is `filtered` (the `rules` list) or `restricted` (`filter_policy.restricted_exec`),
+and an absent `exec_mode` means `filtered`, which is what a v1 server meant. The
+two are **alternatives, not layers** — a policy setting `restricted_exec`
+alongside a non-empty `rules` list is a contract violation the client rejects
+outright, because a guardrail and a boundary disagreeing about one command have
+no defensible resolution.
+
+`restricted_exec.commands[]` names an `executable` (matched against `argv[0]`
+exactly, with no `PATH` search or basename comparison) plus either
+`form: exact` with an `argv` compared element by element, or
+`form: positional` with an `args[]` of per-position specs (`kind` of `literal`,
+`prefix`, `oneof`, or `any`, and `optional` for trailing positions). **Anything
+not covered by a spec is denied**: there is no trailing allowance, so the shape
+of a permitted command is bounded by what the server wrote. `any` is a named
+kind rather than an empty prefix precisely so every unconstrained position stays
+visible to a reviewer.
+
+The audit event records which tier decided, so a later review can tell a
+boundary from a guardrail without re-reading the policy.
 
 ---
 
@@ -703,22 +749,23 @@ outcome for a strict decoder.
 
 ### What deliberately did NOT change
 
-**Wire identifiers keep their names**, even though they say "bastion":
+**Wire identifiers kept their names through phase 0005**, even though they said
+"bastion":
 
 - `bastion_id` — the JSON field on `ConnMeta` and the revocation stream
 - `/v1/bastions/{bastion_id}/events` — the revocation subscription path
 
 Renaming a field on the wire is a contract break, and a contract break is worth
-paying for once, deliberately, not as a side effect of a `sed`. Phase 0006 is
+paying for once, deliberately, not as a side effect of a `sed`. Phase 0006 was
 already queued to revise this contract for the D5a/D6a/D11 vocabulary, and it
 is a **versioned, coordinated** change with Hoplock Control on the other side.
-Renaming `bastion_id` → `proxy_id` and `/v1/bastions/` → `/v1/proxies/` belongs
-in that phase, alongside changes that are breaking anyway — so 0006 carries it,
-and nothing on the wire moves before then.
+So the rename was batched into it, alongside changes that were breaking anyway.
 
-Go identifiers that mirror those fields (`ProxyID` with a `json:"bastion_id"`
-tag) **were** renamed: they are internal and the tag is what the wire sees.
-That mismatch is intentional and temporary, and 0006 closes it.
+**Done in phase 0006** (contract v2): `bastion_id` → `proxy_id`, and
+`/v1/bastions/{bastion_id}/events` → `/v1/proxies/{proxy_id}/events`. The Go
+identifier `ProxyID` had already been renamed in the sweep and now carries a
+`json:"proxy_id"` tag; that deliberate, temporary mismatch is closed. Nothing
+else on the wire moved.
 
 Two other things kept their old names on purpose:
 

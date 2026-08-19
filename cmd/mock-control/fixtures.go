@@ -127,11 +127,80 @@ type fixtureRoute struct {
 	Permissions string `yaml:"permissions"`
 	// PermittedChannels is the channel allow-list; empty denies every channel.
 	PermittedChannels []string `yaml:"permitted_channels"`
+	// PermittedRequests is the in-channel request policy (D5a). ABSENT MEANS
+	// NOT POLICED, which is what every fixture written before phase 0006 means
+	// and why they all keep working; present-but-empty denies every request.
+	PermittedRequests *fixtureRequestPolicy `yaml:"permitted_requests"`
+	// PermittedForwards is the forwarding destination policy (D5a). Absent
+	// means destinations are not policed.
+	PermittedForwards *fixtureForwardPolicy `yaml:"permitted_forwards"`
+	// PermittedGlobalRequests is the connection-level request allow-list
+	// (D5a). Absent means global requests are relayed unpoliced.
+	PermittedGlobalRequests *fixtureGlobalRequestPolicy `yaml:"permitted_global_requests"`
+	// TargetAuth is the credential method the server picks for this route
+	// (D6a). Absent leaves the proxy on its locally configured method.
+	TargetAuth *fixtureTargetAuth `yaml:"target_auth"`
+	// HopConnection is "dial" or "relay" for a nexthop route (D11). Empty
+	// means "dial".
+	HopConnection string `yaml:"hop_connection"`
+	// NextProxyID is the next proxy's id, which a "relay" hop needs to select
+	// the registration to open a channel over. Required with hop_connection:
+	// relay.
+	NextProxyID string `yaml:"next_proxy_id"`
 	// FilterPolicy is the command filter policy for the connection.
 	FilterPolicy fixtureFilterPolicy `yaml:"filter_policy"`
 	// Cache authorises the proxy to reuse this decision. Absent (or a zero
 	// ttl_seconds) means the decision is not cacheable.
 	Cache fixtureCacheHint `yaml:"cache"`
+}
+
+// fixtureRequestPolicy mirrors control.RequestPolicy in YAML form.
+type fixtureRequestPolicy struct {
+	// Types are permitted request types: pty-req, shell, exec, env, x11-req,
+	// auth-agent-req. "subsystem" is not one of them — name subsystems below.
+	Types []string `yaml:"types"`
+	// Subsystems are permitted by name, so sftp is deniable while shell stays.
+	Subsystems []string `yaml:"subsystems"`
+}
+
+// fixtureForwardPolicy mirrors control.ForwardPolicy in YAML form.
+type fixtureForwardPolicy struct {
+	// DirectTCPIP are destinations the client may forward to.
+	DirectTCPIP []fixtureForwardDestination `yaml:"direct_tcpip"`
+	// ForwardedTCPIP are destinations the target may forward back for.
+	ForwardedTCPIP []fixtureForwardDestination `yaml:"forwarded_tcpip"`
+}
+
+// fixtureForwardDestination mirrors control.ForwardDestination in YAML form.
+type fixtureForwardDestination struct {
+	// Host is exact, a "*."-prefixed wildcard, a bare "*", or a CIDR.
+	Host string `yaml:"host"`
+	// Port is an exact port; mutually exclusive with PortRange. Both unset
+	// permits any port on a matching host.
+	Port int `yaml:"port"`
+	// PortRange is an inclusive range.
+	PortRange *fixturePortRange `yaml:"port_range"`
+}
+
+// fixturePortRange mirrors control.PortRange in YAML form.
+type fixturePortRange struct {
+	From int `yaml:"from"`
+	To   int `yaml:"to"`
+}
+
+// fixtureGlobalRequestPolicy mirrors control.GlobalRequestPolicy in YAML form.
+type fixtureGlobalRequestPolicy struct {
+	// Types are permitted global request names, e.g. tcpip-forward.
+	Types []string `yaml:"types"`
+}
+
+// fixtureTargetAuth mirrors control.TargetAuth in YAML form.
+type fixtureTargetAuth struct {
+	// Method is "ephemeral-user", "brokered-key", or "static-key".
+	Method string `yaml:"method"`
+	// Params are method-scoped parameters. Fixture values are never real
+	// secrets — credential_ref names local material, it does not carry it.
+	Params map[string]string `yaml:"params"`
 }
 
 // fixtureCacheHint mirrors control.CacheHint in YAML form.
@@ -150,8 +219,46 @@ type fixtureFilterPolicy struct {
 	// Mode decides commands no rule matched: "whitelist" blocks them,
 	// "blacklist" allows them.
 	Mode string `yaml:"mode"`
-	// Rules are evaluated in order; the first match wins.
+	// Rules are evaluated in order; the first match wins. They are the
+	// filtered-exec tier and must be empty under exec_mode: restricted.
 	Rules []fixtureFilterRule `yaml:"rules"`
+	// ExecMode is "filtered" (the rules decide — a guardrail) or "restricted"
+	// (restricted_exec decides — a boundary). Empty means "filtered" (D12).
+	ExecMode string `yaml:"exec_mode"`
+	// RestrictedExec is the enforced tier. Required with exec_mode:
+	// restricted, forbidden otherwise.
+	RestrictedExec *fixtureRestrictedExec `yaml:"restricted_exec"`
+}
+
+// fixtureRestrictedExec mirrors control.RestrictedExecPolicy in YAML form.
+type fixtureRestrictedExec struct {
+	// Commands is the default-deny allow-list. Empty denies every exec.
+	Commands []fixtureRestrictedCommand `yaml:"commands"`
+}
+
+// fixtureRestrictedCommand mirrors control.RestrictedCommand in YAML form.
+type fixtureRestrictedCommand struct {
+	// Executable is matched against argv[0] exactly, as written.
+	Executable string `yaml:"executable"`
+	// Form is "exact" (argv below is the whole vector) or "positional".
+	Form string `yaml:"form"`
+	// Argv is the complete argument vector; form: exact only.
+	Argv []string `yaml:"argv"`
+	// Args is one spec per position; form: positional only. Anything not
+	// covered by a spec is denied — there is no trailing allowance.
+	Args []fixtureArgumentSpec `yaml:"args"`
+}
+
+// fixtureArgumentSpec mirrors control.ArgumentSpec in YAML form.
+type fixtureArgumentSpec struct {
+	// Kind is "literal", "prefix", "oneof", or "any".
+	Kind string `yaml:"kind"`
+	// Value is required and non-empty for "literal" and "prefix".
+	Value string `yaml:"value"`
+	// Values is required and non-empty for "oneof".
+	Values []string `yaml:"values"`
+	// Optional marks a trailing position that may be absent.
+	Optional bool `yaml:"optional"`
 }
 
 // fixtureFilterRule mirrors control.FilterRule in YAML form.
@@ -319,6 +426,27 @@ func (f *fixtures) validate() error {
 			// beats wondering later why the decision is never reused.
 			add("routes[%d].cache.key is set but ttl_seconds is 0 (nothing is cached)", i)
 		}
+		if r.HopConnection != "" && control.RouteType(r.RouteType) != control.RouteTypeNextHop {
+			add("routes[%d].hop_connection is set on a %q route", i, r.RouteType)
+		}
+		switch control.HopConnection(r.HopConnection) {
+		case "", control.HopConnectionDial:
+		case control.HopConnectionRelay:
+			if r.NextProxyID == "" {
+				add("routes[%d].hop_connection is relay but next_proxy_id is empty", i)
+			}
+		default:
+			add("routes[%d].hop_connection %q must be %q or %q", i, r.HopConnection,
+				control.HopConnectionDial, control.HopConnectionRelay)
+		}
+		if r.TargetAuth != nil {
+			switch control.TargetAuthMethod(r.TargetAuth.Method) {
+			case control.TargetAuthEphemeralUser, control.TargetAuthBrokeredKey,
+				control.TargetAuthStaticKey:
+			default:
+				add("routes[%d].target_auth.method %q is not a known method", i, r.TargetAuth.Method)
+			}
+		}
 		switch control.FilterMode(r.FilterPolicy.Mode) {
 		case control.FilterModeWhitelist, control.FilterModeBlacklist:
 		default:
@@ -338,6 +466,14 @@ func (f *fixtures) validate() error {
 				add("routes[%d].filter_policy.rules[%d] (%q): %q is not a known action",
 					i, j, rule.Match, rule.Action)
 			}
+		}
+		// The remaining policy rules — the exec tiers, the forwarding
+		// destinations, the request types — are exactly the ones the real
+		// client enforces, so the fixture is checked against that same code
+		// rather than against a second, drifting copy of it. A fixture the
+		// proxy would reject as a contract violation must not start the mock.
+		if err := r.authorizeResponse("fixture.invalid", nil).Validate(); err != nil {
+			add("routes[%d]: %v", i, err)
 		}
 	}
 
@@ -395,6 +531,123 @@ func (u *fixtureUser) hasKeyFingerprint(fp string) bool {
 	return false
 }
 
+// authorizeResponse builds the wire response for this route, apart from the
+// per-request fields (target, hop trail, decision id, cache key) the handler
+// fills in. It is also what validate() runs the client's own contract checks
+// against, so the mock cannot serve a policy the proxy would refuse.
+func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *control.AuthorizeResponse {
+	resp := &control.AuthorizeResponse{
+		RouteType:               control.RouteType(r.RouteType),
+		Target:                  target,
+		TargetPort:              r.TargetPort,
+		Permissions:             r.Permissions,
+		PermittedChannels:       r.PermittedChannels,
+		PermittedRequests:       r.PermittedRequests.wire(),
+		PermittedForwards:       r.PermittedForwards.wire(),
+		PermittedGlobalRequests: r.PermittedGlobalRequests.wire(),
+		TargetAuth:              r.TargetAuth.wire(),
+		FilterPolicy:            r.FilterPolicy.wire(),
+	}
+	if resp.PermittedChannels == nil {
+		// An absent allow-list must serialise as [] (deny all), not null.
+		resp.PermittedChannels = []string{}
+	}
+	if resp.RouteType == control.RouteTypeNextHop {
+		resp.Target = r.NextHop
+		resp.Hop = &control.HopMetadata{
+			Connection:  control.HopConnection(r.HopConnection),
+			NextProxyID: r.NextProxyID,
+			FinalTarget: target,
+			MaxHops:     r.MaxHops,
+			HopTrail:    hopTrail,
+		}
+	} else if r.ResolvedTarget != "" {
+		resp.Target = r.ResolvedTarget
+	}
+	return resp
+}
+
+func (p *fixtureRequestPolicy) wire() *control.RequestPolicy {
+	if p == nil {
+		return nil
+	}
+	return &control.RequestPolicy{Types: p.Types, Subsystems: p.Subsystems}
+}
+
+func (p *fixtureForwardPolicy) wire() *control.ForwardPolicy {
+	if p == nil {
+		return nil
+	}
+	return &control.ForwardPolicy{
+		DirectTCPIP:    forwardDestinations(p.DirectTCPIP),
+		ForwardedTCPIP: forwardDestinations(p.ForwardedTCPIP),
+	}
+}
+
+func forwardDestinations(in []fixtureForwardDestination) []control.ForwardDestination {
+	if in == nil {
+		return nil
+	}
+	out := make([]control.ForwardDestination, len(in))
+	for i, d := range in {
+		out[i] = control.ForwardDestination{Host: d.Host, Port: d.Port}
+		if d.PortRange != nil {
+			out[i].PortRange = &control.PortRange{From: d.PortRange.From, To: d.PortRange.To}
+		}
+	}
+	return out
+}
+
+func (p *fixtureGlobalRequestPolicy) wire() *control.GlobalRequestPolicy {
+	if p == nil {
+		return nil
+	}
+	return &control.GlobalRequestPolicy{Types: p.Types}
+}
+
+func (a *fixtureTargetAuth) wire() *control.TargetAuth {
+	if a == nil {
+		return nil
+	}
+	return &control.TargetAuth{Method: control.TargetAuthMethod(a.Method), Params: a.Params}
+}
+
+func (p fixtureFilterPolicy) wire() control.FilterPolicy {
+	return control.FilterPolicy{
+		Mode:           control.FilterMode(p.Mode),
+		Rules:          filterRules(p.Rules),
+		ExecMode:       control.ExecMode(p.ExecMode),
+		RestrictedExec: p.RestrictedExec.wire(),
+	}
+}
+
+func (p *fixtureRestrictedExec) wire() *control.RestrictedExecPolicy {
+	if p == nil {
+		return nil
+	}
+	out := &control.RestrictedExecPolicy{Commands: make([]control.RestrictedCommand, len(p.Commands))}
+	for i, c := range p.Commands {
+		out.Commands[i] = control.RestrictedCommand{
+			Executable: c.Executable,
+			Form:       control.CommandForm(c.Form),
+			Argv:       c.Argv,
+		}
+		if c.Args != nil {
+			args := make([]control.ArgumentSpec, len(c.Args))
+			for j, a := range c.Args {
+				args[j] = control.ArgumentSpec{
+					Kind:     control.ArgumentKind(a.Kind),
+					Value:    a.Value,
+					Values:   a.Values,
+					Optional: a.Optional,
+				}
+			}
+			out.Commands[i].Args = args
+		}
+	}
+	return out
+}
+
 // identity converts the fixture identity into its wire form.
 func (u *fixtureUser) identity() *control.Identity {
 	return &control.Identity{
@@ -406,4 +659,21 @@ func (u *fixtureUser) identity() *control.Identity {
 		Groups:      u.Identity.Groups,
 		Claims:      u.Identity.Claims,
 	}
+}
+
+// usesV2Vocabulary reports whether a response carries any field the phase 0006
+// vocabulary added. A proxy that declared version 1 refuses such a field rather
+// than dropping it, so the mock has to know when it is about to send one.
+func usesV2Vocabulary(r *control.AuthorizeResponse) bool {
+	switch {
+	case r.PermittedRequests != nil,
+		r.PermittedForwards != nil,
+		r.PermittedGlobalRequests != nil,
+		r.TargetAuth != nil,
+		r.FilterPolicy.ExecMode != "",
+		r.FilterPolicy.RestrictedExec != nil,
+		r.Hop != nil && (r.Hop.Connection != "" || r.Hop.NextProxyID != ""):
+		return true
+	}
+	return false
 }

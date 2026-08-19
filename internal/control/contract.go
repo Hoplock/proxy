@@ -22,8 +22,23 @@ const (
 	// PathProxyEvents is the revocation stream, templated on the proxy id.
 	// Build a concrete path with ProxyEventsPath rather than by formatting
 	// this constant, so the escaping stays in one place.
-	PathProxyEvents = "/v1/bastions/{bastion_id}/events"
+	PathProxyEvents = "/v1/proxies/{proxy_id}/events"
 )
+
+// PolicyVersion is the highest policy vocabulary this client implements, sent
+// as AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12, phase 0006).
+//
+// Version 1 was the phase 0002/0003 vocabulary: permitted_channels and a
+// filter rule list. Version 2 adds in-channel requests, forwarding
+// destinations, global requests, target_auth, hop connection direction, and
+// the exec enforcement mode.
+//
+// The server must not answer with policy fields introduced after the version
+// the proxy declares. That is what makes it safe for this client to refuse an
+// authorize response carrying a field it does not understand rather than
+// dropping it: an unknown field may be a restriction, and a dropped
+// restriction is a silently widened policy.
+const PolicyVersion = 2
 
 // QueryLastEventID is the query parameter carrying the last event the proxy
 // processed, so the server can replay the gap after a reconnect (PLAN §6.4).
@@ -31,7 +46,7 @@ const QueryLastEventID = "last_event_id"
 
 // ProxyEventsPath returns the revocation stream path for one proxy.
 func ProxyEventsPath(proxyID string) string {
-	return "/v1/bastions/" + url.PathEscape(proxyID) + "/events"
+	return "/v1/proxies/" + url.PathEscape(proxyID) + "/events"
 }
 
 // ConnMeta describes the SSH connection a call is made on behalf of. It travels
@@ -41,7 +56,7 @@ type ConnMeta struct {
 	// SessionID is proxy-assigned and stable for the whole session.
 	SessionID string `json:"session_id"`
 	// ProxyID identifies the proxy making the call.
-	ProxyID string `json:"bastion_id"`
+	ProxyID string `json:"proxy_id"`
 	// ClientAddr is the SSH client's remote address ("host:port").
 	ClientAddr string `json:"client_addr"`
 	// ServerAddr is the local address the client connected to ("host:port").
@@ -184,7 +199,11 @@ type AuthorizeRequest struct {
 	Target     string     `json:"target"`
 	TargetPort int        `json:"target_port,omitempty"`
 	AuthMethod AuthMethod `json:"auth_method,omitempty"`
-	Conn       ConnMeta   `json:"conn"`
+	// PolicyVersion is the highest policy vocabulary the proxy implements
+	// (PolicyVersion). Absent means 1. The server must not answer with policy
+	// fields introduced after it; the client refuses a response that does.
+	PolicyVersion int      `json:"policy_version,omitempty"`
+	Conn          ConnMeta `json:"conn"`
 }
 
 // RouteType says what AuthorizeResponse.Target refers to.
@@ -208,8 +227,32 @@ type AuthorizeResponse struct {
 	Permissions string `json:"permissions,omitempty"`
 	// PermittedChannels lists the SSH channel types the session may open (D5).
 	// An empty list denies every channel.
-	PermittedChannels []string     `json:"permitted_channels"`
-	FilterPolicy      FilterPolicy `json:"filter_policy"`
+	//
+	// It is the coarsest of the three policy axes (D5a) and never stands
+	// alone: "session" carries scp, sftp, a shell, and a one-shot command
+	// alike, and a direct-tcpip channel's meaning is the destination in its
+	// payload. See PermittedRequests and PermittedForwards.
+	PermittedChannels []string `json:"permitted_channels"`
+	// PermittedRequests is the in-channel request policy (D5a axis 2,
+	// enforced by phase 0009). NIL MEANS NOT POLICED — the v1 default, so a
+	// server that never heard of this field does not accidentally deny every
+	// shell. A non-nil policy is an allow-list: anything it does not name is
+	// denied, and an empty one denies every request.
+	PermittedRequests *RequestPolicy `json:"permitted_requests,omitempty"`
+	// PermittedForwards is the forwarding destination policy (D5a axis 2,
+	// enforced by phase 0009). Nil means destinations are not policed; a
+	// non-nil policy permits only the destinations it lists, per direction.
+	PermittedForwards *ForwardPolicy `json:"permitted_forwards,omitempty"`
+	// PermittedGlobalRequests is the connection-level request policy (D5a
+	// axis 3, enforced by phase 0009). Nil means global requests are relayed
+	// unpoliced, which is what the proxy does today; a non-nil policy relays
+	// only the types it lists and answers the rest with a false reply.
+	PermittedGlobalRequests *GlobalRequestPolicy `json:"permitted_global_requests,omitempty"`
+	// TargetAuth is the credential method the server chose for this route
+	// (D6a, consumed by phase 0007). Nil means the proxy uses its locally
+	// configured method, which is v1 behaviour.
+	TargetAuth   *TargetAuth  `json:"target_auth,omitempty"`
+	FilterPolicy FilterPolicy `json:"filter_policy"`
 	// Hop is set when RouteType is RouteTypeNextHop.
 	Hop *HopMetadata `json:"hop,omitempty"`
 	// DecisionID correlates this decision with the server's audit trail.
@@ -263,7 +306,7 @@ const (
 )
 
 // RevocationEvent is one line of the server→proxy event stream
-// (GET /v1/bastions/{bastion_id}/events). The payload field that is set is the
+// (GET /v1/proxies/{proxy_id}/events). The payload field that is set is the
 // one named by Type; every other one is absent.
 //
 // The stream is what makes a cached decision safe to hold (PLAN §6.4): it is
@@ -351,7 +394,30 @@ type FilterPolicy struct {
 	// Rules are the ordered pattern→action list. Empty leaves every command to
 	// Mode: an empty whitelist blocks everything, an empty blacklist filters
 	// nothing.
+	//
+	// This is the FILTERED EXEC tier — a guardrail, not a boundary (D12). It
+	// must be empty when ExecMode is ExecModeRestricted.
 	Rules []FilterRule `json:"rules,omitempty"`
+	// ExecMode selects which tier decides an exec request (D12, enforced by
+	// phase 0010). Empty means ExecModeFiltered, which is v1 behaviour.
+	//
+	// The two tiers are ALTERNATIVES, NOT LAYERS. A policy that sets both Rules
+	// and RestrictedExec is a contract violation the client refuses outright:
+	// silently resolving it would mean a guardrail and a boundary disagreeing
+	// about the same command with no defensible answer for which won.
+	ExecMode ExecMode `json:"exec_mode,omitempty"`
+	// RestrictedExec is the enforced tier. Required when ExecMode is
+	// ExecModeRestricted, forbidden otherwise.
+	RestrictedExec *RestrictedExecPolicy `json:"restricted_exec,omitempty"`
+}
+
+// Exec returns the exec tier this policy selects, resolving the absent-value
+// default so callers never have to decide what an empty ExecMode meant.
+func (p FilterPolicy) Exec() ExecMode {
+	if p.ExecMode == "" {
+		return ExecModeFiltered
+	}
+	return p.ExecMode
 }
 
 // FilterRule pairs one command pattern with the action to take when it matches.
@@ -371,12 +437,31 @@ type FilterRule struct {
 
 // HopMetadata carries the chaining constraints for a next-hop route.
 type HopMetadata struct {
+	// Connection says how this proxy reaches the next one (D11, consumed by
+	// phase 0008). Empty means HopConnectionDial, which is the original
+	// next-hop behaviour and keeps a v1 server's route working.
+	Connection HopConnection `json:"connection,omitempty"`
+	// NextProxyID is the proxy id of the next hop — the same id that proxy
+	// presents when it registers, which is how a relay hop selects the
+	// registration to open a channel over. Required when Connection is
+	// HopConnectionRelay; informational on a dial hop.
+	NextProxyID string `json:"next_proxy_id,omitempty"`
 	// FinalTarget is the end host the chain is being built toward.
 	FinalTarget string `json:"final_target,omitempty"`
 	// MaxHops caps the total hops for the session.
 	MaxHops int `json:"max_hops,omitempty"`
 	// HopTrail is the trail to forward to the next proxy (PLAN §6.1).
 	HopTrail []string `json:"hop_trail,omitempty"`
+}
+
+// Direction returns how the next hop is reached, resolving the absent-value
+// default. A nil HopMetadata reads as HopConnectionDial for the same reason an
+// absent field does.
+func (h *HopMetadata) Direction() HopConnection {
+	if h == nil || h.Connection == "" {
+		return HopConnectionDial
+	}
+	return h.Connection
 }
 
 // HostKeyReportRequest reports a target host key the proxy has just seen (D7).
