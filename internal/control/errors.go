@@ -15,18 +15,18 @@ var (
 	// credential was rejected, or the identity may not reach the target. It is
 	// never returned for a transport or server failure, so a caller must not
 	// fail open on any other error.
-	ErrUnauthorized = errors.New("Hoplock Control denied the request")
+	ErrUnauthorized = errors.New("denied by Hoplock Control")
 	// ErrBadRequest means the server rejected the request as malformed (4xx
 	// other than 401) — a bug in the caller, not a policy decision.
-	ErrBadRequest = errors.New("Hoplock Control rejected the request")
+	ErrBadRequest = errors.New("request rejected by Hoplock Control")
 	// ErrServer means the server failed to process a valid request (5xx).
-	ErrServer = errors.New("Hoplock Control error")
+	ErrServer = errors.New("failure inside Hoplock Control")
 	// ErrTransport means the call never produced a usable HTTP response
 	// (dial failure, timeout, cancelled context, TLS failure).
-	ErrTransport = errors.New("Hoplock Control unreachable")
+	ErrTransport = errors.New("could not reach Hoplock Control")
 	// ErrProtocol means a response was received but did not match the contract
 	// (undecodable body, missing required field, unknown enum value).
-	ErrProtocol = errors.New("Hoplock Control response violates the contract")
+	ErrProtocol = errors.New("response from Hoplock Control violates the contract")
 )
 
 // APIError describes one failed Control API call. Op is the client method

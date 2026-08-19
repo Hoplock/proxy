@@ -75,6 +75,31 @@ routes:
         - match: "sudo *"
           action: warn_and_continue
           message: "Privileged command — this is recorded."
+    # Axis 2 of the policy vocabulary (D5a): which requests may be made INSIDE
+    # a permitted channel. `session` carries scp, sftp, a shell, and a one-shot
+    # command alike, so the channel allow-list above cannot say "may log in,
+    # may not copy files off the box" — this can. Subsystems are named
+    # individually, so sftp is denied here while shell stays.
+    #
+    # Omitting `permitted_requests` entirely leaves requests unpoliced (what a
+    # v1 server means). Writing `permitted_requests: {}` denies every one.
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    # Axis 3: connection-level global requests. Remote forwarding is asked for
+    # with `tcpip-forward` on the connection, not by opening a channel, so the
+    # channel allow-list never sees it. An empty `types` denies every one,
+    # which is what "may never open a listener" looks like.
+    permitted_global_requests:
+      types: []
+    # The credential method for this route is the server's choice, not the
+    # proxy's config (D6a). Linux hosts that accept a provisioning account get
+    # just-in-time users.
+    target_auth:
+      method: ephemeral-user
+      params:
+        key_type: ed25519
+        lifetime_seconds: "900"
     # The server authorises the proxy to reuse this decision for a minute, so
     # a second session (an scp beside a shell) skips the authorize round trip.
     # Omit `cache` — as every other route here does — to forbid reuse entirely.
@@ -91,19 +116,109 @@ routes:
     route_type: nexthop
     next_hop: proxy-2.company.com
     max_hops: 3
+    # How the next proxy is reached (D11). `relay` means proxy-2 has already
+    # registered an OUTBOUND connection with this proxy, which then opens a
+    # channel over it — the protected zone needs no inbound firewall rule at
+    # all. `next_proxy_id` is how that registration is selected. Omitting
+    # `hop_connection` means `dial`, the original behaviour, which does need an
+    # inbound rule. A relay hop with no live registration is an outage; it is
+    # never quietly downgraded to a dial.
+    hop_connection: relay
+    next_proxy_id: proxy-2
     permissions: readOnlyGroup
     permitted_channels: [session]
     filter_policy:
       # No rules on a blacklist means no filtering.
       mode: blacklist
 
+  # An appliance the proxy cannot administer, under RESTRICTED EXEC (D12): the
+  # command is parsed into an argument vector and must be covered completely by
+  # one entry below, or it is denied. Nothing else runs, and nothing is passed
+  # through a shell to be re-expanded.
+  #
+  # `exec_mode: restricted` and a `rules` list are ALTERNATIVES, not layers — a
+  # route setting both is a contract violation and the mock refuses to start.
+  - login: svc-deploy
+    target: edge-fw-01.company.com
+    route_type: direct
+    permissions: applianceReadOnly
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    target_auth:
+      method: brokered-key
+      params:
+        username: monitor
+        credential_ref: edge-fleet-2026
+    filter_policy:
+      # With an empty rule list, `whitelist` also blocks every command typed
+      # into an interactive shell — which this route has no channel for anyway.
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          # form: exact — the whole argument vector, compared element by
+          # element. Nothing longer and nothing shorter matches.
+          - executable: /bin/uptime
+            form: exact
+            argv: []
+          - executable: show
+            form: exact
+            argv: [version]
+          # form: positional — one spec per argument position. Arguments beyond
+          # the last spec are DENIED: there is no trailing wildcard.
+          - executable: /usr/bin/journalctl
+            form: positional
+            args:
+              - kind: prefix
+                value: "--unit="
+              - kind: oneof
+                values: ["-n", "--lines"]
+                optional: true
+              - kind: any
+                # `any` is named rather than smuggled in as an empty prefix, so
+                # that every unconstrained position is visible to a reviewer
+                # searching for the word. It is the one shape here that is not
+                # a boundary.
+                optional: true
+
   # Whitelist: anything not matched by a rule is blocked by the mode. Port
-  # forwarding is permitted for the deploy account.
+  # forwarding is permitted for the deploy account — but only to one place.
   - login: svc-deploy
     target: "*"
     route_type: direct
     permissions: deployGroup
     permitted_channels: [session, direct-tcpip]
+    permitted_requests:
+      # A CI account runs commands and never needs a terminal, so `pty-req` and
+      # `shell` are simply absent: anything a present policy does not name is
+      # denied.
+      types: [exec, env]
+    # Axis 2 again, for the other kind of channel: a `direct-tcpip` open
+    # carries the host and port it wants, and THAT is what policy is about.
+    # Allowing the channel type alone would permit tunnelling anywhere.
+    permitted_forwards:
+      direct_tcpip:
+        - host: postgres.prod.company.com
+          port: 5432
+        # Wildcards match leading labels; a CIDR matches only IP literals, and
+        # the proxy never resolves a name to decide policy.
+        - host: "*.metrics.company.com"
+          port_range:
+            from: 9090
+            to: 9100
+        - host: 10.4.0.0/16
+          port: 443
+      # The target may not open forwards back at all: the list is empty, and an
+      # empty list in a present policy is a deny.
+      forwarded_tcpip: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: svc-deploy
+        # An opaque handle naming material the proxy holds locally. No
+        # credential travels on this API.
+        credential_ref: deploy-fleet-2026
     filter_policy:
       # Whitelist: anything no rule matched is blocked. These two are allowed,
       # and reaching for the one dangerous neighbour kills the session outright.
@@ -120,7 +235,7 @@ routes:
   # Anything not matched above is denied (401). There is no catch-all here on
   # purpose: fixtures should have to say yes explicitly.
 
-# The server → proxy revocation stream (GET /v1/bastions/{id}/events), which
+# The server → proxy revocation stream (GET /v1/proxies/{id}/events), which
 # is what makes the cache above safe to hold: it can kill a live session or drop
 # a cached decision at any moment.
 events:

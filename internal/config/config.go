@@ -112,11 +112,19 @@ type Auth struct {
 	Target TargetAuth `yaml:"target"`
 }
 
-// TargetAuth chooses how the proxy logs into targets.
+// TargetAuth configures how the proxy logs into targets.
+//
+// Since contract v2 (phase 0006) the *selection* belongs to Hoplock Control:
+// the authorize response's `target_auth` names the method per route, because one
+// proxy routinely fronts a Linux estate and an appliance estate at once (D6a).
+// What lives here is the LOCAL MATERIAL each method needs — which key, which
+// provisioning account — plus the fallback used when a v1 server sends no
+// `target_auth` at all.
 type TargetAuth struct {
-	// Method names the implementation. Defaults to
-	// TargetAuthMethodStaticKey, the phase-0005 placeholder; the ephemeral
-	// just-in-time provisioner (D6) is added in phase 0006.
+	// Method is the fallback used when the authorize response carries no
+	// target_auth. Defaults to TargetAuthMethodStaticKey, the phase-0005
+	// placeholder; the ephemeral just-in-time provisioner (D6) and
+	// brokered-key (D6a) are added in phase 0007.
 	Method string `yaml:"method"`
 	// StaticKey configures the placeholder implementation.
 	StaticKey StaticKeyAuth `yaml:"static_key"`

@@ -35,8 +35,8 @@ func (s *server) handleProxyEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProxy(w, r) {
 		return
 	}
-	if r.PathValue("bastion_id") == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "bastion_id is required")
+	if r.PathValue("proxy_id") == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "proxy_id is required")
 		return
 	}
 

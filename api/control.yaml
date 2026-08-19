@@ -21,12 +21,41 @@ info:
     A `401` from any endpoint is a **decision**, not a failure: it means "deny
     this user/session". Transport failures and `5xx` responses are separate and
     must never be interpreted as a deny.
-  version: 1.0.0
+
+    ## Policy vocabulary v2 (phase 0006)
+
+    The endpoints and their semantics are unchanged, so the path prefix stays
+    `/v1`. What changed is the **vocabulary** `/v1/authorize` answers in: the
+    flat `permitted_channels` list is joined by in-channel request policy,
+    forwarding destinations, connection-level global requests, a server-chosen
+    target credential method, a hop connection direction, and an exec
+    enforcement mode (PLAN D5a, D6a, D11, D12).
+
+    Every one of those fields is **additive with a documented absent-value
+    default**, and each default is the behaviour a v1 server already produced,
+    so a v2 proxy works unchanged against a v1 server. The defaults are stated
+    per field below; none of them is "deny everything", and none of them is
+    invented by the proxy.
+
+    Compatibility runs the other way too, and it does **not** rely on ignoring
+    what is not understood. A proxy declares the highest vocabulary it
+    implements in `AuthorizeRequest.policy_version`; the server MUST NOT answer
+    with policy fields introduced after that version, and a proxy that receives
+    an authorize field it does not know **fails the session closed** as a
+    contract violation rather than dropping the field. Silently ignoring an
+    unknown field is how a restriction becomes an allowance, so it is forbidden
+    even though it would be the more forgiving behaviour.
+
+    One breaking rename lands with this vocabulary, deliberately batched into
+    the change that was breaking anyway (PLAN §11): `ConnMeta.bastion_id` is
+    now `proxy_id`, and `GET /v1/bastions/{bastion_id}/events` is now
+    `GET /v1/proxies/{proxy_id}/events`.
+  version: 2.0.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
 servers:
-  - url: https://management.example.com
+  - url: https://control.example.com
     description: Hoplock Control root; all paths below are absolute from here.
 
 security:
@@ -281,7 +310,7 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
 
-  /v1/bastions/{bastion_id}/events:
+  /v1/proxies/{proxy_id}/events:
     get:
       tags: [revocation]
       operationId: streamProxyEvents
@@ -319,7 +348,7 @@ paths:
         and re-authorizes from scratch. An absent `last_event_id` means a fresh
         subscription: the server starts from now and replays nothing.
       parameters:
-        - name: bastion_id
+        - name: proxy_id
           in: path
           required: true
           description: The proxy whose events are being subscribed to.
@@ -409,13 +438,13 @@ components:
         Metadata about the SSH connection a request is made on behalf of. Sent
         with every call so the server can make decisions on, and correlate logs
         by, the connection rather than just the identity.
-      required: [session_id, bastion_id, client_addr, timestamp]
+      required: [session_id, proxy_id, client_addr, timestamp]
       properties:
         session_id:
           type: string
           description: Proxy-assigned id, stable for the whole session.
           example: 01HQ2Z3K4M5N6P7Q8R9S0T1V2W
-        bastion_id:
+        proxy_id:
           type: string
           description: Identifier of the proxy making the call.
           example: proxy-eu-west-1
@@ -610,6 +639,24 @@ components:
           type: string
           description: How the identity was authenticated, for policy and audit.
           enum: [cert, password-mfa]
+        policy_version:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 1
+          description: |
+            The highest **policy vocabulary** version this proxy implements.
+            Absent means `1` (the phase 0002/0003 vocabulary: `permitted_channels`
+            and `filter_policy.rules` only). The current vocabulary is `2`.
+
+            The server MUST NOT answer with policy fields introduced after this
+            version. That constraint is what makes the proxy's fail-closed rule
+            safe: because the proxy refuses an authorize response containing a
+            field it does not understand, a server that respects
+            `policy_version` can add vocabulary freely, and a server that
+            ignores it is caught immediately instead of having its restrictions
+            silently dropped.
+          example: 2
         conn:
           $ref: '#/components/schemas/ConnMeta'
 
@@ -640,11 +687,26 @@ components:
         permitted_channels:
           type: array
           description: |
-            SSH channel types the session may open. The proxy denies every
-            channel not on this list (D5). An empty list denies all channels.
+            SSH channel types the session may open, in either direction. The
+            proxy denies every channel not on this list (D5). An empty list
+            denies all channels.
+
+            This is the coarsest of the three policy axes (D5a) and cannot
+            stand alone: `session` carries `scp`, `sftp`, an interactive shell,
+            and a one-shot command alike, and a `direct-tcpip` channel's whole
+            meaning is the destination in its payload. See
+            `permitted_requests` and `permitted_forwards`.
           items:
             type: string
           example: [session, direct-tcpip]
+        permitted_requests:
+          $ref: '#/components/schemas/RequestPolicy'
+        permitted_forwards:
+          $ref: '#/components/schemas/ForwardPolicy'
+        permitted_global_requests:
+          $ref: '#/components/schemas/GlobalRequestPolicy'
+        target_auth:
+          $ref: '#/components/schemas/TargetAuth'
         filter_policy:
           $ref: '#/components/schemas/FilterPolicy'
         hop:
@@ -654,6 +716,254 @@ components:
           description: Server-assigned id for this decision, for audit correlation.
         cache:
           $ref: '#/components/schemas/CacheHint'
+
+    RequestPolicy:
+      type: object
+      description: |
+        Which **in-channel requests** the session may make (D5a axis 2, enforced
+        by phase 0009).
+
+        A `session` channel is opened before anyone knows what it is for; the
+        request that follows is what makes it an interactive login, a one-shot
+        command, or a file transfer. So this is the axis that expresses "may log
+        in, may not copy files off the box" and "CI may run commands but never
+        gets a PTY" — neither of which a channel-type allow-list can say.
+
+        **Absent object ⇒ in-channel requests are not policed**, which is
+        exactly what a v1 server produced and therefore what a v1 server must
+        keep producing: a server that never heard of this field must not
+        accidentally deny every shell. **Present object ⇒ the request types
+        listed are the only ones permitted**; anything absent from it is
+        denied, so an empty object `{}` denies every request just as
+        `permitted_channels: []` denies every channel. A response that is
+        truncated, half-written, or misunderstood therefore fails toward deny
+        and never toward allow.
+
+        The list governs only the requests that decide what a channel *is*.
+        Ancillary session requests carry no policy of their own and are outside
+        it — `window-change`, `signal`, `exit-status`, `exit-signal`, `break`,
+        and `eow@openssh.com` are relayed regardless, because denying a
+        terminal resize is a broken session, not a policy.
+      properties:
+        types:
+          type: array
+          description: |
+            Permitted request types. `subsystem` is deliberately **not** a
+            member: a subsystem is permitted by name in `subsystems`, so that
+            `sftp` can be denied while `shell` stays.
+
+            `auth-agent-req` covers both the bare name and OpenSSH's
+            `auth-agent-req@openssh.com`, which are the same request.
+          items:
+            type: string
+            enum: [pty-req, shell, exec, env, x11-req, auth-agent-req]
+          example: [pty-req, shell, exec]
+        subsystems:
+          type: array
+          description: |
+            Subsystems permitted by name, matched exactly against the
+            `subsystem` request's name. Absent or empty denies every subsystem
+            while leaving `types` untouched — that is how `sftp` is turned off
+            for a route whose shell stays on.
+          items:
+            type: string
+          example: [sftp]
+
+    ForwardPolicy:
+      type: object
+      description: |
+        Which **forwarding destinations** the session may reach (D5a axis 2,
+        enforced by phase 0009).
+
+        A `direct-tcpip` channel open carries the host and port it wants in its
+        payload, so the destination — not the channel type — is what policy is
+        actually about. Permitting or denying `direct-tcpip` wholesale is the
+        difference between a toggle and a firewall; this list is the firewall.
+
+        **Absent object ⇒ destinations are not policed**: a route that permits
+        the channel type permits any destination on it, which is v1 behaviour.
+        **Present object ⇒ only listed destinations are permitted**, per
+        direction; a direction whose list is absent or empty is denied
+        entirely. A forwarding channel type that is not on
+        `permitted_channels` is denied whatever this object says — the two
+        axes are conjunctive, never a way to widen each other.
+      properties:
+        direct_tcpip:
+          type: array
+          description: |
+            Destinations the **client** may open a forward to, matched against
+            the `direct-tcpip` channel-open payload's host and port.
+          items:
+            $ref: '#/components/schemas/ForwardDestination'
+        forwarded_tcpip:
+          type: array
+          description: |
+            Destinations the **target** may open a forward back for, matched
+            against the `forwarded-tcpip` channel-open payload. It is the same
+            channel type in the other direction and needs its own list: a route
+            that may tunnel out to the database must not thereby accept
+            arbitrary channels pushed the other way.
+          items:
+            $ref: '#/components/schemas/ForwardDestination'
+
+    ForwardDestination:
+      type: object
+      description: |
+        One permitted forwarding destination: a host pattern and, optionally, a
+        port constraint. A channel is permitted when it matches at least one
+        entry in the list for its direction.
+      required: [host]
+      properties:
+        host:
+          type: string
+          description: |
+            Host pattern matched against the destination in the channel-open
+            payload. Three forms, distinguished by shape:
+
+            - **exact** — `db.prod.company.com`, compared case-insensitively;
+            - **wildcard** — a leading `*.` matching one or more leading labels
+              (`*.prod.company.com` matches `db.prod.company.com`), or the bare
+              `*` matching anything;
+            - **CIDR** — `10.4.0.0/16` or `2001:db8::/32`, matched only when
+              the payload's host parses as an IP address in that network. A
+              CIDR entry never matches a hostname, and a hostname entry never
+              matches an IP literal: the proxy does not resolve names to decide
+              policy, because a DNS answer is not a decision the PDP made.
+          example: db.prod.company.com
+        port:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65535
+          description: |
+            Exact permitted port. Mutually exclusive with `port_range`; setting
+            both is a contract violation the proxy refuses. Omitting both
+            permits **any** port on a matching host, which is a decision the
+            server made explicitly by writing an entry with no port constraint.
+          example: 5432
+        port_range:
+          $ref: '#/components/schemas/PortRange'
+
+    PortRange:
+      type: object
+      description: An inclusive port range.
+      required: [from, to]
+      properties:
+        from:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65535
+          example: 30000
+        to:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 65535
+          description: Inclusive upper bound; must be greater than or equal to `from`.
+          example: 30100
+
+    GlobalRequestPolicy:
+      type: object
+      description: |
+        Which **connection-level global requests** the session may make (D5a
+        axis 3, enforced by phase 0009).
+
+        Remote forwarding is requested with `tcpip-forward` on the connection,
+        not by opening a channel, so it is invisible to a channel-type
+        allow-list — and denying the resulting `forwarded-tcpip` channel is not
+        equivalent, because the listener is created on the target either way and
+        only the connections through it fail. A denied global request is
+        answered with a `false` reply rather than relayed.
+
+        **Absent object ⇒ global requests are relayed unpoliced** (v1
+        behaviour: `serveGlobalRequests` relays every one). **Present object ⇒
+        only the listed types are relayed**; `{}` denies all of them.
+
+        Transport hygiene requests carry no policy and are outside the list:
+        `keepalive@openssh.com`, `no-more-sessions@openssh.com`,
+        `hostkeys-00@openssh.com`, and `hostkeys-prove-00@openssh.com` are
+        relayed regardless. Denying a keepalive breaks a healthy session, and
+        `no-more-sessions@openssh.com` is a restriction the client is asking
+        for.
+      properties:
+        types:
+          type: array
+          description: |
+            Permitted global request types, matched exactly against the request
+            name on the wire.
+          items:
+            type: string
+          example: [tcpip-forward, cancel-tcpip-forward]
+
+    TargetAuth:
+      type: object
+      description: |
+        How the proxy authenticates to the **target** for this route (D6a,
+        consumed by phase 0007).
+
+        The choice belongs to the server, per route, not to proxy-local config:
+        one proxy routinely fronts a Linux estate that accepts just-in-time
+        provisioning and an appliance estate that can never create a user, and
+        `auth.target.method` in `config.yaml` cannot express that. With this
+        object, that config key becomes **local material only** — which key,
+        which provisioning account — and never the selection.
+
+        **Absent ⇒ the proxy uses its locally configured method**, which is
+        what a v1 server implies and how phase 0005 already behaves. A v2
+        server should always set it.
+
+        A method the proxy does not implement, or has no local material for, is
+        an **outage-class denial** (PLAN §4.3): the session fails and says so.
+        It is never a fallback to a different method, which would mean
+        connecting with credentials the server did not choose.
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [ephemeral-user, brokered-key, static-key]
+          description: |
+            `ephemeral-user` — create a short-lived OS user and key on the
+            target and remove them afterwards (D6, PLAN §5.1).
+            `brokered-key` — use a per-target credential held only for the
+            session and never written to disk (PLAN §5.2), for devices the
+            proxy cannot administer.
+            `static-key` — the development placeholder from phase 0005; it is
+            named here so a fixture can select it, and it is not a production
+            method.
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Method-specific parameters. The object is **open on purpose**: a
+            future Hoplock Control that mints per-session target credentials
+            itself arrives as another `method` plus its own parameters, not as
+            another breaking change to this schema.
+
+            Parameter names are scoped to their method. A proxy that implements
+            the named method MUST refuse a parameter name it does not know, for
+            the same reason it refuses an unknown top-level field: an unknown
+            parameter may be a constraint, and dropping a constraint widens
+            access.
+
+            Documented parameters today:
+
+            - `ephemeral-user`: `username` (the OS user to create; absent means
+              derive it from the identity's login), `key_type` (e.g.
+              `ed25519`), `lifetime_seconds` (upper bound on the provisioned
+              credential's life).
+            - `brokered-key`: `username` (the standing account to log in as)
+              and `credential_ref` (an **opaque handle** naming local material
+              on the proxy). No credential material travels on this API in
+              v2 — `credential_ref` selects it, it does not carry it.
+            - `static-key`: `username`.
+
+            Values are never logged, never echoed in an error, and never
+            written to disk.
+          example:
+            username: svc-net
+            credential_ref: appliance-fleet-2026
 
     CacheHint:
       type: object
@@ -669,7 +979,7 @@ components:
         object.
 
         A cached allow outlives a withdrawal of access for up to `ttl_seconds`,
-        which is what `GET /v1/bastions/{bastion_id}/events` exists to bound. A
+        which is what `GET /v1/proxies/{proxy_id}/events` exists to bound. A
         server that issues cache hints must serve that stream; a proxy that
         cannot hear it stops using its cache.
       required: [ttl_seconds]
@@ -702,7 +1012,7 @@ components:
     RevocationEvent:
       type: object
       description: |
-        One line of `GET /v1/bastions/{bastion_id}/events`. The payload property
+        One line of `GET /v1/proxies/{proxy_id}/events`. The payload property
         named by `type` is present; the others are absent.
       required: [event_id, type, timestamp]
       properties:
@@ -814,8 +1124,159 @@ components:
           description: |
             Ordered pattern→action rules. Each rule carries its own action, so
             one policy can warn on one command and kill the session on another.
+
+            This is the **filtered exec** tier — a guardrail, not a boundary
+            (D12): every `exec` command is seen before it runs, but `sh -c`,
+            any interpreter, an editor shell escape, or a base64 pipe still
+            gets past a pattern. It MUST be empty when `exec_mode` is
+            `restricted`.
           items:
             $ref: '#/components/schemas/FilterRule'
+        exec_mode:
+          type: string
+          enum: [filtered, restricted]
+          default: filtered
+          description: |
+            Which tier decides an `exec` request (D12, enforced by phase 0010).
+            **Absent means `filtered`**, which is v1 behaviour.
+
+            `filtered` — `rules` decide, and `restricted_exec` MUST be absent.
+            `restricted` — `restricted_exec` decides and MUST be present, and
+            `rules` MUST be empty.
+
+            The two are **alternatives, not layers**. A policy that sets both a
+            rule list and `restricted_exec` is a contract violation the proxy
+            refuses outright: silently resolving it would mean a guardrail and a
+            boundary disagreeing about the same command, with no defensible
+            answer for which won.
+
+            `mode` keeps its meaning under `restricted`, but only for the
+            best-effort interactive tier: with an empty rule list, `whitelist`
+            blocks every command typed into an interactive shell and
+            `blacklist` leaves them to audit alone. It says nothing about
+            `exec`, where "not named ⇒ denied" is the whole point.
+        restricted_exec:
+          $ref: '#/components/schemas/RestrictedExecPolicy'
+
+    RestrictedExecPolicy:
+      type: object
+      description: |
+        The **restricted exec** tier (D12, enforced by phase 0010): a
+        default-deny allow-list of executables together with the shape of their
+        permitted arguments. Present only when `filter_policy.exec_mode` is
+        `restricted`.
+
+        This is the tier sold as enforcement, and what earns that word is the
+        mechanism, not the strictness:
+
+        - the `exec` command string is **parsed** into an argument vector using
+          POSIX shell word splitting and quote removal, not pattern-matched;
+        - a command that cannot be represented as a single argument vector is
+          **denied before any matching happens** — anything containing `;`,
+          `|`, `&`, `` ` ``, `$(`, `${`, `<`, `>`, a newline, or an unterminated
+          quote, because those are shell syntax and there is no argv that means
+          them;
+        - the parsed vector must match one entry of `commands` **completely**:
+          every argument is covered by the entry or the command is denied;
+        - the approved vector is run **directly** on the target, never through
+          `sh -c`, so nothing re-expands what was approved.
+
+        An empty `commands` list denies every `exec`, which is a coherent
+        policy (a route that may log in interactively but run no one-shot
+        command) rather than an accident.
+      required: [commands]
+      properties:
+        commands:
+          type: array
+          description: |
+            Permitted commands. They are tried in order and the first entry
+            whose executable matches and whose argument shape accepts the
+            vector permits the command; if none does, it is denied.
+          items:
+            $ref: '#/components/schemas/RestrictedCommand'
+
+    RestrictedCommand:
+      type: object
+      description: One permitted executable and the shape of its permitted arguments.
+      required: [executable, form]
+      properties:
+        executable:
+          type: string
+          description: |
+            Matched against `argv[0]` exactly, as written by the user. A policy
+            that means `/usr/bin/systemctl` says so; a policy that means
+            `systemctl` accepts only the bare name and leaves resolution to the
+            target's `PATH`. The proxy performs no `PATH` search, no symlink
+            resolution, and no basename comparison of its own — every one of
+            those would silently accept a name the server did not write.
+          example: systemctl
+        form:
+          type: string
+          enum: [exact, positional]
+          description: |
+            `exact` — `argv` is the complete argument vector and the command
+            must equal it.
+            `positional` — `args` describes the arguments one position at a
+            time.
+        argv:
+          type: array
+          description: |
+            Required when `form` is `exact`, forbidden otherwise. The complete
+            argument list **after** the executable, compared element by element;
+            a vector of a different length does not match.
+          items:
+            type: string
+          example: [status, nginx.service]
+        args:
+          type: array
+          description: |
+            Required when `form` is `positional`, forbidden otherwise. One spec
+            per argument position, in order, after the executable.
+
+            **Arguments not covered by a spec are denied.** There is no
+            trailing allowance and no wildcard tail: a vector longer than
+            `args` never matches, so the shape of a permitted command is
+            bounded by what the server wrote. Optional positions are expressed
+            by `optional` on the specs at the end of the list.
+          items:
+            $ref: '#/components/schemas/ArgumentSpec'
+
+    ArgumentSpec:
+      type: object
+      description: The permitted shape of one argument position.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [literal, prefix, oneof, any]
+          description: |
+            `literal` — the argument must equal `value`.
+            `prefix` — the argument must start with `value`, which MUST NOT be
+            empty (e.g. `--unit=` permits `--unit=nginx.service`).
+            `oneof` — the argument must equal one of `values`.
+            `any` — the argument is unconstrained.
+
+            `any` is named rather than smuggled in as an empty prefix so that
+            it is visible in the policy and in the audit record. It is the one
+            shape in this schema that is **not** a boundary, and a reviewer
+            should be able to find every use of it by searching for the word.
+        value:
+          type: string
+          description: Required and non-empty for `literal` and `prefix`; forbidden otherwise.
+          example: "--unit="
+        values:
+          type: array
+          description: Required and non-empty for `oneof`; forbidden otherwise.
+          items:
+            type: string
+          example: [status, is-active]
+        optional:
+          type: boolean
+          default: false
+          description: |
+            Whether this position may be absent. Only trailing positions may be
+            optional: once a spec is optional every spec after it must be too,
+            or the positions after it would be ambiguous.
 
     FilterRule:
       type: object
@@ -842,8 +1303,47 @@ components:
 
     HopMetadata:
       type: object
-      description: Chaining constraints, present when `route_type` is `nexthop`.
+      description: |
+        Chaining constraints, present when `route_type` is `nexthop`.
+
+        It also says **how** the next proxy is reached (D11, consumed by phase
+        0008). That is not a detail inside the hop protocol — it is the hop
+        protocol, which is why it is in the contract before the phase that
+        builds it.
       properties:
+        connection:
+          type: string
+          enum: [dial, relay]
+          default: dial
+          description: |
+            How this proxy reaches the next one.
+
+            `dial` — this proxy opens a TCP/SSH connection to `target`. Simple,
+            and it needs an inbound firewall rule at the next hop.
+            `relay` — the next proxy has already **registered an outbound relay
+            connection** with this one, and this proxy opens a channel over
+            that existing connection instead of dialling. The protected zone
+            needs no inbound rule at all, which is the whole point: one hole per
+            hop is still a hole per hop.
+
+            **Absent means `dial`**, the original next-hop behaviour, so a v1
+            server's route still works.
+
+            A `relay` hop with **no live registration** for `next_proxy_id` is
+            an outage (PLAN §4.3), reported as one. It is never silently
+            downgraded to `dial`: dialling would punch through exactly the
+            boundary the mode exists to preserve, and it would do it at the
+            moment the operator is least able to see it.
+        next_proxy_id:
+          type: string
+          description: |
+            The proxy id of the next hop — the same id that proxy presents when
+            it registers, which is how a `relay` hop selects the registration to
+            open a channel over. **Required when `connection` is `relay`.**
+
+            On a `dial` hop it is informational: it names the peer expected at
+            `target`, for logs and for the hop trail.
+          example: proxy-zone-b
         final_target:
           type: string
           description: |

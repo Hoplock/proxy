@@ -18,6 +18,10 @@ import (
 // apart — a stale contract is worse than no contract.
 const specPath = "../../api/control.yaml"
 
+// readmePath is the contract's human-readable companion. It is what a fresh
+// session reads first, so it is asserted against the same constants.
+const readmePath = "../../api/README.md"
+
 // loadSpec decodes the OpenAPI document into a generic tree.
 func loadSpec(t *testing.T) map[string]any {
 	t.Helper()
@@ -111,7 +115,7 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 			documented[name] = true
 		}
 	}
-	for _, name := range []string{"bastion_id", QueryLastEventID} {
+	for _, name := range []string{"proxy_id", QueryLastEventID} {
 		if !documented[name] {
 			t.Errorf("get %q does not document the %q parameter", PathProxyEvents, name)
 		}
@@ -180,6 +184,19 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 			string(EventTypeHeartbeat), string(EventTypeResync)}},
 		{"LogRecord", "severity", []string{
 			string(SeverityInfo), string(SeverityWarn), string(SeverityCritical)}},
+		// The phase 0006 vocabulary (D5a, D6a, D11, D12).
+		{"TargetAuth", "method", []string{
+			string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
+			string(TargetAuthStaticKey)}},
+		{"FilterPolicy", "exec_mode", []string{
+			string(ExecModeFiltered), string(ExecModeRestricted)}},
+		{"RestrictedCommand", "form", []string{
+			string(CommandFormExact), string(CommandFormPositional)}},
+		{"ArgumentSpec", "kind", []string{
+			string(ArgumentLiteral), string(ArgumentPrefix),
+			string(ArgumentOneOf), string(ArgumentAny)}},
+		{"HopMetadata", "connection", []string{
+			string(HopConnectionDial), string(HopConnectionRelay)}},
 	}
 
 	for _, tc := range tests {
@@ -277,5 +294,123 @@ func TestPasswordRequestRedactsThePassword(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"password":"hunter2"`) {
 		t.Errorf("JSON body = %s, want the password sent to the server", body)
+	}
+}
+
+// TestSpecItemEnumsMatchGoConstants covers the enums that live on an array's
+// items rather than on the property itself. permitted_requests.types is one
+// (its members are request names), and it is the axis most likely to be
+// extended, so the document and the Request* constants are pinned together.
+func TestSpecItemEnumsMatchGoConstants(t *testing.T) {
+	doc := loadSpec(t)
+
+	ref := "#/components/schemas/RequestPolicy/properties/types/items/enum"
+	node, ok := resolveRef(doc, ref)
+	if !ok {
+		t.Fatalf("%s has no enum", ref)
+	}
+	values, ok := node.([]any)
+	if !ok {
+		t.Fatalf("%s is not a list", ref)
+	}
+	got := make(map[string]bool, len(values))
+	for _, v := range values {
+		s, _ := v.(string)
+		got[s] = true
+	}
+
+	want := []string{RequestPTY, RequestShell, RequestExec, RequestEnv, RequestX11, RequestAuthAgent}
+	if len(got) != len(want) {
+		t.Errorf("enum has %d values, Go declares %d", len(got), len(want))
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("enum is missing the Go constant %q", w)
+		}
+	}
+	// The one member that must NOT be there: a subsystem is permitted by name,
+	// so listing "subsystem" as a type would mean "sftp and everything else".
+	if got[RequestSubsystem] {
+		t.Errorf("enum lists %q; subsystems are permitted by name in RequestPolicy.Subsystems",
+			RequestSubsystem)
+	}
+}
+
+// TestSpecDocumentsTheV2PolicySchemas keeps the AuthorizeResponse properties
+// and the Go struct tags in step. A field the document does not carry is a
+// field a server has no reason to send.
+func TestSpecDocumentsTheV2PolicySchemas(t *testing.T) {
+	doc := loadSpec(t)
+
+	for field, schema := range map[string]string{
+		"permitted_requests":        "RequestPolicy",
+		"permitted_forwards":        "ForwardPolicy",
+		"permitted_global_requests": "GlobalRequestPolicy",
+		"target_auth":               "TargetAuth",
+	} {
+		ref := "#/components/schemas/AuthorizeResponse/properties/" + field + "/$ref"
+		node, ok := resolveRef(doc, ref)
+		if !ok {
+			t.Errorf("AuthorizeResponse does not document %q", field)
+			continue
+		}
+		if got, want := node, "#/components/schemas/"+schema; got != want {
+			t.Errorf("AuthorizeResponse.%s = %v, want %s", field, got, want)
+		}
+	}
+
+	// The properties that are not $refs, checked for presence.
+	for schema, field := range map[string]string{
+		"AuthorizeRequest":   "policy_version",
+		"FilterPolicy":       "restricted_exec",
+		"HopMetadata":        "next_proxy_id",
+		"ForwardPolicy":      "forwarded_tcpip",
+		"ForwardDestination": "port_range",
+	} {
+		ref := "#/components/schemas/" + schema + "/properties/" + field
+		if _, ok := resolveRef(doc, ref); !ok {
+			t.Errorf("%s does not document %q", schema, field)
+		}
+	}
+}
+
+// TestReadmeDocumentsTheContract guards the companion document. api/README.md
+// is what a session reads before the OpenAPI file, so a vocabulary it does not
+// mention is a vocabulary the next phase will not know exists.
+func TestReadmeDocumentsTheContract(t *testing.T) {
+	raw, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+	readme := string(raw)
+
+	// Every path the client dials, spelled exactly as the client dials it.
+	for _, path := range []string{
+		PathAuthenticateCert, PathAuthenticatePassword, PathPollMFA, PathAuthorize,
+		PathReportHostKey, PathIngestLogBatch, PathIngestPriorityLog, PathProxyEvents,
+	} {
+		if !strings.Contains(readme, path) {
+			t.Errorf("%s does not document the path %q", readmePath, path)
+		}
+	}
+
+	// Every field and enum value the phase 0006 vocabulary added, by the name
+	// that appears on the wire.
+	for _, name := range []string{
+		"policy_version", "permitted_requests", "permitted_forwards",
+		"permitted_global_requests", "target_auth", "exec_mode",
+		"restricted_exec", "next_proxy_id", "subsystems",
+		"direct_tcpip", "forwarded_tcpip", "port_range",
+		string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
+		string(TargetAuthStaticKey),
+		string(ExecModeFiltered), string(ExecModeRestricted),
+		string(CommandFormExact), string(CommandFormPositional),
+		string(ArgumentLiteral), string(ArgumentPrefix), string(ArgumentOneOf),
+		string(ArgumentAny),
+		string(HopConnectionDial), string(HopConnectionRelay),
+	} {
+		if !strings.Contains(readme, name) {
+			t.Errorf("%s does not document %q", readmePath, name)
+		}
 	}
 }

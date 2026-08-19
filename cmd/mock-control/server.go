@@ -276,38 +276,23 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	decisionID := fmt.Sprintf("decision-%d", s.idCounter)
 	s.mu.Unlock()
 
-	resp := control.AuthorizeResponse{
-		RouteType:         control.RouteType(route.RouteType),
-		Target:            req.Target,
-		TargetPort:        route.TargetPort,
-		Permissions:       route.Permissions,
-		PermittedChannels: route.PermittedChannels,
-		FilterPolicy: control.FilterPolicy{
-			Mode:  control.FilterMode(route.FilterPolicy.Mode),
-			Rules: filterRules(route.FilterPolicy.Rules),
-		},
-		DecisionID: decisionID,
-		Cache:      cacheHint(route, req.Identity.Subject, req.Target),
-	}
-	if resp.PermittedChannels == nil {
-		// An absent allow-list must serialise as [] (deny all), not null.
-		resp.PermittedChannels = []string{}
-	}
+	// For a chain the target is the next proxy; the host the user asked for
+	// travels in hop metadata so the next proxy re-runs the flow.
+	hopTrail := append(append([]string{}, req.Conn.HopTrail...), req.Conn.ProxyID)
+	resp := route.authorizeResponse(req.Target, hopTrail)
+	resp.DecisionID = decisionID
+	resp.Cache = cacheHint(route, req.Identity.Subject, req.Target)
 
-	switch resp.RouteType {
-	case control.RouteTypeDirect:
-		if route.ResolvedTarget != "" {
-			resp.Target = route.ResolvedTarget
-		}
-	case control.RouteTypeNextHop:
-		// For a chain the target is the next proxy; the host the user asked
-		// for travels in hop metadata so the next proxy re-runs the flow.
-		resp.Target = route.NextHop
-		resp.Hop = &control.HopMetadata{
-			FinalTarget: req.Target,
-			MaxHops:     route.MaxHops,
-			HopTrail:    append(append([]string{}, req.Conn.HopTrail...), req.Conn.ProxyID),
-		}
+	// A proxy declaring an older vocabulary must not be answered with fields it
+	// cannot read: it fails such a response closed, by contract. A real server
+	// would tailor the policy; the mock's fixtures are v2, so it says plainly
+	// that it cannot serve this proxy rather than sending policy that will be
+	// refused as a protocol error three lines later.
+	if req.PolicyVersion > 0 && req.PolicyVersion < control.PolicyVersion && usesV2Vocabulary(resp) {
+		writeError(w, http.StatusInternalServerError, "policy_version",
+			fmt.Sprintf("this route needs policy vocabulary %d; the proxy declared %d",
+				control.PolicyVersion, req.PolicyVersion))
+		return
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

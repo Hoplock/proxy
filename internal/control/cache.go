@@ -333,7 +333,7 @@ func (c *CachingClient) lookup(shape, subject string) (*AuthorizeResponse, bool)
 	}
 
 	c.stats.Hits++
-	return entry.resp.clone(), true
+	return entry.resp.Clone(), true
 }
 
 // store caches resp when the server authorised it.
@@ -375,7 +375,7 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 		key:       hint.Key,
 		subject:   subject,
 		expiresAt: now.Add(ttl),
-		resp:      resp.clone(),
+		resp:      resp.Clone(),
 	}
 	c.shapes[shape] = hint.Key
 	c.stats.Stored++
@@ -448,32 +448,4 @@ func authorizeShape(req *AuthorizeRequest) (shape, subject string, cacheable boo
 		strings.Join(req.Conn.HopTrail, ","),
 	}, "\x00")
 	return shape, subject, true
-}
-
-// clone deep-copies a decision, so a cached policy cannot be mutated by a
-// caller that was handed it — every session gets its own copy of the
-// allow-list and the filter rules.
-func (r *AuthorizeResponse) clone() *AuthorizeResponse {
-	if r == nil {
-		return nil
-	}
-	out := *r
-	if r.PermittedChannels != nil {
-		out.PermittedChannels = append([]string(nil), r.PermittedChannels...)
-	}
-	if r.FilterPolicy.Rules != nil {
-		out.FilterPolicy.Rules = append([]FilterRule(nil), r.FilterPolicy.Rules...)
-	}
-	if r.Hop != nil {
-		hop := *r.Hop
-		if r.Hop.HopTrail != nil {
-			hop.HopTrail = append([]string(nil), r.Hop.HopTrail...)
-		}
-		out.Hop = &hop
-	}
-	if r.Cache != nil {
-		hint := *r.Cache
-		out.Cache = &hint
-	}
-	return &out
 }

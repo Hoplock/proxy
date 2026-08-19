@@ -702,6 +702,72 @@ func TestFixtureValidation(t *testing.T) {
 			wantErrs: []string{"host_keys.decision"},
 		},
 		{
+			// The rejection phase 0006 exists to make loudly: a guardrail and a
+			// boundary cannot both decide the same command.
+			name: "restricted exec beside a rule list",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    filter_policy:\n      mode: whitelist\n" +
+				"      exec_mode: restricted\n      restricted_exec:\n        commands: []\n" +
+				"      rules:\n        - match: rm\n          action: block_command\n",
+			wantErrs: []string{"alternatives, not layers"},
+		},
+		{
+			name: "restricted exec mode without a policy",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    filter_policy:\n      mode: whitelist\n" +
+				"      exec_mode: restricted\n",
+			wantErrs: []string{"restricted_exec is absent"},
+		},
+		{
+			name: "restricted exec policy under the filtered tier",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    filter_policy:\n      mode: whitelist\n" +
+				"      restricted_exec:\n        commands: []\n",
+			wantErrs: []string{"alternatives, not layers"},
+		},
+		{
+			name: "subsystem named as a request type",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    permitted_requests:\n      types: [shell, subsystem]\n",
+			wantErrs: []string{"permitted_requests.subsystems"},
+		},
+		{
+			name: "forward destination with both a port and a range",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    permitted_forwards:\n      direct_tcpip:\n" +
+				"        - host: db\n          port: 5432\n          port_range:\n" +
+				"            from: 1\n            to: 2\n",
+			wantErrs: []string{"both port and port_range"},
+		},
+		{
+			name: "relay hop with no proxy to relay through",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    route_type: nexthop\n    next_hop: p2\n" +
+				"    hop_connection: relay\n",
+			wantErrs: []string{"next_proxy_id"},
+		},
+		{
+			name: "hop connection on a direct route",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    hop_connection: dial\n",
+			wantErrs: []string{"hop_connection is set on a"},
+		},
+		{
+			name: "unknown target auth method",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    target_auth:\n      method: telepathy\n",
+			wantErrs: []string{"target_auth.method"},
+		},
+		{
+			name: "empty prefix in an argument spec",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    filter_policy:\n      mode: whitelist\n" +
+				"      exec_mode: restricted\n      restricted_exec:\n        commands:\n" +
+				"          - executable: ls\n            form: positional\n            args:\n" +
+				"              - kind: prefix\n",
+			wantErrs: []string{"non-empty value"},
+		},
+		{
 			name: "every problem is reported at once",
 			yaml: "users:\n  - login: alice\n" +
 				"routes:\n  - target: h\n    route_type: teleport\n",
@@ -915,5 +981,203 @@ func assertJSONLines(t *testing.T, path string, want int) {
 	}
 	if got != want {
 		t.Errorf("%s holds %d records, want %d", path, got, want)
+	}
+}
+
+// TestAuthorizeServesTheV2Vocabulary drives the phase 0006 fixture keys through
+// the real client, which is the only way to know the mock and the contract agree
+// about them: the client decodes the authorize response strictly and validates
+// it, so a fixture key that serialises wrongly fails here rather than in 0009.
+func TestAuthorizeServesTheV2Vocabulary(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	ctx := context.Background()
+	alice := &control.Identity{Subject: "alice@example.com", Login: "alice", Source: "fixture"}
+	deploy := &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy", Source: "fixture"}
+
+	t.Run("in-channel requests and global requests", func(t *testing.T) {
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: alice, Target: "host.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		if resp.PermittedRequests == nil {
+			t.Fatal("permitted_requests is absent; the fixture sets it")
+		}
+		if !resp.PermittedRequests.RequestPermitted(control.RequestShell) {
+			t.Error("shell denied though the fixture permits it")
+		}
+		// The point of naming subsystems individually: sftp off, shell on.
+		if resp.PermittedRequests.SubsystemPermitted("sftp") {
+			t.Error("sftp permitted though the fixture's subsystem list is empty")
+		}
+		if resp.PermittedGlobalRequests == nil {
+			t.Fatal("permitted_global_requests is absent; the fixture sets it")
+		}
+		if resp.PermittedGlobalRequests.Permitted(control.GlobalRequestTCPIPForward) {
+			t.Error("tcpip-forward permitted though the fixture's list is empty")
+		}
+		if resp.TargetAuth == nil || resp.TargetAuth.Method != control.TargetAuthEphemeralUser {
+			t.Errorf("target_auth = %+v, want the ephemeral-user method", resp.TargetAuth)
+		}
+	})
+
+	t.Run("forwarding destinations", func(t *testing.T) {
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: deploy, Target: "app-01.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		dests, policed := resp.PermittedForwards.Destinations(control.ChannelDirectTCPIP)
+		if !policed || len(dests) != 3 {
+			t.Fatalf("direct_tcpip = %v (policed=%v), want the fixture's three entries", dests, policed)
+		}
+		if dests[0].Host != "postgres.prod.company.com" || dests[0].Port != 5432 {
+			t.Errorf("first destination = %+v, want the exact host:port entry", dests[0])
+		}
+		if pr := dests[1].PortRange; pr == nil || pr.From != 9090 || pr.To != 9100 {
+			t.Errorf("second destination port range = %+v, want 9090-9100", pr)
+		}
+		if rev, policed := resp.PermittedForwards.Destinations(control.ChannelForwardedTCPIP); !policed || len(rev) != 0 {
+			t.Errorf("forwarded_tcpip = %v (policed=%v), want policed with none", rev, policed)
+		}
+		if resp.TargetAuth == nil || resp.TargetAuth.Params["credential_ref"] != "deploy-fleet-2026" {
+			t.Errorf("target_auth = %+v, want the brokered-key credential reference", resp.TargetAuth)
+		}
+	})
+
+	t.Run("restricted exec", func(t *testing.T) {
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: deploy, Target: "edge-fw-01.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		if got := resp.FilterPolicy.Exec(); got != control.ExecModeRestricted {
+			t.Fatalf("exec_mode = %q, want %q", got, control.ExecModeRestricted)
+		}
+		if len(resp.FilterPolicy.Rules) != 0 {
+			t.Error("a restricted policy must carry no rule list: the tiers are alternatives")
+		}
+		cmds := resp.FilterPolicy.RestrictedExec.Commands
+		if len(cmds) != 3 {
+			t.Fatalf("restricted_exec.commands = %d, want the fixture's three", len(cmds))
+		}
+		if cmds[2].Form != control.CommandFormPositional || len(cmds[2].Args) != 3 {
+			t.Errorf("third command = %+v, want the positional form with three specs", cmds[2])
+		}
+		if cmds[2].Args[0].Kind != control.ArgumentPrefix || cmds[2].Args[0].Value != "--unit=" {
+			t.Errorf("first arg spec = %+v, want the --unit= prefix", cmds[2].Args[0])
+		}
+	})
+
+	t.Run("hop direction", func(t *testing.T) {
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: alice, Target: "deep.internal.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		if got := resp.Hop.Direction(); got != control.HopConnectionRelay {
+			t.Errorf("hop.connection = %q, want %q", got, control.HopConnectionRelay)
+		}
+		if resp.Hop.NextProxyID != "proxy-2" {
+			t.Errorf("hop.next_proxy_id = %q, want the registration to relay through", resp.Hop.NextProxyID)
+		}
+	})
+}
+
+// TestAuthorizeStillServesAV1Fixture is the compatibility criterion at the mock:
+// a fixture written before phase 0006 sets none of the new keys, and must still
+// produce a working, documented-default decision rather than a denial.
+func TestAuthorizeStillServesAV1Fixture(t *testing.T) {
+	fx := mustParseFixtures(t, `
+users:
+  - login: alice
+    password: "pw"
+routes:
+  - login: alice
+    target: "*"
+    route_type: direct
+    permitted_channels: [session]
+    filter_policy:
+      mode: blacklist
+      rules:
+        - match: shutdown
+          action: block_command
+`)
+	m := startMock(t, fx, serverOptions{})
+
+	resp, err := m.client.Authorize(context.Background(), &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice", Login: "alice"},
+		Target:   "host.company.com",
+		Conn:     testConn(),
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		got  bool
+	}{
+		{"permitted_requests", resp.PermittedRequests != nil},
+		{"permitted_forwards", resp.PermittedForwards != nil},
+		{"permitted_global_requests", resp.PermittedGlobalRequests != nil},
+		{"target_auth", resp.TargetAuth != nil},
+		{"restricted_exec", resp.FilterPolicy.RestrictedExec != nil},
+	} {
+		if tc.got {
+			t.Errorf("%s was invented for a fixture that never set it", tc.name)
+		}
+	}
+	if got := resp.FilterPolicy.Exec(); got != control.ExecModeFiltered {
+		t.Errorf("exec_mode = %q, want %q", got, control.ExecModeFiltered)
+	}
+	// And the v1 policy it did express is untouched.
+	if !resp.PermittedRequests.RequestPermitted(control.RequestShell) {
+		t.Error("a v1 fixture must not deny every shell")
+	}
+	if len(resp.FilterPolicy.Rules) != 1 {
+		t.Errorf("filter rules = %v, want the fixture's one rule", resp.FilterPolicy.Rules)
+	}
+}
+
+// TestAuthorizeRefusesAProxyThatCannotReadThePolicy covers the other half of the
+// versioning rule. The proxy fails closed on a field it does not understand, so
+// a server holding v2 policy for a proxy that declared v1 says so plainly
+// instead of sending policy that will be refused as a protocol error.
+func TestAuthorizeRefusesAProxyThatCannotReadThePolicy(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+
+	body, err := json.Marshal(control.AuthorizeRequest{
+		Identity:      &control.Identity{Subject: "alice@example.com", Login: "alice"},
+		Target:        "host.company.com",
+		PolicyVersion: 1,
+		Conn:          testConn(),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, m.srv.URL+control.PathAuthorize, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// An outage, not a deny: the proxy is not forbidden, the two ends disagree.
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	payload, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(payload), "policy_version") {
+		t.Errorf("body = %s, want it to name the version mismatch", payload)
 	}
 }
