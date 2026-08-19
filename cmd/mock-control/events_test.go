@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // eventFixtures is a minimal world with one cacheable route and a fast
 // heartbeat, so a test can tell a live subscription from a hung one quickly.
 const eventFixtures = `
-bastion_token: "dev-bastion-token"
+proxy_token: "dev-proxy-token"
 users:
   - login: alice
     identity:
@@ -75,7 +75,7 @@ func (r *recordingRegistry) KillAll(_ context.Context, reason string) error {
 
 // revoke publishes an event through the mock-only debug endpoint and returns
 // how many subscribers it reached.
-func (m *mock) revoke(t *testing.T, ev mgmt.RevocationEvent) debugRevokeResponse {
+func (m *mock) revoke(t *testing.T, ev control.RevocationEvent) debugRevokeResponse {
 	t.Helper()
 	body, err := json.Marshal(ev)
 	if err != nil {
@@ -113,8 +113,8 @@ func TestAuthorizeCarriesTheFixtureCacheHint(t *testing.T) {
 	ctx := context.Background()
 
 	// fixtures.example.yaml opts alice's direct route into caching.
-	resp, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
-		Identity: &mgmt.Identity{Subject: "alice@example.com", Login: "alice"},
+	resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice@example.com", Login: "alice"},
 		Target:   "host.company.com",
 		Conn:     testConn(),
 	})
@@ -134,8 +134,8 @@ func TestAuthorizeCarriesTheFixtureCacheHint(t *testing.T) {
 	}
 
 	// A route with no cache fixture must not be cacheable at all.
-	resp, err = m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
-		Identity: &mgmt.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy"},
+	resp, err = m.client.Authorize(ctx, &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy"},
 		Target:   "build.company.com",
 		Conn:     testConn(),
 	})
@@ -148,27 +148,27 @@ func TestAuthorizeCarriesTheFixtureCacheHint(t *testing.T) {
 }
 
 // TestRevocationEndsACachedDecisionAndItsSessions is the end-to-end shape of
-// phase 0003: a bastion holding a server-authorised cache, subscribed to the
+// phase 0003: a proxy holding a server-authorised cache, subscribed to the
 // event stream, is told to kill a subject's sessions — and both halves happen.
 func TestRevocationEndsACachedDecisionAndItsSessions(t *testing.T) {
 	m := startMock(t, mustParseFixtures(t, eventFixtures), serverOptions{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cache := mgmt.NewCachingClient(m.client, mgmt.CacheOptions{})
+	cache := control.NewCachingClient(m.client, control.CacheOptions{})
 	registry := &recordingRegistry{}
-	stream := mgmt.NewRevocationStream(m.client, cache, registry, mgmt.StreamOptions{
+	stream := control.NewRevocationStream(m.client, cache, registry, control.StreamOptions{
 		HeartbeatTimeout: time.Second, // the fixture heartbeats every 20ms
 	})
 	subscribed := make(chan error, 1)
-	go func() { subscribed <- stream.Subscribe(ctx, "bastion-1") }()
+	go func() { subscribed <- stream.Subscribe(ctx, "proxy-1") }()
 
-	// The cache is dead until the bastion can hear revocations, so a live
+	// The cache is dead until the proxy can hear revocations, so a live
 	// subscription is also the signal that the stream is up.
 	waitUntil(t, "the revocation stream to connect", func() bool { return !cache.StreamStale() })
 
-	req := &mgmt.AuthorizeRequest{
-		Identity: &mgmt.Identity{Subject: "alice@example.com", Login: "alice"},
+	req := &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice@example.com", Login: "alice"},
 		Target:   "host.company.com",
 		Conn:     testConn(),
 	}
@@ -188,9 +188,9 @@ func TestRevocationEndsACachedDecisionAndItsSessions(t *testing.T) {
 	}
 
 	const reason = "Access withdrawn by the security team; contact #security."
-	delivered := m.revoke(t, mgmt.RevocationEvent{
-		Type:        mgmt.EventTypeSessionKill,
-		SessionKill: &mgmt.SessionKillEvent{Subject: "alice@example.com", Reason: reason},
+	delivered := m.revoke(t, control.RevocationEvent{
+		Type:        control.EventTypeSessionKill,
+		SessionKill: &control.SessionKillEvent{Subject: "alice@example.com", Reason: reason},
 	})
 	if delivered.Delivered != 1 {
 		t.Errorf("the event reached %d subscribers, want 1", delivered.Delivered)
@@ -230,7 +230,7 @@ func TestEventStreamHeartbeats(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stream, err := m.client.StreamEvents(ctx, "bastion-1", "")
+	stream, err := m.client.StreamEvents(ctx, "proxy-1", "")
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestEventStreamHeartbeats(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Recv: %v", err)
 		}
-		if ev.Type != mgmt.EventTypeHeartbeat {
+		if ev.Type != control.EventTypeHeartbeat {
 			t.Fatalf("event %d type = %q, want a heartbeat", i, ev.Type)
 		}
 		if ev.EventID == "" || ev.Timestamp.IsZero() {
@@ -250,7 +250,7 @@ func TestEventStreamHeartbeats(t *testing.T) {
 	}
 }
 
-// TestEventStreamReplaysTheGap covers the reconnect contract: the bastion sends
+// TestEventStreamReplaysTheGap covers the reconnect contract: the proxy sends
 // the last id it processed, and the server replays what came after it.
 func TestEventStreamReplaysTheGap(t *testing.T) {
 	// Heartbeats off, so the stream carries exactly the replayed events.
@@ -260,16 +260,16 @@ func TestEventStreamReplaysTheGap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	first := m.revoke(t, mgmt.RevocationEvent{
-		Type:            mgmt.EventTypeCacheInvalidate,
-		CacheInvalidate: &mgmt.CacheInvalidateEvent{Keys: []string{"k1"}},
+	first := m.revoke(t, control.RevocationEvent{
+		Type:            control.EventTypeCacheInvalidate,
+		CacheInvalidate: &control.CacheInvalidateEvent{Keys: []string{"k1"}},
 	})
-	second := m.revoke(t, mgmt.RevocationEvent{
-		Type:            mgmt.EventTypeCacheInvalidate,
-		CacheInvalidate: &mgmt.CacheInvalidateEvent{Keys: []string{"k2"}},
+	second := m.revoke(t, control.RevocationEvent{
+		Type:            control.EventTypeCacheInvalidate,
+		CacheInvalidate: &control.CacheInvalidateEvent{Keys: []string{"k2"}},
 	})
 
-	stream, err := m.client.StreamEvents(ctx, "bastion-1", first.EventID)
+	stream, err := m.client.StreamEvents(ctx, "proxy-1", first.EventID)
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -300,16 +300,16 @@ func TestEventStreamResyncsWhenTheGapIsTooOld(t *testing.T) {
 
 	var first debugRevokeResponse
 	for i := 0; i < 3; i++ {
-		ev := m.revoke(t, mgmt.RevocationEvent{
-			Type:            mgmt.EventTypeCacheInvalidate,
-			CacheInvalidate: &mgmt.CacheInvalidateEvent{All: true},
+		ev := m.revoke(t, control.RevocationEvent{
+			Type:            control.EventTypeCacheInvalidate,
+			CacheInvalidate: &control.CacheInvalidateEvent{All: true},
 		})
 		if i == 0 {
 			first = ev
 		}
 	}
 
-	stream, err := m.client.StreamEvents(ctx, "bastion-1", first.EventID)
+	stream, err := m.client.StreamEvents(ctx, "proxy-1", first.EventID)
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -319,12 +319,12 @@ func TestEventStreamResyncsWhenTheGapIsTooOld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv: %v", err)
 	}
-	if ev.Type != mgmt.EventTypeResync {
+	if ev.Type != control.EventTypeResync {
 		t.Errorf("first event = %q, want a resync: the server cannot replay that far back", ev.Type)
 	}
 
 	// An id this server never issued is treated the same way.
-	unknown, err := m.client.StreamEvents(ctx, "bastion-1", "not-an-event-id")
+	unknown, err := m.client.StreamEvents(ctx, "proxy-1", "not-an-event-id")
 	if err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
@@ -333,20 +333,20 @@ func TestEventStreamResyncsWhenTheGapIsTooOld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recv: %v", err)
 	}
-	if ev.Type != mgmt.EventTypeResync {
+	if ev.Type != control.EventTypeResync {
 		t.Errorf("first event = %q, want a resync for an unknown last_event_id", ev.Type)
 	}
 }
 
-func TestEventStreamRequiresTheBastionToken(t *testing.T) {
+func TestEventStreamRequiresTheProxyToken(t *testing.T) {
 	m := startMock(t, mustParseFixtures(t, eventFixtures), serverOptions{})
-	client, err := mgmt.NewRESTClient(mgmt.Options{BaseURL: m.srv.URL, Token: "wrong-token"})
+	client, err := control.NewRESTClient(control.Options{BaseURL: m.srv.URL, Token: "wrong-token"})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
 
-	_, err = client.StreamEvents(context.Background(), "bastion-1", "")
-	if !mgmt.IsUnauthorized(err) {
+	_, err = client.StreamEvents(context.Background(), "proxy-1", "")
+	if !control.IsUnauthorized(err) {
 		t.Errorf("StreamEvents error = %v, want a deny", err)
 	}
 }

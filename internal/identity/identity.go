@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Method names how an identity was proven to the bastion. It travels with the
+// Method names how an identity was proven to the proxy. It travels with the
 // identity because policy may legitimately care: a certificate and a
 // password+MFA login are not the same assurance level, and an audit record that
 // omits the method cannot answer "how did they get in?".
@@ -23,7 +23,7 @@ const (
 	MethodPasswordMFA Method = "password-mfa"
 )
 
-// Valid reports whether m is a method this bastion knows how to produce.
+// Valid reports whether m is a method this proxy knows how to produce.
 func (m Method) Valid() bool {
 	switch m {
 	case MethodCert, MethodPasswordMFA:
@@ -44,7 +44,7 @@ var ErrIncomplete = errors.New("identity is incomplete")
 // Claims carries source-specific attributes about the principal: everything an
 // identity source knows that is not already a first-class field. It is a
 // map[string]string rather than a richer tree because that is the shape the
-// management API contract puts on the wire (mgmt.Identity.Claims); a claim with
+// Control API contract puts on the wire (control.Identity.Claims); a claim with
 // internal structure must be encoded into a string by its source, so adding a
 // source never silently changes the contract.
 //
@@ -80,7 +80,7 @@ func (c Claims) Clone() Claims {
 	return out
 }
 
-// Identity is an authenticated principal as the bastion understands it: the
+// Identity is an authenticated principal as the proxy understands it: the
 // result of a user authenticator, and the input to routing, policy, and logging.
 //
 // It is a claims model rather than a username string so that AD, Okta, or any
@@ -90,7 +90,7 @@ func (c Claims) Clone() Claims {
 // which is only the name the user happened to type at their SSH client.
 //
 // An Identity is immutable once returned by an authenticator. Nothing in the
-// bastion may add a group, a principal, or a claim to it: the bastion is a
+// proxy may add a group, a principal, or a claim to it: the proxy is a
 // policy *enforcement* point, and widening an identity locally would be
 // originating policy (D2). Use Clone before handing it to code that might.
 type Identity struct {
@@ -117,7 +117,7 @@ type Identity struct {
 	Claims Claims
 	// Method is how this identity was proven on this connection.
 	Method Method
-	// AuthenticatedAt is when the bastion accepted the identity. It is per
+	// AuthenticatedAt is when the proxy accepted the identity. It is per
 	// connection: authentication is never cached (PLAN §6.4), so this is always
 	// the current session's own login, not a remembered one.
 	AuthenticatedAt time.Time
@@ -175,7 +175,7 @@ func cloneStrings(in []string) []string {
 // Validate reports whether the identity carries the fields every consumer
 // depends on. It exists because an identity arrives from a remote decision: a
 // server that answers "authenticated" with no subject has violated the contract,
-// and the bastion must refuse the session rather than proceed with a principal
+// and the proxy must refuse the session rather than proceed with a principal
 // it cannot name in an audit log.
 func (id *Identity) Validate() error {
 	switch {

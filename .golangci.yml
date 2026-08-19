@@ -27,4 +27,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/mauroasilva/securecommandproxy
+        - github.com/hoplock/proxy

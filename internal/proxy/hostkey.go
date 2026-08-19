@@ -10,23 +10,23 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
-// ErrHostKeyRejected means the management server refused the target's host key.
-var ErrHostKeyRejected = errors.New("proxy: target host key rejected by the management server")
+// ErrHostKeyRejected means Hoplock Control refused the target's host key.
+var ErrHostKeyRejected = errors.New("proxy: target host key rejected by Hoplock Control")
 
 // hostKeyCallback implements the prototype's host-key policy: trust on first
-// use, but report every key to the management server (D7).
+// use, but report every key to Hoplock Control (D7).
 //
-// The bastion keeps no known-hosts file of its own. That is deliberate: a local
-// trust store would be a second policy, diverging per bastion, in a system whose
+// The proxy keeps no known-hosts file of its own. That is deliberate: a local
+// trust store would be a second policy, diverging per proxy, in a system whose
 // whole premise is that decisions are central (D2). Reporting on every
 // connection costs one round trip at setup and gives the server the evidence it
 // needs to move from trust-on-first-use to per-target pinning later, without a
-// bastion change.
+// proxy change.
 func (s *session) hostKeyCallback(_ string, remote net.Addr, key ssh.PublicKey) error {
-	resp, err := s.srv.client.ReportHostKey(s.ctx, &mgmt.HostKeyReportRequest{
+	resp, err := s.srv.client.ReportHostKey(s.ctx, &control.HostKeyReportRequest{
 		Target:     s.route.Host,
 		TargetPort: s.route.Port,
 		HostKey:    hostKeyMaterial(key),
@@ -38,11 +38,11 @@ func (s *session) hostKeyCallback(_ string, remote net.Addr, key ssh.PublicKey) 
 		// "carry on".
 		return s.recordHostKeyErr(fmt.Errorf("report host key: %w", err))
 	}
-	if resp.Decision != mgmt.HostKeyAccept {
+	if resp.Decision != control.HostKeyAccept {
 		return s.recordHostKeyErr(fmt.Errorf("%w (%s)", ErrHostKeyRejected, resp.Reason))
 	}
 	if !resp.Known {
-		s.logf("proxy: session=%s target=%s host key %s trusted on first use, reported to the management server",
+		s.logf("proxy: session=%s target=%s host key %s trusted on first use, reported to Hoplock Control",
 			s.id, remote, ssh.FingerprintSHA256(key))
 	}
 	return nil
@@ -66,9 +66,9 @@ func (s *session) takeHostKeyErr() error {
 
 // hostKeyMaterial converts a host key to its wire form. Nothing is validated
 // locally, for the same reason user certificates are not (D2).
-func hostKeyMaterial(key ssh.PublicKey) mgmt.PublicKeyMaterial {
+func hostKeyMaterial(key ssh.PublicKey) control.PublicKeyMaterial {
 	_, isCert := key.(*ssh.Certificate)
-	return mgmt.PublicKeyMaterial{
+	return control.PublicKeyMaterial{
 		Type:          key.Type(),
 		Blob:          key.Marshal(),
 		Fingerprint:   ssh.FingerprintSHA256(key),

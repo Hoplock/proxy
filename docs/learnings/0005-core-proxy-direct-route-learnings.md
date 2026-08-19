@@ -4,13 +4,13 @@
 - What shipped: the first working end-to-end proxy. `internal/routing` (D1
   username split + authorize/route), `internal/proxy` (the SSH engine: generic
   channel passthrough, session lifecycle, TOFU host keys, user-facing failure
-  reporting, `mgmt.SessionRegistry`), `internal/auth/target` (interface +
+  reporting, `control.SessionRegistry`), `internal/auth/target` (interface +
   `static-key` **placeholder**), `internal/sshtest` (in-process target for
-  tests), and a real `cmd/bastion` that listens.
+  tests), and a real `cmd/proxy` that listens.
 - Key packages/files: `internal/routing/{username,resolve}.go`,
   `internal/proxy/{proxy,session,channel,feedback,hostkey,registry}.go`,
   `internal/auth/target/{auth,statickey,registry}.go`,
-  `internal/sshtest/{target,keys}.go`, `cmd/bastion/main.go`,
+  `internal/sshtest/{target,keys}.go`, `cmd/proxy/main.go`,
   `internal/config/config.go` (+ `config.example.yaml`),
   `internal/auth/user/feedback.go` (one new function).
 - Key types: `routing.ParseUsername`/`NormalizeTarget`, `routing.Route`
@@ -20,7 +20,7 @@
   (`Serve` + `KillSession`/`KillSubject`/`KillAll`/`Sessions`), `proxy.Options`;
   `user.FailureMessageFor`/`OutageMessageFor`/`OutageDetailPolicyService`.
 - New config keys (decoder is strict — struct and example move together):
-  `bastion.id` (**required**), `management.token`,
+  `proxy.id` (**required**), `management.token`,
   `management.cache.{max_ttl,stale_after}`, `auth.target.method` +
   `auth.target.static_key.{key_path,username}`,
   `proxy.{dial_timeout,default_target_port}`.
@@ -56,7 +56,7 @@ policy request, and a log line, so whitespace or control characters in it are a
 log-forging primitive, not a cosmetic problem.
 
 `Resolve` wraps the management client's error **unchanged** (`fmt.Errorf
-("authorize: %w", err)`), so `mgmt.IsUnauthorized` still classifies a deny after
+("authorize: %w", err)`), so `control.IsUnauthorized` still classifies a deny after
 the wrap. Everything the user is told depends on that classification surviving;
 a `routing.ErrDenied` of its own would have been a second, drifting copy.
 
@@ -129,9 +129,9 @@ all (`ssh -N`) gets an unexplained close.
 
 ### Host keys (D7)
 
-Every connection reports the target's key to the management server and obeys the
-answer; the bastion keeps no known-hosts file, because a local trust store is a
-second policy diverging per bastion. A report failure is **fail-closed** — an
+Every connection reports the target's key to Hoplock Control and obeys the
+answer; the proxy keeps no known-hosts file, because a local trust store is a
+second policy diverging per proxy. A report failure is **fail-closed** — an
 unverifiable host key is what a man-in-the-middle looks like. The refusal reason
 is stashed on the session (`hostKeyErr`) rather than parsed back out of
 x/crypto's handshake error, so classification does not depend on another
@@ -143,8 +143,8 @@ library's error formatting.
 `Login` — the login is what the user typed. A kill writes the operator's reason
 to every open channel, sends a non-zero exit status, and closes; a kill for an
 unknown session returns nil, because the server broadcasts to a fleet and does
-not know which bastion holds which session. `Serve` also calls `KillAll` on
-shutdown: a bastion going away owes users the same explanation a revocation does.
+not know which proxy holds which session. `Serve` also calls `KillAll` on
+shutdown: a proxy going away owes users the same explanation a revocation does.
 
 ### The target plane (`internal/auth/target`) — placeholder warning
 
@@ -169,12 +169,12 @@ cannot spell the name differently.
   pty/env/exec/shell, exit statuses, and an echo channel for non-session types.
   It is a package, not a helper, because two test packages need it — and 0011's
   containerised sshd replaces it for scenario testing, not for these.
-- `internal/proxy` tests drive a **real SSH client** through a real bastion into
-  it, with a fake `mgmt.Client` so each decision is a field: exec, shell+pty,
+- `internal/proxy` tests drive a **real SSH client** through a real proxy into
+  it, with a fake `control.Client` so each decision is a field: exec, shell+pty,
   exit status, deny vs outage text, target-unreachable, host-key report and
   rejection, allow-list both directions, next-hop refusal, malformed username,
   kills, and a goroutine-count check for leaks.
-- `cmd/mock-management/proxy_e2e_test.go` is the acceptance test: the same
+- `cmd/mock-control/proxy_e2e_test.go` is the acceptance test: the same
   engine against the **real contract over HTTP**, with fixtures built in-test
   (the shipped fixture fingerprints cannot match a generated key). Follow that
   pattern for 0006/0007 end-to-end tests — the mock is a `main` package and can
@@ -186,11 +186,11 @@ cannot spell the name differently.
 
 - **No new prompts**; numbering invariants hold — 0005 moved to `implemented/`,
   0006–0011 remain queued.
-- `cmd/bastion` now wires `CachingClient` + `RevocationStream` + the proxy, which
+- `cmd/proxy` now wires `CachingClient` + `RevocationStream` + the proxy, which
   closes 0003's follow-up. The bearer token finally has a config field
   (`management.token`).
 - Logging is still `*log.Logger` lines. 0010 turns the session start/end,
-  channel, host-key, and kill events into `mgmt.LogRecord`s; the call sites
+  channel, host-key, and kill events into `control.LogRecord`s; the call sites
   already log only redaction-safe fields.
 - `serveGlobalRequests` blocks the first global request until the leg is up
   rather than refusing it. That is right for `tcpip-forward` and harmless for

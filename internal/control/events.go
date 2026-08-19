@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"bufio"
@@ -18,19 +18,19 @@ import (
 const contentTypeNDJSON = "application/x-ndjson"
 
 // maxEventLineBytes caps one event line, so a misbehaving or hostile server
-// cannot make the bastion buffer without bound.
+// cannot make the proxy buffer without bound.
 const maxEventLineBytes = 1 << 20
 
-// EventStreamer opens the server→bastion revocation stream. It is separate from
+// EventStreamer opens the server→proxy revocation stream. It is separate from
 // Client because it is the one call that is long-lived rather than
 // request/response: a decorator around Client (see CachingClient) has nothing
 // to add to it, and a fake Client in a test should not have to implement it.
 // RESTClient implements both.
 type EventStreamer interface {
-	// StreamEvents subscribes to the events for one bastion, resuming after
+	// StreamEvents subscribes to the events for one proxy, resuming after
 	// lastEventID when it is non-empty. The returned stream stays open until it
 	// fails, is closed, or ctx ends.
-	StreamEvents(ctx context.Context, bastionID, lastEventID string) (EventStream, error)
+	StreamEvents(ctx context.Context, proxyID, lastEventID string) (EventStream, error)
 }
 
 // EventStream delivers revocation events in the order the server sent them.
@@ -88,7 +88,7 @@ func (s *ndjsonEventStream) Close() error { return s.body.Close() }
 // validateEvent enforces "the payload named by type is present and selects
 // something", so a dispatcher can act on an event without re-checking the
 // contract. An unrecognised type is deliberately not an error: a newer server
-// must be able to add an event type without breaking older bastions, which then
+// must be able to add an event type without breaking older proxies, which then
 // ignore it (see RevocationStream.dispatch).
 func validateEvent(ev *RevocationEvent) error {
 	if ev.EventID == "" {
@@ -125,8 +125,8 @@ func validateEvent(ev *RevocationEvent) error {
 // indistinguishable from a crash. This phase's job is to carry the reason to
 // the implementation intact.
 //
-// A kill for a session, subject, or bastion the registry knows nothing about is
-// not an error — the server may be addressing sessions this bastion never had,
+// A kill for a session, subject, or proxy the registry knows nothing about is
+// not an error — the server may be addressing sessions this proxy never had,
 // or has already lost. Implementations are called from the stream's goroutine,
 // so they must not block for long.
 type SessionRegistry interface {
@@ -134,7 +134,7 @@ type SessionRegistry interface {
 	KillSession(ctx context.Context, sessionID, reason string) error
 	// KillSubject tears down every session belonging to a subject.
 	KillSubject(ctx context.Context, subject, reason string) error
-	// KillAll tears down every session on this bastion.
+	// KillAll tears down every session on this proxy.
 	KillAll(ctx context.Context, reason string) error
 }
 

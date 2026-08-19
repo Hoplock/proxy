@@ -21,7 +21,7 @@ apart in the code, in the audit record, and in the documentation.
 ### The policy engine (`internal/filter`)
 Pure logic, no SSH types, exhaustively unit-tested in isolation.
 
-- **Filtered exec (guardrail).** The management server supplies an **ordered
+- **Filtered exec (guardrail).** Hoplock Control supplies an **ordered
   rule list** — each rule a `match` pattern with **its own action**
   (`allow_and_log`, `block_command`, `warn_and_continue`, `kill_session`) and an
   optional operator `message` — plus a **mode** (`whitelist` | `blacklist`)

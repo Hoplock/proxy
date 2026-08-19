@@ -1,4 +1,4 @@
-# SecureCommandProxy — developer entry points.
+# Hoplock Proxy — developer entry points.
 # See docs/PROTOCOL.md before contributing.
 
 GO ?= go
@@ -10,14 +10,14 @@ LISTEN ?= 127.0.0.1:8080
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build test vet lint fmt license-check openapi-check tidy run-bastion run-mock clean
+.PHONY: all build test vet lint fmt license-check openapi-check tidy run-proxy run-mock clean
 
 all: build vet test lint
 
 ## build: compile all binaries into $(BIN_DIR)
 build:
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/bastion ./cmd/bastion
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/mock-management ./cmd/mock-management
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/hoplock-proxy ./cmd/proxy
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/mock-control ./cmd/mock-control
 	$(GO) build ./...
 
 ## test: run all unit tests with the race detector
@@ -49,26 +49,26 @@ license-check:
 	fi; \
 	echo "license headers OK"
 
-## openapi-check: validate the management API contract as an OpenAPI 3 document
+## openapi-check: validate the Control API contract as an OpenAPI 3 document
 ## (needs `pip install openapi-spec-validator`; CI installs it)
 openapi-check:
 	$(PYTHON) -c 'from openapi_spec_validator import validate; \
 	from openapi_spec_validator.readers import read_from_filename; \
-	spec, _ = read_from_filename("api/management.yaml"); \
+	spec, _ = read_from_filename("api/control.yaml"); \
 	validate(spec); \
-	print("api/management.yaml is a valid OpenAPI 3 document")'
+	print("api/control.yaml is a valid OpenAPI 3 document")'
 
 ## tidy: tidy and verify go.mod/go.sum
 tidy:
 	$(GO) mod tidy
 
-## run-bastion: run the bastion daemon (CONFIG=path to override)
-run-bastion:
-	$(GO) run ./cmd/bastion -config $(CONFIG)
+## run-proxy: run the proxy daemon (CONFIG=path to override)
+run-proxy:
+	$(GO) run ./cmd/proxy -config $(CONFIG)
 
-## run-mock: run the mock management server (LISTEN=host:port to override)
+## run-mock: run the mock Hoplock Control (LISTEN=host:port to override)
 run-mock:
-	$(GO) run ./cmd/mock-management -listen $(LISTEN)
+	$(GO) run ./cmd/mock-control -listen $(LISTEN)
 
 ## clean: remove build output
 clean:

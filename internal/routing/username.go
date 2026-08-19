@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// DefaultTargetPort is the SSH port used when the management server's route
+// DefaultTargetPort is the SSH port used when Hoplock Control's route
 // does not name one. The port is the server's to choose (D2); this is only the
 // fallback for a response that left it unset.
 const DefaultTargetPort = 22
@@ -20,7 +20,7 @@ const DefaultTargetPort = 22
 const maxHostnameLength = 253
 
 // Parsing outcomes. Both are user input problems, not policy decisions: they
-// are decided locally, before the management server is asked anything, and must
+// are decided locally, before Hoplock Control is asked anything, and must
 // never be reported to the user as a denial.
 var (
 	// ErrMalformedUsername means the SSH username did not carry a target in the
@@ -79,7 +79,7 @@ func ParseUsername(username, delimiter string) (login, target string, err error)
 }
 
 // NormalizeTarget canonicalises a target so that two spellings of one host
-// reach the management server — and the audit log — as one string. It lowercases
+// reach Hoplock Control — and the audit log — as one string. It lowercases
 // (DNS is case-insensitive, policy keys are not) and drops the root dot.
 func NormalizeTarget(target string) (string, error) {
 	t := strings.TrimSpace(target)
@@ -127,9 +127,9 @@ func validateHostname(host string) error {
 	return nil
 }
 
-// validateLogin rejects a login the bastion could not safely present, log, or
+// validateLogin rejects a login the proxy could not safely present, log, or
 // reason about. It does not decide whether the login exists — that is the
-// management server's answer, not the bastion's (D2).
+// Hoplock Control's answer, not the proxy's (D2).
 func validateLogin(login string) error {
 	if len(login) > 64 {
 		return errors.New("login is longer than 64 characters")

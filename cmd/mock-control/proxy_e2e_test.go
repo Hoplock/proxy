@@ -15,16 +15,16 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/target"
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/config"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
-	"github.com/mauroasilva/securecommandproxy/internal/proxy"
-	"github.com/mauroasilva/securecommandproxy/internal/routing"
-	"github.com/mauroasilva/securecommandproxy/internal/sshtest"
+	"github.com/hoplock/proxy/internal/auth/target"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/proxy"
+	"github.com/hoplock/proxy/internal/routing"
+	"github.com/hoplock/proxy/internal/sshtest"
 )
 
-// This file is the phase's end-to-end test: a real SSH client, a real bastion,
+// This file is the phase's end-to-end test: a real SSH client, a real proxy,
 // a real target, and the real management contract spoken over HTTP to the mock
 // server in this package.
 //
@@ -36,7 +36,7 @@ import (
 
 const e2eSessionID = "sess-e2e"
 
-// e2eStack is a bastion wired to the mock management server, with a stand-in
+// e2eStack is a proxy wired to the mock Hoplock Control, with a stand-in
 // target behind it.
 type e2eStack struct {
 	mock     *mock
@@ -71,7 +71,7 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 	}
 
 	fx := &fixtures{
-		BastionToken: "e2e-token",
+		ProxyToken: "e2e-token",
 		Users: []fixtureUser{{
 			Login: "alice",
 			Identity: fixtureIdentity{
@@ -84,18 +84,18 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 		Routes: []fixtureRoute{{
 			Login:             "alice",
 			Target:            tgt.Host(),
-			RouteType:         string(mgmt.RouteTypeDirect),
+			RouteType:         string(control.RouteTypeDirect),
 			TargetPort:        tgt.Port(),
 			Permissions:       "deployGroup",
 			PermittedChannels: permittedChannels,
-			FilterPolicy:      fixtureFilterPolicy{Mode: string(mgmt.FilterModeBlacklist)},
+			FilterPolicy:      fixtureFilterPolicy{Mode: string(control.FilterModeBlacklist)},
 		}},
-		HostKeys: fixtureHostKeys{Decision: string(mgmt.HostKeyAccept)},
+		HostKeys: fixtureHostKeys{Decision: string(control.HostKeyAccept)},
 	}
 	m := startMock(t, fx, serverOptions{})
 
 	userAuth, err := user.NewFromConfig(
-		config.UserAuth{Methods: []string{string(mgmt.AuthMethodCert)}},
+		config.UserAuth{Methods: []string{string(control.AuthMethodCert)}},
 		user.Options{Client: m.client},
 	)
 	if err != nil {
@@ -117,7 +117,7 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 		Resolver:        resolver,
 		TargetAuth:      targetAuth,
 		Client:          m.client,
-		BastionID:       "bastion-e2e",
+		ProxyID:         "proxy-e2e",
 		TargetDelimiter: config.DefaultTargetDelimiter,
 		NewSessionID:    func() string { return e2eSessionID },
 	})
@@ -147,7 +147,7 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 	return &e2eStack{mock: m, target: tgt, proxy: server, addr: listener.Addr().String(), clientKe: clientKey}
 }
 
-// dial connects to the bastion the way a user's SSH client would, with the
+// dial connects to the proxy the way a user's SSH client would, with the
 // target encoded in the username (D1).
 func (s *e2eStack) dial(t *testing.T) *ssh.Client {
 	t.Helper()
@@ -158,14 +158,14 @@ func (s *e2eStack) dial(t *testing.T) *ssh.Client {
 		Timeout:         10 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("dial the bastion: %v", err)
+		t.Fatalf("dial the proxy: %v", err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	return client
 }
 
 // TestEndToEndDirectRoute is the phase's acceptance criterion: a user
-// authenticates to the bastion, is authorized to a direct target by the real
+// authenticates to the proxy, is authorized to a direct target by the real
 // management contract, runs a command, and gets its output and exit status.
 func TestEndToEndDirectRoute(t *testing.T) {
 	stack := startE2E(t, []string{"session"})
@@ -247,10 +247,10 @@ func TestEndToEndDirectRoute(t *testing.T) {
 		// The mock records keys on first sighting (D7). Reporting the same key
 		// again now must come back known — which it can only be if the proxy
 		// reported it during the dial above.
-		resp, err := stack.mock.client.ReportHostKey(context.Background(), &mgmt.HostKeyReportRequest{
+		resp, err := stack.mock.client.ReportHostKey(context.Background(), &control.HostKeyReportRequest{
 			Target:     stack.target.Host(),
 			TargetPort: stack.target.Port(),
-			HostKey: mgmt.PublicKeyMaterial{
+			HostKey: control.PublicKeyMaterial{
 				Type:        stack.target.HostKey().Type(),
 				Fingerprint: ssh.FingerprintSHA256(stack.target.HostKey()),
 			},
@@ -260,7 +260,7 @@ func TestEndToEndDirectRoute(t *testing.T) {
 			t.Fatalf("ReportHostKey: %v", err)
 		}
 		if !resp.Known {
-			t.Error("the target's host key is unknown to the management server; the proxy did not report it")
+			t.Error("the target's host key is unknown to Hoplock Control; the proxy did not report it")
 		}
 	})
 }
@@ -306,7 +306,7 @@ func TestEndToEndUnauthorizedTarget(t *testing.T) {
 		Timeout:         10 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("dial the bastion: %v", err)
+		t.Fatalf("dial the proxy: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"bytes"
@@ -180,7 +180,7 @@ func TestCachingClientNeverCachesWithoutTheServersPermission(t *testing.T) {
 			r.Cache = &CacheHint{Key: "authz:alice:host"}
 			return r
 		}()},
-		{"a ttl without a key: the bastion never invents one", func() *AuthorizeResponse {
+		{"a ttl without a key: the proxy never invents one", func() *AuthorizeResponse {
 			r := testAuthorizeResponse("", 0)
 			r.Cache = &CacheHint{TTLSeconds: 300}
 			return r
@@ -279,7 +279,7 @@ func TestCachingClientClampsTheTTLDownwardOnly(t *testing.T) {
 }
 
 // TestCachingClientReportsAClamp: shortening the server's lifetime is the one
-// place a local setting overrides the PDP, and a fleet where one bastion is
+// place a local setting overrides the PDP, and a fleet where one proxy is
 // configured differently is unexplainable from the outside if that is silent.
 func TestCachingClientReportsAClamp(t *testing.T) {
 	newCache := func(t *testing.T, maxTTL time.Duration, serverTTL int) (*CachingClient, *bytes.Buffer) {

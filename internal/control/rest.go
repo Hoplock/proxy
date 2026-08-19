@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"bytes"
@@ -16,26 +16,26 @@ import (
 	"time"
 )
 
-// DefaultTimeout bounds a single management API call when Options.Timeout is
+// DefaultTimeout bounds a single Control API call when Options.Timeout is
 // left zero. Every call is on a session's critical path, so waiting forever is
 // never the right behaviour.
 const DefaultTimeout = 10 * time.Second
 
-// defaultUserAgent identifies the bastion's client to the server.
-const defaultUserAgent = "securecommandproxy-bastion/1"
+// defaultUserAgent identifies the proxy's client to the server.
+const defaultUserAgent = "hoplock-proxy/1"
 
 // maxErrorBodyBytes caps how much of an error response we read before giving
-// up, so a misbehaving or hostile server cannot make the bastion buffer without
+// up, so a misbehaving or hostile server cannot make the proxy buffer without
 // bound on a failure path.
 const maxErrorBodyBytes = 64 << 10
 
 // Options configures a RESTClient.
 type Options struct {
-	// BaseURL is the management server root, e.g. "https://mgmt.example.com".
-	// Required; taken from the bastion's bootstrap config.
+	// BaseURL is Hoplock Control root, e.g. "https://control.example.com".
+	// Required; taken from the proxy's bootstrap config.
 	BaseURL string
-	// Token authenticates the bastion to the management server as a bearer
-	// token. This is the seam for the bastion→server channel credential: a
+	// Token authenticates the proxy to Hoplock Control as a bearer
+	// token. This is the seam for the proxy→server channel credential: a
 	// deployment may replace it with mTLS by supplying its own HTTPClient.
 	Token string
 	// HTTPClient is used for all calls. When nil a client with sane transport
@@ -59,20 +59,20 @@ type RESTClient struct {
 
 var _ Client = (*RESTClient)(nil)
 
-// NewRESTClient validates opts and returns a client for the management API.
+// NewRESTClient validates opts and returns a client for the Control API.
 func NewRESTClient(opts Options) (*RESTClient, error) {
 	if opts.BaseURL == "" {
-		return nil, errors.New("mgmt: BaseURL is required")
+		return nil, errors.New("control: BaseURL is required")
 	}
 	u, err := url.Parse(opts.BaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("mgmt: parse BaseURL: %w", err)
+		return nil, fmt.Errorf("control: parse BaseURL: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("mgmt: BaseURL scheme %q must be http or https", u.Scheme)
+		return nil, fmt.Errorf("control: BaseURL scheme %q must be http or https", u.Scheme)
 	}
 	if u.Host == "" {
-		return nil, errors.New("mgmt: BaseURL has no host")
+		return nil, errors.New("control: BaseURL has no host")
 	}
 	// Paths are absolute, so a base path must not silently swallow them.
 	u.Path = strings.TrimSuffix(u.Path, "/")
@@ -169,7 +169,7 @@ func (c *RESTClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*Aut
 		}
 	}
 	if c := resp.Cache; c != nil {
-		// A cache hint the bastion cannot honour exactly is refused rather than
+		// A cache hint the proxy cannot honour exactly is refused rather than
 		// guessed at: it may not invent a key, and a negative lifetime has no
 		// meaning. Either would put the PEP in charge of the decision's
 		// lifetime, which is what the server-set TTL exists to prevent.
@@ -183,20 +183,20 @@ func (c *RESTClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*Aut
 	return resp, nil
 }
 
-// StreamEvents opens the bastion's revocation stream and returns the events as
+// StreamEvents opens the proxy's revocation stream and returns the events as
 // they arrive. It implements EventStreamer.
 //
 // The call is deliberately outside the per-call timeout: the response is
 // long-lived by design, so its only bound is ctx. lastEventID is the last event
-// the bastion processed, echoed back so the server can replay the gap; pass ""
+// the proxy processed, echoed back so the server can replay the gap; pass ""
 // on a first subscription.
-func (c *RESTClient) StreamEvents(ctx context.Context, bastionID, lastEventID string) (EventStream, error) {
+func (c *RESTClient) StreamEvents(ctx context.Context, proxyID, lastEventID string) (EventStream, error) {
 	const op = "StreamEvents"
-	if bastionID == "" {
-		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: bastion id is required", ErrBadRequest)}
+	if proxyID == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: proxy id is required", ErrBadRequest)}
 	}
 
-	u := c.baseURL.String() + BastionEventsPath(bastionID)
+	u := c.baseURL.String() + ProxyEventsPath(proxyID)
 	if lastEventID != "" {
 		u += "?" + url.Values{QueryLastEventID: []string{lastEventID}}.Encode()
 	}

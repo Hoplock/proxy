@@ -21,13 +21,13 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Fatalf("Load(%s) returned error: %v", exampleConfigPath, err)
 	}
 
-	if got, want := cfg.Bastion.ListenAddr, "0.0.0.0:2222"; got != want {
+	if got, want := cfg.Proxy.ListenAddr, "0.0.0.0:2222"; got != want {
 		t.Errorf("ListenAddr = %q, want %q", got, want)
 	}
-	if got, want := cfg.Bastion.HostKeyPath, "/etc/securecommandproxy/host_key"; got != want {
+	if got, want := cfg.Proxy.HostKeyPath, "/etc/hoplock/host_key"; got != want {
 		t.Errorf("HostKeyPath = %q, want %q", got, want)
 	}
-	if got, want := cfg.Management.BaseURL, "https://management.example.com"; got != want {
+	if got, want := cfg.Control.BaseURL, "https://control.example.com"; got != want {
 		t.Errorf("BaseURL = %q, want %q", got, want)
 	}
 	if got, want := cfg.Routing.TargetDelimiter, DefaultTargetDelimiter; got != want {
@@ -48,16 +48,16 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 const minimalConfig = `
-bastion:
-  id: "bastion-1"
+proxy:
+  id: "proxy-1"
   listen_addr: "0.0.0.0:2222"
-  host_key_path: "/etc/securecommandproxy/host_key"
-management:
-  base_url: "https://management.example.com"
+  host_key_path: "/etc/hoplock/host_key"
+control:
+  base_url: "https://control.example.com"
 auth:
   target:
     static_key:
-      key_path: "/etc/securecommandproxy/target_key"
+      key_path: "/etc/hoplock/target_key"
 `
 
 func TestParseAppliesDelimiterDefault(t *testing.T) {
@@ -78,7 +78,7 @@ func TestParseRejectsMalformed(t *testing.T) {
 	}{
 		{
 			name:  "not yaml",
-			input: "bastion: [this is not: valid\n",
+			input: "proxy: [this is not: valid\n",
 			want:  ErrMalformed,
 		},
 		{
@@ -97,11 +97,11 @@ routing:
 		{
 			name: "wrong type",
 			input: `
-bastion:
+proxy:
   listen_addr: ["0.0.0.0:2222"]
-  host_key_path: "/etc/securecommandproxy/host_key"
-management:
-  base_url: "https://management.example.com"
+  host_key_path: "/etc/hoplock/host_key"
+control:
+  base_url: "https://control.example.com"
 `,
 			want: ErrMalformed,
 		},
@@ -123,9 +123,9 @@ management:
 func TestValidate(t *testing.T) {
 	valid := func() Config {
 		return Config{
-			Bastion:    Bastion{ID: "bastion-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
-			Management: Management{BaseURL: "https://management.example.com"},
-			Routing:    Routing{TargetDelimiter: DefaultTargetDelimiter},
+			Proxy:   Proxy{ID: "proxy-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
+			Control: Control{BaseURL: "https://control.example.com"},
+			Routing: Routing{TargetDelimiter: DefaultTargetDelimiter},
 			Auth: Auth{
 				User: UserAuth{Methods: DefaultUserAuthMethods()},
 				Target: TargetAuth{
@@ -145,38 +145,38 @@ func TestValidate(t *testing.T) {
 		{name: "valid"},
 		{
 			name:      "missing listen addr",
-			mutate:    func(c *Config) { c.Bastion.ListenAddr = "" },
-			wantField: "bastion.listen_addr",
+			mutate:    func(c *Config) { c.Proxy.ListenAddr = "" },
+			wantField: "proxy.listen_addr",
 			wantCause: ErrMissing,
 		},
 		{
 			name:      "listen addr without port",
-			mutate:    func(c *Config) { c.Bastion.ListenAddr = "0.0.0.0" },
-			wantField: "bastion.listen_addr",
+			mutate:    func(c *Config) { c.Proxy.ListenAddr = "0.0.0.0" },
+			wantField: "proxy.listen_addr",
 			wantCause: ErrInvalid,
 		},
 		{
 			name:      "missing host key path",
-			mutate:    func(c *Config) { c.Bastion.HostKeyPath = "" },
-			wantField: "bastion.host_key_path",
+			mutate:    func(c *Config) { c.Proxy.HostKeyPath = "" },
+			wantField: "proxy.host_key_path",
 			wantCause: ErrMissing,
 		},
 		{
 			name:      "missing base url",
-			mutate:    func(c *Config) { c.Management.BaseURL = "" },
-			wantField: "management.base_url",
+			mutate:    func(c *Config) { c.Control.BaseURL = "" },
+			wantField: "control.base_url",
 			wantCause: ErrMissing,
 		},
 		{
 			name:      "base url without scheme",
-			mutate:    func(c *Config) { c.Management.BaseURL = "management.example.com" },
-			wantField: "management.base_url",
+			mutate:    func(c *Config) { c.Control.BaseURL = "control.example.com" },
+			wantField: "control.base_url",
 			wantCause: ErrInvalid,
 		},
 		{
 			name:      "base url with wrong scheme",
-			mutate:    func(c *Config) { c.Management.BaseURL = "ftp://management.example.com" },
-			wantField: "management.base_url",
+			mutate:    func(c *Config) { c.Control.BaseURL = "ftp://management.example.com" },
+			wantField: "control.base_url",
 			wantCause: ErrInvalid,
 		},
 		{
@@ -242,7 +242,7 @@ func TestValidateReportsAllFields(t *testing.T) {
 	if !errors.As(err, &verr) {
 		t.Fatalf("Validate() error = %v (%T), want *ValidationError", err, err)
 	}
-	// bastion.id, bastion.listen_addr, bastion.host_key_path,
+	// proxy.id, proxy.listen_addr, proxy.host_key_path,
 	// management.base_url, routing.target_delimiter, auth.user.methods, and the
 	// unset auth.target.method — every problem in one pass, so an operator can
 	// fix the file in a single edit.
@@ -275,12 +275,12 @@ func TestParseAppliesUserAuthDefaults(t *testing.T) {
 // including durations as strings.
 func TestParseUserAuthSection(t *testing.T) {
 	const src = `
-bastion:
-  id: "bastion-1"
+proxy:
+  id: "proxy-1"
   listen_addr: "0.0.0.0:2222"
-  host_key_path: "/etc/securecommandproxy/host_key"
-management:
-  base_url: "https://management.example.com"
+  host_key_path: "/etc/hoplock/host_key"
+control:
+  base_url: "https://control.example.com"
 auth:
   user:
     methods: ["cert"]
@@ -290,7 +290,7 @@ auth:
       max_wait: 90s
   target:
     static_key:
-      key_path: "/etc/securecommandproxy/target_key"
+      key_path: "/etc/hoplock/target_key"
 `
 	cfg, err := Parse(strings.NewReader(src))
 	if err != nil {
@@ -316,11 +316,11 @@ auth:
 // method must fail loudly rather than be silently undone.
 func TestParseRejectsEmptyMethodList(t *testing.T) {
 	const src = `
-bastion:
+proxy:
   listen_addr: "0.0.0.0:2222"
-  host_key_path: "/etc/securecommandproxy/host_key"
-management:
-  base_url: "https://management.example.com"
+  host_key_path: "/etc/hoplock/host_key"
+control:
+  base_url: "https://control.example.com"
 auth:
   user:
     methods: []
@@ -337,9 +337,9 @@ auth:
 func TestValidateAuth(t *testing.T) {
 	valid := func() Config {
 		return Config{
-			Bastion:    Bastion{ID: "bastion-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
-			Management: Management{BaseURL: "https://management.example.com"},
-			Routing:    Routing{TargetDelimiter: DefaultTargetDelimiter},
+			Proxy:   Proxy{ID: "proxy-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
+			Control: Control{BaseURL: "https://control.example.com"},
+			Routing: Routing{TargetDelimiter: DefaultTargetDelimiter},
 			Auth: Auth{
 				User: UserAuth{Methods: DefaultUserAuthMethods()},
 				Target: TargetAuth{
@@ -424,13 +424,13 @@ func TestValidateAuth(t *testing.T) {
 }
 
 // TestValidateProxyAndTargetAuth covers the settings phase 0005 added: the
-// bastion's own id, the target authentication plane, and the engine's bounds.
+// proxy's own id, the target authentication plane, and the engine's bounds.
 func TestValidateProxyAndTargetAuth(t *testing.T) {
 	valid := func() Config {
 		return Config{
-			Bastion:    Bastion{ID: "bastion-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
-			Management: Management{BaseURL: "https://management.example.com"},
-			Routing:    Routing{TargetDelimiter: DefaultTargetDelimiter},
+			Proxy:   Proxy{ID: "proxy-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
+			Control: Control{BaseURL: "https://control.example.com"},
+			Routing: Routing{TargetDelimiter: DefaultTargetDelimiter},
 			Auth: Auth{
 				User: UserAuth{Methods: DefaultUserAuthMethods()},
 				Target: TargetAuth{
@@ -448,12 +448,12 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 		wantCause error
 	}{
 		{
-			// The management server addresses this bastion by id, including
-			// its revocation stream: a nameless bastion cannot be told to kill
+			// Hoplock Control addresses this proxy by id, including
+			// its revocation stream: a nameless proxy cannot be told to kill
 			// a session.
-			name:      "missing bastion id",
-			mutate:    func(c *Config) { c.Bastion.ID = "" },
-			wantField: "bastion.id",
+			name:      "missing proxy id",
+			mutate:    func(c *Config) { c.Proxy.ID = "" },
+			wantField: "proxy.id",
 			wantCause: ErrMissing,
 		},
 		{
@@ -470,27 +470,27 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 		},
 		{
 			name:      "negative dial timeout",
-			mutate:    func(c *Config) { c.Proxy.DialTimeout = -time.Second },
-			wantField: "proxy.dial_timeout",
+			mutate:    func(c *Config) { c.Dial.DialTimeout = -time.Second },
+			wantField: "dial.dial_timeout",
 			wantCause: ErrInvalid,
 		},
 		{
 			name:      "port out of range",
-			mutate:    func(c *Config) { c.Proxy.DefaultTargetPort = 70000 },
-			wantField: "proxy.default_target_port",
+			mutate:    func(c *Config) { c.Dial.DefaultTargetPort = 70000 },
+			wantField: "dial.default_target_port",
 			wantCause: ErrInvalid,
 		},
 		{
 			name:      "negative cache clamp",
-			mutate:    func(c *Config) { c.Management.Cache.MaxTTL = -time.Minute },
-			wantField: "management.cache.max_ttl",
+			mutate:    func(c *Config) { c.Control.Cache.MaxTTL = -time.Minute },
+			wantField: "control.cache.max_ttl",
 			wantCause: ErrInvalid,
 		},
 		{
-			// A bastion may run without a bearer token (development topologies
+			// A proxy may run without a bearer token (development topologies
 			// do), and the default cache settings mean "honour the server".
 			name:   "token and cache are optional",
-			mutate: func(c *Config) { c.Management.Token = "" },
+			mutate: func(c *Config) { c.Control.Token = "" },
 		},
 	}
 
@@ -533,8 +533,8 @@ func TestParseAppliesTargetAuthDefault(t *testing.T) {
 	if got, want := cfg.Auth.Target.Method, TargetAuthMethodStaticKey; got != want {
 		t.Errorf("Auth.Target.Method = %q, want %q (default)", got, want)
 	}
-	if got := cfg.Proxy; got != (Proxy{}) {
-		t.Errorf("Proxy = %+v, want the zero value (package defaults apply)", got)
+	if got := cfg.Dial; got != (Dial{}) {
+		t.Errorf("Dial = %+v, want the zero value (package defaults apply)", got)
 	}
 }
 
@@ -546,17 +546,17 @@ func TestExampleConfigCarriesTheProxySettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(%s): %v", exampleConfigPath, err)
 	}
-	if cfg.Bastion.ID == "" {
-		t.Error("the example config does not set bastion.id")
+	if cfg.Proxy.ID == "" {
+		t.Error("the example config does not set proxy.id")
 	}
-	if got, want := cfg.Proxy.DialTimeout, 15*time.Second; got != want {
-		t.Errorf("Proxy.DialTimeout = %v, want %v", got, want)
+	if got, want := cfg.Dial.DialTimeout, 15*time.Second; got != want {
+		t.Errorf("Dial.DialTimeout = %v, want %v", got, want)
 	}
-	if got, want := cfg.Proxy.DefaultTargetPort, 22; got != want {
-		t.Errorf("Proxy.DefaultTargetPort = %d, want %d", got, want)
+	if got, want := cfg.Dial.DefaultTargetPort, 22; got != want {
+		t.Errorf("Dial.DefaultTargetPort = %d, want %d", got, want)
 	}
-	if got, want := cfg.Management.Cache.StaleAfter, 30*time.Second; got != want {
-		t.Errorf("Management.Cache.StaleAfter = %v, want %v", got, want)
+	if got, want := cfg.Control.Cache.StaleAfter, 30*time.Second; got != want {
+		t.Errorf("Control.Cache.StaleAfter = %v, want %v", got, want)
 	}
 	if got, want := cfg.Auth.Target.Method, TargetAuthMethodStaticKey; got != want {
 		t.Errorf("Auth.Target.Method = %q, want %q", got, want)

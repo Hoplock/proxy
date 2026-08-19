@@ -12,9 +12,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/config"
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // stubAuthenticator is a UserAuthenticator with scripted answers, for the
@@ -288,12 +288,12 @@ func TestRegistryFallsBackFromCertificateToPassword(t *testing.T) {
 	_, pub := testKey(t)
 
 	_, client := newRecordingServer(t, map[string]http.HandlerFunc{
-		mgmt.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
+		control.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
 			writeDeny(t, w, "unknown_key", "no")
 		},
-		mgmt.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-				Status:   mgmt.AuthStatusAuthenticated,
+		control.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+				Status:   control.AuthStatusAuthenticated,
 				Identity: aliceIdentity(),
 			})
 		},

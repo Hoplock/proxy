@@ -13,11 +13,11 @@ import (
 // second factor is outstanding (PLAN §4.3). The SSH layer implements it over
 // keyboard-interactive; tests implement it to assert what the user was told.
 //
-// It exists because a bastion that waits silently for a phone approval is
-// indistinguishable from a bastion that has hung. Everything here is
+// It exists because a proxy that waits silently for a phone approval is
+// indistinguishable from a proxy that has hung. Everything here is
 // informational: a prompter never collects an answer, it only speaks.
 type MFAPrompter interface {
-	// Challenge is called once, when the management server issues the
+	// Challenge is called once, when Hoplock Control issues the
 	// challenge, with the server's own prompt text.
 	Challenge(instruction string) error
 	// Waiting is called while polling, with how long the user has been waiting,
@@ -59,7 +59,7 @@ type silentPrompter struct{}
 func (silentPrompter) Challenge(string) error              { return nil }
 func (silentPrompter) Waiting(string, time.Duration) error { return nil }
 
-// DefaultMFAPrompt is shown when the management server issues a challenge with
+// DefaultMFAPrompt is shown when Hoplock Control issues a challenge with
 // no prompt text of its own. The server's text is preferred: it knows which
 // factor the user actually has.
 const DefaultMFAPrompt = "Approve the login request on your second factor to continue."

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"context"
@@ -22,13 +22,13 @@ const (
 	DefaultHeartbeatTimeout = 20 * time.Second
 	// DefaultMinBackoff is the first reconnect delay.
 	DefaultMinBackoff = time.Second
-	// DefaultMaxBackoff caps the reconnect delay, so a bastion keeps trying at a
+	// DefaultMaxBackoff caps the reconnect delay, so a proxy keeps trying at a
 	// steady rate instead of drifting into hours.
 	DefaultMaxBackoff = 30 * time.Second
 	// defaultRevocationReason is shown to the user when the server killed a
 	// session without saying why. PLAN §4.3: a revoked session must never look
 	// like a crash, so there is always something to display.
-	defaultRevocationReason = "your session was ended by the management server"
+	defaultRevocationReason = "your session was ended by Hoplock Control"
 )
 
 // errHeartbeatMissed ends a connection whose heartbeats stopped arriving.
@@ -52,12 +52,12 @@ type StreamOptions struct {
 	Logger *log.Logger
 }
 
-// RevocationStream keeps the bastion's outbound subscription to the management
+// RevocationStream keeps the proxy's outbound subscription to the management
 // server open and routes what arrives (PLAN §6.4).
 //
-// The subscription is outbound because bastions sit behind firewalls and must
+// The subscription is outbound because proxies sit behind firewalls and must
 // not need an inbound listener: this stream is the server's only way to reach a
-// running bastion, which makes it both the kill switch for live sessions and
+// running proxy, which makes it both the kill switch for live sessions and
 // the thing that makes a cached authorize decision safe to hold.
 //
 // It reconnects for as long as it is asked to, resuming from the last event it
@@ -124,17 +124,17 @@ func NewRevocationStream(src EventStreamer, cache CacheController, registry Sess
 // bounded exponential backoff after any transport or protocol failure.
 //
 // It returns nil when ctx ends — that is the normal way to stop — and an error
-// only when reconnecting cannot help: the server rejected the bastion's own
+// only when reconnecting cannot help: the server rejected the proxy's own
 // credential (a deny), or rejected the request as malformed. Both are
 // configuration faults that a retry loop would only hide.
-func (s *RevocationStream) Subscribe(ctx context.Context, bastionID string) error {
-	if bastionID == "" {
-		return &APIError{Op: "Subscribe", Cause: fmt.Errorf("%w: bastion id is required", ErrBadRequest)}
+func (s *RevocationStream) Subscribe(ctx context.Context, proxyID string) error {
+	if proxyID == "" {
+		return &APIError{Op: "Subscribe", Cause: fmt.Errorf("%w: proxy id is required", ErrBadRequest)}
 	}
 
 	backoff := s.minBackoff
 	for {
-		err := s.runOnce(ctx, bastionID)
+		err := s.runOnce(ctx, proxyID)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -143,11 +143,11 @@ func (s *RevocationStream) Subscribe(ctx context.Context, bastionID string) erro
 			// The server closed the stream cleanly; reconnect from the start of
 			// the backoff, since nothing is known to be wrong.
 			backoff = s.minBackoff
-			s.logf("mgmt: revocation stream closed by the server; reconnecting")
+			s.logf("control: revocation stream closed by the server; reconnecting")
 		case IsUnauthorized(err) || errors.Is(err, ErrBadRequest):
 			return err
 		default:
-			s.logf("mgmt: revocation stream failed (%v); reconnecting in %s", err, backoff)
+			s.logf("control: revocation stream failed (%v); reconnecting in %s", err, backoff)
 		}
 
 		if err := s.sleep(ctx, backoff); err != nil {
@@ -158,7 +158,7 @@ func (s *RevocationStream) Subscribe(ctx context.Context, bastionID string) erro
 }
 
 // LastEventID returns the id of the last event processed. It is what a
-// reconnect resumes from, and it is opaque to the bastion.
+// reconnect resumes from, and it is opaque to the proxy.
 func (s *RevocationStream) LastEventID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -166,8 +166,8 @@ func (s *RevocationStream) LastEventID() string {
 }
 
 // runOnce holds one connection open until it fails or ctx ends.
-func (s *RevocationStream) runOnce(ctx context.Context, bastionID string) error {
-	stream, err := s.src.StreamEvents(ctx, bastionID, s.LastEventID())
+func (s *RevocationStream) runOnce(ctx context.Context, proxyID string) error {
+	stream, err := s.src.StreamEvents(ctx, proxyID, s.LastEventID())
 	if err != nil {
 		return err
 	}
@@ -257,9 +257,9 @@ func (s *RevocationStream) handle(ctx context.Context, ev *RevocationEvent) {
 	case EventTypeSessionKill:
 		s.handleKill(ctx, ev.SessionKill)
 	default:
-		// A newer server may know event types this bastion does not. Ignoring
+		// A newer server may know event types this proxy does not. Ignoring
 		// them keeps the stream alive rather than reconnecting in a loop.
-		s.logf("mgmt: ignoring unknown revocation event type %q (event %s)", ev.Type, ev.EventID)
+		s.logf("control: ignoring unknown revocation event type %q (event %s)", ev.Type, ev.EventID)
 	}
 }
 
@@ -301,11 +301,11 @@ func (s *RevocationStream) markAlive() {
 }
 
 // report logs a registry failure. It is never fatal: a kill for a session this
-// bastion does not have is normal, and one that failed must not stop the rest
+// proxy does not have is normal, and one that failed must not stop the rest
 // of the stream from being applied.
 func (s *RevocationStream) report(op string, err error) {
 	if err != nil {
-		s.logf("mgmt: revocation %s: %v", op, err)
+		s.logf("control: revocation %s: %v", op, err)
 	}
 }
 

@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/config"
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
+	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // MethodStaticKey names the placeholder implementation below. It is the config
@@ -23,7 +23,7 @@ const MethodStaticKey = config.TargetAuthMethodStaticKey
 
 // StaticKeyOptions configures a StaticKeyAuthenticator.
 type StaticKeyOptions struct {
-	// KeyPath is the PEM private key the bastion logs into targets with.
+	// KeyPath is the PEM private key the proxy logs into targets with.
 	// Required unless Signer is set.
 	KeyPath string
 	// Signer overrides KeyPath with an in-memory key. Tests use it; production

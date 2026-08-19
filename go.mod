@@ -1,4 +1,4 @@
-module github.com/mauroasilva/securecommandproxy
+module github.com/hoplock/proxy
 
 go 1.25.0
 

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"context"
@@ -116,7 +116,7 @@ func newFakeSource(script ...scriptedConn) *fakeSource {
 	return &fakeSource{script: script, connected: make(chan struct{}, 32)}
 }
 
-func (s *fakeSource) StreamEvents(_ context.Context, bastionID, lastEventID string) (EventStream, error) {
+func (s *fakeSource) StreamEvents(_ context.Context, proxyID, lastEventID string) (EventStream, error) {
 	s.mu.Lock()
 	n := len(s.opened)
 	s.opened = append(s.opened, lastEventID)
@@ -124,9 +124,9 @@ func (s *fakeSource) StreamEvents(_ context.Context, bastionID, lastEventID stri
 	if n < len(s.script) {
 		conn = s.script[n]
 	}
-	if bastionID == "" {
+	if proxyID == "" {
 		s.mu.Unlock()
-		return nil, errors.New("fakeSource: no bastion id")
+		return nil, errors.New("fakeSource: no proxy id")
 	}
 	if conn.openErr != nil {
 		s.mu.Unlock()
@@ -234,7 +234,7 @@ func event(id string, t EventType) RevocationEvent {
 func startStream(t *testing.T, s *RevocationStream, ctx context.Context) <-chan error {
 	t.Helper()
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.Subscribe(ctx, "bastion-1") }()
+	go func() { errCh <- s.Subscribe(ctx, "proxy-1") }()
 	return errCh
 }
 
@@ -419,18 +419,18 @@ func TestRevocationStreamStopsOnADeny(t *testing.T) {
 	src := newFakeSource(scriptedConn{openErr: denied})
 	stream := NewRevocationStream(src, nil, nil, StreamOptions{
 		Sleep: func(context.Context, time.Duration) error {
-			t.Error("a rejected bastion credential must not be retried")
+			t.Error("a rejected proxy credential must not be retried")
 			return nil
 		},
 	})
 
-	err := stream.Subscribe(context.Background(), "bastion-1")
+	err := stream.Subscribe(context.Background(), "proxy-1")
 	if !IsUnauthorized(err) {
 		t.Errorf("Subscribe returned %v, want the deny", err)
 	}
 }
 
-func TestRevocationStreamRejectsAnEmptyBastionID(t *testing.T) {
+func TestRevocationStreamRejectsAnEmptyProxyID(t *testing.T) {
 	stream := NewRevocationStream(newFakeSource(), nil, nil, StreamOptions{})
 	err := stream.Subscribe(context.Background(), "")
 	if !errors.Is(err, ErrBadRequest) {
@@ -461,7 +461,7 @@ func TestRevocationStreamEndsCleanlyOnCancellation(t *testing.T) {
 }
 
 // TestRevocationStreamIgnoresUnknownEventTypes keeps a newer server from
-// breaking an older bastion: the unknown event is skipped, the connection lives.
+// breaking an older proxy: the unknown event is skipped, the connection lives.
 func TestRevocationStreamIgnoresUnknownEventTypes(t *testing.T) {
 	kill := event("evt-2", EventTypeSessionKill)
 	kill.SessionKill = &SessionKillEvent{All: true, Reason: "lockdown"}
@@ -487,7 +487,7 @@ func TestRevocationStreamIgnoresUnknownEventTypes(t *testing.T) {
 }
 
 // TestRevocationStreamSurvivesARegistryFailure: a kill for a session this
-// bastion never had is normal and must not stop the rest of the stream.
+// proxy never had is normal and must not stop the rest of the stream.
 func TestRevocationStreamSurvivesARegistryFailure(t *testing.T) {
 	first := event("evt-1", EventTypeSessionKill)
 	first.SessionKill = &SessionKillEvent{SessionIDs: []string{"gone"}, Reason: "revoked"}
@@ -509,7 +509,7 @@ func TestRevocationStreamSurvivesARegistryFailure(t *testing.T) {
 	}
 }
 
-// TestRevocationStreamDrivesTheRealCache is the wiring the bastion runs with:
+// TestRevocationStreamDrivesTheRealCache is the wiring the proxy runs with:
 // an event on the stream must actually drop the CachingClient's entry.
 func TestRevocationStreamDrivesTheRealCache(t *testing.T) {
 	cache, inner, _ := newTestCache(CacheOptions{})

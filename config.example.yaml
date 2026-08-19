@@ -1,42 +1,42 @@
-# SecureCommandProxy — bastion bootstrap configuration (example).
+# Hoplock Proxy — proxy bootstrap configuration (example).
 #
-# Copy to config.yaml and edit. This file holds only what the bastion needs to
-# start and reach the management server: every authentication, authorization,
-# routing, and filtering decision is made by the management server per
+# Copy to config.yaml and edit. This file holds only what the proxy needs to
+# start and reach Hoplock Control: every authentication, authorization,
+# routing, and filtering decision is made by Hoplock Control per
 # connection (see docs/PLAN.md, D2).
 
-bastion:
-  # Identifier the management server knows this bastion by. It is on every
-  # management call and addresses this bastion's revocation stream, so it must
-  # match what the management server was told to expect.
-  id: "bastion-1"
+proxy:
+  # Identifier Hoplock Control knows this proxy by. It is on every
+  # management call and addresses this proxy's revocation stream, so it must
+  # match what Hoplock Control was told to expect.
+  id: "proxy-1"
   # host:port the SSH listener binds to.
   listen_addr: "0.0.0.0:2222"
-  # Path to this bastion's SSH host private key. Never commit a real key.
-  host_key_path: "/etc/securecommandproxy/host_key"
+  # Path to this proxy's SSH host private key. Never commit a real key.
+  host_key_path: "/etc/hoplock/host_key"
 
-management:
-  # Root URL of the management API (the policy decision point).
-  base_url: "https://management.example.com"
-  # Bearer token authenticating this bastion to the management server. Optional;
+control:
+  # Root URL of the Control API (the policy decision point).
+  base_url: "https://control.example.com"
+  # Bearer token authenticating this proxy to Hoplock Control. Optional;
   # supply it from the deployment's secret store, never from a committed file.
   token: ""
-  # Reuse of authorize decisions the management server explicitly permitted.
+  # Reuse of authorize decisions Hoplock Control explicitly permitted.
   # Nothing here can widen a decision — the server sets the lifetime and can
   # withdraw it at any time over the revocation stream. All optional.
   cache:
     # Clamp on the server's lifetime. 0 (the default) honours it exactly; any
-    # other value only makes this bastion ask more often than it was allowed to,
+    # other value only makes this proxy ask more often than it was allowed to,
     # and every decision it shortens is counted and logged.
     max_ttl: 0s
     # How long the revocation stream may be unheard before the cache stops
     # serving anything and every connection is re-authorized.
     stale_after: 30s
 
-proxy:
+dial:
   # How long to wait for the target leg (dial plus SSH handshake). Optional.
   dial_timeout: 15s
-  # Port used when the management server's route names none. Optional.
+  # Port used when Hoplock Control's route names none. Optional.
   default_target_port: 22
 
 routing:
@@ -46,24 +46,24 @@ routing:
   target_delimiter: "#"
 
 auth:
-  # user -> bastion authentication (docs/PLAN.md §4.1).
+  # user -> proxy authentication (docs/PLAN.md §4.1).
   user:
-    # Enabled methods. This is a set, not an order: the bastion always tries
+    # Enabled methods. This is a set, not an order: the proxy always tries
     # certificates first and falls back to password + out-of-band MFA. Drop
-    # "password-mfa" for a certificate-only bastion; an empty list is rejected.
+    # "password-mfa" for a certificate-only proxy; an empty list is rejected.
     # Optional; defaults to both.
     methods: ["cert", "password-mfa"]
-    # How the bastion waits for an out-of-band second factor. The management
+    # How the proxy waits for an out-of-band second factor. The management
     # server states the polling interval and the expiry; these only bound how
-    # the bastion behaves while obeying them. All optional.
+    # the proxy behaves while obeying them. All optional.
     mfa:
       # Floor on the server's requested polling interval.
       min_poll_interval: 500ms
-      # How often the user is told the bastion is still waiting.
+      # How often the user is told the proxy is still waiting.
       progress_interval: 5s
       # Cap on the total wait. The server's expiry wins when it is sooner.
       max_wait: 2m
-  # bastion -> target authentication (docs/PLAN.md §4.2).
+  # proxy -> target authentication (docs/PLAN.md §4.2).
   target:
     # Implementation. "static-key" is the phase-0005 PLACEHOLDER: one preloaded
     # key for every session on every target, provisioning nothing and expiring
@@ -71,8 +71,8 @@ auth:
     # provisioner (D6) replaces it in phase 0006.
     method: "static-key"
     static_key:
-      # Private key the bastion logs into targets with. Never commit a real key.
-      key_path: "/etc/securecommandproxy/target_key"
+      # Private key the proxy logs into targets with. Never commit a real key.
+      key_path: "/etc/hoplock/target_key"
       # Log into every target as this account instead of the authenticated
       # login. Optional; empty uses the login.
       username: ""

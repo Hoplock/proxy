@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // MethodCert is the registry/config name of the certificate authenticator. It
@@ -27,7 +27,7 @@ const MethodCert = string(identity.MethodCert)
 // acceptable key.
 //
 // It validates nothing locally. The offered material is relayed verbatim to the
-// management server, which owns the trust roots, the principal rules, and
+// Hoplock Control, which owns the trust roots, the principal rules, and
 // revocation. That is also why certificate authentication is never cached
 // (PLAN §6.4): this call is where revocation is enforced.
 type CertAuthenticator struct {
@@ -65,14 +65,14 @@ func (a *CertAuthenticator) AuthenticateCert(ctx context.Context, meta ConnMeta,
 
 	material := publicKeyMaterial(key)
 	now := a.opts.now()
-	req := &mgmt.AuthenticateCertRequest{
+	req := &control.AuthenticateCertRequest{
 		Login:     meta.Login,
 		Target:    meta.Target,
 		PublicKey: material,
 		Conn:      meta.wire(now),
 	}
 
-	a.opts.logf("auth: session=%s method=%s login=%q key=%s: asking management server",
+	a.opts.logf("auth: session=%s method=%s login=%q key=%s: asking Hoplock Control",
 		meta.SessionID, MethodCert, meta.Login, material.Fingerprint)
 
 	resp, err := a.opts.Client.AuthenticateCert(ctx, req)

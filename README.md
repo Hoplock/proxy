@@ -1,24 +1,41 @@
-# SecureCommandProxy
+# Hoplock Proxy
 
-SecureCommandProxy is a **decrypting SSH bastion** — a policy-enforcing SSH
-proxy. A user's SSH client connects to the bastion; the bastion terminates that
-SSH connection, authenticates the user, opens a **fresh** SSH connection to the
-target, and proxies traffic between the two legs. Because both legs are
-decrypted inside the bastion, it can log everything and filter or inspect
-commands and channels. The bastion itself is deliberately thin: it is the policy
-*enforcement* point, while a central management server is the policy *decision*
-point.
+Identity-aware SSH proxy with multi-hop routing, command and channel controls,
+and policy enforcement at every hop.
 
-The architecture — end-to-end flow, decisions D1–D10, package layout, and the
+Hoplock Proxy is a **decrypting** SSH proxy: a user's SSH client connects to it,
+it terminates that SSH connection, authenticates the user, opens a **fresh**
+connection to the target, and proxies traffic between the two legs. Because both
+legs are decrypted inside the proxy, it can log everything and filter or inspect
+commands and channels — which is what a jump host tunnelling an end-to-end
+encrypted session cannot do.
+
+It is deliberately thin. Hoplock Proxy is the policy **enforcement** point (PEP);
+[Hoplock Control](https://github.com/hoplock/control) is the policy **decision**
+point (PDP). This repository has no dependency on Hoplock Control's
+implementation — only on the API contract in [`api/`](api/README.md), which it
+owns.
+
+## Where this fits
+
+| Component | Role |
+| --- | --- |
+| **Hoplock Proxy** (this repo) | Data plane. Enforces access: SSH proxying, channel and command controls, port-forward policy, multi-hop relay, audit events. |
+| **Hoplock Control** | Open-source control plane. Manages access: proxies, targets, identities, routes, policies, audit ingest, API and console. |
+| **Hoplock Enterprise** | Commercial extensions to Control: governance, compliance, advanced audit, approval workflows, SIEM/SOAR, HA. |
+
+Hoplock Proxy never depends on Hoplock Control's code, and never on Enterprise.
+
+The architecture — end-to-end flow, decisions D1–D12, package layout, and the
 phased delivery plan — lives in **[`docs/PLAN.md`](docs/PLAN.md)**. Read it
 before reading the code.
 
-> Status: early, but end to end. The bastion authenticates a user, authorizes
-> the connection against the management server, and proxies a **direct** route
+> Status: early, but end to end. The proxy authenticates a user, authorizes
+> the connection against Hoplock Control, and proxies a **direct** route
 > to a target, passing every SSH channel through generically. Target
 > credentials are still a placeholder (one preloaded key — see
 > `auth.target.method` in `config.example.yaml`). Next is a revision of the
-> management contract (phase 0006) that gives policy the vocabulary the later
+> Control API contract (phase 0006) that gives policy the vocabulary the later
 > phases enforce — per-request channel policy, destination-aware forwarding,
 > global requests, server-chosen target credentials, hop connection direction —
 > followed by target credentials, next-hop chaining, inspection, filtering, and
@@ -39,38 +56,37 @@ make vet                        # go vet
 make lint                       # golangci-lint
 make license-check              # every .go file carries the license header
 
-./bin/bastion --version
-./bin/mock-management --version
+./bin/hoplock-proxy --version
+./bin/mock-control --version
 ```
 
 To run from source:
 
 ```sh
 cp config.example.yaml config.yaml   # then edit
-make run-bastion CONFIG=config.yaml
+make run-proxy CONFIG=config.yaml
 make run-mock LISTEN=127.0.0.1:8080
 ```
 
-## Management API
+## Control API
 
-The contract between the bastion and the management server lives in
-[`api/`](api/README.md): `api/management.yaml` (OpenAPI 3, the source of truth)
-and a human-readable companion. `internal/mgmt` is the typed Go client — the
-only package that talks to the management server — and `cmd/mock-management`
+The contract between the proxy and Hoplock Control lives in
+[`api/`](api/README.md): `api/control.yaml` (OpenAPI 3, the source of truth)
+and a human-readable companion. `internal/control` is the typed Go client — the
+only package that talks to Hoplock Control — and `cmd/mock-control`
 serves the contract from a fixture file for development and tests. `make
 openapi-check` validates the document.
 
-**This repo owns the contract; it does not implement the production management
-server.** That component — policy authoring and simulation, identity
+**This repo owns the contract; it does not implement the production Hoplock Control.** That component — policy authoring and simulation, identity
 federation, JIT access and approvals, the tamper-evident audit store — lives in
-its own repository, which vendors `api/management.yaml` from here read-only and
+its own repository, which vendors `api/control.yaml` from here read-only and
 proves conformance against it (D3). A contract change starts here.
 
 ## Configuration
 
-The bastion reads a YAML bootstrap file; see
+The proxy reads a YAML bootstrap file; see
 [`config.example.yaml`](config.example.yaml) for the annotated set of fields.
-It holds only what is needed to start and reach the management server — every
+It holds only what is needed to start and reach Hoplock Control — every
 authentication, authorization, routing, and filtering decision is made remotely,
 per connection (`docs/PLAN.md`, D2).
 
@@ -78,10 +94,10 @@ per connection (`docs/PLAN.md`, D2).
 
 | Path                | What lives there                                              |
 | ------------------- | ------------------------------------------------------------- |
-| `cmd/bastion`       | the proxy daemon                                              |
-| `cmd/mock-management` | reference/mock management API for dev and CI                |
+| `cmd/proxy`       | the proxy daemon                                              |
+| `cmd/mock-control` | reference/mock Control API for dev and CI                |
 | `internal/`         | the implementation packages (see `docs/PLAN.md` §3)           |
-| `api/`              | management API contract — source of truth                     |
+| `api/`              | Control API contract — source of truth                     |
 | `deploy/`           | docker-compose e2e topology and fixtures (final phase)        |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
 | `prompts/`          | queued and implemented phase prompts                          |

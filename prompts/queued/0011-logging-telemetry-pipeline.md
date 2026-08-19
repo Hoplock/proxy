@@ -12,7 +12,7 @@
 
 ## Objective
 Replace the basic session logging with the full **telemetry pipeline**:
-structured records, **batched** shipment to the management server, **immediate**
+structured records, **batched** shipment to Hoplock Control, **immediate**
 shipment for critical events, a **local disk buffer** for network-outage
 resilience, and correct **redaction**.
 
@@ -24,7 +24,7 @@ resilience, and correct **redaction**.
     timestamps, channel types, in-channel requests, forwarding destinations,
     policy decisions **and the tier that decided** (D12)) plus replay-friendly stream
     capture for pty sessions (asciinema/ttyrec-style).
-  - **Batching**: efficient batched delivery to the management server's batch
+  - **Batching**: efficient batched delivery to Hoplock Control's batch
     ingest endpoint (0002). Configurable batch size/flush interval.
   - **Priority/immediate path**: blocked commands and other critical events
     (0010's flagged events) are delivered immediately — either flush the in-flight

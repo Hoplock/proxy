@@ -10,14 +10,14 @@
   the server selects one), **§5 (full lifecycle & robustness requirements)**,
   §4.3 (what the user is told when provisioning fails).
 - `docs/learnings/` — read summaries; open `0006` (the `target_auth` field),
-  `0005` (proxy seam for target auth) and `0002` (mgmt client).
+  `0005` (proxy seam for target auth) and `0002` (control client).
 
 ## Objective
-Implement the real **bastion→target** credential plane: just-in-time ephemeral
+Implement the real **proxy→target** credential plane: just-in-time ephemeral
 user provisioning via a management certificate (`ephemeral-user`), and a
 session-scoped credential for targets that cannot be administered at all
 (`brokered-key`). Both replace the `static-key` placeholder from 0005, and the
-**management server chooses between them per route** via 0006's `target_auth`.
+**Hoplock Control chooses between them per route** via 0006's `target_auth`.
 
 ## In scope
 
@@ -35,7 +35,7 @@ session-scoped credential for targets that cannot be administered at all
 - **Robustness (PLAN §5.1):**
   - Teardown is **idempotent** and runs on normal close, error, panic, and
     signal. Provisioned sessions are tracked.
-  - An **orphan reaper**: on bastion startup and periodically, clean up ephemeral
+  - An **orphan reaper**: on proxy startup and periodically, clean up ephemeral
     users/keys left by dead sessions (identify them by a naming convention or a
     tracked registry).
   - **Concurrency safety**: concurrent sessions for the same username on the same
@@ -48,21 +48,21 @@ session-scoped credential for targets that cannot be administered at all
   appliances, storage, hypervisors, OT gear. It changes nothing on the target:
   it uses an account that already exists.
 - The credential is held **in memory for the session only**: never written to
-  disk by the bastion, never in a log line, an error string, or a config dump.
+  disk by the proxy, never in a log line, an error string, or a config dump.
   Zero it in `Teardown`.
 - Where the credential comes from is a **seam**, not a hard-coded store: an
   interface with a local implementation (a file or environment-provided secret
-  keyed by target, loaded on demand) that a future management-server-minted
-  credential can implement instead. Name the interface in your learnings — the
-  management server's plan expects to implement it.
+  keyed by target, loaded on demand) that a future Control-minted
+  credential can implement instead. Name the interface in your learnings — Hoplock
+  Control's plan expects to implement it.
 - `Teardown` still exists and is still guaranteed; here it zeroes memory and
   closes the leg. There is no remote state to undo, which is the entire point.
 
 ### Selection & wiring
 - The method comes from `target_auth.method` in the authorize response (0006).
-  Bastion config keeps only the **local material** each method needs (management
+  Proxy config keeps only the **local material** each method needs (management
   cert path, provisioning account, credential source), never the selection.
-- A method the bastion does not implement, or has no local material for, is a
+- A method the proxy does not implement, or has no local material for, is a
   clean **outage-class** denial (PLAN §4.3) naming the session id — never a
   silent fallback to another method, which would mean connecting with
   credentials the server did not choose.
@@ -73,7 +73,7 @@ session-scoped credential for targets that cannot be administered at all
 
 ## Out of scope
 - Multi-hop (0008). Channel inspection/filtering (0009/0010).
-- A management server that mints target credentials — 0006's `target_auth` is
+- A Hoplock Control that mints target credentials — 0006's `target_auth` is
   extensible for it; implement only the local credential source here.
 
 ## Acceptance criteria

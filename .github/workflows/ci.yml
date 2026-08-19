@@ -86,7 +86,7 @@ jobs:
       - name: install the OpenAPI validator
         run: pip install openapi-spec-validator==0.9.0
 
-      - name: validate api/management.yaml
+      - name: validate api/control.yaml
         run: make openapi-check
 
   license:

@@ -12,14 +12,14 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // wildcard matches any login or target in a route rule.
 const wildcard = "*"
 
-// Revocation stream defaults. The heartbeat is well inside the bastion's
-// default timeout (mgmt.DefaultHeartbeatTimeout), so a healthy stream is never
+// Revocation stream defaults. The heartbeat is well inside the proxy's
+// default timeout (control.DefaultHeartbeatTimeout), so a healthy stream is never
 // mistaken for a dead one.
 const (
 	defaultHeartbeatMS  = 5_000
@@ -33,9 +33,9 @@ const (
 // The file format is documented in api/README.md; fixtures.example.yaml is the
 // worked example and is exercised by the tests.
 type fixtures struct {
-	// BastionToken, when set, is the bearer token every /v1 request must
-	// present. Empty disables bastion authentication (handy for local curl).
-	BastionToken string `yaml:"bastion_token"`
+	// ProxyToken, when set, is the bearer token every /v1 request must
+	// present. Empty disables proxy authentication (handy for local curl).
+	ProxyToken string `yaml:"proxy_token"`
 	// Users are matched by login for both authentication flows.
 	Users []fixtureUser `yaml:"users"`
 	// Routes are evaluated in order; the first match wins. No match is a deny.
@@ -46,14 +46,14 @@ type fixtures struct {
 	Events fixtureEvents `yaml:"events"`
 }
 
-// fixtureEvents tunes the server→bastion event stream.
+// fixtureEvents tunes the server→proxy event stream.
 type fixtureEvents struct {
 	// HeartbeatMS is the interval between heartbeat events. Zero uses
 	// defaultHeartbeatMS; a negative value disables heartbeats entirely, which
-	// is how a test drives a bastion's missed-heartbeat detection.
+	// is how a test drives a proxy's missed-heartbeat detection.
 	HeartbeatMS int `yaml:"heartbeat_ms"`
 	// ReplayBuffer is how many events are retained for replay after a
-	// reconnect. A bastion resuming from before the retained history is told to
+	// reconnect. A proxy resuming from before the retained history is told to
 	// resync. Zero uses defaultReplayBuffer.
 	ReplayBuffer int `yaml:"replay_buffer"`
 }
@@ -74,7 +74,7 @@ type fixtureUser struct {
 	MFA fixtureMFA `yaml:"mfa"`
 }
 
-// fixtureIdentity mirrors mgmt.Identity in YAML form.
+// fixtureIdentity mirrors control.Identity in YAML form.
 type fixtureIdentity struct {
 	Subject     string            `yaml:"subject"`
 	DisplayName string            `yaml:"display_name"`
@@ -117,7 +117,7 @@ type fixtureRoute struct {
 	// ResolvedTarget overrides the host returned for a direct route. Empty
 	// returns the target the user asked for.
 	ResolvedTarget string `yaml:"resolved_target"`
-	// NextHop is the bastion to chain to; required for "nexthop".
+	// NextHop is the proxy to chain to; required for "nexthop".
 	NextHop string `yaml:"next_hop"`
 	// MaxHops caps the chain length for a next-hop route.
 	MaxHops int `yaml:"max_hops"`
@@ -129,14 +129,14 @@ type fixtureRoute struct {
 	PermittedChannels []string `yaml:"permitted_channels"`
 	// FilterPolicy is the command filter policy for the connection.
 	FilterPolicy fixtureFilterPolicy `yaml:"filter_policy"`
-	// Cache authorises the bastion to reuse this decision. Absent (or a zero
+	// Cache authorises the proxy to reuse this decision. Absent (or a zero
 	// ttl_seconds) means the decision is not cacheable.
 	Cache fixtureCacheHint `yaml:"cache"`
 }
 
-// fixtureCacheHint mirrors mgmt.CacheHint in YAML form.
+// fixtureCacheHint mirrors control.CacheHint in YAML form.
 type fixtureCacheHint struct {
-	// TTLSeconds is how long the bastion may reuse the decision. Zero means do
+	// TTLSeconds is how long the proxy may reuse the decision. Zero means do
 	// not cache.
 	TTLSeconds int `yaml:"ttl_seconds"`
 	// Key overrides the cache key. Empty derives one per (subject, target),
@@ -145,7 +145,7 @@ type fixtureCacheHint struct {
 	Key string `yaml:"key"`
 }
 
-// fixtureFilterPolicy mirrors mgmt.FilterPolicy in YAML form.
+// fixtureFilterPolicy mirrors control.FilterPolicy in YAML form.
 type fixtureFilterPolicy struct {
 	// Mode decides commands no rule matched: "whitelist" blocks them,
 	// "blacklist" allows them.
@@ -154,7 +154,7 @@ type fixtureFilterPolicy struct {
 	Rules []fixtureFilterRule `yaml:"rules"`
 }
 
-// fixtureFilterRule mirrors mgmt.FilterRule in YAML form.
+// fixtureFilterRule mirrors control.FilterRule in YAML form.
 type fixtureFilterRule struct {
 	Match   string `yaml:"match"`
 	Action  string `yaml:"action"`
@@ -214,7 +214,7 @@ func parseFixtures(r io.Reader) (*fixtures, error) {
 
 func (f *fixtures) applyDefaults() {
 	if f.HostKeys.Decision == "" {
-		f.HostKeys.Decision = string(mgmt.HostKeyAccept)
+		f.HostKeys.Decision = string(control.HostKeyAccept)
 	}
 	if f.Events.HeartbeatMS == 0 {
 		f.Events.HeartbeatMS = defaultHeartbeatMS
@@ -251,10 +251,10 @@ func (f *fixtures) applyDefaults() {
 			r.Target = wildcard
 		}
 		if r.RouteType == "" {
-			r.RouteType = string(mgmt.RouteTypeDirect)
+			r.RouteType = string(control.RouteTypeDirect)
 		}
 		if r.FilterPolicy.Mode == "" {
-			r.FilterPolicy.Mode = string(mgmt.FilterModeBlacklist)
+			r.FilterPolicy.Mode = string(control.FilterModeBlacklist)
 		}
 	}
 }
@@ -289,12 +289,12 @@ func (f *fixtures) validate() error {
 	}
 
 	for i, r := range f.Routes {
-		switch mgmt.RouteType(r.RouteType) {
-		case mgmt.RouteTypeDirect:
+		switch control.RouteType(r.RouteType) {
+		case control.RouteTypeDirect:
 			if r.NextHop != "" {
 				add("routes[%d] is direct but sets next_hop", i)
 			}
-		case mgmt.RouteTypeNextHop:
+		case control.RouteTypeNextHop:
 			if r.NextHop == "" {
 				add("routes[%d] is nexthop but has no next_hop", i)
 			}
@@ -303,7 +303,7 @@ func (f *fixtures) validate() error {
 			}
 		default:
 			add("routes[%d].route_type %q must be %q or %q", i, r.RouteType,
-				mgmt.RouteTypeDirect, mgmt.RouteTypeNextHop)
+				control.RouteTypeDirect, control.RouteTypeNextHop)
 		}
 		if r.MaxHops < 0 {
 			add("routes[%d].max_hops must not be negative", i)
@@ -319,19 +319,19 @@ func (f *fixtures) validate() error {
 			// beats wondering later why the decision is never reused.
 			add("routes[%d].cache.key is set but ttl_seconds is 0 (nothing is cached)", i)
 		}
-		switch mgmt.FilterMode(r.FilterPolicy.Mode) {
-		case mgmt.FilterModeWhitelist, mgmt.FilterModeBlacklist:
+		switch control.FilterMode(r.FilterPolicy.Mode) {
+		case control.FilterModeWhitelist, control.FilterModeBlacklist:
 		default:
 			add("routes[%d].filter_policy.mode %q must be %q or %q", i, r.FilterPolicy.Mode,
-				mgmt.FilterModeWhitelist, mgmt.FilterModeBlacklist)
+				control.FilterModeWhitelist, control.FilterModeBlacklist)
 		}
 		for j, rule := range r.FilterPolicy.Rules {
 			if rule.Match == "" {
 				add("routes[%d].filter_policy.rules[%d] has no match pattern", i, j)
 			}
-			switch mgmt.FilterAction(rule.Action) {
-			case mgmt.FilterActionAllowAndLog, mgmt.FilterActionBlockCommand,
-				mgmt.FilterActionWarnAndContinue, mgmt.FilterActionKillSession:
+			switch control.FilterAction(rule.Action) {
+			case control.FilterActionAllowAndLog, control.FilterActionBlockCommand,
+				control.FilterActionWarnAndContinue, control.FilterActionKillSession:
 			default:
 				// No default action: every rule states its own, or the policy is
 				// ambiguous about how severely to treat that command.
@@ -341,11 +341,11 @@ func (f *fixtures) validate() error {
 		}
 	}
 
-	switch mgmt.HostKeyDecision(f.HostKeys.Decision) {
-	case mgmt.HostKeyAccept, mgmt.HostKeyReject:
+	switch control.HostKeyDecision(f.HostKeys.Decision) {
+	case control.HostKeyAccept, control.HostKeyReject:
 	default:
 		add("host_keys.decision %q must be %q or %q", f.HostKeys.Decision,
-			mgmt.HostKeyAccept, mgmt.HostKeyReject)
+			control.HostKeyAccept, control.HostKeyReject)
 	}
 	for i, k := range f.HostKeys.Known {
 		if k.Target == "" || k.Fingerprint == "" {
@@ -396,8 +396,8 @@ func (u *fixtureUser) hasKeyFingerprint(fp string) bool {
 }
 
 // identity converts the fixture identity into its wire form.
-func (u *fixtureUser) identity() *mgmt.Identity {
-	return &mgmt.Identity{
+func (u *fixtureUser) identity() *control.Identity {
+	return &control.Identity{
 		Subject:     u.Identity.Subject,
 		Login:       u.Login,
 		DisplayName: u.Identity.DisplayName,

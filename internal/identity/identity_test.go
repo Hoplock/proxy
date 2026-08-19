@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 func TestMethodValid(t *testing.T) {
@@ -30,10 +30,10 @@ func TestMethodValid(t *testing.T) {
 }
 
 func TestMethodWireMethod(t *testing.T) {
-	if got, want := MethodCert.WireMethod(), mgmt.AuthMethodCert; got != want {
+	if got, want := MethodCert.WireMethod(), control.AuthMethodCert; got != want {
 		t.Errorf("MethodCert.WireMethod() = %q, want %q", got, want)
 	}
-	if got, want := MethodPasswordMFA.WireMethod(), mgmt.AuthMethodPasswordMFA; got != want {
+	if got, want := MethodPasswordMFA.WireMethod(), control.AuthMethodPasswordMFA; got != want {
 		t.Errorf("MethodPasswordMFA.WireMethod() = %q, want %q", got, want)
 	}
 	if got := Method("kerberos").WireMethod(); got != "" {
@@ -177,7 +177,7 @@ func TestIdentityStringOmitsClaims(t *testing.T) {
 
 func TestFromWire(t *testing.T) {
 	at := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
-	wire := &mgmt.Identity{
+	wire := &control.Identity{
 		Subject:     "alice@example.com",
 		Login:       "alice",
 		DisplayName: "Alice Example",
@@ -220,11 +220,11 @@ func TestFromWireRejectsUnusableIdentities(t *testing.T) {
 
 	for _, tt := range []struct {
 		name string
-		wire *mgmt.Identity
+		wire *control.Identity
 	}{
 		{name: "nil", wire: nil},
-		{name: "no subject", wire: &mgmt.Identity{Login: "alice"}},
-		{name: "no login", wire: &mgmt.Identity{Subject: "alice@example.com"}},
+		{name: "no subject", wire: &control.Identity{Login: "alice"}},
+		{name: "no login", wire: &control.Identity{Subject: "alice@example.com"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			id, err := FromWire(tt.wire, MethodCert, at)
@@ -241,7 +241,7 @@ func TestFromWireRejectsUnusableIdentities(t *testing.T) {
 // TestFromWireDefaultsSource keeps a cosmetic omission from failing a session:
 // the source name is for humans, unlike the subject, which is not.
 func TestFromWireDefaultsSource(t *testing.T) {
-	id, err := FromWire(&mgmt.Identity{Subject: "alice@example.com", Login: "alice"}, MethodCert, time.Now())
+	id, err := FromWire(&control.Identity{Subject: "alice@example.com", Login: "alice"}, MethodCert, time.Now())
 	if err != nil {
 		t.Fatalf("FromWire returned error: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestToWireRoundTrip(t *testing.T) {
 }
 
 // TestToWireDoesNotAlias guards the same immutability property in the other
-// direction: handing an identity to the mgmt client must not give that client a
+// direction: handing an identity to the control client must not give that client a
 // handle on the session's identity.
 func TestToWireDoesNotAlias(t *testing.T) {
 	id := &Identity{

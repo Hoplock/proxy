@@ -17,10 +17,10 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/target"
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
-	"github.com/mauroasilva/securecommandproxy/internal/routing"
+	"github.com/hoplock/proxy/internal/auth/target"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/routing"
 )
 
 // Engine defaults. All are bounds on waiting, not policy: nothing here decides
@@ -35,19 +35,19 @@ const (
 	// phone), so this is generous; it exists to stop an idle unauthenticated
 	// socket from living forever.
 	DefaultAuthTimeout = 3 * time.Minute
-	// defaultServerVersion identifies the bastion to clients. It must start
+	// defaultServerVersion identifies the proxy to clients. It must start
 	// with "SSH-2.0-" per RFC 4253.
-	defaultServerVersion = "SSH-2.0-SecureCommandProxy"
+	defaultServerVersion = "SSH-2.0-Hoplock Proxy"
 )
 
-// ShutdownReason is shown to every live session when the bastion stops. A
-// bastion going away owes its users the same explanation a revocation does
+// ShutdownReason is shown to every live session when the proxy stops. A
+// proxy going away owes its users the same explanation a revocation does
 // (PLAN §4.3): silence would be indistinguishable from a crash.
-const ShutdownReason = "the bastion is shutting down"
+const ShutdownReason = "the proxy is shutting down"
 
 // Options configures a Server.
 type Options struct {
-	// HostKey is the bastion's own SSH host key, presented to clients.
+	// HostKey is the proxy's own SSH host key, presented to clients.
 	// Required.
 	HostKey ssh.Signer
 	// Authenticator authenticates users; normally a *user.Registry. Required.
@@ -57,11 +57,11 @@ type Options struct {
 	Resolver *routing.Resolver
 	// TargetAuth provisions the credentials for the target leg. Required.
 	TargetAuth target.TargetAuthenticator
-	// Client is the management API client, used here for the host-key report
+	// Client is the Control API client, used here for the host-key report
 	// (D7). Required.
-	Client mgmt.Client
-	// BastionID identifies this bastion on every management call. Required.
-	BastionID string
+	Client control.Client
+	// ProxyID identifies this proxy on every management call. Required.
+	ProxyID string
 	// TargetDelimiter splits the SSH username into login and target (D1).
 	// Required, and validated by config.
 	TargetDelimiter string
@@ -84,20 +84,20 @@ type Options struct {
 // Server is the core SSH proxy engine (PLAN §3).
 //
 // It terminates the client's SSH connection, authorizes it against the
-// management server, opens a fresh SSH connection to the target, and proxies
+// Hoplock Control, opens a fresh SSH connection to the target, and proxies
 // every channel between the two. Both legs are decrypted inside the process,
 // which is what later phases inspect (0008) and filter (0009); this phase
 // establishes the transport and the session lifecycle underneath them.
 //
-// It also implements mgmt.SessionRegistry, so the management server's
+// It also implements control.SessionRegistry, so Hoplock Control's
 // revocation stream can end a session that is already in flight (PLAN §6.4).
 type Server struct {
 	hostKey       ssh.Signer
 	auth          user.UserAuthenticator
 	resolver      *routing.Resolver
 	targetAuth    target.TargetAuthenticator
-	client        mgmt.Client
-	bastionID     string
+	client        control.Client
+	proxyID       string
 	delimiter     string
 	dialTimeout   time.Duration
 	authTimeout   time.Duration
@@ -112,7 +112,7 @@ type Server struct {
 	conns sync.WaitGroup
 }
 
-var _ mgmt.SessionRegistry = (*Server)(nil)
+var _ control.SessionRegistry = (*Server)(nil)
 
 // New validates opts and returns a Server.
 func New(opts Options) (*Server, error) {
@@ -127,8 +127,8 @@ func New(opts Options) (*Server, error) {
 		return nil, errors.New("proxy: a target authenticator is required")
 	case opts.Client == nil:
 		return nil, errors.New("proxy: a management client is required")
-	case opts.BastionID == "":
-		return nil, errors.New("proxy: a bastion id is required")
+	case opts.ProxyID == "":
+		return nil, errors.New("proxy: a proxy id is required")
 	case opts.TargetDelimiter == "":
 		return nil, errors.New("proxy: a target delimiter is required")
 	}
@@ -139,7 +139,7 @@ func New(opts Options) (*Server, error) {
 		resolver:      opts.Resolver,
 		targetAuth:    opts.TargetAuth,
 		client:        opts.Client,
-		bastionID:     opts.BastionID,
+		proxyID:       opts.ProxyID,
 		delimiter:     opts.TargetDelimiter,
 		dialTimeout:   opts.DialTimeout,
 		authTimeout:   opts.AuthTimeout,
@@ -214,7 +214,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	sessionID := s.newSessionID()
 	remote := conn.RemoteAddr().String()
 
-	// One connection must never be able to stop the bastion serving every other
+	// One connection must never be able to stop the proxy serving every other
 	// one. A panic before the session exists has nowhere to be reported, so it
 	// is logged and the connection dropped.
 	defer func() {
@@ -267,13 +267,13 @@ func (s *Server) serverConfig(ctx context.Context, sessionID string) (*ssh.Serve
 		Authenticator: s.auth,
 		BaseContext:   ctx,
 		ConnMeta: func(conn ssh.ConnMetadata) user.ConnMeta {
-			base := user.ConnMeta{SessionID: sessionID, BastionID: s.bastionID}
+			base := user.ConnMeta{SessionID: sessionID, ProxyID: s.proxyID}
 			// The target must be split off the username before the login is
 			// presented for authentication (D1). A username that does not parse
 			// is passed through whole: refusing it here would deny the
-			// connection locally, and the bastion does not decide who exists —
+			// connection locally, and the proxy does not decide who exists —
 			// the malformed name is reported to the user by the engine, after
-			// the management server has had its say.
+			// Hoplock Control has had its say.
 			login, tgt, err := routing.ParseUsername(conn.User(), s.delimiter)
 			if err == nil {
 				base.Login, base.Target = login, tgt

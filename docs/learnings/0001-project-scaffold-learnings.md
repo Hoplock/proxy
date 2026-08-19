@@ -5,9 +5,9 @@
   bootstrap config loader with typed errors, two scaffold binaries, Makefile,
   `.golangci.yml` (schema v2), and a 3-job CI workflow. No SSH/business logic.
 - Key packages/files: `internal/config/config.go`, `config.example.yaml`,
-  `cmd/bastion/main.go`, `cmd/mock-management/main.go`, `Makefile`,
+  `cmd/proxy/main.go`, `cmd/mock-control/main.go`, `Makefile`,
   `.golangci.yml`, `.github/workflows/ci.yml`, `docs/LICENSE-HEADER.md`.
-- Key interfaces/types added: `config.Config` (`Bastion`, `Management`,
+- Key interfaces/types added: `config.Config` (`Proxy`, `Management`,
   `Routing`), `config.Load`/`config.Parse`/`(*Config).Validate`,
   `config.FieldError`, `config.ValidationError`, sentinels `ErrMissing`,
   `ErrInvalid`, `ErrMalformed`, const `DefaultTargetDelimiter = "#"`.
@@ -24,7 +24,7 @@
 ## Details
 
 ### Module & layout
-Module path is `github.com/mauroasilva/securecommandproxy` (PLAN §8), Go 1.24.
+Module path is `github.com/hoplock/proxy` (PLAN §8), Go 1.24.
 Only dependency: `gopkg.in/yaml.v3`. Every `internal/` package from PLAN §3
 exists as a `doc.go` containing just the header plus a package comment naming
 the package's responsibility and the PLAN section/decision it implements. Keep
@@ -39,7 +39,7 @@ by phases 0002 and 0010 respectively.
 ### Config contract (what later phases consume)
 ```go
 type Config struct {
-    Bastion    Bastion    `yaml:"bastion"`     // listen_addr, host_key_path
+    Proxy    Proxy    `yaml:"proxy"`     // listen_addr, host_key_path
     Management Management `yaml:"management"`  // base_url
     Routing    Routing    `yaml:"routing"`     // target_delimiter
 }
@@ -49,26 +49,26 @@ type Config struct {
 - `Validate` reports **all** problems at once as a `*ValidationError` whose
   `Unwrap() []error` exposes each `*FieldError`, so `errors.Is(err, ErrMissing)`
   and `errors.As(err, &verr)` both work. `FieldError.Field` is the YAML path
-  (e.g. `bastion.listen_addr`) — keep that convention for new fields.
+  (e.g. `proxy.listen_addr`) — keep that convention for new fields.
 - Delimiter validation rejects anything that is not exactly one character, and
   rejects alphanumerics plus `.`, `-`, `_`, so splitting `alice#host.example.com`
   is unambiguous (D1). Phase 0003/0006 should split on the configured delimiter
   rather than hardcoding `#`.
 - Only bootstrap settings belong here. Anything policy-related is fetched from
-  the management server per connection (D2) and must **not** be added to this
+  Hoplock Control per connection (D2) and must **not** be added to this
   struct.
 
 ### Binaries
 Both `cmd` mains are scaffolds: they parse flags via a `flag.FlagSet` with a
 custom `Usage`, support `-version`/`--version` (printing a `var version = "dev"`
 overridden by `-ldflags "-X main.version=..."`, which the Makefile sets from
-`git describe`), and exit 0. `bastion` also accepts `-config` and
-`mock-management` accepts `-listen`; neither does anything with them yet — 0002
-wires the mock API, 0004 wires the bastion's listener and config load.
+`git describe`), and exit 0. `proxy` also accepts `-config` and
+`mock-control` accepts `-listen`; neither does anything with them yet — 0002
+wires the mock API, 0004 wires the proxy's listener and config load.
 
 ### Tooling
 - `make all` = `build vet test lint`. Other targets: `fmt` (`golangci-lint fmt`),
-  `license-check`, `tidy`, `run-bastion CONFIG=...`, `run-mock LISTEN=...`,
+  `license-check`, `tidy`, `run-proxy CONFIG=...`, `run-mock LISTEN=...`,
   `clean`. `make test` runs with `-race`.
 - `.golangci.yml` is **schema v2** (`version: "2"`). Linters: errcheck, govet,
   ineffassign, staticcheck, unused; formatters gofmt + goimports with
@@ -96,4 +96,4 @@ wires the mock API, 0004 wires the bastion's listener and config load.
 - No new prompts were added; numbering invariants (PROTOCOL §6) are unchanged —
   0001 moved to `prompts/implemented/`, 0002–0010 remain queued.
 - A `--config` that actually loads and validates the file will land with the
-  bastion's real startup path (0004); `internal/config` is ready for it.
+  proxy's real startup path (0004); `internal/config` is ready for it.

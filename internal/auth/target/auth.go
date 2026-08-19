@@ -12,12 +12,12 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
-// Target is the host the bastion is about to log into on the user's behalf.
+// Target is the host the proxy is about to log into on the user's behalf.
 type Target struct {
-	// Host is the target hostname or IP, as the management server routed it.
+	// Host is the target hostname or IP, as Hoplock Control routed it.
 	Host string
 	// Port is the target's SSH port.
 	Port int
@@ -29,15 +29,15 @@ func (t Target) Addr() string { return net.JoinHostPort(t.Host, strconv.Itoa(t.P
 // String implements fmt.Stringer.
 func (t Target) String() string { return t.Addr() }
 
-// TargetAuthenticator produces the credentials the bastion uses to log into a
+// TargetAuthenticator produces the credentials the proxy uses to log into a
 // target, and guarantees teardown of anything it provisioned (PLAN §4.2).
 //
-// It is the mirror of the user→bastion plane (D4): both take and return an
-// identity rather than a boolean, so AD/Okta claims decide what the bastion may
+// It is the mirror of the user→proxy plane (D4): both take and return an
+// identity rather than a boolean, so AD/Okta claims decide what the proxy may
 // assume on the far side without any caller changing.
 //
 // The name repeats the package name because it names the *plane*
-// (bastion→target), as PLAN §4.2 fixes it; its counterpart is
+// (proxy→target), as PLAN §4.2 fixes it; its counterpart is
 // user.UserAuthenticator.
 type TargetAuthenticator interface {
 	// Name identifies the implementation for logging and metrics.

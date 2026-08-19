@@ -5,7 +5,7 @@
 - `docs/PLAN.md` — especially §1 (flow), §2 (D1, D2, D5, D7), §3 (proxy/channel),
   §4.2 (target auth interface + static-key placeholder), §4.3 (what the user is
   told), §6.1–6.2.
-- `docs/learnings/` — read summaries; open `0002` (mgmt client + route payload)
+- `docs/learnings/` — read summaries; open `0002` (control client + route payload)
   and `0004` (identity + user auth entry points).
 
 ## Objective
@@ -17,7 +17,7 @@ works before ephemeral provisioning (0006) lands.
 ## In scope
 - `internal/routing` (initial): parse the target from the SSH username using the
   configured delimiter (D1, default `#`) → `login` + `target`; normalize/validate.
-  Then call the management server's **authorize + route** endpoint and handle the
+  Then call Hoplock Control's **authorize + route** endpoint and handle the
   `direct` case (return the route). Leave a clear TODO/interface point for
   `nexthop` (0007).
 - `internal/proxy`: the core engine.
@@ -43,7 +43,7 @@ works before ephemeral provisioning (0006) lands.
       failures only when the channel has no pty (`scp`, `sftp`, `exec`), so
       tooling parsing the stream is not corrupted.
     - Apply the disclosure split on every failure path (authorize, target dial,
-      host-key rejection, provisioning): `mgmt.IsUnauthorized` → a generic
+      host-key rejection, provisioning): `control.IsUnauthorized` → a generic
       "access denied" that names neither target nor reason; anything else →
       an explicit "this is an outage, not a permissions problem" plus the
       session id as a support reference.
@@ -53,7 +53,7 @@ works before ephemeral provisioning (0006) lands.
 - `internal/auth/target` (placeholder only): a `static-key` `TargetAuthenticator`
   (PLAN §4.2) that returns an `ssh.ClientConfig` from a configured test key, with
   a no-op `Teardown`. Clearly marked as a placeholder to be superseded by 0006.
-- Host keys: present the bastion's own host key to clients; for the target use
+- Host keys: present the proxy's own host key to clients; for the target use
   **trust-on-first-use** and call the **report host key** endpoint on new keys
   (D7).
 - Minimal integration test harness proving E2E (see below).
@@ -65,9 +65,9 @@ works before ephemeral provisioning (0006) lands.
   buffer machinery is 0010.
 
 ## Acceptance criteria
-- An integration test (using `cmd/mock-management` + an in-test/containerized
+- An integration test (using `cmd/mock-control` + an in-test/containerized
   `sshd` target + the static-key target auth) demonstrates:
-  a user authenticates to the bastion, is authorized to a **direct** target, runs
+  a user authenticates to the proxy, is authorized to a **direct** target, runs
   an `exec` command, and gets correct output and exit status; and opens an
   interactive `shell` and exchanges data.
 - Channels not in the permitted list are refused.

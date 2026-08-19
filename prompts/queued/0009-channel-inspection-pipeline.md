@@ -19,7 +19,7 @@ in-channel requests, forwarding destinations, and connection-level global
 requests. Ship the framework with **no heavy inspectors yet** (command filtering
 is 0010).
 
-This is the phase where the product stops being a bastion with an allow-list and
+This is the phase where the product stops being a proxy with an allow-list and
 starts being an SSH firewall, so the acceptance criteria are written around
 policy statements a customer would recognise, not around internal structure.
 

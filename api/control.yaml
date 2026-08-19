@@ -1,20 +1,20 @@
 openapi: 3.0.3
 
 info:
-  title: SecureCommandProxy Management API
+  title: Hoplock Proxy Control API
   description: |
-    The contract between a **bastion** (Policy Enforcement Point) and the
-    **management server** (Policy Decision Point).
+    The contract between a **proxy** (Policy Enforcement Point) and the
+    **Hoplock Control** (Policy Decision Point).
 
-    The bastion originates no policy (PLAN D2): it authenticates nothing
+    The proxy originates no policy (PLAN D2): it authenticates nothing
     locally, decides no routes, and invents no filter lists. It does not,
     however, re-ask per action — `/v1/authorize` returns the whole policy for a
-    connection (route, channel allow-list, filter policy), which the bastion
+    connection (route, channel allow-list, filter policy), which the proxy
     then enforces locally for that connection's lifetime. The round trips are at
     session setup; the session's data path makes no calls to this API.
 
-    All requests are JSON over HTTPS (PLAN D9). The bastion authenticates itself
-    to the management server with a bearer token (see `bastionToken`); that is a
+    All requests are JSON over HTTPS (PLAN D9). The proxy authenticates itself
+    to Hoplock Control with a bearer token (see `proxyToken`); that is a
     deliberate seam — production deployments are expected to replace it with
     mTLS or a signed assertion without changing the payloads.
 
@@ -27,14 +27,14 @@ info:
 
 servers:
   - url: https://management.example.com
-    description: Management server root; all paths below are absolute from here.
+    description: Hoplock Control root; all paths below are absolute from here.
 
 security:
-  - bastionToken: []
+  - proxyToken: []
 
 tags:
   - name: authentication
-    description: user → bastion authentication, delegated to the server.
+    description: user → proxy authentication, delegated to the server.
   - name: authorization
     description: authorize + route decisions.
   - name: host-keys
@@ -42,7 +42,7 @@ tags:
   - name: logs
     description: session log ingestion (D8).
   - name: revocation
-    description: server → bastion revocation stream (PLAN §6.4).
+    description: server → proxy revocation stream (PLAN §6.4).
 
 paths:
   /v1/auth/cert:
@@ -52,10 +52,10 @@ paths:
       summary: Authenticate a client that offered a public key or certificate.
       description: |
         Called when the SSH client offers a public key or certificate. The
-        bastion has already stripped the target segment from the SSH username
+        proxy has already stripped the target segment from the SSH username
         (D1) and sends the bare `login`.
 
-        The bastion performs no local key validation: it relays the offered key
+        The proxy performs no local key validation: it relays the offered key
         material and the server decides.
       requestBody:
         required: true
@@ -85,13 +85,13 @@ paths:
       operationId: authenticatePassword
       summary: Authenticate a password, optionally starting out-of-band MFA.
       description: |
-        Called for password / keyboard-interactive flows, which the bastion
+        Called for password / keyboard-interactive flows, which the proxy
         attempts only after certificate authentication was not accepted.
 
         MFA is entirely the server's concern. If the server requires a second
         factor it returns `200` with `status: mfa_required` and an
-        `mfa` challenge; the bastion then polls `/v1/auth/mfa/poll` until the
-        challenge resolves. The bastion never contacts the MFA provider itself.
+        `mfa` challenge; the proxy then polls `/v1/auth/mfa/poll` until the
+        challenge resolves. The proxy never contacts the MFA provider itself.
 
         The submitted password MUST NOT be logged by either side (PLAN §7).
       requestBody:
@@ -123,7 +123,7 @@ paths:
       operationId: pollMFA
       summary: Poll an outstanding out-of-band MFA challenge.
       description: |
-        Polled by the bastion after `/v1/auth/password` returned
+        Polled by the proxy after `/v1/auth/password` returned
         `status: mfa_required`, no more often than the challenge's
         `poll_after_ms`.
 
@@ -158,11 +158,11 @@ paths:
       summary: Authorize an authenticated identity for a target and return a route.
       description: |
         The single decision that shapes the whole session (PLAN §1 step 4). The
-        response tells the bastion where to connect (`direct` to the target, or
-        `nexthop` to another bastion), which SSH channel types it may open, and
+        response tells the proxy where to connect (`direct` to the target, or
+        `nexthop` to another proxy), which SSH channel types it may open, and
         which command filter policy to enforce.
 
-        The bastion MUST treat the response as the complete policy for the
+        The proxy MUST treat the response as the complete policy for the
         connection: anything not permitted here is denied.
       requestBody:
         required: true
@@ -190,10 +190,10 @@ paths:
       operationId: reportHostKey
       summary: Report a target host key and get the trust decision for it.
       description: |
-        Called before the bastion completes the target handshake, for every
+        Called before the proxy completes the target handshake, for every
         target host key it sees. In the prototype the server implements
         trust-on-first-use and records the key (D7); the response still carries
-        an explicit decision so a later, stricter policy needs no bastion change.
+        an explicit decision so a later, stricter policy needs no proxy change.
       requestBody:
         required: true
         content:
@@ -220,7 +220,7 @@ paths:
       operationId: ingestLogBatch
       summary: Ingest a batch of session log records.
       description: |
-        The throughput path (D8). The bastion accumulates records and ships them
+        The throughput path (D8). The proxy accumulates records and ships them
         in batches; the server acknowledges how many it accepted. Batches are
         the default for everything that is not a critical security event.
 
@@ -259,7 +259,7 @@ paths:
         prioritise separately in the server and in any middlebox.
 
         Unlike the batch endpoint this responds `200`: the acknowledgement means
-        the record is durable, so the bastion can act (e.g. kill the session)
+        the record is durable, so the proxy can act (e.g. kill the session)
         knowing the event was recorded.
       requestBody:
         required: true
@@ -284,37 +284,37 @@ paths:
   /v1/bastions/{bastion_id}/events:
     get:
       tags: [revocation]
-      operationId: streamBastionEvents
-      summary: Subscribe to the bastion's revocation event stream.
+      operationId: streamProxyEvents
+      summary: Subscribe to the proxy's revocation event stream.
       description: |
         A long-lived response of **newline-delimited JSON**: one
         `RevocationEvent` per line, written as the server decides them, until
         either side closes the connection.
 
-        The subscription is **outbound from the bastion**, and deliberately so:
-        bastions sit behind firewalls and must not need an inbound listener
+        The subscription is **outbound from the proxy**, and deliberately so:
+        proxies sit behind firewalls and must not need an inbound listener
         (PLAN §1). This stream is therefore the server's only way to reach a
-        running bastion — to end a session that is already in flight, or to
-        withdraw an authorize decision the bastion is allowed to reuse
+        running proxy — to end a session that is already in flight, or to
+        withdraw an authorize decision the proxy is allowed to reuse
         (`AuthorizeResponse.cache`). Caching without it would let a revoked
         allow survive for the length of its TTL, so a server that issues cache
         hints MUST serve this endpoint.
 
-        The bastion keeps one subscription open per bastion id and reconnects
+        The proxy keeps one subscription open per proxy id and reconnects
         with bounded exponential backoff. A stream that goes silent is
         indistinguishable from a healthy idle one, so the server MUST emit
         `heartbeat` events at a steady interval (comfortably inside the
-        bastion's timeout, which defaults to 20s); a bastion that misses them
-        drops the connection and reconnects. While the bastion cannot hear this
+        proxy's timeout, which defaults to 20s); a proxy that misses them
+        drops the connection and reconnects. While the proxy cannot hear this
         stream it stops serving cached decisions and re-authorizes every
         connection — it does **not** kill live sessions.
 
-        **Gap recovery.** On reconnect the bastion sends the last `event_id` it
+        **Gap recovery.** On reconnect the proxy sends the last `event_id` it
         processed as `last_event_id`. **The server decides** what happens next:
         it either replays every event after that id, in order, before resuming
         live delivery, or — when the id is too old to replay, unknown, or the
         server keeps no history — it emits a `resync` event as the **first**
-        line of the stream and nothing older. `resync` tells the bastion it has
+        line of the stream and nothing older. `resync` tells the proxy it has
         missed events it cannot be given, so it drops its entire decision cache
         and re-authorizes from scratch. An absent `last_event_id` means a fresh
         subscription: the server starts from now and replays nothing.
@@ -322,16 +322,16 @@ paths:
         - name: bastion_id
           in: path
           required: true
-          description: The bastion whose events are being subscribed to.
+          description: The proxy whose events are being subscribed to.
           schema:
             type: string
-          example: bastion-eu-west-1
+          example: proxy-eu-west-1
         - name: last_event_id
           in: query
           required: false
           description: |
-            The last `event_id` the bastion processed. Absent on a fresh
-            subscription. It is opaque to the bastion, which only echoes it
+            The last `event_id` the proxy processed. Absent on a fresh
+            subscription. It is opaque to the proxy, which only echoes it
             back.
           schema:
             type: string
@@ -353,12 +353,12 @@ paths:
 
 components:
   securitySchemes:
-    bastionToken:
+    proxyToken:
       type: http
       scheme: bearer
       description: |
-        Bearer token identifying the bastion to the management server. This is
-        the bastion→server channel credential and is unrelated to the end user's
+        Bearer token identifying the proxy to Hoplock Control. This is
+        the proxy→server channel credential and is unrelated to the end user's
         SSH credentials.
 
   responses:
@@ -372,7 +372,7 @@ components:
       description: |
         Deny decision. For the auth endpoints the credential was rejected; for
         `/v1/authorize` the identity may not reach the requested target; for the
-        remaining endpoints the bastion's own token was rejected. Clients MUST
+        remaining endpoints the proxy's own token was rejected. Clients MUST
         distinguish this from transport errors and never fail open.
       content:
         application/json:
@@ -413,12 +413,12 @@ components:
       properties:
         session_id:
           type: string
-          description: Bastion-assigned id, stable for the whole session.
+          description: Proxy-assigned id, stable for the whole session.
           example: 01HQ2Z3K4M5N6P7Q8R9S0T1V2W
         bastion_id:
           type: string
-          description: Identifier of the bastion making the call.
-          example: bastion-eu-west-1
+          description: Identifier of the proxy making the call.
+          example: proxy-eu-west-1
         client_addr:
           type: string
           description: Remote address of the SSH client, `host:port`.
@@ -434,14 +434,14 @@ components:
         hop_trail:
           type: array
           description: |
-            Bastion ids already traversed, oldest first, for loop detection on
+            Proxy ids already traversed, oldest first, for loop detection on
             next-hop routes (PLAN §6.1). Empty on a user's first hop.
           items:
             type: string
         timestamp:
           type: string
           format: date-time
-          description: When the bastion made the call (RFC 3339, UTC).
+          description: When the proxy made the call (RFC 3339, UTC).
 
     Identity:
       type: object
@@ -563,7 +563,7 @@ components:
           description: Opaque handle to poll with; single connection, single use.
         prompt:
           type: string
-          description: Text the bastion may show the user while waiting.
+          description: Text the proxy may show the user while waiting.
           example: Approve the sign-in request on your phone.
         poll_after_ms:
           type: integer
@@ -621,9 +621,9 @@ components:
           type: string
           enum: [direct, nexthop]
           description: |
-            `direct` — `target` is the end host; the bastion provisions target
-            credentials and proxies. `nexthop` — `target` is the next bastion;
-            the bastion chains to it and that bastion repeats the flow.
+            `direct` — `target` is the end host; the proxy provisions target
+            credentials and proxies. `nexthop` — `target` is the next proxy;
+            the proxy chains to it and that proxy repeats the flow.
         target:
           type: string
           description: Host to connect to, meaning per `route_type`.
@@ -640,7 +640,7 @@ components:
         permitted_channels:
           type: array
           description: |
-            SSH channel types the session may open. The bastion denies every
+            SSH channel types the session may open. The proxy denies every
             channel not on this list (D5). An empty list denies all channels.
           items:
             type: string
@@ -658,11 +658,11 @@ components:
     CacheHint:
       type: object
       description: |
-        The server authorising the bastion to **reuse this decision** for later
+        The server authorising the proxy to **reuse this decision** for later
         connections (PLAN §6.4, D2). Absent means: do not cache. There is no
-        default lifetime and the bastion never invents one.
+        default lifetime and the proxy never invents one.
 
-        The lifetime belongs to the server. A bastion may hold the decision for
+        The lifetime belongs to the server. A proxy may hold the decision for
         less time than `ttl_seconds` (an operator may configure a stricter local
         clamp) but never longer, so the PDP keeps ownership of its own risk
         appetite and can decline caching for a sensitive target by omitting this
@@ -670,14 +670,14 @@ components:
 
         A cached allow outlives a withdrawal of access for up to `ttl_seconds`,
         which is what `GET /v1/bastions/{bastion_id}/events` exists to bound. A
-        server that issues cache hints must serve that stream; a bastion that
+        server that issues cache hints must serve that stream; a proxy that
         cannot hear it stops using its cache.
       required: [ttl_seconds]
       properties:
         key:
           type: string
           description: |
-            Opaque handle for this decision. The bastion MUST NOT construct,
+            Opaque handle for this decision. The proxy MUST NOT construct,
             parse, or derive meaning from it — it only echoes the key back in a
             `cache_invalidate` event.
 
@@ -709,7 +709,7 @@ components:
         event_id:
           type: string
           description: |
-            Server-assigned, opaque id. The bastion stores the last one it
+            Server-assigned, opaque id. The proxy stores the last one it
             processed and sends it back as `last_event_id` on reconnect; it
             never parses or orders by it itself.
           example: evt-00000042
@@ -721,11 +721,11 @@ components:
             `cache_invalidate` — drop cached authorize decisions.
             `heartbeat` — liveness only, so a silently dead stream is
             detectable.
-            `resync` — the bastion missed events that cannot be replayed: it
+            `resync` — the proxy missed events that cannot be replayed: it
             drops its entire cache and re-authorizes from scratch.
 
-            A bastion ignores a type it does not recognise, so the server may
-            add types without breaking older bastions.
+            A proxy ignores a type it does not recognise, so the server may
+            add types without breaking older proxies.
         timestamp:
           type: string
           format: date-time
@@ -740,12 +740,12 @@ components:
       description: |
         Ends sessions that are already in flight. Exactly one of `session_ids`,
         `subject`, or `all` selects what dies. Killing sessions for a subject
-        also drops that subject's cached decisions on the bastion, so the user
+        also drops that subject's cached decisions on the proxy, so the user
         cannot immediately reconnect through a decision that is on its way out.
       properties:
         session_ids:
           type: array
-          description: Sessions to end, by the bastion-assigned `session_id`.
+          description: Sessions to end, by the proxy-assigned `session_id`.
           items:
             type: string
           example: [01HQ2Z3K4M5N6P7Q8R9S0T1V2W]
@@ -755,7 +755,7 @@ components:
           example: alice@example.com
         all:
           type: boolean
-          description: End every session on this bastion.
+          description: End every session on this proxy.
         reason:
           type: string
           description: |
@@ -764,7 +764,7 @@ components:
             log (PLAN §4.3), so that a revoked session is never mistaken for a
             crash or a network fault. Because it is displayed verbatim, it must
             be safe to disclose: no policy internals, no other users, no
-            infrastructure detail. A server should always set it; a bastion that
+            infrastructure detail. A server should always set it; a proxy that
             receives none shows a generic message instead.
           example: Access withdrawn by the security team; contact #security.
 
@@ -787,7 +787,7 @@ components:
           example: alice@example.com
         all:
           type: boolean
-          description: Drop the bastion's entire decision cache.
+          description: Drop the proxy's entire decision cache.
 
     FilterPolicy:
       type: object
@@ -831,7 +831,7 @@ components:
         action:
           type: string
           enum: [allow_and_log, block_command, warn_and_continue, kill_session]
-          description: What the bastion does when this rule matches.
+          description: What the proxy does when this rule matches.
         message:
           type: string
           description: |
@@ -848,20 +848,20 @@ components:
           type: string
           description: |
             The end host the chain is being built toward; forwarded to the next
-            bastion so it can re-run the flow for the same target.
+            proxy so it can re-run the flow for the same target.
           example: host.company.com
         max_hops:
           type: integer
           format: int32
           minimum: 1
           description: |
-            Maximum total hops allowed for this session. The bastion refuses to
+            Maximum total hops allowed for this session. The proxy refuses to
             chain further once `conn.hop_trail` reaches this length.
           example: 3
         hop_trail:
           type: array
           description: |
-            Hop trail to forward to the next bastion, this bastion appended.
+            Hop trail to forward to the next proxy, this proxy appended.
             Used for loop detection (PLAN §6.1).
           items:
             type: string
@@ -889,7 +889,7 @@ components:
         decision:
           type: string
           enum: [accept, reject]
-          description: Whether the bastion may continue the target handshake.
+          description: Whether the proxy may continue the target handshake.
         known:
           type: boolean
           description: |
@@ -969,7 +969,7 @@ components:
           format: int32
           description: |
             How many records the server stored. Fewer than sent means the rest
-            were duplicates; the bastion may drop them.
+            were duplicates; the proxy may drop them.
 
     LogPriorityRequest:
       type: object

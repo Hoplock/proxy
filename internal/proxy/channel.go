@@ -12,8 +12,8 @@ import (
 )
 
 // SSH channel and request names this engine reasons about by name. Everything
-// else is forwarded generically (D5): the bastion proxies channel types it has
-// never heard of, and only the management server's allow-list decides which are
+// else is forwarded generically (D5): the proxy proxies channel types it has
+// never heard of, and only Hoplock Control's allow-list decides which are
 // allowed to exist.
 const (
 	channelSession = "session"

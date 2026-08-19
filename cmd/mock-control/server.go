@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // Debug paths. They are deliberately outside the /v1 contract namespace: they
-// exist so tests and the e2e topology can assert on what the bastion shipped,
+// exist so tests and the e2e topology can assert on what the proxy shipped,
 // and no production server implements them.
 const (
 	pathDebugLogs   = "/debug/logs"
@@ -37,7 +37,7 @@ type serverOptions struct {
 	Now func() time.Time
 }
 
-// server implements the management API from static fixtures. Everything it
+// server implements the Control API from static fixtures. Everything it
 // remembers — MFA challenges, seen host keys, ingested logs — lives here, in
 // memory, for the lifetime of the process.
 type server struct {
@@ -49,13 +49,13 @@ type server struct {
 	mu       sync.Mutex
 	mfa      map[string]*mfaChallenge
 	hostKeys map[string]bool // "target\x00fingerprint" -> seen
-	batched  []mgmt.LogRecord
-	priority []mgmt.LogRecord
+	batched  []control.LogRecord
+	priority []control.LogRecord
 	seenLogs map[string]bool // record_id -> stored, for de-duplication
 	// subs are the open revocation streams; events are the retained history a
-	// reconnecting bastion replays from, trimmed to the fixture's buffer size.
+	// reconnecting proxy replays from, trimmed to the fixture's buffer size.
 	subs           map[*subscriber]bool
-	events         []mgmt.RevocationEvent
+	events         []control.RevocationEvent
 	evictedThrough int
 	idCounter      int
 }
@@ -96,16 +96,16 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 // handler routes the contract endpoints plus the mock-only debug endpoints.
 func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+mgmt.PathAuthenticateCert, s.handleAuthenticateCert)
-	mux.HandleFunc("POST "+mgmt.PathAuthenticatePassword, s.handleAuthenticatePassword)
-	mux.HandleFunc("POST "+mgmt.PathPollMFA, s.handlePollMFA)
-	mux.HandleFunc("POST "+mgmt.PathAuthorize, s.handleAuthorize)
-	mux.HandleFunc("POST "+mgmt.PathReportHostKey, s.handleReportHostKey)
-	mux.HandleFunc("POST "+mgmt.PathIngestLogBatch, s.handleIngestLogBatch)
-	mux.HandleFunc("POST "+mgmt.PathIngestPriorityLog, s.handleIngestPriorityLog)
-	// The path constant is already a net/http wildcard pattern, so the bastion
+	mux.HandleFunc("POST "+control.PathAuthenticateCert, s.handleAuthenticateCert)
+	mux.HandleFunc("POST "+control.PathAuthenticatePassword, s.handleAuthenticatePassword)
+	mux.HandleFunc("POST "+control.PathPollMFA, s.handlePollMFA)
+	mux.HandleFunc("POST "+control.PathAuthorize, s.handleAuthorize)
+	mux.HandleFunc("POST "+control.PathReportHostKey, s.handleReportHostKey)
+	mux.HandleFunc("POST "+control.PathIngestLogBatch, s.handleIngestLogBatch)
+	mux.HandleFunc("POST "+control.PathIngestPriorityLog, s.handleIngestPriorityLog)
+	// The path constant is already a net/http wildcard pattern, so the proxy
 	// and the mock agree on the shape of the route as well as the string.
-	mux.HandleFunc("GET "+mgmt.PathBastionEvents, s.handleBastionEvents)
+	mux.HandleFunc("GET "+control.PathProxyEvents, s.handleProxyEvents)
 	mux.HandleFunc("GET "+pathDebugLogs, s.handleDebugLogs)
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
@@ -115,10 +115,10 @@ func (s *server) handler() http.Handler {
 // --- contract handlers ------------------------------------------------------
 
 func (s *server) handleAuthenticateCert(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.AuthenticateCertRequest
+	var req control.AuthenticateCertRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -138,17 +138,17 @@ func (s *server) handleAuthenticateCert(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no identity matches the offered key")
 		return
 	}
-	writeJSON(w, http.StatusOK, mgmt.AuthenticateResponse{
-		Status:   mgmt.AuthStatusAuthenticated,
+	writeJSON(w, http.StatusOK, control.AuthenticateResponse{
+		Status:   control.AuthStatusAuthenticated,
 		Identity: user.identity(),
 	})
 }
 
 func (s *server) handleAuthenticatePassword(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.AuthenticatePasswordRequest
+	var req control.AuthenticatePasswordRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -166,8 +166,8 @@ func (s *server) handleAuthenticatePassword(w http.ResponseWriter, r *http.Reque
 	}
 
 	if !user.MFA.Required {
-		writeJSON(w, http.StatusOK, mgmt.AuthenticateResponse{
-			Status:   mgmt.AuthStatusAuthenticated,
+		writeJSON(w, http.StatusOK, control.AuthenticateResponse{
+			Status:   control.AuthStatusAuthenticated,
 			Identity: user.identity(),
 		})
 		return
@@ -187,17 +187,17 @@ func (s *server) handleAuthenticatePassword(w http.ResponseWriter, r *http.Reque
 	s.mfa[token] = challenge
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, mgmt.AuthenticateResponse{
-		Status: mgmt.AuthStatusMFARequired,
+	writeJSON(w, http.StatusOK, control.AuthenticateResponse{
+		Status: control.AuthStatusMFARequired,
 		MFA:    challenge.wire(token),
 	})
 }
 
 func (s *server) handlePollMFA(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.MFAPollRequest
+	var req control.MFAPollRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -221,8 +221,8 @@ func (s *server) handlePollMFA(w http.ResponseWriter, r *http.Request) {
 	case challenge.remainingPolls > 0:
 		challenge.remainingPolls--
 		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, mgmt.AuthenticateResponse{
-			Status: mgmt.AuthStatusMFARequired,
+		writeJSON(w, http.StatusOK, control.AuthenticateResponse{
+			Status: control.AuthStatusMFARequired,
 			MFA:    challenge.wire(req.Token),
 		})
 		return
@@ -242,17 +242,17 @@ func (s *server) handlePollMFA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "identity is no longer known")
 		return
 	}
-	writeJSON(w, http.StatusOK, mgmt.AuthenticateResponse{
-		Status:   mgmt.AuthStatusAuthenticated,
+	writeJSON(w, http.StatusOK, control.AuthenticateResponse{
+		Status:   control.AuthStatusAuthenticated,
 		Identity: user.identity(),
 	})
 }
 
 func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.AuthorizeRequest
+	var req control.AuthorizeRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -276,14 +276,14 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	decisionID := fmt.Sprintf("decision-%d", s.idCounter)
 	s.mu.Unlock()
 
-	resp := mgmt.AuthorizeResponse{
-		RouteType:         mgmt.RouteType(route.RouteType),
+	resp := control.AuthorizeResponse{
+		RouteType:         control.RouteType(route.RouteType),
 		Target:            req.Target,
 		TargetPort:        route.TargetPort,
 		Permissions:       route.Permissions,
 		PermittedChannels: route.PermittedChannels,
-		FilterPolicy: mgmt.FilterPolicy{
-			Mode:  mgmt.FilterMode(route.FilterPolicy.Mode),
+		FilterPolicy: control.FilterPolicy{
+			Mode:  control.FilterMode(route.FilterPolicy.Mode),
 			Rules: filterRules(route.FilterPolicy.Rules),
 		},
 		DecisionID: decisionID,
@@ -295,28 +295,28 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch resp.RouteType {
-	case mgmt.RouteTypeDirect:
+	case control.RouteTypeDirect:
 		if route.ResolvedTarget != "" {
 			resp.Target = route.ResolvedTarget
 		}
-	case mgmt.RouteTypeNextHop:
-		// For a chain the target is the next bastion; the host the user asked
-		// for travels in hop metadata so the next bastion re-runs the flow.
+	case control.RouteTypeNextHop:
+		// For a chain the target is the next proxy; the host the user asked
+		// for travels in hop metadata so the next proxy re-runs the flow.
 		resp.Target = route.NextHop
-		resp.Hop = &mgmt.HopMetadata{
+		resp.Hop = &control.HopMetadata{
 			FinalTarget: req.Target,
 			MaxHops:     route.MaxHops,
-			HopTrail:    append(append([]string{}, req.Conn.HopTrail...), req.Conn.BastionID),
+			HopTrail:    append(append([]string{}, req.Conn.HopTrail...), req.Conn.ProxyID),
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.HostKeyReportRequest
+	var req control.HostKeyReportRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -332,29 +332,29 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 	s.hostKeys[id] = true
 	s.mu.Unlock()
 
-	resp := mgmt.HostKeyReportResponse{
-		Decision: mgmt.HostKeyDecision(s.fx.HostKeys.Decision),
+	resp := control.HostKeyReportResponse{
+		Decision: control.HostKeyDecision(s.fx.HostKeys.Decision),
 		Known:    known,
 		Reason:   "host key already trusted",
 	}
 	if !known {
 		resp.Reason = "first sighting; recorded (trust-on-first-use)"
-		if resp.Decision == mgmt.HostKeyReject {
+		if resp.Decision == control.HostKeyReject {
 			resp.Reason = "first sighting; policy rejects unknown host keys"
 		}
 	} else {
 		// A key we already trust is always accepted, whatever the policy for
 		// unknown keys is.
-		resp.Decision = mgmt.HostKeyAccept
+		resp.Decision = control.HostKeyAccept
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *server) handleIngestLogBatch(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.LogBatchRequest
+	var req control.LogBatchRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -383,14 +383,14 @@ func (s *server) handleIngestLogBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusAccepted, mgmt.LogBatchResponse{Accepted: accepted})
+	writeJSON(w, http.StatusAccepted, control.LogBatchResponse{Accepted: accepted})
 }
 
 func (s *server) handleIngestPriorityLog(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
-	var req mgmt.LogPriorityRequest
+	var req control.LogPriorityRequest
 	if !decode(w, r, &req) {
 		return
 	}
@@ -409,22 +409,22 @@ func (s *server) handleIngestPriorityLog(w http.ResponseWriter, r *http.Request)
 	}
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, mgmt.LogPriorityResponse{Accepted: true, ReceiptID: receipt})
+	writeJSON(w, http.StatusOK, control.LogPriorityResponse{Accepted: true, ReceiptID: receipt})
 }
 
 // --- mock-only debug handlers ----------------------------------------------
 
 // debugLogs is what GET /debug/logs returns.
 type debugLogs struct {
-	Batched  []mgmt.LogRecord `json:"batched"`
-	Priority []mgmt.LogRecord `json:"priority"`
+	Batched  []control.LogRecord `json:"batched"`
+	Priority []control.LogRecord `json:"priority"`
 }
 
 func (s *server) handleDebugLogs(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	out := debugLogs{
-		Batched:  append([]mgmt.LogRecord{}, s.batched...),
-		Priority: append([]mgmt.LogRecord{}, s.priority...),
+		Batched:  append([]control.LogRecord{}, s.batched...),
+		Priority: append([]control.LogRecord{}, s.priority...),
 	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, out)
@@ -440,7 +440,7 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	// Open subscriptions survive a reset; only the replayable history is
 	// cleared, so a reconnect after this point starts from now.
 	s.events = nil
-	// Everything published so far is gone, so a bastion resuming from any of it
+	// Everything published so far is gone, so a proxy resuming from any of it
 	// is told to resync rather than silently missing what it asked for.
 	s.evictedThrough = s.idCounter
 	for _, k := range s.fx.HostKeys.Known {
@@ -452,22 +452,22 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 
 // --- helpers ----------------------------------------------------------------
 
-// authorizeBastion enforces the bearer token when the fixtures set one. It
+// authorizeProxy enforces the bearer token when the fixtures set one. It
 // reports whether the request may proceed.
-func (s *server) authorizeBastion(w http.ResponseWriter, r *http.Request) bool {
-	if s.fx.BastionToken == "" {
+func (s *server) authorizeProxy(w http.ResponseWriter, r *http.Request) bool {
+	if s.fx.ProxyToken == "" {
 		return true
 	}
 	const prefix = "Bearer "
 	got := r.Header.Get("Authorization")
-	if !strings.HasPrefix(got, prefix) || got[len(prefix):] != s.fx.BastionToken {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid bastion token")
+	if !strings.HasPrefix(got, prefix) || got[len(prefix):] != s.fx.ProxyToken {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid proxy token")
 		return false
 	}
 	return true
 }
 
-// decode reads a JSON request body, rejecting unknown fields so a bastion that
+// decode reads a JSON request body, rejecting unknown fields so a proxy that
 // drifts from the contract is told loudly instead of being silently ignored.
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(r.Body)
@@ -503,8 +503,8 @@ type errorEnvelope struct {
 }
 
 // wire converts an internal challenge into its contract form.
-func (c *mfaChallenge) wire(token string) *mgmt.MFAChallenge {
-	return &mgmt.MFAChallenge{
+func (c *mfaChallenge) wire(token string) *control.MFAChallenge {
+	return &control.MFAChallenge{
 		Token:       token,
 		Prompt:      c.prompt,
 		PollAfterMS: c.pollAfterMS,
@@ -521,7 +521,7 @@ func hostKeyID(target, fingerprint string) string { return target + "\x00" + fin
 // The derived key is per (subject, target) — the narrowest scope, and never
 // shared across identities, which the contract forbids. A fixture can set the
 // key explicitly to model a server that shares one decision more widely.
-func cacheHint(route *fixtureRoute, subject, target string) *mgmt.CacheHint {
+func cacheHint(route *fixtureRoute, subject, target string) *control.CacheHint {
 	if route.Cache.TTLSeconds <= 0 {
 		return nil
 	}
@@ -529,20 +529,20 @@ func cacheHint(route *fixtureRoute, subject, target string) *mgmt.CacheHint {
 	if key == "" {
 		key = "authz:" + subject + ":" + target
 	}
-	return &mgmt.CacheHint{Key: key, TTLSeconds: route.Cache.TTLSeconds}
+	return &control.CacheHint{Key: key, TTLSeconds: route.Cache.TTLSeconds}
 }
 
 // filterRules converts fixture rules into their contract form, preserving order
 // because the first match wins.
-func filterRules(in []fixtureFilterRule) []mgmt.FilterRule {
+func filterRules(in []fixtureFilterRule) []control.FilterRule {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]mgmt.FilterRule, 0, len(in))
+	out := make([]control.FilterRule, 0, len(in))
 	for _, r := range in {
-		out = append(out, mgmt.FilterRule{
+		out = append(out, control.FilterRule{
 			Match:   r.Match,
-			Action:  mgmt.FilterAction(r.Action),
+			Action:  control.FilterAction(r.Action),
 			Message: r.Message,
 		})
 	}
@@ -552,22 +552,22 @@ func filterRules(in []fixtureFilterRule) []mgmt.FilterRule {
 // mirror appends a record to a JSONL file when -log-dir is set. The caller
 // holds s.mu. A mirroring failure is reported but never fails the request: the
 // in-memory store is the source of truth for tests.
-func (s *server) mirror(name string, rec mgmt.LogRecord) {
+func (s *server) mirror(name string, rec control.LogRecord) {
 	if s.logDir == "" {
 		return
 	}
 	line, err := json.Marshal(rec)
 	if err != nil {
-		s.logger.Printf("mock-management: encode record %s: %v", rec.RecordID, err)
+		s.logger.Printf("mock-control: encode record %s: %v", rec.RecordID, err)
 		return
 	}
 	f, err := os.OpenFile(filepath.Join(s.logDir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		s.logger.Printf("mock-management: open %s: %v", name, err)
+		s.logger.Printf("mock-control: open %s: %v", name, err)
 		return
 	}
 	defer func() { _ = f.Close() }()
 	if _, err := f.Write(append(line, '\n')); err != nil {
-		s.logger.Printf("mock-management: write %s: %v", name, err)
+		s.logger.Printf("mock-control: write %s: %v", name, err)
 	}
 }

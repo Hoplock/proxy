@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // testMeta is the connection every test authenticates on. The login and target
@@ -24,7 +24,7 @@ import (
 func testMeta() ConnMeta {
 	return ConnMeta{
 		SessionID:     "sess-0001",
-		BastionID:     "bastion-a",
+		ProxyID:       "proxy-a",
 		Login:         "alice",
 		Target:        "db01.corp.example.com",
 		ClientAddr:    "203.0.113.7:52344",
@@ -33,8 +33,8 @@ func testMeta() ConnMeta {
 	}
 }
 
-// recordingServer is a management server built per test from path handlers. It
-// keeps every request body, so a test can prove what the bastion actually put
+// recordingServer is a Hoplock Control server built per test from path handlers. It
+// keeps every request body, so a test can prove what the proxy actually put
 // on the wire — which is how the redaction test distinguishes "the password was
 // sent" from "the password was logged".
 type recordingServer struct {
@@ -44,10 +44,10 @@ type recordingServer struct {
 }
 
 // newRecordingServer starts a server that answers the given paths and returns
-// it together with a real mgmt.RESTClient pointed at it. Tests go through the
+// it together with a real control.RESTClient pointed at it. Tests go through the
 // real client on purpose: the contract, the client, and the authenticator are
 // then all exercised by the same assertion.
-func newRecordingServer(t *testing.T, handlers map[string]http.HandlerFunc) (*recordingServer, *mgmt.RESTClient) {
+func newRecordingServer(t *testing.T, handlers map[string]http.HandlerFunc) (*recordingServer, *control.RESTClient) {
 	t.Helper()
 
 	rs := &recordingServer{bodies: make(map[string][]string)}
@@ -71,7 +71,7 @@ func newRecordingServer(t *testing.T, handlers map[string]http.HandlerFunc) (*re
 	rs.server = httptest.NewServer(mux)
 	t.Cleanup(rs.server.Close)
 
-	client, err := mgmt.NewRESTClient(mgmt.Options{BaseURL: rs.server.URL, Timeout: 5 * time.Second})
+	client, err := control.NewRESTClient(control.Options{BaseURL: rs.server.URL, Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewRESTClient returned error: %v", err)
 	}
@@ -103,47 +103,47 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, v any) {
 }
 
 // writeDeny answers with the contract's 401, which is the ONLY response the
-// bastion may treat as a deny decision.
+// proxy may treat as a deny decision.
 func writeDeny(t *testing.T, w http.ResponseWriter, code, message string) {
 	t.Helper()
 	body := map[string]any{"error": map[string]string{"code": code, "message": message}}
 	writeJSON(t, w, http.StatusUnauthorized, body)
 }
 
-// fakeClient is a mgmt.Client whose auth calls are supplied per test, for the
+// fakeClient is a control.Client whose auth calls are supplied per test, for the
 // failure modes an httptest server cannot produce conveniently (a dead
 // connection, a response that violates the contract).
 //
 // The embedded interface is nil: a test that calls a method it did not set
 // panics, which is louder and more useful than a silent zero value.
 type fakeClient struct {
-	mgmt.Client
-	certFn     func(context.Context, *mgmt.AuthenticateCertRequest) (*mgmt.AuthenticateResponse, error)
-	passwordFn func(context.Context, *mgmt.AuthenticatePasswordRequest) (*mgmt.AuthenticateResponse, error)
-	pollFn     func(context.Context, *mgmt.MFAPollRequest) (*mgmt.AuthenticateResponse, error)
+	control.Client
+	certFn     func(context.Context, *control.AuthenticateCertRequest) (*control.AuthenticateResponse, error)
+	passwordFn func(context.Context, *control.AuthenticatePasswordRequest) (*control.AuthenticateResponse, error)
+	pollFn     func(context.Context, *control.MFAPollRequest) (*control.AuthenticateResponse, error)
 }
 
-func (c *fakeClient) AuthenticateCert(ctx context.Context, req *mgmt.AuthenticateCertRequest) (*mgmt.AuthenticateResponse, error) {
+func (c *fakeClient) AuthenticateCert(ctx context.Context, req *control.AuthenticateCertRequest) (*control.AuthenticateResponse, error) {
 	return c.certFn(ctx, req)
 }
 
-func (c *fakeClient) AuthenticatePassword(ctx context.Context, req *mgmt.AuthenticatePasswordRequest) (*mgmt.AuthenticateResponse, error) {
+func (c *fakeClient) AuthenticatePassword(ctx context.Context, req *control.AuthenticatePasswordRequest) (*control.AuthenticateResponse, error) {
 	return c.passwordFn(ctx, req)
 }
 
-func (c *fakeClient) PollMFA(ctx context.Context, req *mgmt.MFAPollRequest) (*mgmt.AuthenticateResponse, error) {
+func (c *fakeClient) PollMFA(ctx context.Context, req *control.MFAPollRequest) (*control.AuthenticateResponse, error) {
 	return c.pollFn(ctx, req)
 }
 
 // transportError is what the client returns when it never reached the server:
 // the "unknown decision" half of the error contract.
 func transportError(op string) error {
-	return &mgmt.APIError{Op: op, Cause: mgmt.ErrTransport}
+	return &control.APIError{Op: op, Cause: control.ErrTransport}
 }
 
 // denyError is a deny decision as the client reports it.
 func denyError(op string) error {
-	return &mgmt.APIError{Op: op, StatusCode: http.StatusUnauthorized, Cause: mgmt.ErrUnauthorized}
+	return &control.APIError{Op: op, StatusCode: http.StatusUnauthorized, Cause: control.ErrUnauthorized}
 }
 
 // testLogger returns a logger and the buffer it writes to.
@@ -153,8 +153,8 @@ func testLogger() (*log.Logger, *bytes.Buffer) {
 }
 
 // aliceIdentity is the authenticated identity the test servers return.
-func aliceIdentity() *mgmt.Identity {
-	return &mgmt.Identity{
+func aliceIdentity() *control.Identity {
+	return &control.Identity{
 		Subject:     "alice@example.com",
 		Login:       "alice",
 		DisplayName: "Alice Example",

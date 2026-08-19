@@ -10,24 +10,24 @@ Stand up the Go project skeleton, conventions, and CI so every later phase drops
 into a consistent structure. **No SSH or business logic yet.**
 
 ## In scope
-- `go.mod` with module path `github.com/mauroasilva/securecommandproxy`, Go **1.24**.
+- `go.mod` with module path `github.com/hoplock/proxy`, Go **1.24**.
 - Directory skeleton per PLAN §3. Create packages as empty-but-compiling stubs
   (a `doc.go` with the package clause + one-line purpose comment) for:
-  `internal/config`, `internal/identity`, `internal/mgmt`, `internal/auth/user`,
+  `internal/config`, `internal/identity`, `internal/control`, `internal/auth/user`,
   `internal/auth/target`, `internal/routing`, `internal/proxy`,
   `internal/channel`, `internal/filter`, `internal/logging`.
-- `cmd/bastion/main.go` and `cmd/mock-management/main.go` as minimal programs
+- `cmd/proxy/main.go` and `cmd/mock-control/main.go` as minimal programs
   that build, print a version/usage line, and exit 0. Wire a `--version` flag.
 - `internal/config`: a YAML bootstrap config loader with a typed struct and an
   example file `config.example.yaml`. Include only fields we already know are
-  needed: listen address, management-server base URL, bastion identity/host-key
+  needed: listen address, management-server base URL, proxy identity/host-key
   path, target-username delimiter (default `#`, per D1). Loader validates and
   returns typed errors. Unit-tested.
 - **License (D10):** `LICENSE` file — proprietary, all rights reserved,
   confidential. Add the per-file header from PLAN §8 to every `.go` file.
   Provide the exact header text in a short `docs/` note or the README so later
   phases copy it verbatim.
-- `Makefile` targets: `build`, `test`, `vet`, `lint`, `run-bastion`,
+- `Makefile` targets: `build`, `test`, `vet`, `lint`, `run-proxy`,
   `run-mock`, `tidy`. `lint` uses `golangci-lint`.
 - `.golangci.yml` with a reasonable baseline (govet, staticcheck, errcheck,
   ineffassign, gofmt/goimports).
@@ -39,7 +39,7 @@ into a consistent structure. **No SSH or business logic yet.**
   note.
 
 ## Out of scope
-- Any SSH handling, management API calls, auth, proxying, or logging logic.
+- Any SSH handling, Control API calls, auth, proxying, or logging logic.
 - The API contract (that's 0002).
 
 ## Acceptance criteria

@@ -8,7 +8,7 @@
 // to prove anything: a fake that returns canned bytes would not exercise channel
 // opens, request replies, exit statuses, or teardown, which is where a proxy's
 // bugs live. Two test packages need the same target — the engine's own tests and
-// the end-to-end test that drives the mock management server — so it is a
+// the end-to-end test that drives the mock Hoplock Control — so it is a
 // package rather than a helper duplicated in each.
 //
 // It is test support: it authenticates anyone, and nothing here belongs in a

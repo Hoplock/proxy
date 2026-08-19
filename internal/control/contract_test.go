@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"encoding/json"
@@ -13,10 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// specPath is the contract this package implements. api/management.yaml is the
+// specPath is the contract this package implements. api/control.yaml is the
 // source of truth, so these tests fail if the Go client and the document drift
 // apart — a stale contract is worse than no contract.
-const specPath = "../../api/management.yaml"
+const specPath = "../../api/control.yaml"
 
 // loadSpec decodes the OpenAPI document into a generic tree.
 func loadSpec(t *testing.T) map[string]any {
@@ -94,15 +94,15 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 	// The revocation stream is the one endpoint that is a long-lived GET rather
 	// than a POST, so it is checked separately: no request body, and the gap
 	// recovery parameter the client sends on reconnect must be documented.
-	item, ok := paths[PathBastionEvents].(map[string]any)
+	item, ok := paths[PathProxyEvents].(map[string]any)
 	if !ok {
-		t.Fatalf("%s documents no path %q", specPath, PathBastionEvents)
+		t.Fatalf("%s documents no path %q", specPath, PathProxyEvents)
 	}
 	op, ok := item["get"].(map[string]any)
 	if !ok {
-		t.Fatalf("path %q has no get operation", PathBastionEvents)
+		t.Fatalf("path %q has no get operation", PathProxyEvents)
 	}
-	checkResponses(t, "get "+PathBastionEvents, op, "200")
+	checkResponses(t, "get "+PathProxyEvents, op, "200")
 	params, _ := op["parameters"].([]any)
 	documented := make(map[string]bool, len(params))
 	for _, p := range params {
@@ -113,7 +113,7 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 	}
 	for _, name := range []string{"bastion_id", QueryLastEventID} {
 		if !documented[name] {
-			t.Errorf("get %q does not document the %q parameter", PathBastionEvents, name)
+			t.Errorf("get %q does not document the %q parameter", PathProxyEvents, name)
 		}
 	}
 

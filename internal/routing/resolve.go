@@ -11,17 +11,17 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
-// ErrUnsupportedRoute means the management server returned a route this bastion
+// ErrUnsupportedRoute means Hoplock Control returned a route this proxy
 // cannot serve. Today that is only "nexthop", which phase 0007 implements; it is
-// an outage from the user's point of view (the bastion is incomplete, they are
+// an outage from the user's point of view (the proxy is incomplete, they are
 // not forbidden), never a denial.
-var ErrUnsupportedRoute = errors.New("routing: route type is not supported by this bastion")
+var ErrUnsupportedRoute = errors.New("routing: route type is not supported by this proxy")
 
-// Request is everything the management server needs to decide a route for one
+// Request is everything Hoplock Control needs to decide a route for one
 // connection.
 type Request struct {
 	// Identity is the authenticated user. Required: an unauthenticated
@@ -31,23 +31,23 @@ type Request struct {
 	// returned it.
 	Target string
 	// Conn is the connection metadata carried on every management call.
-	Conn mgmt.ConnMeta
+	Conn control.ConnMeta
 }
 
-// Route is the management server's answer: the per-connection policy snapshot
+// Route is Hoplock Control's answer: the per-connection policy snapshot
 // (PLAN §6.4). It is the whole decision — where to connect, which channels are
 // allowed, and which command filter applies — so nothing on the data path has to
 // ask the server anything (D2).
 //
-// The bastion never widens it. Fields are copied out of the wire response so a
+// The proxy never widens it. Fields are copied out of the wire response so a
 // session cannot mutate a cached decision that another session will be served
 // (the caching client also deep-copies; this is the second half of that
 // guarantee).
 type Route struct {
 	// Type is "direct" (Host is the end host) or "nexthop" (Host is the next
-	// bastion in the chain).
-	Type mgmt.RouteType
-	// Host and Port are what the bastion dials.
+	// proxy in the chain).
+	Type control.RouteType
+	// Host and Port are what the proxy dials.
 	Host string
 	Port int
 	// Permissions is the opaque permission-set name, carried into logs.
@@ -56,20 +56,20 @@ type Route struct {
 	// channel — that is a decision, not a default.
 	PermittedChannels []string
 	// Filter is the command filter policy enforced by phase 0009.
-	Filter mgmt.FilterPolicy
+	Filter control.FilterPolicy
 	// Hop carries the chaining constraints of a next-hop route (phase 0007).
-	Hop *mgmt.HopMetadata
+	Hop *control.HopMetadata
 	// DecisionID correlates this decision with the server's audit trail.
 	DecisionID string
 }
 
-// Addr is the "host:port" the bastion dials for this route.
+// Addr is the "host:port" the proxy dials for this route.
 func (r *Route) Addr() string {
 	return net.JoinHostPort(r.Host, strconv.Itoa(r.Port))
 }
 
-// IsDirect reports whether Host is the end host rather than the next bastion.
-func (r *Route) IsDirect() bool { return r.Type == mgmt.RouteTypeDirect }
+// IsDirect reports whether Host is the end host rather than the next proxy.
+func (r *Route) IsDirect() bool { return r.Type == control.RouteTypeDirect }
 
 // RequireDirect is the seam phase 0007 replaces. A proxy that can only serve
 // direct routes calls it before dialling; when chaining lands, the caller
@@ -101,8 +101,8 @@ func (r *Route) ChannelPermitted(channelType string) bool {
 
 // ResolverOptions configures a Resolver.
 type ResolverOptions struct {
-	// Client is the management API client. Required.
-	Client mgmt.Client
+	// Client is the Control API client. Required.
+	Client control.Client
 	// DefaultTargetPort is used when the server's route names no port. Zero
 	// means DefaultTargetPort.
 	DefaultTargetPort int
@@ -111,10 +111,10 @@ type ResolverOptions struct {
 }
 
 // Resolver turns an authenticated identity plus a requested target into the
-// connection's policy, by asking the management server (D2). It originates no
+// connection's policy, by asking Hoplock Control (D2). It originates no
 // policy of its own: it does not decide, cache, or second-guess, it converts.
 type Resolver struct {
-	client      mgmt.Client
+	client      control.Client
 	defaultPort int
 	logger      *log.Logger
 }
@@ -135,11 +135,11 @@ func NewResolver(opts ResolverOptions) (*Resolver, error) {
 	return r, nil
 }
 
-// Resolve asks the management server to authorize the connection and returns
+// Resolve asks Hoplock Control to authorize the connection and returns
 // the route it answered with.
 //
 // The error it returns wraps the management client's error unchanged, so
-// mgmt.IsUnauthorized still classifies a deny after the wrap. That matters:
+// control.IsUnauthorized still classifies a deny after the wrap. That matters:
 // what the user is told depends entirely on that classification (PLAN §4.3),
 // and a caller must never see an outage as a denial.
 func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
@@ -150,7 +150,7 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		return nil, fmt.Errorf("%w: no target to authorize", ErrMalformedUsername)
 	}
 
-	resp, err := r.client.Authorize(ctx, &mgmt.AuthorizeRequest{
+	resp, err := r.client.Authorize(ctx, &control.AuthorizeRequest{
 		Identity:   req.Identity.ToWire(),
 		Target:     req.Target,
 		AuthMethod: req.Identity.Method.WireMethod(),
@@ -184,8 +184,8 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 	return route, nil
 }
 
-func cloneFilter(p mgmt.FilterPolicy) mgmt.FilterPolicy {
-	return mgmt.FilterPolicy{Mode: p.Mode, Rules: append([]mgmt.FilterRule(nil), p.Rules...)}
+func cloneFilter(p control.FilterPolicy) control.FilterPolicy {
+	return control.FilterPolicy{Mode: p.Mode, Rules: append([]control.FilterRule(nil), p.Rules...)}
 }
 
 func (r *Resolver) logf(format string, args ...any) {

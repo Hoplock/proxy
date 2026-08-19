@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/config"
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // testConnMeta is the ConnMetaFunc the SSH tests use. Splitting the SSH
@@ -54,7 +54,7 @@ func TestNewServerAuthRequiresItsDependencies(t *testing.T) {
 	}
 }
 
-// TestApplyOffersOnlySupportedMethods keeps a certificate-only bastion from
+// TestApplyOffersOnlySupportedMethods keeps a certificate-only proxy from
 // prompting users for a password that can never work.
 func TestApplyOffersOnlySupportedMethods(t *testing.T) {
 	client := &fakeClient{}
@@ -115,7 +115,7 @@ func TestDisclosureSplit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &fakeClient{
-				certFn: func(context.Context, *mgmt.AuthenticateCertRequest) (*mgmt.AuthenticateResponse, error) {
+				certFn: func(context.Context, *control.AuthenticateCertRequest) (*control.AuthenticateResponse, error) {
 					return nil, tt.err
 				},
 			}
@@ -188,7 +188,7 @@ func TestFailureMessageDefaultsToOutage(t *testing.T) {
 	// A raw management error classifies correctly without being translated
 	// first, so a caller cannot get the disclosure wrong by forgetting to.
 	if got := FailureMessage(denyError("Authorize"), "sess-0001"); got != DenyMessage {
-		t.Errorf("FailureMessage(mgmt deny) = %q, want %q", got, DenyMessage)
+		t.Errorf("FailureMessage(control deny) = %q, want %q", got, DenyMessage)
 	}
 	if got := OutageMessage(""); strings.Contains(got, "Quote session id") {
 		t.Errorf("OutageMessage(\"\") = %q, want no dangling support reference", got)
@@ -424,13 +424,13 @@ func TestHandshakeFallsBackToPasswordAndMFA(t *testing.T) {
 	var polls atomic.Int32
 
 	_, client := newRecordingServer(t, map[string]http.HandlerFunc{
-		mgmt.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
+		control.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
 			writeDeny(t, w, "unknown_key", "no")
 		},
-		mgmt.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-				Status: mgmt.AuthStatusMFARequired,
-				MFA: &mgmt.MFAChallenge{
+		control.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+				Status: control.AuthStatusMFARequired,
+				MFA: &control.MFAChallenge{
 					Token:       "tok-1",
 					Prompt:      serverPrompt,
 					PollAfterMS: 1,
@@ -438,16 +438,16 @@ func TestHandshakeFallsBackToPasswordAndMFA(t *testing.T) {
 				},
 			})
 		},
-		mgmt.PathPollMFA: func(w http.ResponseWriter, _ *http.Request) {
+		control.PathPollMFA: func(w http.ResponseWriter, _ *http.Request) {
 			if polls.Add(1) <= 2 {
-				writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-					Status: mgmt.AuthStatusMFARequired,
-					MFA:    &mgmt.MFAChallenge{Token: "tok-1", PollAfterMS: 1, ExpiresAt: time.Now().Add(time.Minute)},
+				writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+					Status: control.AuthStatusMFARequired,
+					MFA:    &control.MFAChallenge{Token: "tok-1", PollAfterMS: 1, ExpiresAt: time.Now().Add(time.Minute)},
 				})
 				return
 			}
-			writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-				Status:   mgmt.AuthStatusAuthenticated,
+			writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+				Status:   control.AuthStatusAuthenticated,
 				Identity: aliceIdentity(),
 			})
 		},
@@ -548,13 +548,13 @@ func TestHandshakeFallsBackToPasswordAndMFA(t *testing.T) {
 // all.
 func TestHandshakeAcceptsCertificateWithoutPrompting(t *testing.T) {
 	_, client := newRecordingServer(t, map[string]http.HandlerFunc{
-		mgmt.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-				Status:   mgmt.AuthStatusAuthenticated,
+		control.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+				Status:   control.AuthStatusAuthenticated,
 				Identity: aliceIdentity(),
 			})
 		},
-		mgmt.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
+		control.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
 			t.Error("password authentication was attempted after the key was accepted")
 			writeDeny(t, w, "unexpected", "unexpected")
 		},
@@ -593,10 +593,10 @@ func TestHandshakeAcceptsCertificateWithoutPrompting(t *testing.T) {
 // disconnect: the generic deny text reaches the client as a banner.
 func TestHandshakeDeniedTellsTheUser(t *testing.T) {
 	_, client := newRecordingServer(t, map[string]http.HandlerFunc{
-		mgmt.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
+		control.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
 			writeDeny(t, w, "unknown_key", "no")
 		},
-		mgmt.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
+		control.PathAuthenticatePassword: func(w http.ResponseWriter, _ *http.Request) {
 			writeDeny(t, w, "bad_credentials", "no")
 		},
 	})

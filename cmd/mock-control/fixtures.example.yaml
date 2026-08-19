@@ -1,4 +1,4 @@
-# Example fixtures for the mock management server (cmd/mock-management).
+# Example fixtures for the mock Hoplock Control (cmd/mock-control).
 #
 # Everything the mock decides comes from this file: who exists, what they may
 # reach, and how target host keys are treated. The format is documented in
@@ -7,8 +7,8 @@
 # The credentials below are test data. Never put a real secret in a fixture.
 
 # Bearer token every /v1 request must present. Remove or leave empty to serve
-# without bastion authentication (convenient for curl during development).
-bastion_token: "dev-bastion-token"
+# without proxy authentication (convenient for curl during development).
+proxy_token: "dev-proxy-token"
 
 users:
   # Certificate + password user whose MFA is approved after one pending poll.
@@ -30,7 +30,7 @@ users:
       pending_polls: 1
       poll_after_ms: 10
       ttl_ms: 60000
-      prompt: "Approve the SecureCommandProxy sign-in on your phone."
+      prompt: "Approve the Hoplock Proxy sign-in on your phone."
 
   # Password-only user whose MFA is always denied — the deny path for tests.
   - login: mallory
@@ -75,21 +75,21 @@ routes:
         - match: "sudo *"
           action: warn_and_continue
           message: "Privileged command — this is recorded."
-    # The server authorises the bastion to reuse this decision for a minute, so
+    # The server authorises the proxy to reuse this decision for a minute, so
     # a second session (an scp beside a shell) skips the authorize round trip.
     # Omit `cache` — as every other route here does — to forbid reuse entirely.
     # The key defaults to one per (subject, target) and is opaque to the
-    # bastion; it is what a cache_invalidate event names.
+    # proxy; it is what a cache_invalidate event names.
     cache:
       ttl_seconds: 60
 
-  # Next-hop route: the far segment is reachable only through another bastion.
+  # Next-hop route: the far segment is reachable only through another proxy.
   # The response returns next_hop as the target and carries the host the user
   # asked for in hop metadata.
   - login: alice
     target: deep.internal.company.com
     route_type: nexthop
-    next_hop: bastion-2.company.com
+    next_hop: proxy-2.company.com
     max_hops: 3
     permissions: readOnlyGroup
     permitted_channels: [session]
@@ -120,15 +120,15 @@ routes:
   # Anything not matched above is denied (401). There is no catch-all here on
   # purpose: fixtures should have to say yes explicitly.
 
-# The server → bastion revocation stream (GET /v1/bastions/{id}/events), which
+# The server → proxy revocation stream (GET /v1/bastions/{id}/events), which
 # is what makes the cache above safe to hold: it can kill a live session or drop
 # a cached decision at any moment.
 events:
-  # How often to emit a heartbeat. It must stay comfortably inside the bastion's
+  # How often to emit a heartbeat. It must stay comfortably inside the proxy's
   # heartbeat timeout (20s by default), or a healthy stream looks dead. A
   # negative value disables heartbeats, to exercise that detection.
   heartbeat_ms: 5000
-  # How many events are retained for replay after a reconnect. A bastion
+  # How many events are retained for replay after a reconnect. A proxy
   # resuming from before the retained history is answered with `resync`.
   replay_buffer: 128
 

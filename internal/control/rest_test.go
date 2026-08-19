@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 func testConn() ConnMeta {
 	return ConnMeta{
 		SessionID:  "session-1",
-		BastionID:  "bastion-test",
+		ProxyID:    "proxy-test",
 		ClientAddr: "203.0.113.7:52344",
 		Timestamp:  time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC),
 	}
@@ -58,7 +58,7 @@ func TestNewRESTClientRejectsBadOptions(t *testing.T) {
 	}{
 		{name: "no base url", opts: Options{}},
 		{name: "not a url", opts: Options{BaseURL: "://nope"}},
-		{name: "wrong scheme", opts: Options{BaseURL: "ftp://mgmt.example.com"}},
+		{name: "wrong scheme", opts: Options{BaseURL: "ftp://control.example.com"}},
 		{name: "no host", opts: Options{BaseURL: "https://"}},
 	}
 	for _, tc := range tests {
@@ -422,7 +422,7 @@ func TestAuthorizeAcceptsANextHopRoute(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		respondJSON(t, w, http.StatusOK, AuthorizeResponse{
 			RouteType:         RouteTypeNextHop,
-			Target:            "bastion-2.company.com",
+			Target:            "proxy-2.company.com",
 			PermittedChannels: []string{"session"},
 			FilterPolicy: FilterPolicy{
 				Mode:  FilterModeWhitelist,
@@ -431,7 +431,7 @@ func TestAuthorizeAcceptsANextHopRoute(t *testing.T) {
 			Hop: &HopMetadata{
 				FinalTarget: "deep.internal.company.com",
 				MaxHops:     3,
-				HopTrail:    []string{"bastion-1"},
+				HopTrail:    []string{"proxy-1"},
 			},
 		})
 	})
@@ -447,7 +447,7 @@ func TestAuthorizeAcceptsANextHopRoute(t *testing.T) {
 	if resp.Hop == nil || resp.Hop.FinalTarget != "deep.internal.company.com" {
 		t.Fatalf("hop metadata = %+v, want the final target preserved", resp.Hop)
 	}
-	if got, want := resp.Hop.HopTrail, []string{"bastion-1"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := resp.Hop.HopTrail, []string{"proxy-1"}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("hop trail = %v, want %v", got, want)
 	}
 }
@@ -516,7 +516,7 @@ func TestBaseURLPathPrefixIsPreserved(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// A trailing slash on the base URL must not double up in the request path.
-	c, err := NewRESTClient(Options{BaseURL: srv.URL + "/mgmt/"})
+	c, err := NewRESTClient(Options{BaseURL: srv.URL + "/control/"})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestBaseURLPathPrefixIsPreserved(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReportHostKey: %v", err)
 	}
-	if want := "/mgmt" + PathReportHostKey; gotPath != want {
+	if want := "/control" + PathReportHostKey; gotPath != want {
 		t.Errorf("path = %q, want %q", gotPath, want)
 	}
 }

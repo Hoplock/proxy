@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"errors"
@@ -15,21 +15,21 @@ var (
 	// credential was rejected, or the identity may not reach the target. It is
 	// never returned for a transport or server failure, so a caller must not
 	// fail open on any other error.
-	ErrUnauthorized = errors.New("management server denied the request")
+	ErrUnauthorized = errors.New("Hoplock Control denied the request")
 	// ErrBadRequest means the server rejected the request as malformed (4xx
 	// other than 401) — a bug in the caller, not a policy decision.
-	ErrBadRequest = errors.New("management server rejected the request")
+	ErrBadRequest = errors.New("Hoplock Control rejected the request")
 	// ErrServer means the server failed to process a valid request (5xx).
-	ErrServer = errors.New("management server error")
+	ErrServer = errors.New("Hoplock Control error")
 	// ErrTransport means the call never produced a usable HTTP response
 	// (dial failure, timeout, cancelled context, TLS failure).
-	ErrTransport = errors.New("management server unreachable")
+	ErrTransport = errors.New("Hoplock Control unreachable")
 	// ErrProtocol means a response was received but did not match the contract
 	// (undecodable body, missing required field, unknown enum value).
-	ErrProtocol = errors.New("management server response violates the contract")
+	ErrProtocol = errors.New("Hoplock Control response violates the contract")
 )
 
-// APIError describes one failed management API call. Op is the client method
+// APIError describes one failed Control API call. Op is the client method
 // that failed, so an error read in a log names the call without a stack trace.
 type APIError struct {
 	// Op is the failing operation, e.g. "Authorize".
@@ -46,7 +46,7 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	msg := fmt.Sprintf("mgmt %s: %v", e.Op, e.Cause)
+	msg := fmt.Sprintf("control %s: %v", e.Op, e.Cause)
 	if e.StatusCode != 0 {
 		msg += fmt.Sprintf(" (http %d", e.StatusCode)
 		if e.Code != "" {

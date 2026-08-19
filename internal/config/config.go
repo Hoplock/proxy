@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-// Package config loads and validates the bastion's YAML bootstrap
+// Package config loads and validates the proxy's YAML bootstrap
 // configuration (PLAN §8, D9).
 package config
 
@@ -18,50 +18,50 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // DefaultTargetDelimiter separates the login from the target hostname in the
 // SSH username, e.g. "alice#host.company.com" (D1).
 const DefaultTargetDelimiter = "#"
 
-// TargetAuthMethodStaticKey names the placeholder bastion→target
+// TargetAuthMethodStaticKey names the placeholder proxy→target
 // authentication method (PLAN §4.2). It lives here, rather than in
 // internal/auth/target, for the same reason the user-plane method names live in
 // internal/identity: config has to validate the name, and a name spelled in two
 // places eventually gets spelled two ways.
 const TargetAuthMethodStaticKey = "static-key"
 
-// Config is the bastion's bootstrap configuration. It holds only what the
-// bastion needs to start and reach the management server; every policy decision
+// Config is the proxy's bootstrap configuration. It holds only what the
+// proxy needs to start and reach Hoplock Control; every policy decision
 // is made remotely (D2), so nothing policy-related belongs here.
 type Config struct {
-	Bastion    Bastion    `yaml:"bastion"`
-	Management Management `yaml:"management"`
-	Routing    Routing    `yaml:"routing"`
-	Auth       Auth       `yaml:"auth"`
-	Proxy      Proxy      `yaml:"proxy"`
+	Proxy   Proxy   `yaml:"proxy"`
+	Control Control `yaml:"control"`
+	Routing Routing `yaml:"routing"`
+	Auth    Auth    `yaml:"auth"`
+	Dial    Dial    `yaml:"dial"`
 }
 
-// Bastion describes the local SSH listener and this bastion's own identity.
-type Bastion struct {
-	// ID identifies this bastion to the management server. It is on every
-	// management call and is the address of this bastion's revocation stream
-	// (PLAN §6.4), so it is deployment-assigned and required: a bastion that
+// Proxy describes the local SSH listener and this proxy's own identity.
+type Proxy struct {
+	// ID identifies this proxy to Hoplock Control. It is on every
+	// management call and is the address of this proxy's revocation stream
+	// (PLAN §6.4), so it is deployment-assigned and required: a proxy that
 	// cannot be named cannot be told to kill a session.
 	ID string `yaml:"id"`
 	// ListenAddr is the "host:port" the SSH listener binds to.
 	ListenAddr string `yaml:"listen_addr"`
-	// HostKeyPath is the path to the bastion's SSH host private key.
+	// HostKeyPath is the path to the proxy's SSH host private key.
 	HostKeyPath string `yaml:"host_key_path"`
 }
 
-// Management describes how to reach the management server (PDP).
-type Management struct {
-	// BaseURL is the root URL of the management API, e.g.
-	// "https://mgmt.example.com".
+// Control describes how to reach Hoplock Control (PDP).
+type Control struct {
+	// BaseURL is the root URL of the Control API, e.g.
+	// "https://control.example.com".
 	BaseURL string `yaml:"base_url"`
-	// Token authenticates this bastion to the management server as a bearer
+	// Token authenticates this proxy to Hoplock Control as a bearer
 	// token. Empty is allowed so a development topology can run without one;
 	// a real deployment sets it (or supplies mTLS at the transport instead).
 	Token string `yaml:"token"`
@@ -69,13 +69,13 @@ type Management struct {
 	Cache Cache `yaml:"cache"`
 }
 
-// Cache tunes the bastion's side of server-authorised policy caching. Nothing
+// Cache tunes the proxy's side of server-authorised policy caching. Nothing
 // here can widen a decision: the server owns the lifetime, and these settings
-// only ever make the bastion ask more often than it was allowed to.
+// only ever make the proxy ask more often than it was allowed to.
 type Cache struct {
 	// MaxTTL clamps the server's cache lifetime downwards. Zero — the default —
 	// honours the server exactly. Every decision a clamp actually shortens is
-	// counted and logged, because a bastion quietly diverging from what the
+	// counted and logged, because a proxy quietly diverging from what the
 	// server asked for is indistinguishable from a fault (PLAN §6.4).
 	MaxTTL time.Duration `yaml:"max_ttl"`
 	// StaleAfter is how long the revocation stream may be unheard before the
@@ -84,13 +84,13 @@ type Cache struct {
 	StaleAfter time.Duration `yaml:"stale_after"`
 }
 
-// Proxy tunes the SSH proxy engine. None of it decides anything; it bounds how
-// long a user waits for a failure they cannot see.
-type Proxy struct {
+// Dial tunes the outbound leg to the target. None of it decides anything; it
+// bounds how long a user waits for a failure they cannot see.
+type Dial struct {
 	// DialTimeout bounds dialling and handshaking the target leg. Zero means
 	// the package default.
 	DialTimeout time.Duration `yaml:"dial_timeout"`
-	// DefaultTargetPort is used when the management server's route names no
+	// DefaultTargetPort is used when Hoplock Control's route names no
 	// port. Zero means the package default (22).
 	DefaultTargetPort int `yaml:"default_target_port"`
 }
@@ -102,17 +102,17 @@ type Routing struct {
 	TargetDelimiter string `yaml:"target_delimiter"`
 }
 
-// Auth holds the bastion's authentication planes. Each plane is a pluggable
+// Auth holds the proxy's authentication planes. Each plane is a pluggable
 // interface with swappable implementations (D4); config chooses which ones run,
 // never what they decide.
 type Auth struct {
-	// User configures the user→bastion plane (PLAN §4.1).
+	// User configures the user→proxy plane (PLAN §4.1).
 	User UserAuth `yaml:"user"`
-	// Target configures the bastion→target plane (PLAN §4.2).
+	// Target configures the proxy→target plane (PLAN §4.2).
 	Target TargetAuth `yaml:"target"`
 }
 
-// TargetAuth chooses how the bastion logs into targets.
+// TargetAuth chooses how the proxy logs into targets.
 type TargetAuth struct {
 	// Method names the implementation. Defaults to
 	// TargetAuthMethodStaticKey, the phase-0005 placeholder; the ephemeral
@@ -126,32 +126,32 @@ type TargetAuth struct {
 // key for every session on every target. It provisions nothing and expires
 // nothing, so it belongs in development topologies only (PLAN §4.2).
 type StaticKeyAuth struct {
-	// KeyPath is the private key the bastion logs into targets with.
+	// KeyPath is the private key the proxy logs into targets with.
 	KeyPath string `yaml:"key_path"`
 	// Username logs into every target as this account instead of the
 	// authenticated login. Empty — the default — uses the login.
 	Username string `yaml:"username"`
 }
 
-// UserAuth enables and tunes the user→bastion authenticators.
+// UserAuth enables and tunes the user→proxy authenticators.
 type UserAuth struct {
 	// Methods is the set of enabled authentication methods, by name
 	// ("cert", "password-mfa"). Defaults to DefaultUserAuthMethods.
 	//
-	// It is a set, not an order: the bastion always tries certificates first and
+	// It is a set, not an order: the proxy always tries certificates first and
 	// falls back to password+MFA (PLAN §4.1). Listing them the other way round
 	// would prompt every user for a password before looking at the key their
 	// client already offered, so the order is not the operator's to change.
-	// An explicitly empty list is rejected — a bastion with no enabled method
+	// An explicitly empty list is rejected — a proxy with no enabled method
 	// can authenticate nobody.
 	Methods []string `yaml:"methods"`
 	// MFA tunes the wait for an out-of-band second factor.
 	MFA MFA `yaml:"mfa"`
 }
 
-// MFA tunes how the bastion waits on an out-of-band second factor. None of it
-// decides anything: the management server states the pacing and the expiry, and
-// these settings only bound how the bastion behaves while it obeys them.
+// MFA tunes how the proxy waits on an out-of-band second factor. None of it
+// decides anything: Hoplock Control states the pacing and the expiry, and
+// these settings only bound how the proxy behaves while it obeys them.
 type MFA struct {
 	// MinPollInterval floors the server's poll_after_ms, so a challenge with a
 	// tiny or absent interval cannot turn into a polling hot loop. Zero means
@@ -162,7 +162,7 @@ type MFA struct {
 	// package default.
 	ProgressInterval time.Duration `yaml:"progress_interval"`
 	// MaxWait caps the total wait for an approval. The server's expiry still
-	// wins whenever it is sooner: the bastion may give up earlier than the
+	// wins whenever it is sooner: the proxy may give up earlier than the
 	// server, never later. Zero means the package default.
 	MaxWait time.Duration `yaml:"max_wait"`
 }
@@ -185,7 +185,7 @@ var (
 )
 
 // FieldError reports a single invalid configuration field. Field is the YAML
-// path of the offending key (e.g. "bastion.listen_addr").
+// path of the offending key (e.g. "proxy.listen_addr").
 type FieldError struct {
 	Field  string
 	Detail string
@@ -282,31 +282,31 @@ func (c *Config) applyDefaults() {
 func (c *Config) Validate() error {
 	var v ValidationError
 
-	if c.Bastion.ID == "" {
-		v.add("bastion.id", ErrMissing, "")
+	if c.Proxy.ID == "" {
+		v.add("proxy.id", ErrMissing, "")
 	}
 
-	if c.Bastion.ListenAddr == "" {
-		v.add("bastion.listen_addr", ErrMissing, "")
-	} else if _, _, err := net.SplitHostPort(c.Bastion.ListenAddr); err != nil {
-		v.add("bastion.listen_addr", ErrInvalid, `expected "host:port"`)
+	if c.Proxy.ListenAddr == "" {
+		v.add("proxy.listen_addr", ErrMissing, "")
+	} else if _, _, err := net.SplitHostPort(c.Proxy.ListenAddr); err != nil {
+		v.add("proxy.listen_addr", ErrInvalid, `expected "host:port"`)
 	}
 
-	if c.Bastion.HostKeyPath == "" {
-		v.add("bastion.host_key_path", ErrMissing, "")
+	if c.Proxy.HostKeyPath == "" {
+		v.add("proxy.host_key_path", ErrMissing, "")
 	}
 
-	if c.Management.BaseURL == "" {
-		v.add("management.base_url", ErrMissing, "")
+	if c.Control.BaseURL == "" {
+		v.add("control.base_url", ErrMissing, "")
 	} else {
-		u, err := url.Parse(c.Management.BaseURL)
+		u, err := url.Parse(c.Control.BaseURL)
 		switch {
 		case err != nil:
-			v.add("management.base_url", ErrInvalid, "not a URL")
+			v.add("control.base_url", ErrInvalid, "not a URL")
 		case u.Scheme != "http" && u.Scheme != "https":
-			v.add("management.base_url", ErrInvalid, "scheme must be http or https")
+			v.add("control.base_url", ErrInvalid, "scheme must be http or https")
 		case u.Host == "":
-			v.add("management.base_url", ErrInvalid, "missing host")
+			v.add("control.base_url", ErrInvalid, "missing host")
 		}
 	}
 
@@ -314,17 +314,17 @@ func (c *Config) Validate() error {
 		field string
 		value time.Duration
 	}{
-		{"management.cache.max_ttl", c.Management.Cache.MaxTTL},
-		{"management.cache.stale_after", c.Management.Cache.StaleAfter},
-		{"proxy.dial_timeout", c.Proxy.DialTimeout},
+		{"control.cache.max_ttl", c.Control.Cache.MaxTTL},
+		{"control.cache.stale_after", c.Control.Cache.StaleAfter},
+		{"dial.dial_timeout", c.Dial.DialTimeout},
 	} {
 		if d.value < 0 {
 			v.add(d.field, ErrInvalid, "must not be negative")
 		}
 	}
 
-	if p := c.Proxy.DefaultTargetPort; p < 0 || p > 65535 {
-		v.add("proxy.default_target_port", ErrInvalid, "must be between 1 and 65535")
+	if p := c.Dial.DefaultTargetPort; p < 0 || p > 65535 {
+		v.add("dial.default_target_port", ErrInvalid, "must be between 1 and 65535")
 	}
 
 	if err := validateDelimiter(c.Routing.TargetDelimiter); err != nil {
@@ -378,7 +378,7 @@ func (c *Config) validateAuth(v *ValidationError) {
 	c.validateTargetAuth(v)
 }
 
-// validateTargetAuth checks the bastion→target plane. Only the settings of the
+// validateTargetAuth checks the proxy→target plane. Only the settings of the
 // selected method are checked: phase 0006 adds a method that needs no static
 // key, and a config that still carries one must not be forced to keep it valid.
 func (c *Config) validateTargetAuth(v *ValidationError) {

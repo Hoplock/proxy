@@ -1,7 +1,7 @@
-# 0004 — Identity model & user→bastion auth — Learnings
+# 0004 — Identity model & user→proxy auth — Learnings
 
 ## Summary
-- What shipped: the bastion's identity/claims model (`internal/identity`), the
+- What shipped: the proxy's identity/claims model (`internal/identity`), the
   `UserAuthenticator` plane with `cert` + `password-mfa` implementations, a
   config-driven registry that orders them certificate-first, and the SSH server
   auth adapter that speaks to the user (banner, keyboard-interactive MFA
@@ -20,7 +20,7 @@
 - Config keys: `auth.user.methods` (**set**, not order — default both),
   `auth.user.mfa.{min_poll_interval,progress_interval,max_wait}` (durations,
   zero = package default).
-- Error contract: `ErrDenied` (only `mgmt.IsUnauthorized`) vs `ErrUnavailable`
+- Error contract: `ErrDenied` (only `control.IsUnauthorized`) vs `ErrUnavailable`
   (everything else) vs `ErrMethodNotSupported`. `user.FailureMessage(err,
   sessionID)` renders the PLAN §4.3 split; **0005 must reuse it**, not
   re-implement it.
@@ -30,7 +30,7 @@
   `NewFromConfig`, wrap it in `ServerAuth`, call `Apply(*ssh.ServerConfig)`, and
   read the identity back with `IdentityFromPermissions(conn.Permissions)`. The
   `ConnMeta` function is yours to supply — it is where the D1 username split
-  belongs. `cmd/bastion` still does not load its config; that lands with the
+  belongs. `cmd/proxy` still does not load its config; that lands with the
   listener in 0005.
 
 ## Details
@@ -38,7 +38,7 @@
 ### The identity model (`internal/identity`)
 
 ```go
-type Method string // "cert" | "password-mfa"; Valid(); WireMethod() mgmt.AuthMethod
+type Method string // "cert" | "password-mfa"; Valid(); WireMethod() control.AuthMethod
 
 type Claims map[string]string // Get/Value/Has/Clone
 
@@ -64,7 +64,7 @@ Three properties later phases depend on:
 - **Comparisons are exact.** Case folding and domain-qualification belong to the
   identity source. If AD arrives with `ENGINEERING` and Okta with `engineering`,
   that is the adapter's problem to normalise, not every consumer's.
-- **An Identity is immutable after authentication.** Nothing in the bastion adds
+- **An Identity is immutable after authentication.** Nothing in the proxy adds
   a group, principal, or claim: widening an identity locally would be
   originating policy (D2). `Clone` exists for handing it to code that might.
 
@@ -73,17 +73,17 @@ is defaulted to `"unknown"` rather than failing, because it is cosmetic while
 the others are not. `String` deliberately omits claims so no log line
 accidentally prints a source-controlled attribute.
 
-**Conversion lives in `internal/identity/wire.go`**, not in `internal/mgmt`:
-`FromWire(*mgmt.Identity, Method, time.Time) (*Identity, error)` and
-`(*Identity).ToWire() *mgmt.Identity`, plus `Method.WireMethod()` for
-`AuthorizeRequest.AuthMethod`. The direction (identity → mgmt) keeps the
+**Conversion lives in `internal/identity/wire.go`**, not in `internal/control`:
+`FromWire(*control.Identity, Method, time.Time) (*Identity, error)` and
+`(*Identity).ToWire() *control.Identity`, plus `Method.WireMethod()` for
+`AuthorizeRequest.AuthMethod`. The direction (identity → control) keeps the
 contract package a pure description of the wire; 0005/0006/0007 must use these
 two functions rather than copying fields, so a contract change lands in one
 place. Both copy slices and maps — neither side can alias the other.
 
 `FromWire` validating is a security property, not tidiness: a server that
 answers "authenticated" without a subject has violated the contract, and the
-bastion must refuse a session it could not attribute in an audit log. That
+proxy must refuse a session it could not attribute in an audit log. That
 failure is classified `ErrUnavailable`, never `ErrDenied`.
 
 ### The authenticator plane (`internal/auth/user`)
@@ -98,13 +98,13 @@ type UserAuthenticator interface {
 }
 
 type ConnMeta struct {
-    SessionID, BastionID, Login, Target string
+    SessionID, ProxyID, Login, Target string
     ClientAddr, ServerAddr, ClientVersion string
     HopTrail []string
 }
 
 type Options struct {           // shared by both implementations
-    Client mgmt.Client           // required
+    Client control.Client           // required
     Logger *log.Logger           // nil discards; never given a password
     Now    func() time.Time      // nil means time.Now
 }
@@ -115,7 +115,7 @@ Constructors: `NewCertAuthenticator(Options)`,
 ProgressInterval, MaxWait})`.
 
 **The error contract is the load-bearing part.** `classify` maps
-`mgmt.IsUnauthorized(err)` → `ErrDenied` and *everything else* → `ErrUnavailable`,
+`control.IsUnauthorized(err)` → `ErrDenied` and *everything else* → `ErrUnavailable`,
 with an explicit default arm so a new failure mode degrades to "unknown" rather
 than to "denied". Only `ErrDenied` may ever be shown to a user as a permissions
 answer. Both outcomes refuse the connection — failing closed and failing
@@ -195,7 +195,7 @@ sid := user.SessionIDFromPermissions(serverConn.Permissions)
   implementation of it. `user.ConnMetaFromSSH(base, conn)` fills only the
   transport fields (addresses, client version) and never touches Login/Target.
 - **Identity crosses into the connection through `ssh.Permissions.Extensions`**
-  (`securecommandproxy-identity` as JSON, plus `-auth-method` and
+  (`hoplock-identity` as JSON, plus `-auth-method` and
   `-session-id`). Extensions are server-side only — x/crypto never sends them to
   the client — and this avoids a side table that would need its own lifecycle.
 - `Apply` forces `NoClientAuth = false` and installs only the callbacks the
@@ -215,7 +215,7 @@ sid := user.SessionIDFromPermissions(serverConn.Permissions)
 | Anything else | `OutageMessage(sessionID)` | says explicitly it is **not a permissions problem**, quotes the session id |
 | Either | `FailureMessage(err, sessionID)` | picks the branch via `IsDenied(err)` |
 
-`IsDenied` accepts a raw `mgmt` error as well as this package's sentinels, so a
+`IsDenied` accepts a raw `control` error as well as this package's sentinels, so a
 caller cannot get the disclosure wrong by forgetting to translate first.
 `FailureMessage(nil, ...)` renders the **outage** text: "I do not know why this
 failed" is never safely rendered as "you are not allowed".
@@ -224,7 +224,7 @@ The text reaches the client as `*ssh.BannerError` returned from the auth
 callback — that is what makes x/crypto emit `SSH_MSG_USERAUTH_BANNER` before the
 failure. A rejected key therefore also produces the generic deny line before the
 client falls back to keyboard-interactive; that repetition is accepted, because
-the alternative (silence on a certificate-only bastion) is the thing PLAN §4.3
+the alternative (silence on a certificate-only proxy) is the thing PLAN §4.3
 exists to prevent.
 
 **0005 must reuse `FailureMessage`** for post-auth failures (session stderr,
@@ -235,7 +235,7 @@ text from 0003.
 ### Redaction (PLAN §7)
 
 The password exists in exactly one place: the argument passed straight into
-`mgmt.AuthenticatePasswordRequest` (which redacts itself when formatted). It is
+`control.AuthenticatePasswordRequest` (which redacts itself when formatted). It is
 never logged, never wrapped into an error, never handed to a prompter.
 `TestPasswordNeverReachesLogsOrErrors` runs the whole flow to a deny with
 logging on, first asserts the password **was** on the wire (so the assertion is
@@ -245,7 +245,7 @@ user-visible message, and `FailureMessage`'s output for it.
 ### Test notes
 
 - Tests drive a per-test `httptest` server **through the real
-  `mgmt.RESTClient`**, so contract + client + authenticator are exercised
+  `control.RESTClient`**, so contract + client + authenticator are exercised
   together; `fakeClient` covers what HTTP cannot express (dead transport,
   cancelled context).
 - `TestHandshake*` run a **real SSH handshake** over a loopback socket. Use
@@ -261,14 +261,14 @@ user-visible message, and `FailureMessage`'s output for it.
 
 - **No new prompts were added**; numbering invariants (PROTOCOL §6) hold —
   0004 moved to `implemented/`, 0005–0011 remain queued.
-- `cmd/bastion` still ignores `-config`. The real startup path (load config →
-  build `mgmt` client → build registry → listen) belongs with the listener in
-  **0005**. The bastion→server bearer token still has no config field (noted in
-  0002's learnings); whichever phase constructs the real `mgmt.RESTClient` must
+- `cmd/proxy` still ignores `-config`. The real startup path (load config →
+  build `control` client → build registry → listen) belongs with the listener in
+  **0005**. The proxy→server bearer token still has no config field (noted in
+  0002's learnings); whichever phase constructs the real `control.RESTClient` must
   add it to `internal/config` *and* `config.example.yaml` together, because the
   decoder is strict.
 - `Options.Logger` is a `*log.Logger` stop-gap. When `internal/logging` lands
-  (0010), auth events should become structured `mgmt.LogRecord`s
+  (0010), auth events should become structured `control.LogRecord`s
   (`LogKindAuth`) — the call sites already log only redaction-safe fields.
 - Certificate *contents* (principals, validity, CA) are never inspected locally,
   by design (D2). If a later phase wants local pre-validation, it needs a plan

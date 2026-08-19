@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // subscriberBuffer is how many events one subscriber may fall behind by before
@@ -19,20 +19,20 @@ import (
 const subscriberBuffer = 64
 
 // eventIDPrefix labels the ids this server assigns. Only the server may parse
-// them: to the bastion an event id is opaque (api/README.md).
+// them: to the proxy an event id is opaque (api/README.md).
 const eventIDPrefix = "evt-"
 
 // subscriber is one open revocation stream.
 type subscriber struct {
-	ch chan mgmt.RevocationEvent
+	ch chan control.RevocationEvent
 	// kick is closed to end the connection from the server side.
 	kick   chan struct{}
 	kicked bool
 }
 
-// handleBastionEvents serves the long-lived revocation stream.
-func (s *server) handleBastionEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeBastion(w, r) {
+// handleProxyEvents serves the long-lived revocation stream.
+func (s *server) handleProxyEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeProxy(w, r) {
 		return
 	}
 	if r.PathValue("bastion_id") == "" {
@@ -41,10 +41,10 @@ func (s *server) handleBastionEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sub := &subscriber{
-		ch:   make(chan mgmt.RevocationEvent, subscriberBuffer),
+		ch:   make(chan control.RevocationEvent, subscriberBuffer),
 		kick: make(chan struct{}),
 	}
-	backlog, resync := s.subscribe(sub, r.URL.Query().Get(mgmt.QueryLastEventID))
+	backlog, resync := s.subscribe(sub, r.URL.Query().Get(control.QueryLastEventID))
 	defer s.unsubscribe(sub)
 
 	// The stream outlives the server's read and write timeouts by design, so
@@ -61,17 +61,17 @@ func (s *server) handleBastionEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enc := json.NewEncoder(w)
-	write := func(ev mgmt.RevocationEvent) bool {
+	write := func(ev control.RevocationEvent) bool {
 		if err := enc.Encode(ev); err != nil {
 			return false
 		}
 		return rc.Flush() == nil
 	}
 
-	// Gap recovery: replay what the bastion missed, or tell it up front that we
+	// Gap recovery: replay what the proxy missed, or tell it up front that we
 	// cannot, in which case it drops its cache and starts over.
 	if resync {
-		if !write(s.newEvent(mgmt.EventTypeResync)) {
+		if !write(s.newEvent(control.EventTypeResync)) {
 			return
 		}
 	}
@@ -81,9 +81,9 @@ func (s *server) handleBastionEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Heartbeats prove the stream is alive; a bastion that stops hearing them
+	// Heartbeats prove the stream is alive; a proxy that stops hearing them
 	// reconnects. A negative interval disables them, which is how a test drives
-	// the bastion's heartbeat timeout.
+	// the proxy's heartbeat timeout.
 	var heartbeats <-chan time.Time
 	if ms := s.fx.Events.HeartbeatMS; ms > 0 {
 		ticker := time.NewTicker(time.Duration(ms) * time.Millisecond)
@@ -102,7 +102,7 @@ func (s *server) handleBastionEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-heartbeats:
-			if !write(s.newEvent(mgmt.EventTypeHeartbeat)) {
+			if !write(s.newEvent(control.EventTypeHeartbeat)) {
 				return
 			}
 		}
@@ -113,22 +113,22 @@ func (s *server) handleBastionEvents(w http.ResponseWriter, r *http.Request) {
 // on a real server these events come from an operator action or a policy
 // change, and this endpoint is how a test or the e2e topology stands in for one.
 func (s *server) handleDebugRevoke(w http.ResponseWriter, r *http.Request) {
-	var ev mgmt.RevocationEvent
+	var ev control.RevocationEvent
 	if !decode(w, r, &ev) {
 		return
 	}
 	switch ev.Type {
-	case mgmt.EventTypeSessionKill:
+	case control.EventTypeSessionKill:
 		if ev.SessionKill == nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", "session_kill payload is required")
 			return
 		}
-	case mgmt.EventTypeCacheInvalidate:
+	case control.EventTypeCacheInvalidate:
 		if ev.CacheInvalidate == nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", "cache_invalidate payload is required")
 			return
 		}
-	case mgmt.EventTypeHeartbeat, mgmt.EventTypeResync:
+	case control.EventTypeHeartbeat, control.EventTypeResync:
 	default:
 		writeError(w, http.StatusBadRequest, "invalid_request", "unknown event type")
 		return
@@ -148,7 +148,7 @@ type debugRevokeResponse struct {
 // subscribe registers sub and returns what it missed since lastEventID. It
 // reports resync when the gap cannot be replayed — an unparseable id, or one
 // older than everything still retained.
-func (s *server) subscribe(sub *subscriber, lastEventID string) (backlog []mgmt.RevocationEvent, resync bool) {
+func (s *server) subscribe(sub *subscriber, lastEventID string) (backlog []control.RevocationEvent, resync bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.subs[sub] = true
@@ -175,7 +175,7 @@ func (s *server) unsubscribe(sub *subscriber) {
 }
 
 // publishEvent assigns an id, retains the event for replay, and fans it out.
-func (s *server) publishEvent(ev mgmt.RevocationEvent) (eventID string, delivered int) {
+func (s *server) publishEvent(ev control.RevocationEvent) (eventID string, delivered int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -186,12 +186,12 @@ func (s *server) publishEvent(ev mgmt.RevocationEvent) (eventID string, delivere
 
 	s.events = append(s.events, ev)
 	if over := len(s.events) - s.fx.Events.ReplayBuffer; over > 0 {
-		// Remember how far the history was trimmed: a bastion asking to resume
+		// Remember how far the history was trimmed: a proxy asking to resume
 		// from before this point is told to resync instead.
 		if n, ok := eventNum(s.events[over-1].EventID); ok {
 			s.evictedThrough = n
 		}
-		s.events = append([]mgmt.RevocationEvent{}, s.events[over:]...)
+		s.events = append([]control.RevocationEvent{}, s.events[over:]...)
 	}
 
 	for sub := range s.subs {
@@ -199,7 +199,7 @@ func (s *server) publishEvent(ev mgmt.RevocationEvent) (eventID string, delivere
 		case sub.ch <- ev:
 			delivered++
 		default:
-			// Too far behind to catch up: end the connection. The bastion
+			// Too far behind to catch up: end the connection. The proxy
 			// reconnects with its last event id and replays the gap.
 			if !sub.kicked {
 				sub.kicked = true
@@ -213,10 +213,10 @@ func (s *server) publishEvent(ev mgmt.RevocationEvent) (eventID string, delivere
 // newEvent builds a bare event of the given type. Heartbeats and resyncs are
 // per-connection and are deliberately not retained for replay: they carry no
 // state, and heartbeats would otherwise evict real events from the history.
-func (s *server) newEvent(t mgmt.EventType) mgmt.RevocationEvent {
+func (s *server) newEvent(t control.EventType) control.RevocationEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return mgmt.RevocationEvent{
+	return control.RevocationEvent{
 		EventID:   s.nextEventIDLocked(),
 		Type:      t,
 		Timestamp: s.now().UTC(),

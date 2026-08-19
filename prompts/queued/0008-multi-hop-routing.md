@@ -14,32 +14,32 @@
   (route payload shape).
 
 ## Objective
-Implement **next-hop chaining** so a connection can traverse multiple bastions
-while the target stays reachable only via the chain — and so a bastion in a
+Implement **next-hop chaining** so a connection can traverse multiple proxies
+while the target stays reachable only via the chain — and so a proxy in a
 protected zone needs **no inbound firewall rule at all**. Each hop
 independently authenticates, authorizes, and routes.
 
 ## In scope
 - `internal/routing`: handle `route_type == "nexthop"` from the authorize+route
-  response. Reach the **next bastion** and hand the session through so that hop
+  response. Reach the **next proxy** and hand the session through so that hop
   repeats the full flow (auth → authorize → route).
 - **Connection direction (D11)**, from 0006's hop metadata:
-  - `dial` — open a connection to the next bastion, as before.
-  - `relay` — use a connection the **downstream bastion already opened to this
+  - `dial` — open a connection to the next proxy, as before.
+  - `relay` — use a connection the **downstream proxy already opened to this
     one**, and open a channel over it. This is what removes the inbound rule per
     enclave, and it is the mode that matters for segmented estates.
   - A `relay` hop with no live registration fails as an **outage** (PLAN §4.3)
     naming the session id. It is never downgraded to `dial` — that would punch
     through the boundary the mode exists to preserve.
-- **Relay registration** (the other half of `relay`): a bastion configured with
+- **Relay registration** (the other half of `relay`): a proxy configured with
   an upstream opens a long-lived outbound connection to it and registers under
-  its bastion id; the upstream keeps one registration per id and multiplexes
+  its proxy id; the upstream keeps one registration per id and multiplexes
   sessions over it. Reconnect with backoff; a dropped registration must not kill
   sessions already flowing over it beyond what the transport forces. Model it on
-  `internal/mgmt`'s revocation stream (§6.4) — same problem, same direction,
+  `internal/control`'s revocation stream (§6.4) — same problem, same direction,
   and its reconnect/heartbeat behaviour is already proven.
-  - The upstream **authenticates the registering bastion** — a registration is
-    an inbound path into this bastion's routing, so an unauthenticated one is a
+  - The upstream **authenticates the registering proxy** — a registration is
+    an inbound path into this proxy's routing, so an unauthenticated one is a
     way to receive other people's sessions. Reuse the host-key/cert machinery
     rather than inventing a scheme; document the trust model.
 - **Chain identity propagation**: define how the user's identity/authorization
@@ -51,19 +51,19 @@ independently authenticates, authorizes, and routes.
 - Ensure logging captures the hop path **and the direction of each leg** (each
   hop logs its own leg).
 - Config: max hops, next-hop dial settings, upstream to register with (and
-  whether to accept registrations), this bastion's identity as presented to
+  whether to accept registrations), this proxy's identity as presented to
   other hops.
 
 ## Out of scope
 - Channel inspection/filtering internals (0009/0010). Full logging pipeline (0011).
-- Choosing the direction: that is the management server's decision, delivered in
+- Choosing the direction: that is Hoplock Control's decision, delivered in
   the route. This phase implements both and obeys.
 
 ## Acceptance criteria
-- Integration test with two bastions in `dial` mode: user → bastion A (nexthop)
-  → bastion B (direct) → target. An `exec` and an interactive `shell` both work
+- Integration test with two proxies in `dial` mode: user → proxy A (nexthop)
+  → proxy B (direct) → target. An `exec` and an interactive `shell` both work
   end to end.
-- The same test in `relay` mode, with **bastion B accepting no inbound
+- The same test in `relay` mode, with **proxy B accepting no inbound
   connections** (assert this — bind B's listener such that A genuinely cannot
   reach it, so the test fails if the relay path is not what carried the
   session). This is the acceptance criterion that proves D11.
@@ -79,6 +79,6 @@ independently authenticates, authorizes, and routes.
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
 `docs/learnings/0008-multi-hop-routing-learnings.md`. Summary block MUST document
 the chain trust model, how identity is propagated between hops, the relay
-registration protocol and how the upstream authenticates a registering bastion,
+registration protocol and how the upstream authenticates a registering proxy,
 the loop/hop-limit mechanism, and what the e2e topology (0012) needs in order to
 configure a chained pair in **each** direction mode.

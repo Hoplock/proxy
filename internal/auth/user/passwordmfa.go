@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // MethodPasswordMFA is the registry/config name of the password+MFA
@@ -23,17 +23,17 @@ const MethodPasswordMFA = string(identity.MethodPasswordMFA)
 // MFA polling defaults.
 const (
 	// DefaultMinPollInterval floors the server's poll_after_ms so a
-	// misconfigured or hostile challenge cannot turn the bastion into a polling
-	// hot loop against the management server.
+	// misconfigured or hostile challenge cannot turn the proxy into a polling
+	// hot loop against Hoplock Control.
 	DefaultMinPollInterval = 500 * time.Millisecond
-	// DefaultProgressInterval is how often the user is told the bastion is
+	// DefaultProgressInterval is how often the user is told the proxy is
 	// still waiting. It is decoupled from the poll interval on purpose: polling
 	// fast and talking fast are different concerns, and a line per poll would
 	// scroll the real instruction off the screen.
 	DefaultProgressInterval = 5 * time.Second
 	// DefaultMaxWait caps the whole out-of-band wait when the challenge carries
 	// no usable expiry. The server's ExpiresAt wins whenever it is set and
-	// sooner — the bastion may give up earlier than the server, never later.
+	// sooner — the proxy may give up earlier than the server, never later.
 	DefaultMaxWait = 2 * time.Minute
 )
 
@@ -66,13 +66,13 @@ func (o PasswordMFAOptions) withDefaults() PasswordMFAOptions {
 // out-of-band second factor, and is the fallback for clients with no acceptable
 // certificate (PLAN §4.1).
 //
-// The password is relayed to the management server and never stored, logged, or
+// The password is relayed to Hoplock Control and never stored, logged, or
 // wrapped into an error by anything in this type (PLAN §7). The only place it
 // appears is the request struct, which redacts itself when formatted.
 //
 // The MFA wait lives here rather than in the SSH layer because it is a property
 // of the decision, not of the transport: the server states the poll interval
-// and the expiry, and the bastion obeys both.
+// and the expiry, and the proxy obeys both.
 type PasswordMFAAuthenticator struct {
 	opts Options
 	mfa  PasswordMFAOptions
@@ -113,14 +113,14 @@ func (a *PasswordMFAAuthenticator) AuthenticatePassword(ctx context.Context, met
 	const op = "password-mfa"
 
 	now := a.opts.now()
-	req := &mgmt.AuthenticatePasswordRequest{
+	req := &control.AuthenticatePasswordRequest{
 		Login:    meta.Login,
 		Target:   meta.Target,
 		Password: password,
 		Conn:     meta.wire(now),
 	}
 
-	a.opts.logf("auth: session=%s method=%s login=%q: asking management server",
+	a.opts.logf("auth: session=%s method=%s login=%q: asking Hoplock Control",
 		meta.SessionID, MethodPasswordMFA, meta.Login)
 
 	resp, err := a.opts.Client.AuthenticatePassword(ctx, req)
@@ -132,9 +132,9 @@ func (a *PasswordMFAAuthenticator) AuthenticatePassword(ctx context.Context, met
 	}
 
 	switch resp.Status {
-	case mgmt.AuthStatusAuthenticated:
+	case control.AuthStatusAuthenticated:
 		return a.accept(op, meta, resp.Identity, now)
-	case mgmt.AuthStatusMFARequired:
+	case control.AuthStatusMFARequired:
 		return a.awaitMFA(ctx, op, meta, resp.MFA)
 	default:
 		// Unreachable through RESTClient, which rejects unknown statuses, but a
@@ -147,7 +147,7 @@ func (a *PasswordMFAAuthenticator) AuthenticatePassword(ctx context.Context, met
 }
 
 // accept converts a successful response and logs the outcome.
-func (a *PasswordMFAAuthenticator) accept(op string, meta ConnMeta, w *mgmt.Identity, at time.Time) (*identity.Identity, error) {
+func (a *PasswordMFAAuthenticator) accept(op string, meta ConnMeta, w *control.Identity, at time.Time) (*identity.Identity, error) {
 	id, err := identityFrom(op, w, identity.MethodPasswordMFA, at)
 	if err != nil {
 		a.opts.logf("auth: session=%s method=%s login=%q: %v",
@@ -163,14 +163,14 @@ func (a *PasswordMFAAuthenticator) accept(op string, meta ConnMeta, w *mgmt.Iden
 // context ends, telling the user what is happening throughout.
 //
 // Three bounds apply at once and the earliest wins: the challenge's ExpiresAt,
-// the configured MaxWait, and the caller's context. The bastion never polls
+// the configured MaxWait, and the caller's context. The proxy never polls
 // past the expiry the server set — a token is single-use and dead after it, so
 // polling on would only turn a deny into a slower deny.
-func (a *PasswordMFAAuthenticator) awaitMFA(ctx context.Context, op string, meta ConnMeta, challenge *mgmt.MFAChallenge) (*identity.Identity, error) {
+func (a *PasswordMFAAuthenticator) awaitMFA(ctx context.Context, op string, meta ConnMeta, challenge *control.MFAChallenge) (*identity.Identity, error) {
 	// The client guarantees an mfa_required response carries a challenge with a
 	// token; guard anyway, because Client is an interface.
 	if challenge == nil || challenge.Token == "" {
-		return nil, fmt.Errorf("%s: %w: management server requested MFA without a challenge", op, ErrUnavailable)
+		return nil, fmt.Errorf("%s: %w: Hoplock Control requested MFA without a challenge", op, ErrUnavailable)
 	}
 
 	prompter := prompterFrom(ctx)
@@ -212,7 +212,7 @@ func (a *PasswordMFAAuthenticator) awaitMFA(ctx context.Context, op string, meta
 			return nil, fmt.Errorf("%s: %w: no second-factor approval before the challenge expired", op, ErrDenied)
 		}
 
-		resp, err := a.opts.Client.PollMFA(ctx, &mgmt.MFAPollRequest{
+		resp, err := a.opts.Client.PollMFA(ctx, &control.MFAPollRequest{
 			Token: challenge.Token,
 			Conn:  meta.wire(now),
 		})
@@ -224,11 +224,11 @@ func (a *PasswordMFAAuthenticator) awaitMFA(ctx context.Context, op string, meta
 		}
 
 		switch resp.Status {
-		case mgmt.AuthStatusAuthenticated:
+		case control.AuthStatusAuthenticated:
 			a.opts.logf("auth: session=%s method=%s login=%q: approved after %s",
 				meta.SessionID, MethodPasswordMFA, meta.Login, now.Sub(start).Round(time.Millisecond))
 			return a.accept(op, meta, resp.Identity, now)
-		case mgmt.AuthStatusMFARequired:
+		case control.AuthStatusMFARequired:
 			if resp.MFA != nil {
 				// The server may re-state its pacing between polls; honour it.
 				interval = a.pollInterval(resp.MFA)
@@ -249,7 +249,7 @@ func (a *PasswordMFAAuthenticator) awaitMFA(ctx context.Context, op string, meta
 }
 
 // pollInterval is the server's requested pacing, floored by MinPollInterval.
-func (a *PasswordMFAAuthenticator) pollInterval(challenge *mgmt.MFAChallenge) time.Duration {
+func (a *PasswordMFAAuthenticator) pollInterval(challenge *control.MFAChallenge) time.Duration {
 	d := challenge.PollAfter()
 	if d < a.mfa.MinPollInterval {
 		return a.mfa.MinPollInterval

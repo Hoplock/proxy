@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import "context"
 
-// Client is every conversation the bastion has with the management server. No
+// Client is every conversation the proxy has with Hoplock Control. No
 // other package may talk to the server directly (PLAN §3): they depend on this
-// interface, which keeps the bastion testable against the mock server and lets
+// interface, which keeps the proxy testable against the mock server and lets
 // a later phase swap REST for a streaming transport without touching callers.
 //
 // Error contract, uniform across all methods:

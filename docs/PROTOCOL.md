@@ -1,4 +1,4 @@
-# SecureCommandProxy — Session Protocol
+# Hoplock Proxy — Session Protocol
 
 > **Every implementation session MUST read this file first, in full.** It is
 > short by design. It tells a fresh Claude Code session exactly how to pick up
@@ -100,7 +100,7 @@ It MUST begin with a **summary block** so future sessions can decide whether to
 read further without spending tokens on the whole file:
 
 ```markdown
-# 0003 — user→bastion auth — Learnings
+# 0003 — user→proxy auth — Learnings
 
 ## Summary
 - What shipped: <1–3 lines>

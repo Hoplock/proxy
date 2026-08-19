@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // exampleFixturesPath is the fixture file that ships with the mock; it must
@@ -24,17 +24,17 @@ const exampleFixturesPath = "fixtures.example.yaml"
 
 // Credentials from fixtures.example.yaml.
 const (
-	bastionToken   = "dev-bastion-token"
+	proxyToken     = "dev-proxy-token"
 	aliceKeyFP     = "SHA256:AAAA1111alice1111AAAA1111alice1111AAAA111111"
 	alicePassword  = "alice-dev-password"
 	knownHostKeyFP = "SHA256:CCCC3333hostkey3333CCCC3333hostkey3333CCCC"
 )
 
 // mock is a running mock server plus a client wired to it, so the tests drive
-// the contract exactly as the bastion will.
+// the contract exactly as the proxy will.
 type mock struct {
 	srv    *httptest.Server
-	client *mgmt.RESTClient
+	client *control.RESTClient
 	server *server
 }
 
@@ -53,17 +53,17 @@ func startMock(t *testing.T, fx *fixtures, opts serverOptions) *mock {
 	srv := httptest.NewServer(s.handler())
 	t.Cleanup(srv.Close)
 
-	client, err := mgmt.NewRESTClient(mgmt.Options{BaseURL: srv.URL, Token: fx.BastionToken})
+	client, err := control.NewRESTClient(control.Options{BaseURL: srv.URL, Token: fx.ProxyToken})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
 	return &mock{srv: srv, client: client, server: s}
 }
 
-func testConn() mgmt.ConnMeta {
-	return mgmt.ConnMeta{
+func testConn() control.ConnMeta {
+	return control.ConnMeta{
 		SessionID:  "session-1",
-		BastionID:  "bastion-1",
+		ProxyID:    "proxy-1",
 		ClientAddr: "203.0.113.7:52344",
 		Timestamp:  time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC),
 	}
@@ -78,8 +78,8 @@ func TestExampleFixturesAreValid(t *testing.T) {
 		t.Fatalf("example fixtures define %d users and %d routes; both must be non-empty",
 			len(fx.Users), len(fx.Routes))
 	}
-	if fx.BastionToken != bastionToken {
-		t.Errorf("bastion_token = %q, want %q", fx.BastionToken, bastionToken)
+	if fx.ProxyToken != proxyToken {
+		t.Errorf("proxy_token = %q, want %q", fx.ProxyToken, proxyToken)
 	}
 }
 
@@ -88,17 +88,17 @@ func TestCertAuth(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("known key authenticates", func(t *testing.T) {
-		resp, err := m.client.AuthenticateCert(ctx, &mgmt.AuthenticateCertRequest{
+		resp, err := m.client.AuthenticateCert(ctx, &control.AuthenticateCertRequest{
 			Login:     "alice",
 			Target:    "host.company.com",
-			PublicKey: mgmt.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: aliceKeyFP},
+			PublicKey: control.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: aliceKeyFP},
 			Conn:      testConn(),
 		})
 		if err != nil {
 			t.Fatalf("AuthenticateCert: %v", err)
 		}
-		if resp.Status != mgmt.AuthStatusAuthenticated {
-			t.Fatalf("status = %q, want %q", resp.Status, mgmt.AuthStatusAuthenticated)
+		if resp.Status != control.AuthStatusAuthenticated {
+			t.Fatalf("status = %q, want %q", resp.Status, control.AuthStatusAuthenticated)
 		}
 		if got, want := resp.Identity.Subject, "alice@example.com"; got != want {
 			t.Errorf("subject = %q, want %q", got, want)
@@ -115,34 +115,34 @@ func TestCertAuth(t *testing.T) {
 	})
 
 	t.Run("unknown key is denied", func(t *testing.T) {
-		_, err := m.client.AuthenticateCert(ctx, &mgmt.AuthenticateCertRequest{
+		_, err := m.client.AuthenticateCert(ctx, &control.AuthenticateCertRequest{
 			Login:     "alice",
-			PublicKey: mgmt.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: "SHA256:not-alices-key"},
+			PublicKey: control.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: "SHA256:not-alices-key"},
 			Conn:      testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
 
 	t.Run("unknown login is denied", func(t *testing.T) {
-		_, err := m.client.AuthenticateCert(ctx, &mgmt.AuthenticateCertRequest{
+		_, err := m.client.AuthenticateCert(ctx, &control.AuthenticateCertRequest{
 			Login:     "nobody",
-			PublicKey: mgmt.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: aliceKeyFP},
+			PublicKey: control.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: aliceKeyFP},
 			Conn:      testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
 
 	t.Run("password-only user cannot use a key", func(t *testing.T) {
-		_, err := m.client.AuthenticateCert(ctx, &mgmt.AuthenticateCertRequest{
+		_, err := m.client.AuthenticateCert(ctx, &control.AuthenticateCertRequest{
 			Login:     "mallory",
-			PublicKey: mgmt.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: aliceKeyFP},
+			PublicKey: control.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: aliceKeyFP},
 			Conn:      testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
@@ -152,7 +152,7 @@ func TestPasswordAuthWithMFAApproval(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 	ctx := context.Background()
 
-	resp, err := m.client.AuthenticatePassword(ctx, &mgmt.AuthenticatePasswordRequest{
+	resp, err := m.client.AuthenticatePassword(ctx, &control.AuthenticatePasswordRequest{
 		Login:    "alice",
 		Password: alicePassword,
 		Conn:     testConn(),
@@ -160,8 +160,8 @@ func TestPasswordAuthWithMFAApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthenticatePassword: %v", err)
 	}
-	if resp.Status != mgmt.AuthStatusMFARequired {
-		t.Fatalf("status = %q, want %q", resp.Status, mgmt.AuthStatusMFARequired)
+	if resp.Status != control.AuthStatusMFARequired {
+		t.Fatalf("status = %q, want %q", resp.Status, control.AuthStatusMFARequired)
 	}
 	if resp.MFA.Token == "" {
 		t.Fatal("challenge has no token")
@@ -171,27 +171,27 @@ func TestPasswordAuthWithMFAApproval(t *testing.T) {
 	}
 
 	// The fixture keeps the challenge pending for exactly one poll.
-	pending, err := m.client.PollMFA(ctx, &mgmt.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()})
+	pending, err := m.client.PollMFA(ctx, &control.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()})
 	if err != nil {
 		t.Fatalf("PollMFA (pending): %v", err)
 	}
-	if pending.Status != mgmt.AuthStatusMFARequired {
+	if pending.Status != control.AuthStatusMFARequired {
 		t.Fatalf("status = %q, want the challenge still pending", pending.Status)
 	}
 
-	approved, err := m.client.PollMFA(ctx, &mgmt.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()})
+	approved, err := m.client.PollMFA(ctx, &control.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()})
 	if err != nil {
 		t.Fatalf("PollMFA (approve): %v", err)
 	}
-	if approved.Status != mgmt.AuthStatusAuthenticated {
-		t.Fatalf("status = %q, want %q", approved.Status, mgmt.AuthStatusAuthenticated)
+	if approved.Status != control.AuthStatusAuthenticated {
+		t.Fatalf("status = %q, want %q", approved.Status, control.AuthStatusAuthenticated)
 	}
 	if got, want := approved.Identity.Subject, "alice@example.com"; got != want {
 		t.Errorf("subject = %q, want %q", got, want)
 	}
 
 	// The token is single-use: polling a resolved challenge is a deny.
-	if _, err := m.client.PollMFA(ctx, &mgmt.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()}); !mgmt.IsUnauthorized(err) {
+	if _, err := m.client.PollMFA(ctx, &control.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()}); !control.IsUnauthorized(err) {
 		t.Fatalf("error = %v, want a deny for a spent token", err)
 	}
 }
@@ -201,42 +201,42 @@ func TestPasswordAuthDenials(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("wrong password", func(t *testing.T) {
-		_, err := m.client.AuthenticatePassword(ctx, &mgmt.AuthenticatePasswordRequest{
+		_, err := m.client.AuthenticatePassword(ctx, &control.AuthenticatePasswordRequest{
 			Login: "alice", Password: "wrong", Conn: testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
 
 	t.Run("key-only user has no password", func(t *testing.T) {
-		_, err := m.client.AuthenticatePassword(ctx, &mgmt.AuthenticatePasswordRequest{
+		_, err := m.client.AuthenticatePassword(ctx, &control.AuthenticatePasswordRequest{
 			Login: "svc-deploy", Password: "", Conn: testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
 
 	t.Run("mfa denied", func(t *testing.T) {
-		resp, err := m.client.AuthenticatePassword(ctx, &mgmt.AuthenticatePasswordRequest{
+		resp, err := m.client.AuthenticatePassword(ctx, &control.AuthenticatePasswordRequest{
 			Login: "mallory", Password: "mallory-dev-password", Conn: testConn(),
 		})
 		if err != nil {
 			t.Fatalf("AuthenticatePassword: %v", err)
 		}
-		if resp.Status != mgmt.AuthStatusMFARequired {
-			t.Fatalf("status = %q, want %q", resp.Status, mgmt.AuthStatusMFARequired)
+		if resp.Status != control.AuthStatusMFARequired {
+			t.Fatalf("status = %q, want %q", resp.Status, control.AuthStatusMFARequired)
 		}
-		_, err = m.client.PollMFA(ctx, &mgmt.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()})
-		if !mgmt.IsUnauthorized(err) {
+		_, err = m.client.PollMFA(ctx, &control.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()})
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny once MFA is refused", err)
 		}
 	})
 
 	t.Run("unknown token", func(t *testing.T) {
-		_, err := m.client.PollMFA(ctx, &mgmt.MFAPollRequest{Token: "mfa-does-not-exist", Conn: testConn()})
-		if !mgmt.IsUnauthorized(err) {
+		_, err := m.client.PollMFA(ctx, &control.MFAPollRequest{Token: "mfa-does-not-exist", Conn: testConn()})
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
@@ -257,7 +257,7 @@ users:
 	m := startMock(t, fx, serverOptions{Now: func() time.Time { return now }})
 	ctx := context.Background()
 
-	resp, err := m.client.AuthenticatePassword(ctx, &mgmt.AuthenticatePasswordRequest{
+	resp, err := m.client.AuthenticatePassword(ctx, &control.AuthenticatePasswordRequest{
 		Login: "alice", Password: "pw", Conn: testConn(),
 	})
 	if err != nil {
@@ -265,7 +265,7 @@ users:
 	}
 
 	now = now.Add(2 * time.Second) // past the 1s TTL
-	if _, err := m.client.PollMFA(ctx, &mgmt.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()}); !mgmt.IsUnauthorized(err) {
+	if _, err := m.client.PollMFA(ctx, &control.MFAPollRequest{Token: resp.MFA.Token, Conn: testConn()}); !control.IsUnauthorized(err) {
 		t.Fatalf("error = %v, want a deny for an expired challenge", err)
 	}
 }
@@ -273,17 +273,17 @@ users:
 func TestAuthorize(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 	ctx := context.Background()
-	alice := &mgmt.Identity{Subject: "alice@example.com", Login: "alice", Source: "fixture"}
+	alice := &control.Identity{Subject: "alice@example.com", Login: "alice", Source: "fixture"}
 
 	t.Run("direct route carries the full policy", func(t *testing.T) {
-		resp, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
-			Identity: alice, Target: "host.company.com", AuthMethod: mgmt.AuthMethodCert, Conn: testConn(),
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: alice, Target: "host.company.com", AuthMethod: control.AuthMethodCert, Conn: testConn(),
 		})
 		if err != nil {
 			t.Fatalf("Authorize: %v", err)
 		}
-		if resp.RouteType != mgmt.RouteTypeDirect {
-			t.Errorf("route_type = %q, want %q", resp.RouteType, mgmt.RouteTypeDirect)
+		if resp.RouteType != control.RouteTypeDirect {
+			t.Errorf("route_type = %q, want %q", resp.RouteType, control.RouteTypeDirect)
 		}
 		if resp.Target != "host.company.com" {
 			t.Errorf("target = %q, want the requested host", resp.Target)
@@ -297,15 +297,15 @@ func TestAuthorize(t *testing.T) {
 		if len(resp.PermittedChannels) != 1 || resp.PermittedChannels[0] != "session" {
 			t.Errorf("permitted_channels = %v, want [session]", resp.PermittedChannels)
 		}
-		if resp.FilterPolicy.Mode != mgmt.FilterModeBlacklist {
-			t.Errorf("filter mode = %q, want %q", resp.FilterPolicy.Mode, mgmt.FilterModeBlacklist)
+		if resp.FilterPolicy.Mode != control.FilterModeBlacklist {
+			t.Errorf("filter mode = %q, want %q", resp.FilterPolicy.Mode, control.FilterModeBlacklist)
 		}
 		// The whole point of per-rule actions: one policy, three severities, in
 		// the fixture's order.
-		wantRules := []mgmt.FilterRule{
-			{Match: "rm -rf /", Action: mgmt.FilterActionKillSession},
-			{Match: "shutdown", Action: mgmt.FilterActionBlockCommand},
-			{Match: "sudo *", Action: mgmt.FilterActionWarnAndContinue},
+		wantRules := []control.FilterRule{
+			{Match: "rm -rf /", Action: control.FilterActionKillSession},
+			{Match: "shutdown", Action: control.FilterActionBlockCommand},
+			{Match: "sudo *", Action: control.FilterActionWarnAndContinue},
 		}
 		if len(resp.FilterPolicy.Rules) != len(wantRules) {
 			t.Fatalf("filter rules = %+v, want %d rules", resp.FilterPolicy.Rules, len(wantRules))
@@ -328,20 +328,20 @@ func TestAuthorize(t *testing.T) {
 		}
 	})
 
-	t.Run("nexthop route returns the next bastion and keeps the final target", func(t *testing.T) {
+	t.Run("nexthop route returns the next proxy and keeps the final target", func(t *testing.T) {
 		conn := testConn()
-		conn.HopTrail = []string{"bastion-0"}
-		resp, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
+		conn.HopTrail = []string{"proxy-0"}
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
 			Identity: alice, Target: "deep.internal.company.com", Conn: conn,
 		})
 		if err != nil {
 			t.Fatalf("Authorize: %v", err)
 		}
-		if resp.RouteType != mgmt.RouteTypeNextHop {
-			t.Fatalf("route_type = %q, want %q", resp.RouteType, mgmt.RouteTypeNextHop)
+		if resp.RouteType != control.RouteTypeNextHop {
+			t.Fatalf("route_type = %q, want %q", resp.RouteType, control.RouteTypeNextHop)
 		}
-		if resp.Target != "bastion-2.company.com" {
-			t.Errorf("target = %q, want the next bastion", resp.Target)
+		if resp.Target != "proxy-2.company.com" {
+			t.Errorf("target = %q, want the next proxy", resp.Target)
 		}
 		if resp.Hop == nil {
 			t.Fatal("hop metadata is missing on a nexthop route")
@@ -352,32 +352,32 @@ func TestAuthorize(t *testing.T) {
 		if resp.Hop.MaxHops != 3 {
 			t.Errorf("max_hops = %d, want 3", resp.Hop.MaxHops)
 		}
-		want := []string{"bastion-0", "bastion-1"}
+		want := []string{"proxy-0", "proxy-1"}
 		if len(resp.Hop.HopTrail) != len(want) {
 			t.Fatalf("hop_trail = %v, want %v", resp.Hop.HopTrail, want)
 		}
 		for i := range want {
 			if resp.Hop.HopTrail[i] != want[i] {
-				t.Fatalf("hop_trail = %v, want %v (this bastion appended)", resp.Hop.HopTrail, want)
+				t.Fatalf("hop_trail = %v, want %v (this proxy appended)", resp.Hop.HopTrail, want)
 			}
 		}
 	})
 
 	t.Run("wildcard target route matches any host", func(t *testing.T) {
-		svc := &mgmt.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy", Source: "fixture"}
-		resp, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
+		svc := &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy", Source: "fixture"}
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
 			Identity: svc, Target: "anything.company.com", Conn: testConn(),
 		})
 		if err != nil {
 			t.Fatalf("Authorize: %v", err)
 		}
-		if resp.FilterPolicy.Mode != mgmt.FilterModeWhitelist {
-			t.Errorf("filter mode = %q, want %q", resp.FilterPolicy.Mode, mgmt.FilterModeWhitelist)
+		if resp.FilterPolicy.Mode != control.FilterModeWhitelist {
+			t.Errorf("filter mode = %q, want %q", resp.FilterPolicy.Mode, control.FilterModeWhitelist)
 		}
 		if len(resp.FilterPolicy.Rules) != 3 {
 			t.Fatalf("filter rules = %+v, want the three from the fixture", resp.FilterPolicy.Rules)
 		}
-		if last := resp.FilterPolicy.Rules[2]; last.Action != mgmt.FilterActionKillSession {
+		if last := resp.FilterPolicy.Rules[2]; last.Action != control.FilterActionKillSession {
 			t.Errorf("last rule action = %q, want a whitelist that still escalates on %q",
 				last.Action, last.Match)
 		}
@@ -387,21 +387,21 @@ func TestAuthorize(t *testing.T) {
 	})
 
 	t.Run("unmatched target is denied", func(t *testing.T) {
-		_, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
+		_, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
 			Identity: alice, Target: "forbidden.company.com", Conn: testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
 
 	t.Run("unknown identity is denied", func(t *testing.T) {
-		_, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
-			Identity: &mgmt.Identity{Subject: "eve@example.com", Login: "eve"},
+		_, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: &control.Identity{Subject: "eve@example.com", Login: "eve"},
 			Target:   "host.company.com",
 			Conn:     testConn(),
 		})
-		if !mgmt.IsUnauthorized(err) {
+		if !control.IsUnauthorized(err) {
 			t.Fatalf("error = %v, want a deny", err)
 		}
 	})
@@ -419,8 +419,8 @@ routes:
 `)
 	m := startMock(t, fx, serverOptions{})
 
-	resp, err := m.client.Authorize(context.Background(), &mgmt.AuthorizeRequest{
-		Identity: &mgmt.Identity{Subject: "alice", Login: "alice"},
+	resp, err := m.client.Authorize(context.Background(), &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice", Login: "alice"},
 		Target:   "host.company.com",
 		Conn:     testConn(),
 	})
@@ -439,11 +439,11 @@ func TestReportHostKeyTrustsOnFirstUse(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 	ctx := context.Background()
 
-	report := func(target, fp string) *mgmt.HostKeyReportResponse {
+	report := func(target, fp string) *control.HostKeyReportResponse {
 		t.Helper()
-		resp, err := m.client.ReportHostKey(ctx, &mgmt.HostKeyReportRequest{
+		resp, err := m.client.ReportHostKey(ctx, &control.HostKeyReportRequest{
 			Target:  target,
-			HostKey: mgmt.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: fp},
+			HostKey: control.PublicKeyMaterial{Type: "ssh-ed25519", Fingerprint: fp},
 			Conn:    testConn(),
 		})
 		if err != nil {
@@ -456,8 +456,8 @@ func TestReportHostKeyTrustsOnFirstUse(t *testing.T) {
 	if first.Known {
 		t.Error("a key never seen before must report known=false")
 	}
-	if first.Decision != mgmt.HostKeyAccept {
-		t.Errorf("decision = %q, want %q (trust on first use)", first.Decision, mgmt.HostKeyAccept)
+	if first.Decision != control.HostKeyAccept {
+		t.Errorf("decision = %q, want %q (trust on first use)", first.Decision, control.HostKeyAccept)
 	}
 
 	second := report("new.company.com", "SHA256:brand-new-key")
@@ -491,27 +491,27 @@ host_keys:
 	m := startMock(t, fx, serverOptions{})
 	ctx := context.Background()
 
-	unknown, err := m.client.ReportHostKey(ctx, &mgmt.HostKeyReportRequest{
+	unknown, err := m.client.ReportHostKey(ctx, &control.HostKeyReportRequest{
 		Target:  "host.company.com",
-		HostKey: mgmt.PublicKeyMaterial{Fingerprint: "SHA256:unknown"},
+		HostKey: control.PublicKeyMaterial{Fingerprint: "SHA256:unknown"},
 		Conn:    testConn(),
 	})
 	if err != nil {
 		t.Fatalf("ReportHostKey: %v", err)
 	}
-	if unknown.Decision != mgmt.HostKeyReject {
-		t.Errorf("decision = %q, want %q under a rejecting policy", unknown.Decision, mgmt.HostKeyReject)
+	if unknown.Decision != control.HostKeyReject {
+		t.Errorf("decision = %q, want %q under a rejecting policy", unknown.Decision, control.HostKeyReject)
 	}
 
-	trusted, err := m.client.ReportHostKey(ctx, &mgmt.HostKeyReportRequest{
+	trusted, err := m.client.ReportHostKey(ctx, &control.HostKeyReportRequest{
 		Target:  "host.company.com",
-		HostKey: mgmt.PublicKeyMaterial{Fingerprint: "SHA256:trusted"},
+		HostKey: control.PublicKeyMaterial{Fingerprint: "SHA256:trusted"},
 		Conn:    testConn(),
 	})
 	if err != nil {
 		t.Fatalf("ReportHostKey: %v", err)
 	}
-	if trusted.Decision != mgmt.HostKeyAccept || !trusted.Known {
+	if trusted.Decision != control.HostKeyAccept || !trusted.Known {
 		t.Errorf("decision/known = %q/%v, want an already-trusted key accepted", trusted.Decision, trusted.Known)
 	}
 }
@@ -521,14 +521,14 @@ func TestLogIngest(t *testing.T) {
 	m := startMock(t, nil, serverOptions{LogDir: logDir})
 	ctx := context.Background()
 
-	batch := &mgmt.LogBatchRequest{Records: []mgmt.LogRecord{
+	batch := &control.LogBatchRequest{Records: []control.LogRecord{
 		{
 			RecordID: "r1", SessionID: "session-1", Timestamp: testConn().Timestamp,
-			Kind: mgmt.LogKindSessionStart, Severity: mgmt.SeverityInfo, Login: "alice",
+			Kind: control.LogKindSessionStart, Severity: control.SeverityInfo, Login: "alice",
 		},
 		{
 			RecordID: "r2", SessionID: "session-1", Timestamp: testConn().Timestamp,
-			Kind: mgmt.LogKindCommand, Severity: mgmt.SeverityInfo,
+			Kind: control.LogKindCommand, Severity: control.SeverityInfo,
 			Attributes: map[string]string{"command": "uptime"},
 		},
 	}}
@@ -550,11 +550,11 @@ func TestLogIngest(t *testing.T) {
 		t.Errorf("accepted = %d on a retried batch, want 0", retry.Accepted)
 	}
 
-	priority, err := m.client.IngestPriorityLog(ctx, &mgmt.LogPriorityRequest{Record: mgmt.LogRecord{
+	priority, err := m.client.IngestPriorityLog(ctx, &control.LogPriorityRequest{Record: control.LogRecord{
 		RecordID: "r3", SessionID: "session-1", Timestamp: testConn().Timestamp,
-		Kind: mgmt.LogKindPolicyDecision, Severity: mgmt.SeverityCritical,
+		Kind: control.LogKindPolicyDecision, Severity: control.SeverityCritical,
 		Message:    "blocked command",
-		Attributes: map[string]string{"command": "rm -rf /", "action": string(mgmt.FilterActionBlockCommand)},
+		Attributes: map[string]string{"command": "rm -rf /", "action": string(control.FilterActionBlockCommand)},
 	}})
 	if err != nil {
 		t.Fatalf("IngestPriorityLog: %v", err)
@@ -586,20 +586,20 @@ func TestLogIngest(t *testing.T) {
 	}
 }
 
-func TestBastionTokenIsEnforced(t *testing.T) {
+func TestProxyTokenIsEnforced(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
-	wrong, err := mgmt.NewRESTClient(mgmt.Options{BaseURL: m.srv.URL, Token: "not-the-token"})
+	wrong, err := control.NewRESTClient(control.Options{BaseURL: m.srv.URL, Token: "not-the-token"})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
-	_, err = wrong.ReportHostKey(context.Background(), &mgmt.HostKeyReportRequest{
+	_, err = wrong.ReportHostKey(context.Background(), &control.HostKeyReportRequest{
 		Target:  "host.company.com",
-		HostKey: mgmt.PublicKeyMaterial{Fingerprint: "SHA256:whatever"},
+		HostKey: control.PublicKeyMaterial{Fingerprint: "SHA256:whatever"},
 		Conn:    testConn(),
 	})
-	if !mgmt.IsUnauthorized(err) {
-		t.Fatalf("error = %v, want a deny for a bad bastion token", err)
+	if !control.IsUnauthorized(err) {
+		t.Fatalf("error = %v, want a deny for a bad proxy token", err)
 	}
 }
 
@@ -607,13 +607,13 @@ func TestBadRequestsAreRejectedWithoutADeny(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
 	// A malformed body is a caller bug, not a policy decision: the server must
-	// answer 400 so the bastion does not read it as "access denied".
-	req, err := http.NewRequest(http.MethodPost, m.srv.URL+mgmt.PathAuthorize, strings.NewReader(`{"target":`))
+	// answer 400 so the proxy does not read it as "access denied".
+	req, err := http.NewRequest(http.MethodPost, m.srv.URL+control.PathAuthorize, strings.NewReader(`{"target":`))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+bastionToken)
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -629,7 +629,7 @@ func TestBadRequestsAreRejectedWithoutADeny(t *testing.T) {
 func TestServerNeverStoresThePassword(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
-	if _, err := m.client.AuthenticatePassword(context.Background(), &mgmt.AuthenticatePasswordRequest{
+	if _, err := m.client.AuthenticatePassword(context.Background(), &control.AuthenticatePasswordRequest{
 		Login: "alice", Password: alicePassword, Conn: testConn(),
 	}); err != nil {
 		t.Fatalf("AuthenticatePassword: %v", err)
@@ -746,18 +746,18 @@ routes:
 	if r.Login != wildcard {
 		t.Errorf("route login = %q, want the wildcard default", r.Login)
 	}
-	if r.RouteType != string(mgmt.RouteTypeDirect) {
-		t.Errorf("route_type = %q, want %q", r.RouteType, mgmt.RouteTypeDirect)
+	if r.RouteType != string(control.RouteTypeDirect) {
+		t.Errorf("route_type = %q, want %q", r.RouteType, control.RouteTypeDirect)
 	}
-	if r.FilterPolicy.Mode != string(mgmt.FilterModeBlacklist) {
-		t.Errorf("filter mode default = %q, want %q", r.FilterPolicy.Mode, mgmt.FilterModeBlacklist)
+	if r.FilterPolicy.Mode != string(control.FilterModeBlacklist) {
+		t.Errorf("filter mode default = %q, want %q", r.FilterPolicy.Mode, control.FilterModeBlacklist)
 	}
 	if len(r.FilterPolicy.Rules) != 0 {
 		t.Errorf("filter rules = %+v, want none by default (a blacklist with no rules filters nothing)",
 			r.FilterPolicy.Rules)
 	}
-	if fx.HostKeys.Decision != string(mgmt.HostKeyAccept) {
-		t.Errorf("host_keys.decision = %q, want %q", fx.HostKeys.Decision, mgmt.HostKeyAccept)
+	if fx.HostKeys.Decision != string(control.HostKeyAccept) {
+		t.Errorf("host_keys.decision = %q, want %q", fx.HostKeys.Decision, control.HostKeyAccept)
 	}
 }
 
@@ -778,9 +778,9 @@ routes:
 `)
 	m := startMock(t, fx, serverOptions{})
 	ctx := context.Background()
-	alice := &mgmt.Identity{Subject: "alice", Login: "alice"}
+	alice := &control.Identity{Subject: "alice", Login: "alice"}
 
-	specific, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
+	specific, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
 		Identity: alice, Target: "host.company.com", Conn: testConn(),
 	})
 	if err != nil {
@@ -790,7 +790,7 @@ routes:
 		t.Errorf("permissions = %q, want the first matching rule to win", specific.Permissions)
 	}
 
-	fallback, err := m.client.Authorize(ctx, &mgmt.AuthorizeRequest{
+	fallback, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
 		Identity: alice, Target: "other.company.com", Conn: testConn(),
 	})
 	if err != nil {
@@ -814,8 +814,8 @@ routes:
 `)
 	m := startMock(t, fx, serverOptions{})
 
-	resp, err := m.client.Authorize(context.Background(), &mgmt.AuthorizeRequest{
-		Identity: &mgmt.Identity{Subject: "alice", Login: "alice"},
+	resp, err := m.client.Authorize(context.Background(), &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice", Login: "alice"},
 		Target:   "alias.company.com",
 		Conn:     testConn(),
 	})
@@ -827,7 +827,7 @@ routes:
 	}
 }
 
-func TestNoBastionTokenServesEveryone(t *testing.T) {
+func TestNoProxyTokenServesEveryone(t *testing.T) {
 	fx := mustParseFixtures(t, `
 users:
   - login: alice
@@ -835,13 +835,13 @@ users:
 `)
 	m := startMock(t, fx, serverOptions{})
 
-	anonymous, err := mgmt.NewRESTClient(mgmt.Options{BaseURL: m.srv.URL})
+	anonymous, err := control.NewRESTClient(control.Options{BaseURL: m.srv.URL})
 	if err != nil {
 		t.Fatalf("NewRESTClient: %v", err)
 	}
-	if _, err := anonymous.AuthenticateCert(context.Background(), &mgmt.AuthenticateCertRequest{
+	if _, err := anonymous.AuthenticateCert(context.Background(), &control.AuthenticateCertRequest{
 		Login:     "alice",
-		PublicKey: mgmt.PublicKeyMaterial{Fingerprint: "SHA256:alice"},
+		PublicKey: control.PublicKeyMaterial{Fingerprint: "SHA256:alice"},
 		Conn:      testConn(),
 	}); err != nil {
 		t.Fatalf("AuthenticateCert without a token: %v", err)
@@ -903,7 +903,7 @@ func assertJSONLines(t *testing.T, path string, want int) {
 	dec := json.NewDecoder(f)
 	got := 0
 	for {
-		var rec mgmt.LogRecord
+		var rec control.LogRecord
 		err := dec.Decode(&rec)
 		if err == io.EOF {
 			break

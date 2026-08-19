@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"net/url"
 	"time"
 )
 
-// API paths, absolute from the management server's base URL. They are exported
+// API paths, absolute from Hoplock Control's base URL. They are exported
 // so the mock server and the contract test can route/verify against the same
 // constants the client dials, instead of repeating string literals.
 const (
@@ -19,49 +19,49 @@ const (
 	PathReportHostKey        = "/v1/hostkeys/report"
 	PathIngestLogBatch       = "/v1/logs/batch"
 	PathIngestPriorityLog    = "/v1/logs/priority"
-	// PathBastionEvents is the revocation stream, templated on the bastion id.
-	// Build a concrete path with BastionEventsPath rather than by formatting
+	// PathProxyEvents is the revocation stream, templated on the proxy id.
+	// Build a concrete path with ProxyEventsPath rather than by formatting
 	// this constant, so the escaping stays in one place.
-	PathBastionEvents = "/v1/bastions/{bastion_id}/events"
+	PathProxyEvents = "/v1/bastions/{bastion_id}/events"
 )
 
-// QueryLastEventID is the query parameter carrying the last event the bastion
+// QueryLastEventID is the query parameter carrying the last event the proxy
 // processed, so the server can replay the gap after a reconnect (PLAN §6.4).
 const QueryLastEventID = "last_event_id"
 
-// BastionEventsPath returns the revocation stream path for one bastion.
-func BastionEventsPath(bastionID string) string {
-	return "/v1/bastions/" + url.PathEscape(bastionID) + "/events"
+// ProxyEventsPath returns the revocation stream path for one proxy.
+func ProxyEventsPath(proxyID string) string {
+	return "/v1/bastions/" + url.PathEscape(proxyID) + "/events"
 }
 
 // ConnMeta describes the SSH connection a call is made on behalf of. It travels
 // with every request so the server can decide on, and correlate logs by, the
 // connection rather than the identity alone.
 type ConnMeta struct {
-	// SessionID is bastion-assigned and stable for the whole session.
+	// SessionID is proxy-assigned and stable for the whole session.
 	SessionID string `json:"session_id"`
-	// BastionID identifies the bastion making the call.
-	BastionID string `json:"bastion_id"`
+	// ProxyID identifies the proxy making the call.
+	ProxyID string `json:"bastion_id"`
 	// ClientAddr is the SSH client's remote address ("host:port").
 	ClientAddr string `json:"client_addr"`
 	// ServerAddr is the local address the client connected to ("host:port").
 	ServerAddr string `json:"server_addr,omitempty"`
 	// ClientVersion is the SSH client identification string, as offered.
 	ClientVersion string `json:"client_version,omitempty"`
-	// HopTrail lists the bastion ids already traversed, oldest first, for loop
+	// HopTrail lists the proxy ids already traversed, oldest first, for loop
 	// detection on next-hop routes (PLAN §6.1). Empty on a user's first hop.
 	HopTrail []string `json:"hop_trail,omitempty"`
-	// Timestamp is when the bastion made the call.
+	// Timestamp is when the proxy made the call.
 	Timestamp time.Time `json:"timestamp"`
 }
 
-// Identity is the authenticated principal as the management server sees it.
+// Identity is the authenticated principal as Hoplock Control sees it.
 // It is a claims model, not a boolean, so AD/Okta/OIDC sources can be added
 // without changing any caller (D4).
 //
-// This is the wire representation. Phase 0004 introduces the bastion's internal
+// This is the wire representation. Phase 0004 introduces the proxy's internal
 // identity model in internal/identity and converts to and from this type at the
-// mgmt boundary.
+// control boundary.
 type Identity struct {
 	// Subject is the stable unique id of the principal at its source.
 	Subject string `json:"subject"`
@@ -103,7 +103,7 @@ const (
 )
 
 // AuthenticateCertRequest relays a public key or certificate offered by a
-// client. The bastion validates nothing locally; the server decides.
+// client. The proxy validates nothing locally; the server decides.
 type AuthenticateCertRequest struct {
 	Login string `json:"login"`
 	// Target is the target parsed from the SSH username, informational here;
@@ -127,7 +127,7 @@ type AuthenticatePasswordRequest struct {
 
 // String redacts the password so the struct is safe to format.
 func (r AuthenticatePasswordRequest) String() string {
-	return "mgmt.AuthenticatePasswordRequest{Login:" + r.Login +
+	return "control.AuthenticatePasswordRequest{Login:" + r.Login +
 		", Target:" + r.Target + ", Password:[REDACTED], Conn.SessionID:" +
 		r.Conn.SessionID + "}"
 }
@@ -146,7 +146,7 @@ type MFAPollRequest struct {
 type MFAChallenge struct {
 	// Token is the opaque handle to poll with.
 	Token string `json:"token"`
-	// Prompt is text the bastion may show the user while waiting.
+	// Prompt is text the proxy may show the user while waiting.
 	Prompt string `json:"prompt,omitempty"`
 	// PollAfterMS is the minimum delay before the next poll.
 	PollAfterMS int `json:"poll_after_ms"`
@@ -193,7 +193,7 @@ type RouteType string
 const (
 	// RouteTypeDirect means Target is the end host.
 	RouteTypeDirect RouteType = "direct"
-	// RouteTypeNextHop means Target is the next bastion in the chain.
+	// RouteTypeNextHop means Target is the next proxy in the chain.
 	RouteTypeNextHop RouteType = "nexthop"
 )
 
@@ -219,18 +219,18 @@ type AuthorizeResponse struct {
 	Cache *CacheHint `json:"cache,omitempty"`
 }
 
-// CacheHint is the management server authorising the bastion to reuse this
+// CacheHint is Hoplock Control authorising the proxy to reuse this
 // authorize decision for later connections (PLAN §6.4, D2).
 //
-// The lifetime belongs to the server: a bastion may hold the decision for less
+// The lifetime belongs to the server: a proxy may hold the decision for less
 // time than TTLSeconds, never longer, and never invents a hint of its own. That
 // keeps the PDP in charge of its own risk appetite — it can return no hint at
 // all for a sensitive target.
 type CacheHint struct {
 	// Key identifies the decision for invalidation and decides how widely it
-	// may be shared. It is OPAQUE: the bastion never constructs, parses, or
+	// may be shared. It is OPAQUE: the proxy never constructs, parses, or
 	// derives meaning from it. A server must never issue one key to two
-	// identities — the bastion refuses to serve an entry to a different subject,
+	// identities — the proxy refuses to serve an entry to a different subject,
 	// but the contract, not that check, is what makes sharing safe.
 	Key string `json:"key,omitempty"`
 	// TTLSeconds is how long the decision may be reused. Absent or zero means
@@ -250,19 +250,19 @@ func (h *CacheHint) TTL() time.Duration {
 type EventType string
 
 const (
-	// EventTypeSessionKill orders the bastion to tear sessions down now.
+	// EventTypeSessionKill orders the proxy to tear sessions down now.
 	EventTypeSessionKill EventType = "session_kill"
 	// EventTypeCacheInvalidate drops cached authorize decisions.
 	EventTypeCacheInvalidate EventType = "cache_invalidate"
 	// EventTypeHeartbeat is the server proving the stream is still alive, so a
 	// silently dead connection is detectable.
 	EventTypeHeartbeat EventType = "heartbeat"
-	// EventTypeResync says the bastion missed events it cannot be given: it
+	// EventTypeResync says the proxy missed events it cannot be given: it
 	// drops its entire cache and re-authorizes from scratch.
 	EventTypeResync EventType = "resync"
 )
 
-// RevocationEvent is one line of the server→bastion event stream
+// RevocationEvent is one line of the server→proxy event stream
 // (GET /v1/bastions/{bastion_id}/events). The payload field that is set is the
 // one named by Type; every other one is absent.
 //
@@ -270,7 +270,7 @@ const (
 // the server's only way to withdraw access it has already granted, and the only
 // way to end a session that is already in flight.
 type RevocationEvent struct {
-	// EventID is server-assigned and opaque. The bastion stores the last one it
+	// EventID is server-assigned and opaque. The proxy stores the last one it
 	// processed and echoes it back on reconnect (QueryLastEventID) so the server
 	// can replay the gap; it never parses or orders by it itself.
 	EventID string `json:"event_id"`
@@ -287,11 +287,11 @@ type RevocationEvent struct {
 // SessionKillEvent ends sessions that are already running. Exactly one of
 // SessionIDs, Subject, or All selects what dies.
 type SessionKillEvent struct {
-	// SessionIDs names individual sessions by their bastion-assigned id.
+	// SessionIDs names individual sessions by their proxy-assigned id.
 	SessionIDs []string `json:"session_ids,omitempty"`
 	// Subject kills every session belonging to one authenticated subject.
 	Subject string `json:"subject,omitempty"`
-	// All kills every session on this bastion.
+	// All kills every session on this proxy.
 	All bool `json:"all,omitempty"`
 	// Reason is operator-authored text, shown to the user before the connection
 	// closes and carried into the audit log (PLAN §4.3). A revoked session must
@@ -326,7 +326,7 @@ const (
 	FilterModeBlacklist FilterMode = "blacklist"
 )
 
-// FilterAction is what the bastion does when the filter policy matches.
+// FilterAction is what the proxy does when the filter policy matches.
 type FilterAction string
 
 const (
@@ -361,7 +361,7 @@ type FilterRule struct {
 	// Match is the command pattern. Matching semantics belong to the filter
 	// engine and are the same regardless of Mode.
 	Match string `json:"match"`
-	// Action is what the bastion does when Match matches.
+	// Action is what the proxy does when Match matches.
 	Action FilterAction `json:"action"`
 	// Message is optional operator-authored text shown to the user when this
 	// rule fires (e.g. "use the deploy pipeline instead"). It is displayed
@@ -375,11 +375,11 @@ type HopMetadata struct {
 	FinalTarget string `json:"final_target,omitempty"`
 	// MaxHops caps the total hops for the session.
 	MaxHops int `json:"max_hops,omitempty"`
-	// HopTrail is the trail to forward to the next bastion (PLAN §6.1).
+	// HopTrail is the trail to forward to the next proxy (PLAN §6.1).
 	HopTrail []string `json:"hop_trail,omitempty"`
 }
 
-// HostKeyReportRequest reports a target host key the bastion has just seen (D7).
+// HostKeyReportRequest reports a target host key the proxy has just seen (D7).
 type HostKeyReportRequest struct {
 	Target     string            `json:"target"`
 	TargetPort int               `json:"target_port,omitempty"`
@@ -387,7 +387,7 @@ type HostKeyReportRequest struct {
 	Conn       ConnMeta          `json:"conn"`
 }
 
-// HostKeyDecision says whether the bastion may continue the target handshake.
+// HostKeyDecision says whether the proxy may continue the target handshake.
 type HostKeyDecision string
 
 const (
@@ -474,7 +474,7 @@ type LogPriorityRequest struct {
 	Record LogRecord `json:"record"`
 }
 
-// LogPriorityResponse acknowledges a durable critical record. The bastion may
+// LogPriorityResponse acknowledges a durable critical record. The proxy may
 // act on the event (e.g. kill the session) once it has this.
 type LogPriorityResponse struct {
 	Accepted  bool   `json:"accepted"`

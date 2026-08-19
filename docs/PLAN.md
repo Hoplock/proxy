@@ -1,4 +1,4 @@
-# SecureCommandProxy — Implementation Plan
+# Hoplock Proxy — Implementation Plan
 
 > Status: living document. This is the single source of architectural truth.
 > Every implementation session MUST read this file and `docs/PROTOCOL.md` before
@@ -9,39 +9,40 @@
 
 ## 1. Product summary
 
-SecureCommandProxy is a **decrypting SSH bastion** (a policy-enforcing SSH
-proxy). A user's SSH client connects to the bastion; the bastion terminates the
+Hoplock Proxy is a **decrypting, policy-enforcing SSH proxy** — the data plane
+of Hoplock. A user's SSH client connects to the proxy; the proxy terminates the
 SSH connection, authenticates the user, opens a **fresh SSH connection** to the
 target, and proxies traffic between the two. Because both legs are decrypted
-inside the bastion, it can **log everything** and **filter/inspect** commands and
+inside the proxy, it can **log everything** and **filter/inspect** commands and
 channels.
 
-The bastion is deliberately **thin**. All policy decisions are made by a central
-**Management Server** (referred to here as "the API" or "management server"). The
-bastion is the Policy Enforcement Point (PEP); the management server is the
+The proxy is deliberately **thin**. All policy decisions are made by a central
+**Hoplock Control** (referred to here as "the API" or "Hoplock Control"). The
+proxy is the Policy Enforcement Point (PEP); Hoplock Control is the
 Policy Decision Point (PDP).
 
 > Note on terminology: this is an **SSH** proxy, not SSL/TLS. SSH has its own
-> transport encryption; there is no "SSL" to terminate. The repo name and branch
-> use "SSL" loosely — throughout the code and docs we say "SSH".
+> transport encryption; there is no "SSL" to terminate. Early branches and
+> issues in this repository's history use "SSL" loosely — throughout the code
+> and docs we say "SSH".
 
 ### End-to-end flow (v1)
 
 1. User runs SSH toward a name like `host.company.com.<brand>.proxy`. Wildcard
-   DNS (`*.<brand>.proxy`, anycast/geo) resolves it to the **nearest bastion**.
-2. The bastion accepts the connection and determines the intended **target**
+   DNS (`*.<brand>.proxy`, anycast/geo) resolves it to the **nearest proxy**.
+2. The proxy accepts the connection and determines the intended **target**
    (see Decision D1).
-3. The bastion authenticates the user (Section 4), delegating the decision to the
-   management server.
-4. The bastion calls the management server's **authorize + route** endpoint. The
+3. The proxy authenticates the user (Section 4), delegating the decision to Hoplock
+   Control.
+4. The proxy calls Hoplock Control's **authorize + route** endpoint. The
    server returns either `401 Unauthorized` or a **route**:
    - `{ "route_type": "direct",  "target": "host.company.com",     "permissions": "readOnlyGroup", ... }`
-   - `{ "route_type": "nexthop", "target": "bastionHost.company.com", "permissions": "readOnlyGroup", ... }`
-5. For `direct`: the bastion provisions ephemeral target credentials (Section 5),
+   - `{ "route_type": "nexthop", "target": "proxyHost.company.com", "permissions": "readOnlyGroup", ... }`
+5. For `direct`: the proxy provisions ephemeral target credentials (Section 5),
    opens the target SSH connection, and proxies channels.
-6. For `nexthop`: the bastion opens an SSH connection to the next bastion, which
+6. For `nexthop`: the proxy opens an SSH connection to the next proxy, which
    repeats steps 2–5. This allows a **single firewall punch-through per hop**.
-7. All session data is logged and shipped to the management server (Section 7).
+7. All session data is logged and shipped to Hoplock Control (Section 7).
 8. On session end, ephemeral credentials/users are removed (Section 5).
 
 ---
@@ -54,13 +55,13 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 - **D1 — Target identity transport (confirmed).** SSH has no SNI/Host header, so
   the target hostname the user typed is not on the wire after DNS resolution.
   The target is therefore **encoded in the SSH username** using a configurable
-  delimiter (default `#`): `alice#host.company.com`. The bastion parses and
+  delimiter (default `#`): `alice#host.company.com`. The proxy parses and
   strips the target segment **before** authentication, then authorizes
   `user=alice, target=host.company.com`. The `.<brand>.proxy` DNS name is used
-  only for geo-routing to the nearest bastion; a thin client-side SSH-config /
+  only for geo-routing to the nearest proxy; a thin client-side SSH-config /
   wrapper delivers the clean `ssh host.company.com.<brand>.proxy` UX by
   rewriting it into the encoded form. The delimiter and parsing rules live in
-  the bastion bootstrap config.
+  the proxy bootstrap config.
 
   **Why not `ssh -J` (ProxyJump), which does put the target on the wire.** A
   jump host learns the target from the `direct-tcpip` channel the client opens,
@@ -69,34 +70,33 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   through that tunnel, so the inner session stays end-to-end encrypted and the
   jump host sees ciphertext: no channel policy, no command visibility, no
   session capture — none of the reasons this product exists. The username
-  encoding is the price of decryption, and only a decrypting bastion has to pay
+  encoding is the price of decryption, and only a decrypting proxy has to pay
   it. This is the first question a technical evaluator asks, so the answer is
   recorded here as "considered and rejected", not "not considered".
-- **D2 — The bastion originates no policy.** Every authn/authz/route/policy
-  decision is *made* by the management server. A decision is fetched **once per
+- **D2 — The proxy originates no policy.** Every authn/authz/route/policy
+  decision is *made* by Hoplock Control. A decision is fetched **once per
   connection** and enforced locally for that connection's lifetime, so the data
   path (channel opens, commands, stream bytes) makes no calls to the server at
   all — the latency is at session setup, not in the stream (§6.4).
-  The bastion may reuse an authorize decision across connections **only** when
+  The proxy may reuse an authorize decision across connections **only** when
   the server explicitly authorises it with a server-set TTL, and only while it
   can still hear revocations (§6.4). It never caches authentication results, and
   it never widens a decision it was given.
-- **D3 — Management server is a separate component.** This repo defines the
-  **API contract** and ships a **mock/reference management server**
-  (`cmd/mock-management`) used for development and CI. The production management
-  server is out of scope for this repo and is specified in its own sibling
-  repository, which vendors `api/management.yaml` from here and treats it as
+- **D3 — Hoplock Control is a separate component.** This repo defines the
+  **API contract** and ships a **mock/reference Hoplock Control**
+  (`cmd/mock-control`) used for development and CI. The production Hoplock Control is out of scope for this repo and is specified in its own sibling
+  repository, which vendors `api/control.yaml` from here and treats it as
   read-only: **this repo owns the contract, that one implements it.** A contract
   change is made here first, and the sibling repo's conformance suite is what
   proves the two still agree.
-- **D4 — Auth planes are pluggable interfaces.** `user→bastion` and
-  `bastion→target` are separate Go interfaces, each with swappable
+- **D4 — Auth planes are pluggable interfaces.** `user→proxy` and
+  `proxy→target` are separate Go interfaces, each with swappable
   implementations chosen by config, and each segregated into its own package.
   Both are designed around an **identity/claims** model so AD/Okta/OIDC can be
   added later without changing callers.
 - **D5 — Generic channel passthrough first, inspection later.** v1 proxies all
-  SSH channel types generically. The management server returns the set of
-  **permitted channels** per connection; the bastion enforces that allow-list.
+  SSH channel types generically. Hoplock Control returns the set of
+  **permitted channels** per connection; the proxy enforces that allow-list.
   The channel layer is built as a **middleware/inspection pipeline** so filters
   can attach to any channel type later without touching the transport core, and
   without adding latency to un-inspected channels.
@@ -117,11 +117,11 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 
   Only all three make "may open a shell on production, may not copy files off
   it, may not tunnel anywhere except the database, and may never open a
-  listener" a policy this bastion can express. Two of these are the difference
-  between a bastion and a firewall, and both are contract shapes rather than
-  engine work: phase 0006 revises `api/management.yaml` before the inspection
+  listener" a policy this proxy can express. Two of these are the difference
+  between a proxy and a firewall, and both are contract shapes rather than
+  engine work: phase 0006 revises `api/control.yaml` before the inspection
   pipeline (0009) is built against the old vocabulary.
-- **D6 — Ephemeral just-in-time target users.** The bastion holds a
+- **D6 — Ephemeral just-in-time target users.** The proxy holds a
   **management certificate** preloaded on targets. On session start it logs in
   with the management cert, creates a target OS user matching the authenticated
   username, injects a freshly generated short-lived key/cert into that user's
@@ -140,27 +140,27 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 
   So `TargetAuthenticator` gets a **second production implementation** —
   brokered credentials, the grown-up form of the `static-key` placeholder: a
-  per-target credential the bastion holds only for the session's duration and
+  per-target credential the proxy holds only for the session's duration and
   never writes to disk. And the choice between methods belongs to the
-  **management server**, per route, not to bastion-local config: one bastion
+  **Hoplock Control**, per route, not to proxy-local config: one proxy
   fronting both a Linux estate and an appliance estate is the normal case, and
   `auth.target.method` in `config.yaml` cannot express it. The authorize
   response therefore carries a `target_auth` object (a method name plus
-  method-specific parameters), and the bastion config keeps only the local
+  method-specific parameters), and the proxy config keeps only the local
   material each method needs. The object is extensible on purpose: a future
-  management server that mints target credentials itself slots in as another
+  Hoplock Control that mints target credentials itself slots in as another
   method without a third breaking change.
 - **D7 — Host key policy from the server.** Prototype: **trust-on-first-use**,
-  but every newly seen target host key is reported to the management server.
-  Later: per-target configurable policy fetched from the management server based
+  but every newly seen target host key is reported to Hoplock Control.
+  Later: per-target configurable policy fetched from Hoplock Control based
   on server criticality.
-- **D8 — Logs go to the management server.** Structured logs are **batched** to
-  the management server for efficiency. **Blocked commands and other critical
+- **D8 — Logs go to Hoplock Control.** Structured logs are **batched** to
+  Hoplock Control for efficiency. **Blocked commands and other critical
   security events are sent immediately** (flush the in-flight batch or use a
   dedicated priority channel). Local disk is only a **resilience buffer** for
   when the network is unavailable; logs drain to the server when it recovers.
 - **D9 — Tech choices.** Go (min **1.25**, target latest stable). SSH plumbing:
-  `golang.org/x/crypto/ssh`. Bastion bootstrap config: **YAML**. API + policy +
+  `golang.org/x/crypto/ssh`. Proxy bootstrap config: **YAML**. API + policy +
   log payloads: **JSON over HTTPS (REST)** for the prototype; a streaming/gRPC
   transport may be added later behind the same client interface.
   The floor is set by `golang.org/x/crypto`, which *is* this project's SSH
@@ -171,24 +171,24 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 - **D10 — Proprietary/closed source.** Private repo, all rights reserved. A
   proprietary `LICENSE` and per-file SPDX + copyright headers are added in the
   scaffold phase (Section 8).
-- **D11 — A hop is reached over a connection the *downstream* bastion opened
-  (new, phase 0008).** The original next-hop sketch had each bastion dial the
+- **D11 — A hop is reached over a connection the *downstream* proxy opened
+  (new, phase 0008).** The original next-hop sketch had each proxy dial the
   next one, and described the result as "a single firewall punch-through per
   hop". One hole per hop is still a hole per hop: in a segmented estate every
   one of them is a change request, a review board, and a standing inbound path
   into a more sensitive zone — which is the objection this architecture exists
   to remove, not to charge per enclave.
 
-  The bastion already solves this problem once, in the right direction: the
-  revocation stream (§6.4) is outbound from the bastion *because* bastions sit
+  The proxy already solves this problem once, in the right direction: the
+  revocation stream (§6.4) is outbound from the proxy *because* proxies sit
   behind firewalls and must not need an inbound listener. That reasoning does
-  not stop being true one layer down. So a bastion in a protected zone
+  not stop being true one layer down. So a proxy in a protected zone
   **registers an outbound relay connection** with its upstream and the upstream
   dials the next hop *through* it; the protected zone needs no inbound rule at
   all. Forward dialling stays supported for the zones where it is genuinely
   simpler (an upstream that is already reachable), so the route says which
   applies: the authorize response's hop metadata carries a **connection
-  direction**, and neither bastion infers it.
+  direction**, and neither proxy infers it.
 
   This is written down before 0008 rather than after, because connection
   direction is not a detail inside a hop protocol — it *is* the hop protocol,
@@ -203,7 +203,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   or uploaded binary. Reliable interception of an unrestricted shell command is
   still an unrestricted shell.
 
-  The bastion therefore offers **two exec modes**, and only one of them is sold
+  The proxy therefore offers **two exec modes**, and only one of them is sold
   as enforcement:
   - **Filtered exec** (the D5 rule list) — a *guardrail*. Better failure mode
     than the interactive path because the whole command is seen before it runs,
@@ -223,17 +223,17 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 ## 3. Architecture & repository layout
 
 ```
-securecommandproxy/
+hoplock/
 ├── cmd/
-│   ├── bastion/            # the proxy daemon (main)
-│   └── mock-management/    # reference/mock management API for dev + CI
+│   ├── proxy/            # the proxy daemon (main)
+│   └── mock-control/    # reference/mock Control API for dev + CI
 ├── internal/
 │   ├── config/             # YAML bootstrap config loader
 │   ├── identity/           # identity + claims model (AD/Okta/OIDC-ready)
-│   ├── mgmt/               # management API client + shared contract types
+│   ├── control/            # Control API client + shared contract types
 │   ├── auth/
-│   │   ├── user/           # user→bastion authenticators (cert, password+MFA)
-│   │   └── target/         # bastion→target authenticators (ephemeral, mgmt-cert)
+│   │   ├── user/           # user→proxy authenticators (cert, password+MFA)
+│   │   └── target/         # proxy→target authenticators (ephemeral, mgmt-cert)
 │   ├── routing/            # target parsing (D1) + route resolution + multi-hop
 │   ├── proxy/              # core SSH proxy engine, session lifecycle
 │   ├── channel/            # channel allow-listing + inspection pipeline
@@ -258,8 +258,8 @@ securecommandproxy/
 
 ### Component responsibilities
 
-- **`cmd/bastion`** — wires config → listeners → auth → proxy → logging. Small.
-- **`internal/mgmt`** — the ONLY place that talks to the management server. Every
+- **`cmd/proxy`** — wires config → listeners → auth → proxy → logging. Small.
+- **`internal/control`** — the ONLY place that talks to Hoplock Control. Every
   other package depends on interfaces here, not on HTTP. Makes the whole system
   testable against the mock and swappable transports later.
 - **`internal/identity`** — `Identity` (subject, principals, claims, groups,
@@ -279,7 +279,7 @@ securecommandproxy/
 
 ## 4. Authentication design
 
-### 4.1 user → bastion (`internal/auth/user`)
+### 4.1 user → proxy (`internal/auth/user`)
 
 ```go
 // UserAuthenticator decides whether an incoming SSH client is a known identity.
@@ -296,13 +296,13 @@ type UserAuthenticator interface {
 
 Order (D5 answers): **certificate first**. If the client presents no acceptable
 certificate, fall back to **password + out-of-band MFA**. Both flows delegate to
-the management server via `internal/mgmt` — the bastion holds no credential
+Hoplock Control via `internal/control` — the proxy holds no credential
 database. The initial-auth password is **never logged** (D8/redaction).
 
-### 4.2 bastion → target (`internal/auth/target`)
+### 4.2 proxy → target (`internal/auth/target`)
 
 ```go
-// TargetAuthenticator produces the credentials the bastion uses to log into a
+// TargetAuthenticator produces the credentials the proxy uses to log into a
 // target, and guarantees teardown of anything it provisioned.
 type TargetAuthenticator interface {
     Name() string
@@ -318,9 +318,9 @@ type ProvisionedAccess struct {
 }
 ```
 
-There are **two production implementations** (D6a), and the management server
-picks between them per route in its authorize response — never bastion-local
-config, because one bastion routinely fronts estates that need different
+There are **two production implementations** (D6a), and Hoplock Control
+picks between them per route in its authorize response — never proxy-local
+config, because one proxy routinely fronts estates that need different
 methods:
 
 | Method | What it does | For |
@@ -329,7 +329,7 @@ methods:
 | `brokered-key` | Uses a per-target credential held for the session and never written to disk | Appliances, network and OT gear: anything that cannot create users |
 
 `static-key` remains as the development placeholder from phase 0005 —
-`brokered-key` is what it grows into. A method the bastion does not implement,
+`brokered-key` is what it grows into. A method the proxy does not implement,
 or has no local material for, is a clean session denial (an outage-class
 failure, §4.3): never a silent fallback to a different method, which would
 mean connecting with credentials the server did not choose.
@@ -341,22 +341,22 @@ claims flow through unchanged (D4/D8-answers question 8).
 
 A policy proxy that fails silently is indistinguishable from a broken network,
 and a user who cannot tell "I am not allowed" from "the service is down" files
-the wrong ticket — or retries a denial forever. The bastion therefore **always
+the wrong ticket — or retries a denial forever. The proxy therefore **always
 says something before it closes a connection**, and what it says splits along
 one line:
 
 - **Deny** (`401` from any endpoint) → deliberately vague: "access denied". It
   never reveals whether the login, the target, or the policy was the problem,
-  and never whether the target exists. Anything more precise turns the bastion
+  and never whether the target exists. Anything more precise turns the proxy
   into an oracle for probing the estate.
-- **Everything else** (management server unreachable, `5xx`, contract violation,
+- **Everything else** (Hoplock Control unreachable, `5xx`, contract violation,
   target unreachable, provisioning failure) → explicit and honest: this is not a
   permissions problem, it is an outage, plus the **session id as a support
   reference**. That text is safe to disclose and turns a mystery disconnect into
   a ticket that can be answered from the logs.
 
 The same rule covers policy actions mid-session: a blocked command says it was
-blocked, and a session killed by the management server prints the server's
+blocked, and a session killed by Hoplock Control prints the server's
 `reason` before teardown (§6.4). Never a bare drop.
 
 SSH gives four places to speak, and each phase owns the ones it touches:
@@ -383,7 +383,7 @@ Two consequences that are design, not wording:
 
 `SSH_MSG_DISCONNECT` is the row this table cannot fully deliver:
 `golang.org/x/crypto/ssh` does not expose it (`ssh.Conn` offers only `Close`;
-sending a disconnect is on the library's own TODO list), so a bastion built on
+sending a disconnect is on the library's own TODO list), so a proxy built on
 it cannot attach a reason code to a connection close. The engine's answer is the
 ordering above — the session channel exists before anything can fail, so the
 explanation goes over the channel — plus a channel-open **rejection** carrying
@@ -431,19 +431,19 @@ Robustness requirements:
 ### 5.2 `brokered-key` — a credential held only for the session (D6a)
 
 The target is unchanged: nothing is created, nothing is removed, and the only
-prerequisite is an account that already exists on it. The bastion is handed
+prerequisite is an account that already exists on it. The proxy is handed
 (or fetches) the credential for **this** session, uses it, and drops it.
 
-- The credential **never touches disk on the bastion** and never appears in a
+- The credential **never touches disk on the proxy** and never appears in a
   log, an error, or a config file. Where it comes from is a seam — a local
-  secret store today, a management server that mints per-session credentials
+  secret store today, a Hoplock Control server that mints per-session credentials
   later (the same `target_auth` object grows a method, D6a).
 - `Teardown` still exists and is still guaranteed, but its job is zeroing the
   in-memory credential and closing the leg — there is no remote state to undo,
-  which is exactly why this method works on a device the bastion cannot
+  which is exactly why this method works on a device the proxy cannot
   administer.
 - Weaker than D6 by construction: the account is standing and shared across
-  sessions, so **the audit trail is the bastion's**, not the target's. The
+  sessions, so **the audit trail is the proxy's**, not the target's. The
   target sees one login from the proxy; who was actually behind it is knowable
   only from this system's records. That is an honest trade for reaching devices
   D6 cannot, and it is the reason session capture (§7) is not optional for
@@ -457,21 +457,21 @@ prerequisite is an account that already exists on it. The bastion is handed
 
 - **Target parsing (D1)**: split the SSH username on the configured delimiter into
   `login` + `target`. Validate/normalize the target hostname.
-- **Route resolution**: call the management server's authorize+route endpoint with
+- **Route resolution**: call Hoplock Control's authorize+route endpoint with
   `(identity, target, conn metadata)`. Handle `direct` and `nexthop`.
-- **Multi-hop**: for `nexthop`, reach the next bastion and re-run the flow.
+- **Multi-hop**: for `nexthop`, reach the next proxy and re-run the flow.
   Enforce a **max hop count** and **loop detection** (carry a hop trail).
-- **Connection direction (D11)**: the hop metadata says how the next bastion is
+- **Connection direction (D11)**: the hop metadata says how the next proxy is
   reached, and there are two ways:
-  - `dial` — this bastion opens a TCP/SSH connection to the next one. Simple,
+  - `dial` — this proxy opens a TCP/SSH connection to the next one. Simple,
     and it requires an inbound rule at the next hop.
-  - `relay` — the next bastion has already **registered an outbound relay
-    connection** with this one; this bastion opens a channel over that existing
+  - `relay` — the next proxy has already **registered an outbound relay
+    connection** with this one; this proxy opens a channel over that existing
     connection instead of dialling. The protected zone needs no inbound rule.
 
-  A bastion that accepts relay registrations authenticates the registering
-  bastion the same way the management server authenticates a bastion, keeps one
-  registration per bastion id, and re-registers with backoff when the link
+  A proxy that accepts relay registrations authenticates the registering
+  proxy the same way Hoplock Control authenticates a proxy, keeps one
+  registration per proxy id, and re-registers with backoff when the link
   drops. A route naming a `relay` hop with no live registration fails as an
   outage (§4.3) — it is never silently downgraded to `dial`, which would punch
   through the boundary the mode exists to preserve.
@@ -507,7 +507,7 @@ prerequisite is an account that already exists on it. The bastion is handed
 
 ### 6.3 Command filtering (`internal/filter`, D5-answers 12–14)
 
-- The management server tells the bastion, per connection, an **ordered rule
+- Hoplock Control tells the proxy, per connection, an **ordered rule
   list** — each rule a `match` pattern with **its own action** (`allow_and_log`,
   `block_command`, `warn_and_continue`, `kill_session`) and an optional operator
   message — plus a **mode** (`whitelist` or `blacklist`) that decides commands
@@ -544,8 +544,8 @@ without re-reading the policy.
 
 The authorize+route response is a **per-connection policy snapshot**, not a
 per-action question: it carries the route, the channel allow-list, and the whole
-filter policy, and the bastion enforces all three locally. Nothing on the data
-path talks to the management server.
+filter policy, and the proxy enforces all three locally. Nothing on the data
+path talks to Hoplock Control.
 
 Setup, however, is not amortised: each connection costs ~3 sequential round
 trips (authenticate, authorize, host-key report), paid again per hop on a chain.
@@ -553,23 +553,23 @@ Two mechanisms address that, and they only make sense together:
 
 - **Server-authorised caching.** The server may attach a cache hint (an opaque
   key + a TTL) to an authorize decision. Absent hint means do not cache. The
-  **server** owns the lifetime — a bastion may clamp it shorter but never
+  **server** owns the lifetime — a proxy may clamp it shorter but never
   longer, and may never invent one — so the PDP keeps ownership of its own risk
   appetite and can refuse caching per target. A local clamp is **off by
   default** and, where set, must be **observable** (counted and logged per
-  affected decision): it is the one place a bastion's behaviour diverges from
+  affected decision): it is the one place a proxy's behaviour diverges from
   what the server asked for, and an unannounced divergence across a fleet is
   indistinguishable from a server or network fault. **Authentication is never cached**:
   an MFA approval is a per-session assertion, and certificate validation is
   where revocation is enforced.
-- **Server-driven revocation.** The bastion holds a long-lived outbound
-  subscription to the management server (bastions are behind firewalls and must
+- **Server-driven revocation.** The proxy holds a long-lived outbound
+  subscription to Hoplock Control (proxies are behind firewalls and must
   not need an inbound listener) and receives: kill a named session, kill every
   session for a subject, invalidate cached decisions, or resync. This is what
   bounds the damage of a cached allow, and it is the only way the server can end
   a session that is already in flight.
 
-Fail-closed rule: if the bastion cannot hear revocations (the subscription has
+Fail-closed rule: if the proxy cannot hear revocations (the subscription has
 been down beyond a short threshold), it stops serving cached decisions and
 re-authorizes every connection. It does **not** kill live sessions — losing the
 revocation channel is a reason to distrust the cache, not to drop users
@@ -584,10 +584,9 @@ the session-kill hook it defines is implemented by the proxy in 0005.
   type, auth method, timestamps, channel types, policy decisions) + enough
   stream capture for a security team to **reconstruct the session** (replay-
   friendly, e.g. asciinema/ttyrec-style records for pty sessions).
-- **How**: structured, compact records. **Batched** shipment to the management
-  server for throughput; **immediate** shipment for blocked/critical events
+- **How**: structured, compact records. **Batched** shipment to Hoplock Control for throughput; **immediate** shipment for blocked/critical events
   (flush current batch or dedicated priority path).
-- **Resilience**: when the management server is unreachable, buffer to local disk
+- **Resilience**: when Hoplock Control is unreachable, buffer to local disk
   (one area per session) and **drain on recovery**. Local storage is a buffer,
   not the destination.
 - **Redaction**: the initial-auth password is never written. Passwords typed
@@ -598,7 +597,7 @@ the session-kill hook it defines is implemented by the proxy in 0005.
 
 ## 8. Cross-cutting conventions
 
-- **Module path**: `github.com/mauroasilva/securecommandproxy`.
+- **Module path**: `github.com/hoplock/proxy`.
 - **Go**: min 1.25 (the `go` directive in `go.mod`); CI pins the toolchain to the
   latest stable minor (`GO_VERSION` in `.github/workflows/ci.yml`). Keep the two
   distinct: the floor rises only when a dependency forces it, while CI moves with
@@ -615,7 +614,7 @@ the session-kill hook it defines is implemented by the proxy in 0005.
   `// SPDX-License-Identifier: LicenseRef-Proprietary`.
 - **Errors/logging**: no secrets in error strings; structured logging internally.
 - **Testing**: unit tests per package; table-driven where sensible; the mock
-  management server backs integration tests.
+  Hoplock Control backs integration tests.
 - **CI**: `go build ./...`, `go vet ./...`, `go test ./...`, a linter
   (`golangci-lint`), and the e2e job (Section 9). See D9.
 
@@ -629,10 +628,10 @@ Docker containers on a shared Docker network (via `docker compose` in
 
 | Node                | Container                              |
 | ------------------- | -------------------------------------- |
-| Management server   | `cmd/mock-management`                  |
+| Hoplock Control   | `cmd/mock-control`                  |
 | User (SSH client)   | thin image running the test client     |
-| Bastion (direct)    | `cmd/bastion` configured for direct    |
-| Bastion (next-hop)  | `cmd/bastion` configured to chain      |
+| Proxy (direct)    | `cmd/proxy` configured for direct    |
+| Proxy (next-hop)  | `cmd/proxy` configured to chain      |
 | Target (sshd)       | an `sshd` image with the mgmt cert     |
 
 The GitHub Actions job builds the images, `docker compose up`s the topology, runs
@@ -650,11 +649,11 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | #    | Phase                                   | Delivers                                                            |
 | ---- | --------------------------------------- | ------------------------------------------------------------------ |
 | 0001 | Project scaffold & conventions          | module, layout, license+headers, Makefile, CI skeleton, config stub |
-| 0002 | Management API contract + mock server   | `api/` contract, `internal/mgmt` client, `cmd/mock-management`      |
-| 0003 | Policy caching + session revocation     | cache hint + revocation stream in the contract, `internal/mgmt` cache + subscription, `SessionRegistry` hook |
-| 0004 | Identity model + user→bastion auth      | `internal/identity`, `internal/auth/user`, cert-first + password/MFA |
+| 0002 | Control API contract + mock server   | `api/` contract, `internal/control` client, `cmd/mock-control`      |
+| 0003 | Policy caching + session revocation     | cache hint + revocation stream in the contract, `internal/control` cache + subscription, `SessionRegistry` hook |
+| 0004 | Identity model + user→proxy auth      | `internal/identity`, `internal/auth/user`, cert-first + password/MFA |
 | 0005 | Core proxy engine + direct route        | `internal/proxy`, generic channel passthrough, E2E with static-key target auth; implements `SessionRegistry` |
-| 0006 | Policy vocabulary — contract v2         | `api/` + `internal/mgmt`: in-channel requests, forwarding destinations, global requests, `target_auth`, hop direction |
+| 0006 | Policy vocabulary — contract v2         | `api/` + `internal/control`: in-channel requests, forwarding destinations, global requests, `target_auth`, hop direction |
 | 0007 | Target credentials                      | `internal/auth/target`: ephemeral provisioner + orphan reaper, and `brokered-key` (D6a) |
 | 0008 | Multi-hop / next-hop routing            | `internal/routing` chaining, relay registration (D11), loop/hop-limit protection |
 | 0009 | Channel allow-list + inspection pipeline| `internal/channel` enforcement of all three axes + pluggable inspector framework |
@@ -676,19 +675,75 @@ prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
 ---
 
-## 11. Out of scope for the prototype
+## 11. Naming: the Hoplock rename
 
-- Real management server (only the contract + mock live here) — it has its own
+This repository was `SecureCommandProxy` and its central component was called
+"the bastion". Both are gone; the product is **Hoplock** and this component is
+**Hoplock Proxy**. What moved:
+
+| Was | Is | Kind |
+| --- | --- | --- |
+| `github.com/mauroasilva/securecommandproxy` | `github.com/hoplock/proxy` | Go module path |
+| `cmd/bastion` (binary `bastion`) | `cmd/proxy` (binary `hoplock-proxy`) | command |
+| `cmd/mock-management` | `cmd/mock-control` | command |
+| `internal/mgmt` (package `mgmt`) | `internal/control` (package `control`) | package |
+| `api/management.yaml` | `api/control.yaml` | contract |
+| "the bastion" | "the proxy" / Hoplock Proxy | prose, comments, identifiers |
+| "the management server" | Hoplock Control | prose, comments |
+| config `bastion:` | config `proxy:` | config key |
+| config `management:` | config `control:` | config key |
+| config `proxy:` (engine tuning) | config `dial:` | config key |
+
+That last row is not cosmetic. `bastion:` (this proxy's identity and listener)
+and `proxy:` (outbound-leg tuning) collided once "bastion" became "proxy", so
+the outbound settings moved to `dial:` — `dial.dial_timeout` and
+`dial.default_target_port`. An old config file fails to load with a clear
+unknown-key error rather than being silently misread, which is the right
+outcome for a strict decoder.
+
+### What deliberately did NOT change
+
+**Wire identifiers keep their names**, even though they say "bastion":
+
+- `bastion_id` — the JSON field on `ConnMeta` and the revocation stream
+- `/v1/bastions/{bastion_id}/events` — the revocation subscription path
+
+Renaming a field on the wire is a contract break, and a contract break is worth
+paying for once, deliberately, not as a side effect of a `sed`. Phase 0006 is
+already queued to revise this contract for the D5a/D6a/D11 vocabulary, and it
+is a **versioned, coordinated** change with Hoplock Control on the other side.
+Renaming `bastion_id` → `proxy_id` and `/v1/bastions/` → `/v1/proxies/` belongs
+in that phase, alongside changes that are breaking anyway — so 0006 carries it,
+and nothing on the wire moves before then.
+
+Go identifiers that mirror those fields (`ProxyID` with a `json:"bastion_id"`
+tag) **were** renamed: they are internal and the tag is what the wire sees.
+That mismatch is intentional and temporary, and 0006 closes it.
+
+Two other things kept their old names on purpose:
+
+- **"management certificate"** (D6) is a domain term for the privileged
+  provisioning credential on a target. It has nothing to do with Hoplock
+  Control and would be actively confusing if renamed.
+- **`prompts/implemented/` filenames** are frozen by `docs/PROTOCOL.md` §6, so
+  `0002-management-api-contract-and-mock.md` keeps its name even though the
+  contract file it produced is now `api/control.yaml`. Their *contents* were
+  swept, because a future session reads them as reference, not as an audit log.
+
+---
+
+## 12. Out of scope for the prototype
+
+- Real Hoplock Control (only the contract + mock live here) — it has its own
   repository and its own plan (D3).
 - Real geo/anycast DNS and scale/distribution testing.
 - Tamper-evident/append-only log storage (D8 notes the eventual destination);
-  it belongs to the management server, which owns the audit store.
+  it belongs to Hoplock Control, which owns the audit store.
 - AD/Okta/OIDC concrete implementations (interfaces are AD/Okta-ready only).
-  The bastion never talks to an IdP: it authenticates *against the management
-  server*, which is the component that federates. Nothing here changes when
+  The proxy never talks to an IdP: it authenticates *against Hoplock Control*, which is the component that federates. Nothing here changes when
   that lands.
 - Target host-key pinning policy (prototype is TOFU-with-report, D7).
 - Policy authoring, simulation, JIT access requests and approvals, and the
   operator/audit surface. These are the product's north-bound features and they
-  live in the management server. The bastion's job is to enforce a decision and
+  live in Hoplock Control. The proxy's job is to enforce a decision and
   to explain a denial well enough to be traced (§4.3) — not to author one.

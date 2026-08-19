@@ -15,13 +15,13 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
-	"github.com/mauroasilva/securecommandproxy/internal/sshtest"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/sshtest"
 )
 
 // TestExecEndToEnd is the phase's headline claim: a user authenticates to the
-// bastion, is authorized to a direct target, runs a command, and gets that
+// proxy, is authorized to a direct target, runs a command, and gets that
 // command's output and exit status back.
 func TestExecEndToEnd(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
@@ -61,13 +61,13 @@ func TestExecEndToEnd(t *testing.T) {
 	if got, want := calls[0].Identity.Subject, testSubject; got != want {
 		t.Errorf("authorize subject = %q, want %q", got, want)
 	}
-	if got, want := calls[0].Conn.BastionID, testBastionID; got != want {
-		t.Errorf("authorize bastion id = %q, want %q", got, want)
+	if got, want := calls[0].Conn.ProxyID, testProxyID; got != want {
+		t.Errorf("authorize proxy id = %q, want %q", got, want)
 	}
 }
 
 // TestExecExitStatusIsPreserved checks the status the program exited with
-// survives the proxy, because a script on the far side of a bastion has to be
+// survives the proxy, because a script on the far side of a proxy has to be
 // able to tell success from failure.
 func TestExecExitStatusIsPreserved(t *testing.T) {
 	h := newHarness(t, harnessOptions{targetOptions: sshtest.Options{
@@ -137,14 +137,14 @@ func TestInteractiveShell(t *testing.T) {
 		t.Fatalf("Shell: %v", err)
 	}
 
-	if _, err := io.WriteString(stdin, "hello bastion\n"); err != nil {
+	if _, err := io.WriteString(stdin, "hello proxy\n"); err != nil {
 		t.Fatalf("write to shell: %v", err)
 	}
-	got, err := readN(stdout, len("hello bastion\n"))
+	got, err := readN(stdout, len("hello proxy\n"))
 	if err != nil {
 		t.Fatalf("read from shell: %v", err)
 	}
-	if want := "hello bastion\n"; got != want {
+	if want := "hello proxy\n"; got != want {
 		t.Errorf("shell echoed %q, want %q", got, want)
 	}
 
@@ -167,7 +167,7 @@ func TestInteractiveShell(t *testing.T) {
 // precise denial is an oracle for probing the estate one attempt at a time.
 func TestAuthorizeDenyIsGenericAndNamesNothing(t *testing.T) {
 	h := newHarness(t, harnessOptions{
-		authorize: func(*mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error) {
+		authorize: func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
 			return nil, denyError("Authorize")
 		},
 	})
@@ -197,7 +197,7 @@ func TestAuthorizeDenyIsGenericAndNamesNothing(t *testing.T) {
 // session id so the disconnect becomes a ticket the logs can answer.
 func TestManagementOutageIsExplicitAndCarriesTheSessionID(t *testing.T) {
 	h := newHarness(t, harnessOptions{
-		authorize: func(*mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error) {
+		authorize: func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
 			return nil, outageError("Authorize")
 		},
 	})
@@ -223,7 +223,7 @@ func TestManagementOutageIsExplicitAndCarriesTheSessionID(t *testing.T) {
 // stderr plus a non-zero exit status, never a dropped connection.
 func TestFailureAfterChannelOpenIsNotASilentClose(t *testing.T) {
 	h := newHarness(t, harnessOptions{
-		authorize: func(*mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error) {
+		authorize: func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
 			return nil, outageError("Authorize")
 		},
 	})
@@ -243,8 +243,8 @@ func TestFailureAfterChannelOpenIsNotASilentClose(t *testing.T) {
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("Run error = %v (%T), want an *ssh.ExitError rather than a dropped connection", err, err)
 	}
-	if got := exitErr.ExitStatus(); got != exitBastionFailure {
-		t.Errorf("exit status = %d, want %d", got, exitBastionFailure)
+	if got := exitErr.ExitStatus(); got != exitProxyFailure {
+		t.Errorf("exit status = %d, want %d", got, exitProxyFailure)
 	}
 	if stderr.Len() == 0 {
 		t.Error("the session ended with nothing written to stderr")
@@ -267,7 +267,7 @@ func TestTargetDialFailureSaysTheTargetIsUnreachable(t *testing.T) {
 	}
 }
 
-// TestHostKeyIsReportedAndTrustedOnFirstUse covers D7: the bastion keeps no
+// TestHostKeyIsReportedAndTrustedOnFirstUse covers D7: the proxy keeps no
 // local trust store, it reports the key it saw and does what the server says.
 func TestHostKeyIsReportedAndTrustedOnFirstUse(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
@@ -305,8 +305,8 @@ func TestHostKeyIsReportedAndTrustedOnFirstUse(t *testing.T) {
 // failed without being told they lack permission.
 func TestHostKeyRejectionEndsTheSessionWithAReason(t *testing.T) {
 	h := newHarness(t, harnessOptions{
-		hostKey: func(*mgmt.HostKeyReportRequest) (*mgmt.HostKeyReportResponse, error) {
-			return &mgmt.HostKeyReportResponse{Decision: mgmt.HostKeyReject, Known: false, Reason: "unknown key"}, nil
+		hostKey: func(*control.HostKeyReportRequest) (*control.HostKeyReportResponse, error) {
+			return &control.HostKeyReportResponse{Decision: control.HostKeyReject, Known: false, Reason: "unknown key"}, nil
 		},
 	})
 
@@ -379,7 +379,7 @@ func TestPermittedChannelOtherThanSessionIsProxied(t *testing.T) {
 // empty allow-list: it denies everything rather than meaning "unset".
 //
 // The session channel is accepted before the policy is known — that ordering is
-// what gives the bastion somewhere to write — so the refusal arrives as an
+// what gives the proxy somewhere to write — so the refusal arrives as an
 // explained close on the channel rather than as an open failure.
 func TestEmptyChannelAllowListDeniesTheSession(t *testing.T) {
 	h := newHarness(t, harnessOptions{permittedChannels: []string{}})
@@ -398,14 +398,14 @@ func TestEmptyChannelAllowListDeniesTheSession(t *testing.T) {
 // understood, cannot be served yet, and says so as a service limitation rather
 // than as a denial.
 func TestNextHopRouteIsRefusedAsAnOutage(t *testing.T) {
-	h := newHarness(t, harnessOptions{routeType: mgmt.RouteTypeNextHop})
+	h := newHarness(t, harnessOptions{routeType: control.RouteTypeNextHop})
 
 	text, _ := runAndCollect(t, h, "uptime")
 
 	if strings.Contains(text, user.DenyMessage) {
 		t.Errorf("next-hop refusal %q reads as a denial", text)
 	}
-	if !strings.Contains(text, "route this bastion cannot serve yet") {
+	if !strings.Contains(text, "route this proxy cannot serve yet") {
 		t.Errorf("user saw %q, want it to name the unsupported route", text)
 	}
 }
@@ -430,7 +430,7 @@ func TestMalformedUsernameExplainsTheEncoding(t *testing.T) {
 }
 
 // TestKillSubjectTellsTheUserAndEndsTheSession covers the SessionRegistry half
-// of PLAN §6.4 that phase 0003 left for this engine: the management server can
+// of PLAN §6.4 that phase 0003 left for this engine: Hoplock Control can
 // end a session already in flight, and the user is told why before it goes.
 func TestKillSubjectTellsTheUserAndEndsTheSession(t *testing.T) {
 	h := newHarness(t, harnessOptions{})

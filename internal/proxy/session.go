@@ -14,18 +14,18 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/target"
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
-	"github.com/mauroasilva/securecommandproxy/internal/routing"
+	"github.com/hoplock/proxy/internal/auth/target"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/routing"
 )
 
 // failureDeliveryGrace is how long a failed session waits for the client to
 // open a channel it can explain itself on, before closing the connection.
 //
-// It is needed because the client and the bastion work in parallel after
-// authentication: the client opens its session channel while the bastion is
+// It is needed because the client and the proxy work in parallel after
+// authentication: the client opens its session channel while the proxy is
 // still authorizing, and either can win. Closing the moment setup fails would
 // lose the message for a client that was a millisecond behind; waiting forever
 // would strand a client that opens no channel at all (`ssh -N`).
@@ -43,7 +43,7 @@ const teardownTimeout = 30 * time.Second
 
 // session is one client connection and the target leg it is proxied onto.
 //
-// Its lifecycle is deliberately ordered so that the bastion can always speak to
+// Its lifecycle is deliberately ordered so that the proxy can always speak to
 // the user (PLAN §4.3): the client's session channel is accepted *before* the
 // target leg exists, so authorize, provisioning, and the dial all happen with
 // somewhere to write progress and failures to. Everything else here follows
@@ -143,7 +143,7 @@ func (s *session) recoverPanic(where string) {
 // already connected and possibly already waiting on an open channel.
 //
 // Every failure it can produce is classified by stage, because what the user is
-// told depends on it: a deny from the management server is "access denied" and
+// told depends on it: a deny from Hoplock Control is "access denied" and
 // nothing more, while everything else says plainly which part of the service
 // failed (PLAN §4.3).
 func (s *session) setup() {
@@ -350,10 +350,10 @@ func (s *session) removeChannel(ch ssh.Channel) {
 }
 
 // connMeta is the connection metadata every management call carries.
-func (s *session) connMeta() mgmt.ConnMeta {
-	return mgmt.ConnMeta{
+func (s *session) connMeta() control.ConnMeta {
+	return control.ConnMeta{
 		SessionID:     s.id,
-		BastionID:     s.srv.bastionID,
+		ProxyID:       s.srv.proxyID,
 		ClientAddr:    s.conn.RemoteAddr().String(),
 		ServerAddr:    s.conn.LocalAddr().String(),
 		ClientVersion: string(s.conn.ClientVersion()),
@@ -361,7 +361,7 @@ func (s *session) connMeta() mgmt.ConnMeta {
 	}
 }
 
-// kill ends the session on the management server's orders, telling the user why
+// kill ends the session on Hoplock Control's orders, telling the user why
 // first (PLAN §4.3, §6.4). A revoked session must never look like a crash.
 func (s *session) kill(reason string) {
 	s.mu.Lock()
@@ -380,7 +380,7 @@ func (s *session) kill(reason string) {
 	text := bannerPrefix + reason
 	for _, ch := range channels {
 		writeUser(ch, text)
-		sendExitStatus(ch, exitBastionFailure)
+		sendExitStatus(ch, exitProxyFailure)
 		_ = ch.Close()
 	}
 	s.disconnect(text)

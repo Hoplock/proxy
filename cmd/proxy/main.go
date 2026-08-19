@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-// Command bastion is the SecureCommandProxy SSH bastion daemon.
+// Command proxy is the Hoplock Proxy SSH proxy daemon.
 //
 // It loads its bootstrap configuration, builds the management client, the
 // authentication planes, and the proxy engine, and serves SSH until it is
-// signalled. Every decision it enforces is made by the management server
+// signalled. Every decision it enforces is made by Hoplock Control
 // (docs/PLAN.md, D2); this binary is wiring.
 package main
 
@@ -22,21 +22,21 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/target"
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/config"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
-	"github.com/mauroasilva/securecommandproxy/internal/proxy"
-	"github.com/mauroasilva/securecommandproxy/internal/routing"
+	"github.com/hoplock/proxy/internal/auth/target"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/proxy"
+	"github.com/hoplock/proxy/internal/routing"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `bastion — SecureCommandProxy SSH bastion daemon
+const usage = `proxy — Hoplock Proxy SSH proxy daemon
 
 Usage:
-  bastion [flags]
+  proxy [flags]
 
 Flags:
   -config string
@@ -46,7 +46,7 @@ Flags:
 `
 
 func main() {
-	fs := flag.NewFlagSet("bastion", flag.ExitOnError)
+	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), usage) }
 
 	configPath := fs.String("config", "", "path to the YAML bootstrap config")
@@ -56,13 +56,13 @@ func main() {
 	_ = fs.Parse(os.Args[1:])
 
 	if *showVersion {
-		fmt.Printf("bastion %s\n", version)
+		fmt.Printf("proxy %s\n", version)
 		return
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.LUTC)
 	if err := run(*configPath, logger); err != nil {
-		logger.Printf("bastion: %v", err)
+		logger.Printf("proxy: %v", err)
 		os.Exit(1)
 	}
 }
@@ -79,14 +79,14 @@ func run(configPath string, logger *log.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hostKey, err := loadHostKey(cfg.Bastion.HostKeyPath)
+	hostKey, err := loadHostKey(cfg.Proxy.HostKeyPath)
 	if err != nil {
 		return err
 	}
 
-	rest, err := mgmt.NewRESTClient(mgmt.Options{
-		BaseURL: cfg.Management.BaseURL,
-		Token:   cfg.Management.Token,
+	rest, err := control.NewRESTClient(control.Options{
+		BaseURL: cfg.Control.BaseURL,
+		Token:   cfg.Control.Token,
 	})
 	if err != nil {
 		return err
@@ -97,9 +97,9 @@ func run(configPath string, logger *log.Logger) error {
 	// built together on purpose: without the stream the cache is stale by
 	// definition and serves nothing, which is the fail-closed outcome but a
 	// confusing one to debug if the subscription was simply forgotten.
-	cache := mgmt.NewCachingClient(rest, mgmt.CacheOptions{
-		MaxTTL:     cfg.Management.Cache.MaxTTL,
-		StaleAfter: cfg.Management.Cache.StaleAfter,
+	cache := control.NewCachingClient(rest, control.CacheOptions{
+		MaxTTL:     cfg.Control.Cache.MaxTTL,
+		StaleAfter: cfg.Control.Cache.StaleAfter,
 		Logger:     logger,
 	})
 
@@ -113,7 +113,7 @@ func run(configPath string, logger *log.Logger) error {
 	}
 	resolver, err := routing.NewResolver(routing.ResolverOptions{
 		Client:            cache,
-		DefaultTargetPort: cfg.Proxy.DefaultTargetPort,
+		DefaultTargetPort: cfg.Dial.DefaultTargetPort,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -126,9 +126,9 @@ func run(configPath string, logger *log.Logger) error {
 		Resolver:        resolver,
 		TargetAuth:      targetAuth,
 		Client:          cache,
-		BastionID:       cfg.Bastion.ID,
+		ProxyID:         cfg.Proxy.ID,
 		TargetDelimiter: cfg.Routing.TargetDelimiter,
-		DialTimeout:     cfg.Proxy.DialTimeout,
+		DialTimeout:     cfg.Dial.DialTimeout,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -137,33 +137,33 @@ func run(configPath string, logger *log.Logger) error {
 
 	// The proxy is the session registry: the stream's kills land on live
 	// sessions, which is what makes a cached decision safe to hold.
-	stream := mgmt.NewRevocationStream(rest, cache, server, mgmt.StreamOptions{Logger: logger})
+	stream := control.NewRevocationStream(rest, cache, server, control.StreamOptions{Logger: logger})
 	streamDone := make(chan struct{})
 	go func() {
 		defer close(streamDone)
-		if err := stream.Subscribe(ctx, cfg.Bastion.ID); err != nil {
+		if err := stream.Subscribe(ctx, cfg.Proxy.ID); err != nil {
 			// Subscribe only returns for failures a retry cannot fix (this
-			// bastion's own credential was rejected). Cached decisions stop
+			// proxy's own credential was rejected). Cached decisions stop
 			// being served on their own; live sessions are left alone.
-			logger.Printf("bastion: revocation stream stopped: %v", err)
+			logger.Printf("proxy: revocation stream stopped: %v", err)
 		}
 	}()
 
-	listener, err := net.Listen("tcp", cfg.Bastion.ListenAddr)
+	listener, err := net.Listen("tcp", cfg.Proxy.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", cfg.Bastion.ListenAddr, err)
+		return fmt.Errorf("listen on %s: %w", cfg.Proxy.ListenAddr, err)
 	}
-	logger.Printf("bastion %s: listening on %s as %s, management %s, target auth %s",
-		version, listener.Addr(), cfg.Bastion.ID, cfg.Management.BaseURL, targetAuth.Name())
+	logger.Printf("proxy %s: listening on %s as %s, management %s, target auth %s",
+		version, listener.Addr(), cfg.Proxy.ID, cfg.Control.BaseURL, targetAuth.Name())
 
 	serveErr := server.Serve(ctx, listener)
 	<-streamDone
-	logger.Printf("bastion: stopped")
+	logger.Printf("proxy: stopped")
 	return serveErr
 }
 
-// loadHostKey reads the bastion's own SSH host key, the identity every client
-// pins the bastion by.
+// loadHostKey reads the proxy's own SSH host key, the identity every client
+// pins the proxy by.
 func loadHostKey(path string) (ssh.Signer, error) {
 	pem, err := os.ReadFile(path)
 	if err != nil {

@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/config"
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
+	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // Registry is an ordered set of authenticators presented as a single

@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // This file owns everything the user is told after they have authenticated
@@ -21,17 +21,17 @@ import (
 // of that rule would eventually disagree, and the branch that leaks is the one
 // nobody is looking at.
 
-// bannerPrefix marks a line as coming from the bastion rather than from the
+// bannerPrefix marks a line as coming from the proxy rather than from the
 // target's program, which is the difference between "your command printed
 // this" and "your session was ended".
-const bannerPrefix = "SecureCommandProxy: "
+const bannerPrefix = "Hoplock Proxy: "
 
-// exitBastionFailure is the exit status the bastion reports when it, rather
+// exitProxyFailure is the exit status the proxy reports when it, rather
 // than a program on the target, ended the channel. It is deliberately not 0
 // (which would tell a script the command succeeded) and not 255 (which is what
 // the SSH client itself reports for its own errors), so a non-zero status that
-// came from the bastion is distinguishable in a pipeline.
-const exitBastionFailure = 254
+// came from the proxy is distinguishable in a pipeline.
+const exitProxyFailure = 254
 
 // stage names the part of session setup that failed. It exists to pick the
 // user-facing detail: "the policy service is unavailable" is a lie when the
@@ -51,7 +51,7 @@ const (
 )
 
 // setupError is a session-setup failure tagged with the stage it happened in.
-// It wraps the underlying error, so mgmt.IsUnauthorized — and therefore the
+// It wraps the underlying error, so control.IsUnauthorized — and therefore the
 // deny/outage split — still classifies it after the tagging.
 type setupError struct {
 	stage stage
@@ -78,9 +78,9 @@ func outageDetail(err error) string {
 	case stageAuthorize, stageIdentity:
 		return user.OutageDetailPolicyService
 	case stageUsername:
-		return "the connection did not name a target the bastion could read"
+		return "the connection did not name a target the proxy could read"
 	case stageRoute:
-		return "reaching this target needs a route this bastion cannot serve yet"
+		return "reaching this target needs a route this proxy cannot serve yet"
 	case stageProvision:
 		return "credentials for the target could not be provisioned"
 	case stageDial:
@@ -101,7 +101,7 @@ func (s *session) failureText(err error) string {
 
 // usernameHelp explains the one failure the user can actually fix themselves.
 // It is appended to the malformed-username message because the encoded target
-// is this bastion's own convention (D1) and a user who typed a bare hostname
+// is this proxy's own convention (D1) and a user who typed a bare hostname
 // has no way to guess it. It discloses nothing: the delimiter is in the
 // client-side configuration they were given.
 func (s *session) usernameHelp() string {
@@ -129,7 +129,7 @@ func deniedChannelText(channelType string) string {
 // server's decision, arriving in the authorize response rather than in a 401 —
 // so it renders as the same generic denial as every other policy answer.
 func errChannelNotPermitted(channelType string) error {
-	return fmt.Errorf("channel type %q is not permitted by policy: %w", channelType, mgmt.ErrUnauthorized)
+	return fmt.Errorf("channel type %q is not permitted by policy: %w", channelType, control.ErrUnauthorized)
 }
 
 // failChannel reports a setup failure on an already-open session channel and
@@ -149,7 +149,7 @@ func (s *session) failChannel(ch ssh.Channel, queued []*ssh.Request, err error) 
 	if failedAt(err, stageUsername) {
 		writeUser(ch, s.usernameHelp())
 	}
-	sendExitStatus(ch, exitBastionFailure)
+	sendExitStatus(ch, exitProxyFailure)
 	_ = ch.Close()
 	s.failureDelivered()
 }
@@ -162,7 +162,7 @@ func (s *session) rejectChannel(nc ssh.NewChannel, reason ssh.RejectionReason, e
 	s.failureDelivered()
 }
 
-// writeUser writes one line of bastion-authored text to a channel's stderr.
+// writeUser writes one line of proxy-authored text to a channel's stderr.
 //
 // stderr, never stdout: a session's stdout belongs to the program the user ran,
 // and scp and sftp parse it as a protocol. Lines end CRLF because a channel

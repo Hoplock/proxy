@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // This file owns what the person at the SSH prompt is told when authentication
@@ -16,10 +16,10 @@ import (
 //
 //   - A deny is deliberately vague. It names neither the login nor the target,
 //     and does not say which of the two was the problem, because a precise
-//     denial turns the bastion into an oracle for probing the estate: "user
+//     denial turns the proxy into an oracle for probing the estate: "user
 //     unknown" versus "no access to that host" is a directory listing given away
 //     one login attempt at a time.
-//   - Everything else is explicit and honest. The bastion could not reach a
+//   - Everything else is explicit and honest. The proxy could not reach a
 //     decision, that is an outage rather than a permissions problem, and saying
 //     so is what stops a user from re-typing their password forever or filing a
 //     ticket against the wrong team. It carries the session id, which is safe to
@@ -33,17 +33,17 @@ import (
 const DenyMessage = "Access denied."
 
 // BannerMessage is sent before authentication so the user knows the pause is
-// the bastion consulting the policy service rather than a stalled connection
+// the proxy consulting the policy service rather than a stalled connection
 // (PLAN §4.3, the SSH_MSG_USERAUTH_BANNER row).
 func BannerMessage(sessionID string) string {
 	if sessionID == "" {
-		return "SecureCommandProxy: checking your access with the policy service.\r\n"
+		return "Hoplock Proxy: checking your access with the policy service.\r\n"
 	}
-	return fmt.Sprintf("SecureCommandProxy: checking your access with the policy service. Session %s.\r\n", sessionID)
+	return fmt.Sprintf("Hoplock Proxy: checking your access with the policy service. Session %s.\r\n", sessionID)
 }
 
 // OutageDetailPolicyService is the failure OutageMessage describes: the
-// management server could not be reached or could not answer.
+// Hoplock Control could not be reached or could not answer.
 const OutageDetailPolicyService = "the policy service is unavailable"
 
 // OutageMessage is shown when no decision could be obtained. It states plainly
@@ -59,7 +59,7 @@ func OutageMessage(sessionID string) string {
 // (PLAN §4.3, phase 0005).
 //
 // detail completes "could not complete your connection because …" and must stay
-// non-disclosing: it says what broke on the bastion's side, never which target,
+// non-disclosing: it says what broke on the proxy's side, never which target,
 // which policy, or whether either exists. The invariant that matters is the
 // same in every branch — the user is told this is not a permissions problem, so
 // they stop retrying credentials, and is given the session id to quote.
@@ -67,7 +67,7 @@ func OutageMessageFor(detail, sessionID string) string {
 	if detail == "" {
 		detail = OutageDetailPolicyService
 	}
-	msg := "The bastion could not complete your connection because " + detail + ". " +
+	msg := "The proxy could not complete your connection because " + detail + ". " +
 		"This is a service problem, not a permissions problem — retrying with different credentials will not help."
 	if sessionID != "" {
 		msg += fmt.Sprintf(" Quote session id %s when reporting this.", sessionID)
@@ -114,5 +114,5 @@ func IsDenied(err error) bool {
 	if errors.Is(err, ErrUnavailable) {
 		return false
 	}
-	return errors.Is(err, ErrDenied) || mgmt.IsUnauthorized(err)
+	return errors.Is(err, ErrDenied) || control.IsUnauthorized(err)
 }

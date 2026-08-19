@@ -13,42 +13,42 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/auth/target"
-	"github.com/mauroasilva/securecommandproxy/internal/auth/user"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
-	"github.com/mauroasilva/securecommandproxy/internal/routing"
-	"github.com/mauroasilva/securecommandproxy/internal/sshtest"
+	"github.com/hoplock/proxy/internal/auth/target"
+	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/routing"
+	"github.com/hoplock/proxy/internal/sshtest"
 )
 
 // Fixed values every test in this package shares. The session id is fixed so
 // that assertions on the support reference in a failure message are exact.
 const (
 	testSessionID = "sess-testsession"
-	testBastionID = "bastion-test"
+	testProxyID   = "proxy-test"
 	testLogin     = "alice"
 	testSubject   = "alice@example.com"
 	testDelimiter = "#"
 )
 
-// fakeClient is the management server. It is a fake rather than the mock
+// fakeClient is Hoplock Control. It is a fake rather than the mock
 // server because these tests are about the engine: every decision is a field
 // the test sets, and the contract itself is exercised end to end against the
-// real mock in cmd/mock-management.
+// real mock in cmd/mock-control.
 type fakeClient struct {
-	authorize func(*mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error)
-	hostKey   func(*mgmt.HostKeyReportRequest) (*mgmt.HostKeyReportResponse, error)
+	authorize func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error)
+	hostKey   func(*control.HostKeyReportRequest) (*control.HostKeyReportResponse, error)
 
 	mu             sync.Mutex
-	authorizeCalls []mgmt.AuthorizeRequest
-	hostKeyCalls   []mgmt.HostKeyReportRequest
+	authorizeCalls []control.AuthorizeRequest
+	hostKeyCalls   []control.HostKeyReportRequest
 }
 
-var _ mgmt.Client = (*fakeClient)(nil)
+var _ control.Client = (*fakeClient)(nil)
 
-func (c *fakeClient) AuthenticateCert(_ context.Context, req *mgmt.AuthenticateCertRequest) (*mgmt.AuthenticateResponse, error) {
-	return &mgmt.AuthenticateResponse{
-		Status: mgmt.AuthStatusAuthenticated,
-		Identity: &mgmt.Identity{
+func (c *fakeClient) AuthenticateCert(_ context.Context, req *control.AuthenticateCertRequest) (*control.AuthenticateResponse, error) {
+	return &control.AuthenticateResponse{
+		Status: control.AuthStatusAuthenticated,
+		Identity: &control.Identity{
 			Subject: testSubject,
 			Login:   req.Login,
 			Source:  "fixture",
@@ -57,60 +57,60 @@ func (c *fakeClient) AuthenticateCert(_ context.Context, req *mgmt.AuthenticateC
 	}, nil
 }
 
-func (c *fakeClient) AuthenticatePassword(context.Context, *mgmt.AuthenticatePasswordRequest) (*mgmt.AuthenticateResponse, error) {
+func (c *fakeClient) AuthenticatePassword(context.Context, *control.AuthenticatePasswordRequest) (*control.AuthenticateResponse, error) {
 	return nil, denyError("AuthenticatePassword")
 }
 
-func (c *fakeClient) PollMFA(context.Context, *mgmt.MFAPollRequest) (*mgmt.AuthenticateResponse, error) {
+func (c *fakeClient) PollMFA(context.Context, *control.MFAPollRequest) (*control.AuthenticateResponse, error) {
 	return nil, denyError("PollMFA")
 }
 
-func (c *fakeClient) Authorize(_ context.Context, req *mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error) {
+func (c *fakeClient) Authorize(_ context.Context, req *control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
 	c.mu.Lock()
 	c.authorizeCalls = append(c.authorizeCalls, *req)
 	c.mu.Unlock()
 	return c.authorize(req)
 }
 
-func (c *fakeClient) ReportHostKey(_ context.Context, req *mgmt.HostKeyReportRequest) (*mgmt.HostKeyReportResponse, error) {
+func (c *fakeClient) ReportHostKey(_ context.Context, req *control.HostKeyReportRequest) (*control.HostKeyReportResponse, error) {
 	c.mu.Lock()
 	c.hostKeyCalls = append(c.hostKeyCalls, *req)
 	c.mu.Unlock()
 	if c.hostKey != nil {
 		return c.hostKey(req)
 	}
-	return &mgmt.HostKeyReportResponse{Decision: mgmt.HostKeyAccept, Known: false}, nil
+	return &control.HostKeyReportResponse{Decision: control.HostKeyAccept, Known: false}, nil
 }
 
-func (c *fakeClient) IngestLogBatch(context.Context, *mgmt.LogBatchRequest) (*mgmt.LogBatchResponse, error) {
-	return &mgmt.LogBatchResponse{}, nil
+func (c *fakeClient) IngestLogBatch(context.Context, *control.LogBatchRequest) (*control.LogBatchResponse, error) {
+	return &control.LogBatchResponse{}, nil
 }
 
-func (c *fakeClient) IngestPriorityLog(context.Context, *mgmt.LogPriorityRequest) (*mgmt.LogPriorityResponse, error) {
-	return &mgmt.LogPriorityResponse{Accepted: true}, nil
+func (c *fakeClient) IngestPriorityLog(context.Context, *control.LogPriorityRequest) (*control.LogPriorityResponse, error) {
+	return &control.LogPriorityResponse{Accepted: true}, nil
 }
 
-func (c *fakeClient) hostKeyReports() []mgmt.HostKeyReportRequest {
+func (c *fakeClient) hostKeyReports() []control.HostKeyReportRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]mgmt.HostKeyReportRequest(nil), c.hostKeyCalls...)
+	return append([]control.HostKeyReportRequest(nil), c.hostKeyCalls...)
 }
 
-func (c *fakeClient) authorizeRequests() []mgmt.AuthorizeRequest {
+func (c *fakeClient) authorizeRequests() []control.AuthorizeRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]mgmt.AuthorizeRequest(nil), c.authorizeCalls...)
+	return append([]control.AuthorizeRequest(nil), c.authorizeCalls...)
 }
 
-// denyError is a deny decision from the management server: the one error that
+// denyError is a deny decision from Hoplock Control: the one error that
 // may be reported to a user as a permissions answer.
 func denyError(op string) error {
-	return &mgmt.APIError{Op: op, StatusCode: 401, Cause: mgmt.ErrUnauthorized}
+	return &control.APIError{Op: op, StatusCode: 401, Cause: control.ErrUnauthorized}
 }
 
 // outageError is everything else: the server was reached but could not decide.
 func outageError(op string) error {
-	return &mgmt.APIError{Op: op, StatusCode: 503, Cause: mgmt.ErrServer}
+	return &control.APIError{Op: op, StatusCode: 503, Cause: control.ErrServer}
 }
 
 // harnessOptions tune one test's proxy.
@@ -119,11 +119,11 @@ type harnessOptions struct {
 	// ["session"]; an explicitly empty slice denies everything.
 	permittedChannels []string
 	// routeType overrides the route type; empty means direct.
-	routeType mgmt.RouteType
+	routeType control.RouteType
 	// authorize replaces the whole authorize behaviour.
-	authorize func(*mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error)
+	authorize func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error)
 	// hostKey replaces the host-key decision.
-	hostKey func(*mgmt.HostKeyReportRequest) (*mgmt.HostKeyReportResponse, error)
+	hostKey func(*control.HostKeyReportRequest) (*control.HostKeyReportResponse, error)
 	// targetOptions configure the stand-in target host.
 	targetOptions sshtest.Options
 	// noTarget starts no target at all, so the dial fails.
@@ -166,20 +166,20 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 	routeType := opts.routeType
 	if routeType == "" {
-		routeType = mgmt.RouteTypeDirect
+		routeType = control.RouteTypeDirect
 	}
 
 	client := &fakeClient{hostKey: opts.hostKey}
 	client.authorize = opts.authorize
 	if client.authorize == nil {
-		client.authorize = func(*mgmt.AuthorizeRequest) (*mgmt.AuthorizeResponse, error) {
-			return &mgmt.AuthorizeResponse{
+		client.authorize = func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
+			return &control.AuthorizeResponse{
 				RouteType:         routeType,
 				Target:            host,
 				TargetPort:        port,
 				Permissions:       "testGroup",
 				PermittedChannels: permitted,
-				FilterPolicy:      mgmt.FilterPolicy{Mode: mgmt.FilterModeBlacklist},
+				FilterPolicy:      control.FilterPolicy{Mode: control.FilterModeBlacklist},
 				DecisionID:        "decision-1",
 			}, nil
 		}
@@ -205,7 +205,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		Resolver:        resolver,
 		TargetAuth:      targetAuth,
 		Client:          client,
-		BastionID:       testBastionID,
+		ProxyID:         testProxyID,
 		TargetDelimiter: testDelimiter,
 		DialTimeout:     2 * time.Second,
 		Logger:          logs.logger(),
@@ -244,7 +244,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 }
 
-// dial connects an SSH client to the bastion as username.
+// dial connects an SSH client to the proxy as username.
 func (h *harness) dial(username string) (*ssh.Client, error) {
 	h.t.Helper()
 	key, err := sshtest.GenerateSigner()

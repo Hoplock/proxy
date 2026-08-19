@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
-	"github.com/mauroasilva/securecommandproxy/internal/mgmt"
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // testKey returns a fresh signer and its public key.
@@ -37,9 +37,9 @@ func TestCertAuthenticatorAccepts(t *testing.T) {
 	_, pub := testKey(t)
 
 	rs, client := newRecordingServer(t, map[string]http.HandlerFunc{
-		mgmt.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-				Status:   mgmt.AuthStatusAuthenticated,
+		control.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+				Status:   control.AuthStatusAuthenticated,
 				Identity: aliceIdentity(),
 			})
 		},
@@ -65,13 +65,13 @@ func TestCertAuthenticatorAccepts(t *testing.T) {
 		t.Errorf("Groups = %v, want the server's groups to survive the conversion", id.Groups)
 	}
 	if id.AuthenticatedAt.IsZero() {
-		t.Error("AuthenticatedAt is zero, want the time the bastion accepted the identity")
+		t.Error("AuthenticatedAt is zero, want the time the proxy accepted the identity")
 	}
 
-	// The offered key must reach the server verbatim: the bastion validates
+	// The offered key must reach the server verbatim: the proxy validates
 	// nothing locally, so anything it fails to send is a decision the server
 	// could not make.
-	bodies := rs.bodiesFor(mgmt.PathAuthenticateCert)
+	bodies := rs.bodiesFor(control.PathAuthenticateCert)
 	if len(bodies) != 1 {
 		t.Fatalf("recorded %d requests, want 1", len(bodies))
 	}
@@ -104,9 +104,9 @@ func TestCertAuthenticatorMarksCertificates(t *testing.T) {
 	}
 
 	rs, client := newRecordingServer(t, map[string]http.HandlerFunc{
-		mgmt.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-				Status:   mgmt.AuthStatusAuthenticated,
+		control.PathAuthenticateCert: func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+				Status:   control.AuthStatusAuthenticated,
 				Identity: aliceIdentity(),
 			})
 		},
@@ -122,7 +122,7 @@ func TestCertAuthenticatorMarksCertificates(t *testing.T) {
 
 	// The server decides differently for a certificate than for a bare key, so
 	// the distinction has to survive the conversion.
-	if body := rs.bodiesFor(mgmt.PathAuthenticateCert)[0]; !strings.Contains(body, `"is_certificate":true`) {
+	if body := rs.bodiesFor(control.PathAuthenticateCert)[0]; !strings.Contains(body, `"is_certificate":true`) {
 		t.Errorf("request body = %s, want it to mark the material as a certificate", body)
 	}
 }
@@ -153,7 +153,7 @@ func TestCertAuthenticatorOutcomes(t *testing.T) {
 		},
 		{
 			// "Authenticated" with no identity is a contract violation, not a
-			// decision: the bastion cannot audit a session it cannot attribute.
+			// decision: the proxy cannot audit a session it cannot attribute.
 			name: "authenticated without an identity",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				writeJSON(t, w, http.StatusOK, map[string]any{"status": "authenticated"})
@@ -164,9 +164,9 @@ func TestCertAuthenticatorOutcomes(t *testing.T) {
 			// Certificate auth that asks for a second factor is off-contract.
 			name: "mfa requested",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
-				writeJSON(t, w, http.StatusOK, mgmt.AuthenticateResponse{
-					Status: mgmt.AuthStatusMFARequired,
-					MFA:    &mgmt.MFAChallenge{Token: "tok", PollAfterMS: 10},
+				writeJSON(t, w, http.StatusOK, control.AuthenticateResponse{
+					Status: control.AuthStatusMFARequired,
+					MFA:    &control.MFAChallenge{Token: "tok", PollAfterMS: 10},
 				})
 			},
 			wantErr: ErrUnavailable,
@@ -176,7 +176,7 @@ func TestCertAuthenticatorOutcomes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, client := newRecordingServer(t, map[string]http.HandlerFunc{
-				mgmt.PathAuthenticateCert: tt.handler,
+				control.PathAuthenticateCert: tt.handler,
 			})
 			auth, err := NewCertAuthenticator(Options{Client: client})
 			if err != nil {
@@ -203,7 +203,7 @@ func TestCertAuthenticatorOutcomes(t *testing.T) {
 func TestCertAuthenticatorUnreachableServerIsNotADeny(t *testing.T) {
 	_, pub := testKey(t)
 	client := &fakeClient{
-		certFn: func(context.Context, *mgmt.AuthenticateCertRequest) (*mgmt.AuthenticateResponse, error) {
+		certFn: func(context.Context, *control.AuthenticateCertRequest) (*control.AuthenticateResponse, error) {
 			return nil, transportError("AuthenticateCert")
 		},
 	}
@@ -224,7 +224,7 @@ func TestCertAuthenticatorUnreachableServerIsNotADeny(t *testing.T) {
 
 func TestCertAuthenticatorRejectsMissingKey(t *testing.T) {
 	client := &fakeClient{
-		certFn: func(context.Context, *mgmt.AuthenticateCertRequest) (*mgmt.AuthenticateResponse, error) {
+		certFn: func(context.Context, *control.AuthenticateCertRequest) (*control.AuthenticateResponse, error) {
 			t.Error("AuthenticateCert called without a key")
 			return nil, nil
 		},

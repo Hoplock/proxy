@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/mauroasilva/securecommandproxy/internal/identity"
+	"github.com/hoplock/proxy/internal/identity"
 )
 
 // ssh.Permissions extension keys. Permissions is the only value x/crypto/ssh
@@ -21,12 +21,12 @@ import (
 // place to hand the authenticated identity to the proxy (0005).
 const (
 	// ExtensionIdentity holds the authenticated identity, JSON-encoded.
-	ExtensionIdentity = "securecommandproxy-identity"
+	ExtensionIdentity = "hoplock-identity"
 	// ExtensionAuthMethod holds the method that authenticated the connection.
-	ExtensionAuthMethod = "securecommandproxy-auth-method"
-	// ExtensionSessionID holds the bastion-assigned session id, so the proxy
+	ExtensionAuthMethod = "hoplock-auth-method"
+	// ExtensionSessionID holds the proxy-assigned session id, so the proxy
 	// and the log pipeline use the same id the auth calls already used.
-	ExtensionSessionID = "securecommandproxy-session-id"
+	ExtensionSessionID = "hoplock-session-id"
 )
 
 // PasswordPrompt is the keyboard-interactive question that collects the
@@ -120,7 +120,7 @@ func NewServerAuth(opts ServerAuthOptions) (*ServerAuth, error) {
 // Apply installs the authentication callbacks on cfg.
 //
 // Only the methods the authenticator actually supports are offered: advertising
-// keyboard-interactive on a certificate-only bastion would prompt every user
+// keyboard-interactive on a certificate-only proxy would prompt every user
 // for a password that can never succeed. NoClientAuth is forced off — an
 // unauthenticated session has no identity to authorize, log, or revoke.
 func (a *ServerAuth) Apply(cfg *ssh.ServerConfig) {

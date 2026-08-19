@@ -35,7 +35,7 @@ type Options struct {
 }
 
 // Target is an in-process SSH server standing in for a target host. It accepts
-// any public key: authentication to the target is the bastion's problem, and a
+// any public key: authentication to the target is the proxy's problem, and a
 // test that had to manage the target's authorized_keys would be testing the
 // wrong thing.
 type Target struct {
@@ -128,7 +128,7 @@ func (t *Target) Port() int {
 // HostKey is the public host key the target presents.
 func (t *Target) HostKey() ssh.PublicKey { return t.hostKey.PublicKey() }
 
-// Logins are the usernames the bastion logged in as, in order.
+// Logins are the usernames the proxy logged in as, in order.
 func (t *Target) Logins() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Mauro Silva. All rights reserved.
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
-package mgmt
+package control
 
 import (
 	"context"
@@ -19,7 +19,7 @@ const (
 	// window in which a withdrawn authorization could still be honoured is
 	// exactly this plus the remaining TTL of an entry.
 	DefaultStaleAfter = 30 * time.Second
-	// DefaultMaxEntries bounds the cache so a busy bastion cannot grow it
+	// DefaultMaxEntries bounds the cache so a busy proxy cannot grow it
 	// without limit. Reaching it costs cache hits, never correctness.
 	DefaultMaxEntries = 4096
 )
@@ -27,13 +27,13 @@ const (
 // CacheOptions configures a CachingClient.
 type CacheOptions struct {
 	// MaxTTL clamps the server's ttl_seconds DOWNWARD ONLY: an operator may be
-	// more conservative than the management server, never more permissive.
+	// more conservative than Hoplock Control, never more permissive.
 	// Zero — the default — means "no local clamp": the server's lifetime is
 	// honoured exactly.
 	//
-	// Setting it makes this bastion behave differently from its peers, which is
+	// Setting it makes this proxy behave differently from its peers, which is
 	// a real operational cost: the same policy is then reused for less time
-	// here than there, and "why does this bastion re-authorize more often?"
+	// here than there, and "why does this proxy re-authorize more often?"
 	// becomes a per-host question. That divergence must never be silent, so a
 	// clamp that actually shortens a lifetime is counted in CacheStats.Clamped
 	// and reported to Logger.
@@ -68,11 +68,11 @@ type CacheStats struct {
 	// unheard for longer than StaleAfter — the fail-closed rule firing.
 	StaleSkips uint64
 	// Clamped counts stored decisions whose server lifetime was shortened by
-	// CacheOptions.MaxTTL. Anything but zero means this bastion is deliberately
-	// caching for less time than the management server authorised: expect a
+	// CacheOptions.MaxTTL. Anything but zero means this proxy is deliberately
+	// caching for less time than Hoplock Control authorised: expect a
 	// lower hit rate and more authorize calls here than on a peer without the
 	// clamp. It is the number to look at before blaming the server or the
-	// network for a bastion that re-authorizes "too often".
+	// network for a proxy that re-authorizes "too often".
 	Clamped uint64
 	// Entries is the number of decisions held right now.
 	Entries int
@@ -118,8 +118,8 @@ type cacheEntry struct {
 //   - the server owns the lifetime. A decision is cached only when the server
 //     attached a CacheHint, only for the TTL it set, and only under the key it
 //     chose. CacheOptions.MaxTTL may shorten that, never extend it, and the
-//     bastion never invents a hint.
-//   - the bastion must be able to hear revocations. While the revocation stream
+//     proxy never invents a hint.
+//   - the proxy must be able to hear revocations. While the revocation stream
 //     has been unheard for longer than StaleAfter, nothing is served from cache
 //     and nothing new is stored, so every connection is re-authorized. Live
 //     sessions are NOT killed: losing the ability to hear about a revocation is
@@ -138,7 +138,7 @@ type CachingClient struct {
 	// shapes maps a request shape to the server key its decision was returned
 	// under. It is what lets the SERVER choose the sharing scope: if the server
 	// answers two different requests with one key, both shapes point at one
-	// entry and one invalidation drops both. The bastion never derives a key
+	// entry and one invalidation drops both. The proxy never derives a key
 	// itself, so it can never share a decision the server did not share.
 	shapes map[string]string
 	// entries holds the decisions, keyed by the server's cache key.
@@ -177,7 +177,7 @@ func NewCachingClient(inner Client, opts CacheOptions) *CachingClient {
 }
 
 // Authorize returns a cached decision when the server authorised reuse and the
-// bastion can still hear revocations; otherwise it asks the server.
+// proxy can still hear revocations; otherwise it asks the server.
 func (c *CachingClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*AuthorizeResponse, error) {
 	shape, subject, cacheable := authorizeShape(req)
 	if cacheable {
@@ -239,7 +239,7 @@ func (c *CachingClient) StreamAlive(t time.Time) {
 
 // StreamStale reports whether the revocation stream has been unheard for longer
 // than StaleAfter, in which case the cache is not served. It is true before the
-// stream has ever connected: a bastion that has never heard the server must not
+// stream has ever connected: a proxy that has never heard the server must not
 // trust a decision it might have been told to forget.
 func (c *CachingClient) StreamStale() bool {
 	c.mu.Lock()
@@ -339,7 +339,7 @@ func (c *CachingClient) lookup(shape, subject string) (*AuthorizeResponse, bool)
 // store caches resp when the server authorised it.
 func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 	hint := resp.Cache
-	// No hint, no lifetime, or no key means: do not cache. The bastion never
+	// No hint, no lifetime, or no key means: do not cache. The proxy never
 	// supplies any of the three itself.
 	if hint == nil || hint.TTLSeconds <= 0 || hint.Key == "" {
 		return
@@ -382,11 +382,11 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 	if clamped {
 		// Counted and said out loud only when the entry was actually stored, so
 		// the number matches the decisions this really applied to. This is the
-		// one place the bastion holds a decision for less time than the server
-		// asked; leaving it silent would make a fleet where one bastion is
+		// one place the proxy holds a decision for less time than the server
+		// asked; leaving it silent would make a fleet where one proxy is
 		// configured differently impossible to explain from the outside.
 		c.stats.Clamped++
-		c.logf("mgmt: cache: local MaxTTL shortened the server's lifetime for key %q from %s to %s",
+		c.logf("control: cache: local MaxTTL shortened the server's lifetime for key %q from %s to %s",
 			hint.Key, serverTTL, ttl)
 	}
 }
@@ -431,7 +431,7 @@ func (c *CachingClient) pruneExpiredLocked(now time.Time) {
 // change the answer. It reports the subject, and whether the request may be
 // cached at all — an unauthenticated or subject-less request never is.
 //
-// The shape is a bastion-side lookup key only. It is NOT the cache key: the
+// The shape is a proxy-side lookup key only. It is NOT the cache key: the
 // server's opaque CacheHint.Key decides what a decision is shared with and
 // invalidated by.
 func authorizeShape(req *AuthorizeRequest) (shape, subject string, cacheable bool) {

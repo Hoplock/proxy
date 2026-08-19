@@ -20,24 +20,24 @@ hardening/cleanup. This is the acceptance gate for the prototype.
 
 ## In scope
 - `deploy/`: a `docker compose` topology with the five nodes (PLAN §9):
-  1. **management** — `cmd/mock-management` with fixtures covering direct route,
+  1. **management** — `cmd/mock-control` with fixtures covering direct route,
      nexthop route in both connection directions, 401, whitelist & blacklist
      policies, all four match actions, restricted-exec policies, channel
      allow-lists, in-channel request policies, forwarding destination lists,
      global-request allow-lists, and both `target_auth` methods.
   2. **user** — image running the scenario SSH client(s).
-  3. **bastion-direct** — `cmd/bastion` configured for direct routing.
-  4. **bastion-nexthop** — `cmd/bastion` configured to chain to bastion-direct.
+  3. **proxy-direct** — `cmd/proxy` configured for direct routing.
+  4. **proxy-nexthop** — `cmd/proxy` configured to chain to proxy-direct.
   5. **target** — an `sshd` image preloaded with the management cert /
      provisioning account required by 0007's `ephemeral-user`, plus a
      pre-existing unprivileged account standing in for an appliance that
      `brokered-key` reaches without administering it.
-  All on a shared Docker network; the target reachable **only** via the bastions.
+  All on a shared Docker network; the target reachable **only** via the proxies.
 - **Scenario suite** run against the topology:
   - direct route: exec + interactive shell succeed;
   - nexthop route in `dial` mode: exec + interactive shell succeed through both
     hops;
-  - nexthop route in `relay` mode (D11): the same, with the downstream bastion
+  - nexthop route in `relay` mode (D11): the same, with the downstream proxy
     **accepting no inbound connections at all** — enforce it in the compose
     network, so the scenario fails if anything but the registered outbound relay
     carried the session. This is the one that proves the architecture's claim
@@ -69,7 +69,7 @@ hardening/cleanup. This is the acceptance gate for the prototype.
 - **CI: a `govulncheck` job** (`golang.org/x/vuln/cmd/govulncheck`), running
   `govulncheck ./...` over the module and **failing the build** on any finding.
   - *Why this project specifically:* `golang.org/x/crypto/ssh` is not an
-    incidental dependency, it is the bastion's SSH implementation, and its
+    incidental dependency, it is the proxy's SSH implementation, and its
     advisory rate is high. The v0.44.0 → v0.55.0 bump alone (see the Go 1.26
     chore, `main` history) crossed **15** fixed advisories, of which roughly six
     were server-side DoS/panic issues in `x/crypto/ssh` itself — unbounded
@@ -80,7 +80,7 @@ hardening/cleanup. This is the acceptance gate for the prototype.
   - Prefer `govulncheck`'s default symbol-level analysis over a plain dependency
     scan: it reports only vulnerabilities **reachable** from this module's code,
     which keeps the gate from crying wolf about (say) `ssh/agent` advisories
-    that the bastion never calls into.
+    that the proxy never calls into.
   - **Network requirement, and the trap it sets:** govulncheck downloads the
     vulnerability database from `https://vuln.go.dev` at run time. GitHub-hosted
     runners can reach it; some development sandboxes cannot, and the failure is
@@ -100,14 +100,14 @@ hardening/cleanup. This is the acceptance gate for the prototype.
 
 ## Out of scope
 - Real geo/anycast/scale testing (needs real infrastructure — note as future
-  work). Production management server.
+  work). Production Hoplock Control.
 
 ## Acceptance criteria
 - `docker compose` topology comes up cleanly and the full scenario suite passes
   locally and in CI.
-- The target is not reachable except through the bastion chain.
-- A scenario covers the disclosure rule (PLAN §4.3) end to end: with the
-  management server stopped, a connecting user gets a message saying this is an
+- The target is not reachable except through the proxy chain.
+- A scenario covers the disclosure rule (PLAN §4.3) end to end: with Hoplock
+  Control stopped, a connecting user gets a message saying this is an
   outage rather than a permissions problem, carrying the session id — not a
   silent disconnect. A denied user gets the generic "access denied" and nothing
   that reveals the target or the policy. Assert on the client's actual output.
