@@ -246,6 +246,7 @@ hoplock/
 ├── docs/
 │   ├── PLAN.md             # this file
 │   ├── PROTOCOL.md         # session workflow (read before any work)
+│   ├── CROSS-REPO-PROTOCOL.md  # shared with control + enterprise; this repo owns it
 │   └── learnings/          # one learnings file per implemented prompt
 ├── prompts/
 │   ├── queued/             # not-yet-implemented prompts (NNNN-name.md)

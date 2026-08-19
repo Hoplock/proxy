@@ -67,8 +67,16 @@ prefer finishing a smaller, correct slice over reading more.
   discover work that belongs to a later phase, do **not** do it here — note it in
   your learnings file and/or add a new queued prompt (Section 6).
 - **Follow the plan.** Match `docs/PLAN.md`: package layout, interfaces, naming,
-  decisions (D1–D10). If reality forces a deviation, update `docs/PLAN.md` in the
-  **same PR** and call it out in the PR description and learnings.
+  decisions (D1–D12, including D5a and D6a). If reality forces a deviation,
+  update `docs/PLAN.md` in the **same PR** and call it out in the PR description
+  and learnings.
+- **Cross-repo changes follow `docs/CROSS-REPO-PROTOCOL.md`.** This repo owns
+  the contract Hoplock Control vendors (D3), so a change under `api/` creates an
+  obligation in another repository — and that work has no prompt number, so
+  nothing in *this* file covers it. That one does: the ordering (upstream merges
+  first), the downstream-impact check your PR owes, and the conventions for a
+  sync PR. It lists the shared surfaces in its Section 1; if your change touches
+  none of them, you do not need to read it.
 - **Match the codebase.** Mirror existing structure, naming, error handling, and
   test style. Add the per-file license header (see PLAN §8).
 - **No secrets in code or logs.** Never log the initial-auth password. Never
