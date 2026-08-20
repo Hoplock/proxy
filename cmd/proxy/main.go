@@ -107,9 +107,20 @@ func run(configPath string, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	targetAuth, err := target.NewFromConfig(cfg.Auth.Target, target.Options{Logger: logger})
+	targetAuth, err := target.NewFromConfig(cfg.Auth.Target, target.Options{
+		ProxyID: cfg.Proxy.ID,
+		Logger:  logger,
+	})
 	if err != nil {
 		return err
+	}
+	// The ephemeral method's orphan reaper is background work with a lifetime,
+	// so the credential plane gets started and stopped rather than only built.
+	// Stopping it is what keeps a shutdown from being indistinguishable from
+	// the crash the reaper exists to clean up after (PLAN §5.1).
+	if lifecycle, ok := targetAuth.(target.Lifecycle); ok {
+		lifecycle.Start(ctx)
+		defer func() { _ = lifecycle.Close() }()
 	}
 	resolver, err := routing.NewResolver(routing.ResolverOptions{
 		Client:            cache,

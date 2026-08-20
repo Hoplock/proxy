@@ -128,6 +128,10 @@ type harnessOptions struct {
 	targetOptions sshtest.Options
 	// noTarget starts no target at all, so the dial fails.
 	noTarget bool
+	// targetAuth replaces the credential plane. Nil is the static-key
+	// placeholder, which is what most tests want: they are about the engine,
+	// not about which credential it dials with.
+	targetAuth target.TargetAuthenticator
 }
 
 // harness is a running proxy with a target behind it and an SSH client in front.
@@ -189,9 +193,13 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
-	targetAuth, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
-	if err != nil {
-		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	targetAuth := opts.targetAuth
+	if targetAuth == nil {
+		staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+		if err != nil {
+			t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+		}
+		targetAuth = staticKey
 	}
 	userAuth, err := user.NewCertAuthenticator(user.Options{Client: client})
 	if err != nil {
@@ -242,6 +250,12 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		addr:   listener.Addr().String(),
 		logs:   logs,
 	}
+}
+
+// targetHostPort is the stand-in target as a route would name it.
+func (h *harness) targetHostPort() (string, int) {
+	h.t.Helper()
+	return h.target.Host(), h.target.Port()
 }
 
 // dial connects an SSH client to the proxy as username.

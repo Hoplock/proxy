@@ -10,7 +10,10 @@ LISTEN ?= 127.0.0.1:8080
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build test vet lint fmt license-check openapi-check tidy run-proxy run-mock clean
+SSHD_DIR := deploy/sshd
+SSHD_PORT ?= 2022
+
+.PHONY: all build test test-sshd vet lint fmt license-check openapi-check tidy run-proxy run-mock clean
 
 all: build vet test lint
 
@@ -23,6 +26,26 @@ build:
 ## test: run all unit tests with the race detector
 test:
 	$(GO) test -race ./...
+
+## test-sshd: run the target-credential tests against a real sshd in a container
+## (needs docker; phase 0012 folds this into the e2e topology and CI)
+test-sshd:
+	@set -e; \
+	rm -rf $(SSHD_DIR)/keys; mkdir -p $(SSHD_DIR)/keys; \
+	ssh-keygen -q -t ed25519 -N "" -C hoplock-management -f $(SSHD_DIR)/keys/management_key; \
+	ssh-keygen -q -t ed25519 -N "" -C hoplock-brokered -f $(SSHD_DIR)/keys/brokered_key; \
+	HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -f $(SSHD_DIR)/compose.yaml up -d --build; \
+	trap 'HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -f $(SSHD_DIR)/compose.yaml down -v >/dev/null 2>&1; rm -rf $(SSHD_DIR)/keys' EXIT; \
+	for i in $$(seq 1 60); do \
+		if ssh-keyscan -p $(SSHD_PORT) 127.0.0.1 2>/dev/null | grep -q ssh; then break; fi; \
+		sleep 1; \
+	done; \
+	HOPLOCK_TEST_SSHD_ADDR=127.0.0.1:$(SSHD_PORT) \
+	HOPLOCK_TEST_SSHD_MANAGEMENT_KEY=$(SSHD_DIR)/keys/management_key \
+	HOPLOCK_TEST_SSHD_PROVISIONING_USER=root \
+	HOPLOCK_TEST_SSHD_BROKERED_USER=netadmin \
+	HOPLOCK_TEST_SSHD_BROKERED_KEY=$(SSHD_DIR)/keys/brokered_key \
+	$(GO) test -count=1 -v -run TestSSHD ./internal/auth/target/
 
 ## vet: run go vet
 vet:

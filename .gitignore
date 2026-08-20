@@ -22,3 +22,6 @@ config.local.yaml
 .idea/
 .vscode/
 *.swp
+
+# Generated per run by `make test-sshd`; never committed.
+deploy/sshd/keys/

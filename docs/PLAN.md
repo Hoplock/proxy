@@ -437,6 +437,28 @@ Robustness requirements:
 > and concurrency explicitly, and its learnings file must document the exact
 > teardown guarantees for later sessions.
 
+**As built (phase 0007).** Three choices give the requirements above their
+concrete form, and later phases depend on all three:
+
+- **The account name is the registry.** Accounts are named
+  `hl-<proxy tag>-<login>-<token>`, where the tag is a digest of this proxy's
+  id. The reaper finds orphans by that prefix, which is why a crash — the case
+  that destroys every in-memory record — is still recoverable; the tag stops one
+  proxy from sweeping another's live sessions on a shared target; the token is
+  the answer to concurrency (unique principals, not coordination), so two
+  sessions for one login never share an account or a teardown.
+- **Sweeps happen on the provisioning path, not only on a timer.** A restarted
+  proxy has no idea which targets it owes cleanup on, so the first successful
+  provisioning on a target triggers a (rate-limited, background) sweep of it.
+  A live account is never swept whatever its age; an untracked one is swept once
+  it is older than a grace period, which is what protects a session that is
+  being provisioned right now.
+- **A key lifetime is enforced on the target.** `lifetime_seconds` becomes
+  OpenSSH's `expiry-time` restriction in `authorized_keys`, so the key stops
+  working whether or not this proxy is alive to remove it. A proxy configured
+  for a fleet whose sshd cannot express that refuses the route rather than
+  serving it with a key that never expires.
+
 ### 5.2 `brokered-key` — a credential held only for the session (D6a)
 
 The target is unchanged: nothing is created, nothing is removed, and the only
@@ -457,6 +479,15 @@ prerequisite is an account that already exists on it. The proxy is handed
   only from this system's records. That is an honest trade for reaching devices
   D6 cannot, and it is the reason session capture (§7) is not optional for
   routes using this method.
+
+**As built (phase 0007).** The seam is `target.CredentialSource`: one method,
+`Credential(ctx, CredentialRequest) (*Credential, error)`, where the request
+carries the target, the route's opaque `credential_ref`, the account name, and
+the subject. Two local implementations ship — a directory of files and the
+process environment, both keyed by the reference and read on demand rather than
+cached. **A Hoplock Control that mints per-session credentials implements this
+interface**; it arrives as another `target_auth` method plus a source, and
+nothing that touches a credential changes.
 
 ---
 

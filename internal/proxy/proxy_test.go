@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/hoplock/proxy/internal/auth/target"
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/sshtest"
@@ -598,5 +601,140 @@ func settle() {
 		runtime.Gosched()
 		time.Sleep(50 * time.Millisecond)
 		runtime.GC()
+	}
+}
+
+// TestUnimplementedTargetAuthMethodIsAnOutage covers the D6a rule at the level
+// where it matters: Hoplock Control chose a credential method this proxy does
+// not have, so the session fails as an outage naming the session id — and, the
+// half that is a security property rather than a UX one, NOTHING is provisioned
+// and no other method is quietly substituted.
+func TestUnimplementedTargetAuthMethodIsAnOutage(t *testing.T) {
+	placeholder, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{
+		Signer: sshtest.MustGenerateSigner(),
+	})
+	if err != nil {
+		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	}
+	selector, err := target.NewSelector(
+		map[string]target.TargetAuthenticator{target.MethodStaticKey: placeholder},
+		target.MethodStaticKey,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+
+	h := newHarness(t, harnessOptions{targetAuth: selector})
+	h.client.authorize = func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
+		host, port := h.targetHostPort()
+		return &control.AuthorizeResponse{
+			RouteType:         control.RouteTypeDirect,
+			Target:            host,
+			TargetPort:        port,
+			Permissions:       "testGroup",
+			PermittedChannels: []string{channelSession},
+			TargetAuth:        &control.TargetAuth{Method: "control-minted"},
+			DecisionID:        "decision-1",
+		}, nil
+	}
+
+	text, status := runAndCollect(t, h, "uptime")
+
+	if strings.Contains(text, user.DenyMessage) {
+		t.Errorf("the refusal %q reads as a denial; an unimplemented method is an outage", text)
+	}
+	if !strings.Contains(text, "credentials for the target could not be provisioned") {
+		t.Errorf("user saw %q, want it to name the provisioning failure", text)
+	}
+	if !strings.Contains(text, testSessionID) {
+		t.Errorf("user saw %q, want it to carry the session id %q", text, testSessionID)
+	}
+	if status == 0 {
+		t.Error("a session that was never provisioned exited 0")
+	}
+	if logins := h.target.Logins(); len(logins) != 0 {
+		t.Errorf("the proxy logged into the target as %v with a method the server did not choose", logins)
+	}
+}
+
+// TestBrokeredCredentialDoesNotReachTheSessionLog is the disclosure rule
+// applied to the credential plane (D6a, PLAN §5.2): a whole session runs on a
+// brokered credential and the proxy's own log — the one thing this phase adds
+// that is written down and shipped elsewhere (D8) — never contains it.
+func TestBrokeredCredentialDoesNotReachTheSessionLog(t *testing.T) {
+	_, pem, err := sshtest.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	body := bytes.TrimSpace(pem)
+	marker := body[len(body)/2 : len(body)/2+48]
+
+	store := t.TempDir()
+	if err := os.WriteFile(filepath.Join(store, "core-switch.key"), pem, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	source, err := target.NewDirCredentialSource(store, "")
+	if err != nil {
+		t.Fatalf("NewDirCredentialSource: %v", err)
+	}
+	authLogs := &syncBuffer{}
+	brokered, err := target.NewBrokeredKeyAuthenticator(target.BrokeredKeyOptions{
+		Source:   source,
+		Username: "netadmin",
+		Logger:   authLogs.logger(),
+	})
+	if err != nil {
+		t.Fatalf("NewBrokeredKeyAuthenticator: %v", err)
+	}
+	selector, err := target.NewSelector(
+		map[string]target.TargetAuthenticator{target.MethodBrokeredKey: brokered},
+		target.MethodBrokeredKey,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+
+	h := newHarness(t, harnessOptions{targetAuth: selector})
+	h.client.authorize = func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
+		host, port := h.targetHostPort()
+		return &control.AuthorizeResponse{
+			RouteType:         control.RouteTypeDirect,
+			Target:            host,
+			TargetPort:        port,
+			Permissions:       "applianceGroup",
+			PermittedChannels: []string{channelSession},
+			TargetAuth: &control.TargetAuth{
+				Method: control.TargetAuthBrokeredKey,
+				Params: map[string]string{"credential_ref": "core-switch"},
+			},
+			DecisionID: "decision-1",
+		}, nil
+	}
+
+	client := h.mustDial(h.username())
+	defer func() { _ = client.Close() }()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+	if _, err := session.Output("show version"); err != nil {
+		t.Fatalf("the brokered session failed: %v", err)
+	}
+	if logins := h.target.Logins(); len(logins) == 0 || logins[0] != "netadmin" {
+		t.Errorf("the target saw logins %v, want the pre-existing account", logins)
+	}
+	for name, logs := range map[string]string{"the proxy": h.logs.String(), "the credential plane": authLogs.String()} {
+		if strings.Contains(logs, string(marker)) {
+			t.Errorf("the credential appears in %s's log:\n%s", name, logs)
+		}
+	}
+	// The reference is a handle and IS logged, which is what makes the session
+	// traceable to the material it used — and what makes this test meaningful:
+	// the plane logged about the credential without logging the credential.
+	if !strings.Contains(authLogs.String(), "core-switch") {
+		t.Error("the session did not log which credential it used, so this test proves nothing")
 	}
 }

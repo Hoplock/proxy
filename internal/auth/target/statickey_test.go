@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/hoplock/proxy/internal/config"
@@ -116,12 +117,26 @@ func TestNewFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
-	if got, want := auth.Name(), MethodStaticKey; got != want {
+	// Since contract v2 the plane is a selector over the methods this proxy has
+	// material for; the configured method is its fallback, not its identity.
+	if got, want := auth.Name(), MethodPerRoute; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
+	selector, ok := auth.(*Selector)
+	if !ok {
+		t.Fatalf("NewFromConfig returned %T, want *Selector", auth)
+	}
+	if got, want := selector.available(), []string{MethodStaticKey}; !reflect.DeepEqual(got, want) {
+		t.Errorf("available methods = %v, want %v", got, want)
+	}
 
-	if _, err := NewFromConfig(config.TargetAuth{Method: "ephemeral"}, Options{}); !errors.Is(err, ErrUnknownMethod) {
-		t.Errorf("NewFromConfig with an unknown method = %v, want errors.Is(..., ErrUnknownMethod)", err)
+	// A fallback with no local material is a misconfiguration, and it is caught
+	// at startup rather than at the first connection.
+	if _, err := NewFromConfig(config.TargetAuth{
+		Method:    config.TargetAuthMethodEphemeralUser,
+		StaticKey: config.StaticKeyAuth{KeyPath: keyPath},
+	}, Options{}); !errors.Is(err, ErrMethodUnavailable) {
+		t.Errorf("NewFromConfig with an unconfigured fallback = %v, want errors.Is(..., ErrMethodUnavailable)", err)
 	}
 }
 

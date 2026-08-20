@@ -469,6 +469,73 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 			wantCause: ErrMissing,
 		},
 		{
+			// The ephemeral method needs both halves of its management login;
+			// neither has a safe default.
+			name: "ephemeral without a management key",
+			mutate: func(c *Config) {
+				c.Auth.Target.Method = TargetAuthMethodEphemeralUser
+				c.Auth.Target.EphemeralUser.ProvisioningUser = "hoplock-admin"
+			},
+			wantField: "auth.target.ephemeral_user.management_key_path",
+			wantCause: ErrMissing,
+		},
+		{
+			name: "ephemeral without a provisioning account",
+			mutate: func(c *Config) {
+				c.Auth.Target.Method = TargetAuthMethodEphemeralUser
+				c.Auth.Target.EphemeralUser.ManagementKeyPath = "/etc/hoplock/management_key"
+			},
+			wantField: "auth.target.ephemeral_user.provisioning_user",
+			wantCause: ErrMissing,
+		},
+		{
+			// Since contract v2 a proxy is normally configured for methods it
+			// does not default to, because the SERVER selects per route. A
+			// half-written one must fail at startup rather than at the first
+			// route that names it.
+			name: "a method that is configured but not the fallback",
+			mutate: func(c *Config) {
+				c.Auth.Target.EphemeralUser.ProvisioningUser = "hoplock-admin"
+			},
+			wantField: "auth.target.ephemeral_user.management_key_path",
+			wantCause: ErrMissing,
+		},
+		{
+			name: "negative reaper grace",
+			mutate: func(c *Config) {
+				c.Auth.Target.EphemeralUser = EphemeralUserAuth{
+					ManagementKeyPath: "/etc/hoplock/management_key",
+					ProvisioningUser:  "hoplock-admin",
+					Reaper:            ReaperAuth{Grace: -time.Minute},
+				}
+			},
+			wantField: "auth.target.ephemeral_user.reaper.grace",
+			wantCause: ErrInvalid,
+		},
+		{
+			name: "brokered with an unknown source",
+			mutate: func(c *Config) {
+				c.Auth.Target.BrokeredKey = BrokeredKeyAuth{Source: "vault"}
+			},
+			wantField: "auth.target.brokered_key.source",
+			wantCause: ErrInvalid,
+		},
+		{
+			name: "brokered dir source without a directory",
+			mutate: func(c *Config) {
+				c.Auth.Target.BrokeredKey = BrokeredKeyAuth{Source: BrokeredSourceDir}
+			},
+			wantField: "auth.target.brokered_key.dir",
+			wantCause: ErrMissing,
+		},
+		{
+			// The environment source needs no path of its own.
+			name: "brokered env source",
+			mutate: func(c *Config) {
+				c.Auth.Target.BrokeredKey = BrokeredKeyAuth{Source: BrokeredSourceEnv}
+			},
+		},
+		{
 			name:      "negative dial timeout",
 			mutate:    func(c *Config) { c.Dial.DialTimeout = -time.Second },
 			wantField: "dial.dial_timeout",
