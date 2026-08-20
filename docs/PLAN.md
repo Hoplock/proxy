@@ -218,6 +218,17 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   Which mode applies is per connection and comes from the server. Marketing,
   docs, and the audit record use the same two words for the same two things.
 
+  **Where** either mode is enforced is a separate question, opened by phase
+  0013. Both tiers above are enforced *in the proxy, at the `exec` request*, so
+  both stop meaning anything the moment a route permits an interactive shell —
+  which this decision says in as many words. The ephemeral method (D6, §5.1)
+  creates the account, writes its `authorized_keys`, and chooses its shell, so
+  on those routes the same policy can be enforced by sshd and the kernel
+  instead, where it also survives a connection that never went through a proxy.
+  0013 surveys those enforcement points and gives Hoplock Control the vocabulary
+  to choose one per route; 0014 implements them. This decision is amended there
+  rather than replaced.
+
 ---
 
 ## 3. Architecture & repository layout
@@ -738,6 +749,8 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0010 | Command filtering + policy actions      | `internal/filter`: restricted exec (enforced), filtered exec, interactive best-effort |
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
+| 0013 | Enforcement points — contract v3         | survey of where policy is actually enforced (D12 amendment), server-chosen enforcement rung + proxy capability advertisement in `api/` |
+| 0014 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem), teardown + reaper + e2e |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

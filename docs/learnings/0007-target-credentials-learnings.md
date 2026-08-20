@@ -197,6 +197,15 @@ Control's `routes[].target_auth` decides which route uses which.
 - **The management login is opened per operation** (provision, teardown, each
   sweep). Correct and simple; a pooled connection would cut a round trip off
   session setup if profiling ever says it matters.
+- **Confining the ephemeral account itself** — queued as **0013** (survey +
+  contract) and **0014** (implementation). The provisioner writes the account's
+  `authorized_keys`, chooses its shell, and owns its home, so it can bound what
+  that account may execute at the OS rather than at the proxy: the only
+  enforcement point in the system that survives an interactive shell, and the
+  only one that holds for a connection that bypasses the proxy entirely. Nothing
+  in this phase was built to preclude it — `authorizedKeyLine` is already the
+  single place options are written, and the teardown script already verifies
+  rather than assumes.
 - **Ephemeral certificates.** D6 says "keypair/cert"; this ships a keypair plus
   `expiry-time`. A short-lived certificate signed by a CA the fleet already
   trusts would remove the `authorized_keys` write entirely — a natural follow-up
