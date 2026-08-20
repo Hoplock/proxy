@@ -51,6 +51,7 @@ type Target struct {
 
 	mu       sync.Mutex
 	logins   []string
+	keys     []ssh.PublicKey
 	commands []string
 	ptys     int
 	envs     []string
@@ -88,8 +89,11 @@ func StartTarget(opts Options) (*Target, error) {
 	}
 
 	t.config = &ssh.ServerConfig{
-		PublicKeyCallback: func(conn ssh.ConnMetadata, _ ssh.PublicKey) (*ssh.Permissions, error) {
-			t.record(func() { t.logins = append(t.logins, conn.User()) })
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			t.record(func() {
+				t.logins = append(t.logins, conn.User())
+				t.keys = append(t.keys, key)
+			})
 			return &ssh.Permissions{}, nil
 		},
 	}
@@ -133,6 +137,15 @@ func (t *Target) Logins() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]string(nil), t.logins...)
+}
+
+// Keys are the public keys the target was offered, in order. A target that
+// accepts every key still records which one it was shown, which is how a test
+// tells the key a session offered from the key it was supposed to offer.
+func (t *Target) Keys() []ssh.PublicKey {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]ssh.PublicKey(nil), t.keys...)
 }
 
 // Commands are the exec requests the target received, in order.

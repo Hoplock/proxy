@@ -182,7 +182,17 @@ func (s *session) setup() {
 	}
 	s.route = route
 
-	access, err := s.srv.targetAuth.Provision(s.ctx, s.identity, target.Target{Host: route.Host, Port: route.Port})
+	// The route carries the credential method Hoplock Control chose for this
+	// connection (D6a) and the session carries the host-key policy (D7); the
+	// authenticator owns neither. A provisioner that opens its own connection
+	// to the target — the ephemeral method's management login does — borrows
+	// the callback rather than deciding host trust for itself.
+	access, err := s.srv.targetAuth.Provision(s.ctx, s.identity, target.Target{
+		Host:            route.Host,
+		Port:            route.Port,
+		Auth:            route.TargetAuth,
+		HostKeyCallback: s.hostKeyCallback,
+	})
 	if err != nil {
 		s.failSetup(&setupError{stage: stageProvision, err: err})
 		return

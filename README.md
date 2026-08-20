@@ -32,26 +32,30 @@ before reading the code.
 
 > Status: early, but end to end. The proxy authenticates a user, authorizes
 > the connection against Hoplock Control, and proxies a **direct** route
-> to a target, passing every SSH channel through generically. Target
-> credentials are still a placeholder (one preloaded key — see
-> `auth.target.method` in `config.example.yaml`). Next is a revision of the
-> Control API contract (phase 0006) that gives policy the vocabulary the later
-> phases enforce — per-request channel policy, destination-aware forwarding,
-> global requests, server-chosen target credentials, hop connection direction —
-> followed by target credentials, next-hop chaining, inspection, filtering, and
-> the logging pipeline. See `docs/PLAN.md` §10 for the order.
+> to a target, passing every SSH channel through generically. Both production
+> target-credential methods are in: **ephemeral-user**, which creates a
+> short-lived account and key on the target for the session and removes them
+> afterwards (with an orphan reaper for the sessions whose proxy died), and
+> **brokered-key**, a credential held in memory for one session for the
+> appliances and network gear the proxy cannot administer. Hoplock Control
+> chooses between them per route; `auth.target` in `config.example.yaml` holds
+> only the local material each needs. Next are next-hop chaining, channel
+> inspection, command filtering, and the logging pipeline. See `docs/PLAN.md`
+> §10 for the order.
 
 ## Requirements
 
 - Go **1.25** or newer (CI builds and tests on the latest stable release)
 - [`golangci-lint`](https://golangci-lint.run) v2 (for `make lint`)
 - Python 3 with `openapi-spec-validator` (for `make openapi-check` only)
+- Docker with `compose`, and `ssh-keygen` (for `make test-sshd` only)
 
 ## Build and run
 
 ```sh
 make build                      # binaries into ./bin
 make test                       # unit tests with -race
+make test-sshd                  # credential tests against a real sshd (needs docker)
 make vet                        # go vet
 make lint                       # golangci-lint
 make license-check              # every .go file carries the license header
@@ -98,7 +102,7 @@ per connection (`docs/PLAN.md`, D2).
 | `cmd/mock-control` | reference/mock Control API for dev and CI                |
 | `internal/`         | the implementation packages (see `docs/PLAN.md` §3)           |
 | `api/`              | Control API contract — source of truth                     |
-| `deploy/`           | docker-compose e2e topology and fixtures (final phase)        |
+| `deploy/`           | container fixtures: `sshd/` today, the full e2e topology in the final phase |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
 | `prompts/`          | queued and implemented phase prompts                          |
 

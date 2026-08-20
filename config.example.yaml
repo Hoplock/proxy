@@ -73,8 +73,12 @@ auth:
     #
     # "static-key" is the phase-0005 PLACEHOLDER: one preloaded key for every
     # session on every target, provisioning nothing and expiring nothing. It is
-    # for development topologies only; the ephemeral just-in-time provisioner
-    # (D6) and brokered-key (D6a) arrive in phase 0007.
+    # for development topologies only. The two production methods are
+    # "ephemeral-user" (D6) and "brokered-key" (D6a), configured below.
+    #
+    # Configure every method this proxy may be asked for, not just this one: a
+    # route naming a method with no local material here is refused as an outage,
+    # never served with a different credential than the server chose.
     method: "static-key"
     static_key:
       # Private key the proxy logs into targets with. Never commit a real key.
@@ -82,3 +86,61 @@ auth:
       # Log into every target as this account instead of the authenticated
       # login. Optional; empty uses the login.
       username: ""
+
+    # ephemeral-user (D6, PLAN §5.1): the proxy logs in with a management
+    # certificate, creates a short-lived account and key for the session, and
+    # removes both afterwards. Everything here is LOCAL MATERIAL — which key,
+    # which privileged account, what the created accounts look like.
+    ephemeral_user:
+      # Private key of the management certificate, preloaded on targets as an
+      # authorized key for provisioning_user. Required for this method.
+      management_key_path: "/etc/hoplock/management_key"
+      # Optional OpenSSH certificate presented with that key, for fleets that
+      # trust a CA rather than a key — which is how this is meant to be
+      # deployed: rotating the proxy's credential then touches no target.
+      management_cert_path: ""
+      # The privileged account on the target. Required for this method.
+      provisioning_user: "hoplock-admin"
+      # The remote command the provisioning scripts are handed to. Set it to
+      # "sudo -n sh -c" when provisioning_user is not root, so the whole script
+      # runs inside one privileged shell.
+      shell: "sh -c"
+      # Parent directory of ephemeral home directories.
+      home_base: "/home"
+      # Login shell given to ephemeral accounts.
+      target_shell: "/bin/sh"
+      # Write OpenSSH's expiry-time restriction into the ephemeral
+      # authorized_keys entry when a route asks for a lifetime. Set it to false
+      # only for a fleet whose sshd predates 8.2: a route that then asks for a
+      # lifetime is REFUSED rather than served with a key that never expires.
+      key_expiry: true
+      # Bounds one management login and the script it runs.
+      timeout: 30s
+      # The orphan reaper (PLAN §5.1). It removes accounts left behind by
+      # sessions whose proxy died before teardown could run.
+      reaper:
+        # How often every target this proxy has provisioned on is swept.
+        # Negative disables background sweeping entirely.
+        interval: 10m
+        # How old an untracked ephemeral account must be before a sweep removes
+        # it. This is what protects a session the proxy does not know about yet
+        # — one being provisioned right now, or one belonging to another
+        # process using this proxy id. Minutes, not seconds.
+        grace: 30m
+
+    # brokered-key (D6a, PLAN §5.2): a credential held in memory for the
+    # session and never written to disk, for the appliances, network gear, and
+    # OT devices the proxy cannot administer. The target is not modified.
+    brokered_key:
+      # Where this proxy's local material lives: "dir" or "env". The route's
+      # credential_ref selects which entry — it is an opaque handle and never
+      # carries material itself.
+      source: "dir"
+      # Log into brokered targets as this account when the route names none.
+      # Empty uses the authenticated login.
+      username: ""
+      # dir source: one file per reference, "<dir>/<ref><file_suffix>".
+      dir: "/etc/hoplock/brokered"
+      file_suffix: ".key"
+      # env source: the variable is "<env_prefix><REF>", upper-cased.
+      env_prefix: "HOPLOCK_BROKERED_"

@@ -25,12 +25,41 @@ import (
 // SSH username, e.g. "alice#host.company.com" (D1).
 const DefaultTargetDelimiter = "#"
 
-// TargetAuthMethodStaticKey names the placeholder proxy→target
-// authentication method (PLAN §4.2). It lives here, rather than in
-// internal/auth/target, for the same reason the user-plane method names live in
-// internal/identity: config has to validate the name, and a name spelled in two
-// places eventually gets spelled two ways.
-const TargetAuthMethodStaticKey = "static-key"
+// The proxy→target authentication methods (PLAN §4.2, D6/D6a). They live here,
+// rather than in internal/auth/target, for the same reason the user-plane
+// method names live in internal/identity: config has to validate the name, and
+// a name spelled in two places eventually gets spelled two ways.
+const (
+	// TargetAuthMethodStaticKey is the phase-0005 placeholder: one preloaded
+	// key for every session on every target.
+	TargetAuthMethodStaticKey = "static-key"
+	// TargetAuthMethodEphemeralUser creates a short-lived OS account and key on
+	// the target and removes both afterwards (D6).
+	TargetAuthMethodEphemeralUser = "ephemeral-user"
+	// TargetAuthMethodBrokeredKey uses a per-target credential held for the
+	// session and never written to disk (D6a).
+	TargetAuthMethodBrokeredKey = "brokered-key"
+)
+
+// Brokered credential sources (D6a). The source is where the proxy's LOCAL
+// material lives; a future Hoplock Control that mints per-session credentials
+// is another target_auth method, not another entry here.
+const (
+	// BrokeredSourceDir reads one file per credential reference.
+	BrokeredSourceDir = "dir"
+	// BrokeredSourceEnv reads the process environment.
+	BrokeredSourceEnv = "env"
+)
+
+// Defaults for the credential methods that phase 0007 added.
+const (
+	// DefaultBrokeredFileSuffix is appended to a credential reference to name
+	// its file.
+	DefaultBrokeredFileSuffix = ".key"
+	// DefaultBrokeredEnvPrefix prefixes the environment variable holding a
+	// credential.
+	DefaultBrokeredEnvPrefix = "HOPLOCK_BROKERED_"
+)
 
 // Config is the proxy's bootstrap configuration. It holds only what the
 // proxy needs to start and reach Hoplock Control; every policy decision
@@ -123,11 +152,93 @@ type Auth struct {
 type TargetAuth struct {
 	// Method is the fallback used when the authorize response carries no
 	// target_auth. Defaults to TargetAuthMethodStaticKey, the phase-0005
-	// placeholder; the ephemeral just-in-time provisioner (D6) and
-	// brokered-key (D6a) are added in phase 0007.
+	// placeholder.
 	Method string `yaml:"method"`
 	// StaticKey configures the placeholder implementation.
 	StaticKey StaticKeyAuth `yaml:"static_key"`
+	// EphemeralUser configures just-in-time provisioning (D6).
+	EphemeralUser EphemeralUserAuth `yaml:"ephemeral_user"`
+	// BrokeredKey configures session-scoped credentials (D6a).
+	BrokeredKey BrokeredKeyAuth `yaml:"brokered_key"`
+}
+
+// EphemeralUserAuth is the local material the just-in-time provisioner needs
+// (D6, PLAN §5.1): the management certificate preloaded on targets, the account
+// it logs in as, and the shape of what it creates there.
+//
+// Every field here describes THIS PROXY or the fleet it fronts. None of it
+// decides which sessions use the method — that is the route's target_auth, and
+// a proxy that could choose for itself would be originating policy (D2).
+type EphemeralUserAuth struct {
+	// ManagementKeyPath is the management certificate's private key, preloaded
+	// on targets as an authorized key for ProvisioningUser. Required for this
+	// method.
+	ManagementKeyPath string `yaml:"management_key_path"`
+	// ManagementCertPath is an optional OpenSSH certificate for that key, for
+	// fleets that trust a CA rather than a key.
+	ManagementCertPath string `yaml:"management_cert_path"`
+	// ProvisioningUser is the privileged account on the target. Required for
+	// this method.
+	ProvisioningUser string `yaml:"provisioning_user"`
+	// Shell is the remote command the provisioning scripts are handed to. A
+	// provisioning account that is not root sets it to "sudo -n sh -c", so the
+	// whole script runs inside one privileged shell. Empty means "sh -c".
+	Shell string `yaml:"shell"`
+	// HomeBase is the parent directory of ephemeral home directories. Empty
+	// means "/home".
+	HomeBase string `yaml:"home_base"`
+	// TargetShell is the login shell given to ephemeral accounts. Empty means
+	// "/bin/sh".
+	TargetShell string `yaml:"target_shell"`
+	// KeyExpiry writes OpenSSH's expiry-time restriction into the ephemeral
+	// authorized_keys entry when a route asks for a lifetime. Defaults to true.
+	// Set it to false only for a fleet whose sshd predates 8.2 — a route that
+	// then asks for a lifetime is REFUSED rather than served with a key that
+	// never expires.
+	KeyExpiry *bool `yaml:"key_expiry"`
+	// Timeout bounds one management login and the script it runs. Zero means
+	// the package default.
+	Timeout time.Duration `yaml:"timeout"`
+	// Reaper tunes the orphan sweep.
+	Reaper ReaperAuth `yaml:"reaper"`
+}
+
+// ReaperAuth tunes the orphan reaper (PLAN §5.1). Neither field is policy: they
+// bound how quickly an account left behind by a dead session is found.
+type ReaperAuth struct {
+	// Interval is how often the periodic sweep runs. Zero means the package
+	// default; negative disables background sweeping entirely, which leaves
+	// accounts from a crashed proxy to be found by hand.
+	Interval time.Duration `yaml:"interval"`
+	// Grace is how old an untracked ephemeral account must be before a sweep
+	// removes it. Zero means the package default. It must stay comfortably
+	// longer than a provisioning takes: it is what protects a session this
+	// process does not know about yet.
+	Grace time.Duration `yaml:"grace"`
+}
+
+// BrokeredKeyAuth is the local material for session-scoped credentials (D6a,
+// PLAN §5.2).
+//
+// The credential itself is never in this file and never on the proxy's disk in
+// a form this config names: Dir points at a store an operator manages, EnvPrefix
+// at variables a scheduler injects. Which one a session uses is the route's
+// credential_ref, an opaque handle that carries no material of its own.
+type BrokeredKeyAuth struct {
+	// Source is BrokeredSourceDir or BrokeredSourceEnv. Empty means
+	// BrokeredSourceDir.
+	Source string `yaml:"source"`
+	// Username logs into every brokered target as this account when the route
+	// names none. Empty uses the authenticated login.
+	Username string `yaml:"username"`
+	// Dir holds one file per credential reference. Required for the dir source.
+	Dir string `yaml:"dir"`
+	// FileSuffix is appended to a reference to name its file. Empty means
+	// DefaultBrokeredFileSuffix.
+	FileSuffix string `yaml:"file_suffix"`
+	// EnvPrefix prefixes the environment variable holding a credential. Empty
+	// means DefaultBrokeredEnvPrefix.
+	EnvPrefix string `yaml:"env_prefix"`
 }
 
 // StaticKeyAuth configures the placeholder target authenticator: one preloaded
@@ -390,16 +501,76 @@ func (c *Config) validateAuth(v *ValidationError) {
 // selected method are checked: phase 0006 adds a method that needs no static
 // key, and a config that still carries one must not be forced to keep it valid.
 func (c *Config) validateTargetAuth(v *ValidationError) {
-	switch c.Auth.Target.Method {
-	case TargetAuthMethodStaticKey:
-		if c.Auth.Target.StaticKey.KeyPath == "" {
+	t := c.Auth.Target
+	switch t.Method {
+	case TargetAuthMethodStaticKey, TargetAuthMethodEphemeralUser, TargetAuthMethodBrokeredKey:
+	default:
+		v.add("auth.target.method", ErrInvalid,
+			fmt.Sprintf("unknown method %q", t.Method))
+	}
+
+	// Each method's settings are checked when it is the fallback OR when
+	// anything about it was written down. The second half matters since
+	// contract v2: the method a route names is the SERVER's choice, so a proxy
+	// is normally configured for methods it is not itself defaulting to, and a
+	// typo in one of them must not wait for the first route that selects it.
+	if t.Method == TargetAuthMethodStaticKey || t.StaticKey != (StaticKeyAuth{}) {
+		if t.StaticKey.KeyPath == "" {
 			v.add("auth.target.static_key.key_path", ErrMissing,
 				"the static-key method logs into targets with this key")
 		}
-	default:
-		v.add("auth.target.method", ErrInvalid,
-			fmt.Sprintf("unknown method %q", c.Auth.Target.Method))
 	}
+	if t.Method == TargetAuthMethodEphemeralUser || ephemeralConfigured(t.EphemeralUser) {
+		if t.EphemeralUser.ManagementKeyPath == "" {
+			v.add("auth.target.ephemeral_user.management_key_path", ErrMissing,
+				"the ephemeral-user method logs into targets with the management certificate")
+		}
+		if t.EphemeralUser.ProvisioningUser == "" {
+			v.add("auth.target.ephemeral_user.provisioning_user", ErrMissing,
+				"the privileged account the management certificate logs in as")
+		}
+		if t.EphemeralUser.Timeout < 0 {
+			v.add("auth.target.ephemeral_user.timeout", ErrInvalid, "must not be negative")
+		}
+		if t.EphemeralUser.Reaper.Grace < 0 {
+			v.add("auth.target.ephemeral_user.reaper.grace", ErrInvalid, "must not be negative")
+		}
+	}
+	if t.Method == TargetAuthMethodBrokeredKey || brokeredConfigured(t.BrokeredKey) {
+		switch t.BrokeredKey.Source {
+		case "", BrokeredSourceDir:
+			if t.BrokeredKey.Dir == "" {
+				v.add("auth.target.brokered_key.dir", ErrMissing,
+					"the dir source reads one credential file per reference from here")
+			}
+		case BrokeredSourceEnv:
+		default:
+			v.add("auth.target.brokered_key.source", ErrInvalid,
+				fmt.Sprintf("unknown source %q", t.BrokeredKey.Source))
+		}
+	}
+}
+
+// ephemeralConfigured reports whether the operator wrote anything about the
+// ephemeral method.
+func ephemeralConfigured(e EphemeralUserAuth) bool {
+	return e.ManagementKeyPath != "" || e.ManagementCertPath != "" || e.ProvisioningUser != "" ||
+		e.Shell != "" || e.HomeBase != "" || e.TargetShell != "" || e.KeyExpiry != nil ||
+		e.Timeout != 0 || e.Reaper != (ReaperAuth{})
+}
+
+// brokeredConfigured reports whether the operator wrote anything about the
+// brokered method.
+func brokeredConfigured(b BrokeredKeyAuth) bool { return b != (BrokeredKeyAuth{}) }
+
+// EphemeralKeyExpiry resolves the key_expiry setting, which defaults to true:
+// a fleet that can express a key lifetime should, and the operators who cannot
+// are the ones who have to say so.
+func (e EphemeralUserAuth) EphemeralKeyExpiry() bool {
+	if e.KeyExpiry == nil {
+		return true
+	}
+	return *e.KeyExpiry
 }
 
 func (v *ValidationError) add(field string, cause error, detail string) {

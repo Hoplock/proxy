@@ -218,6 +218,17 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   Which mode applies is per connection and comes from the server. Marketing,
   docs, and the audit record use the same two words for the same two things.
 
+  **Where** either mode is enforced is a separate question, opened by phase
+  0013. Both tiers above are enforced *in the proxy, at the `exec` request*, so
+  both stop meaning anything the moment a route permits an interactive shell —
+  which this decision says in as many words. The ephemeral method (D6, §5.1)
+  creates the account, writes its `authorized_keys`, and chooses its shell, so
+  on those routes the same policy can be enforced by sshd and the kernel
+  instead, where it also survives a connection that never went through a proxy.
+  0013 surveys those enforcement points and gives Hoplock Control the vocabulary
+  to choose one per route; 0014 implements them. This decision is amended there
+  rather than replaced.
+
 ---
 
 ## 3. Architecture & repository layout
@@ -437,6 +448,28 @@ Robustness requirements:
 > and concurrency explicitly, and its learnings file must document the exact
 > teardown guarantees for later sessions.
 
+**As built (phase 0007).** Three choices give the requirements above their
+concrete form, and later phases depend on all three:
+
+- **The account name is the registry.** Accounts are named
+  `hl-<proxy tag>-<login>-<token>`, where the tag is a digest of this proxy's
+  id. The reaper finds orphans by that prefix, which is why a crash — the case
+  that destroys every in-memory record — is still recoverable; the tag stops one
+  proxy from sweeping another's live sessions on a shared target; the token is
+  the answer to concurrency (unique principals, not coordination), so two
+  sessions for one login never share an account or a teardown.
+- **Sweeps happen on the provisioning path, not only on a timer.** A restarted
+  proxy has no idea which targets it owes cleanup on, so the first successful
+  provisioning on a target triggers a (rate-limited, background) sweep of it.
+  A live account is never swept whatever its age; an untracked one is swept once
+  it is older than a grace period, which is what protects a session that is
+  being provisioned right now.
+- **A key lifetime is enforced on the target.** `lifetime_seconds` becomes
+  OpenSSH's `expiry-time` restriction in `authorized_keys`, so the key stops
+  working whether or not this proxy is alive to remove it. A proxy configured
+  for a fleet whose sshd cannot express that refuses the route rather than
+  serving it with a key that never expires.
+
 ### 5.2 `brokered-key` — a credential held only for the session (D6a)
 
 The target is unchanged: nothing is created, nothing is removed, and the only
@@ -457,6 +490,15 @@ prerequisite is an account that already exists on it. The proxy is handed
   only from this system's records. That is an honest trade for reaching devices
   D6 cannot, and it is the reason session capture (§7) is not optional for
   routes using this method.
+
+**As built (phase 0007).** The seam is `target.CredentialSource`: one method,
+`Credential(ctx, CredentialRequest) (*Credential, error)`, where the request
+carries the target, the route's opaque `credential_ref`, the account name, and
+the subject. Two local implementations ship — a directory of files and the
+process environment, both keyed by the reference and read on demand rather than
+cached. **A Hoplock Control that mints per-session credentials implements this
+interface**; it arrives as another `target_auth` method plus a source, and
+nothing that touches a credential changes.
 
 ---
 
@@ -707,6 +749,8 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0010 | Command filtering + policy actions      | `internal/filter`: restricted exec (enforced), filtered exec, interactive best-effort |
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
+| 0013 | Enforcement points — contract v3         | survey of where policy is actually enforced (D12 amendment), server-chosen enforcement rung + proxy capability advertisement in `api/` |
+| 0014 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem), teardown + reaper + e2e |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

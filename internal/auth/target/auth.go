@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
 )
 
@@ -21,6 +22,26 @@ type Target struct {
 	Host string
 	// Port is the target's SSH port.
 	Port int
+	// Auth is Hoplock Control's per-route choice of credential method and its
+	// parameters (D6a, contract v2), copied off the authorize response. Nil
+	// means the proxy's locally configured fallback method, which is what a v1
+	// server implies.
+	//
+	// It travels on the target rather than in a second argument because the
+	// server decides it per route, exactly as it decides the host and port: one
+	// proxy routinely fronts a Linux estate that accepts just-in-time
+	// provisioning and an appliance estate that can never create a user, so
+	// "where" and "how" are answered together or not at all.
+	Auth *control.TargetAuth
+	// HostKeyCallback is the session's target host-key policy (D7). An
+	// implementation that opens its own connection to the target — the
+	// ephemeral provisioner's management login is the one that does — must use
+	// it rather than inventing a trust decision of its own.
+	//
+	// It is the mirror of the rule below on ProvisionedAccess.ClientConfig: host
+	// trust belongs to the proxy in both directions, and this field is how a
+	// provisioner borrows it instead of duplicating it.
+	HostKeyCallback ssh.HostKeyCallback
 }
 
 // Addr is the "host:port" to dial.
