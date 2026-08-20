@@ -16,9 +16,9 @@
   renders onto the target).
 
 ## Objective
-Make the enforcement rung Hoplock Control chose real on the target: confine the
-ephemeral account so that what it *can* execute is bounded by the OS, not by
-what the proxy managed to parse on the way past.
+Make the enforcement rungs Hoplock Control chose real on the target: confine the
+ephemeral account so that what it *can* execute — and what it can *reach* — is
+bounded by the OS, not by what the proxy managed to parse on the way past.
 
 ## Why it is worth the complexity
 
@@ -29,6 +29,14 @@ holds for a pty, for a shell escape out of an editor, for an uploaded script —
 and for a session that reaches the host **without going through the proxy at
 all**, which is the one failure mode nothing else in this system covers.
 
+The reach axis is not the same argument repeated; it is the one that matters for
+the automation accounts this feature was asked for. An account confined to
+`uptime` and `cat` that can still open a socket to the rest of the estate is a
+pivot point with an allow-list on it, and the proxy's forwarding policy does not
+see that traffic at all (0013 records why). Egress confinement is the half that
+turns "this account cannot run anything interesting" into "this account cannot
+do anything interesting".
+
 The ephemeral method is the only place this is cheap, and it is cheap only
 because the account is per session: a confinement that would be a fleet-wide
 change for a standing account is, here, four lines written into a file the proxy
@@ -37,8 +45,9 @@ already writes.
 ## In scope
 
 ### Rendering a rung onto the account (`internal/auth/target`)
-The provisioner gains, per rung named by 0013's contract, the target-side
-mechanism that implements it. Expect at least:
+The provisioner gains, per rung named by 0013's contract **on each axis**, the
+target-side mechanism that implements it. A route can sit on a different rung
+per axis, so these compose rather than nest. Expect at least:
 
 - **`authorized_keys` options.** The proxy already writes that file and already
   writes `expiry-time=` into it (0007). A `command=` dispatcher plus `restrict`
@@ -56,6 +65,22 @@ mechanism that implements it. Expect at least:
 - **Filesystem confinement** where 0013's table says a rung requires it: a
   per-session home mounted `noexec,nosuid,nodev`, or a mount namespace. Only
   build this if 0013 named a rung that needs it.
+- **systemd confinement**, if 0013 ranked it where it looks like it ranks: a
+  drop-in on the session's `user-<uid>.slice` (or a `systemd-run` wrapper
+  invoked from the `command=` dispatcher) carrying the sandbox directives for
+  the execution rung and the `IPAddress*` / `PrivateNetwork=` directives for the
+  egress one. It is the rung with no policy module, no MAC, and nothing
+  installed — a file and a `daemon-reload` — so it is likely the one most
+  deployments actually get. Treat "systemd is present, cgroup v2 is mounted, and
+  the directives this rung needs exist in *this* systemd version" as a
+  capability to probe and report (0013), not as an assumption: the directives
+  landed across many releases and a silently-ignored one is a rung that claims a
+  guarantee it is not delivering.
+- **Egress confinement** for the reach axis, by whichever mechanism 0013 chose:
+  the systemd directives above, or a per-uid netfilter rule
+  (`iptables -m owner --uid-owner`, nftables `meta skuid`), or a network
+  namespace. Two things this rung must get right, both of which are teardown
+  problems rather than setup problems — see below.
 
 Two rules that are not optional:
 
@@ -78,6 +103,17 @@ same way**:
 
 - a mount must be unmounted before the home is removed, and a teardown that
   cannot unmount must fail loudly rather than report success;
+- a packet-filter rule keyed on uid must be removed **before** the account is,
+  and this ordering is not cosmetic: `useradd` reuses freed uids, so a rule that
+  outlives its account silently attaches to whoever gets that uid next — an
+  egress boundary quietly transplanted onto an unrelated session, or worse, an
+  allow-list transplanted onto one that was supposed to have none. Removal is
+  verified like everything else here, and the reaper knows how to find a rule
+  whose account is already gone;
+- a systemd drop-in must be removed and the manager reloaded, and a lingering
+  user slice (`loginctl enable-linger` semantics, or a slice that outlives its
+  session) must not keep the confinement — or the absence of it — attached to a
+  recycled uid for the same reason;
 - the orphan reaper must handle a session that died **mid-rung** — a mounted
   home whose account no longer exists, or an account whose dispatcher was
   written but whose key never was;
@@ -95,9 +131,15 @@ rung, including an automation-style route whose account may run exactly two
 binaries.
 
 ## Out of scope
-- **`brokered-key` routes.** The target is unmodifiable by definition (D6a);
-  0013's contract makes a rung on such a route an error, and this phase inherits
-  that rather than working around it.
+- **Applying any rung on a `brokered-key` route.** The target is unmodifiable by
+  definition (D6a); 0013's contract makes an *applied* rung on such a route an
+  error, and this phase inherits that rather than working around it. An
+  **attested** rung — the appliance enforcing its own roles or privilege levels,
+  which 0013 defines — is not this phase's to apply either: nothing is
+  configured for it. What this phase owes it is narrower and must not be
+  skipped: the session must run, the audit record must carry the attested rung
+  rather than "none", and no target-side provisioning may be attempted. A test
+  covers exactly that.
 - Shipping SELinux/AppArmor policy modules for customer fleets. If 0013 named a
   MAC rung, implement the hook that *uses* an existing profile and document the
   prerequisite; authoring fleet policy is not this product.
@@ -113,6 +155,17 @@ each rung 0013 named:
   session all fail **on the target**. This is 0010's bypass test moved one layer
   down and it is the executable form of the rung's marketing claim: if it fails,
   either the rung broke or the claim was never true.
+- **The egress test, per reach rung.** From inside a confined session, assert
+  that a connection to a destination the rung forbids fails **on the target**,
+  that a permitted destination still works where the rung allows one, and that
+  the failure mode is a refused connection rather than a hang. Assert it with a
+  binary the execution rung permits, so the two axes are shown to be
+  independent — a session confined on one axis and open on the other is the
+  configuration this phase exists to make expressible, and it must behave.
+- **The uid-reuse test.** Provision, tear down, then provision again until the
+  uid is reused (or force it), and assert the new session inherits **no** rule,
+  slice, or mount from the old one. This is the one failure here that is silent
+  in every other test.
 - **The direct-connection test** for the `authorized_keys` rung: connecting to
   the target with the ephemeral key *without going through the proxy* is still
   confined. No other rung in this system can pass this test, and it is why the
@@ -123,14 +176,18 @@ each rung 0013 named:
 - Teardown removes every artifact of every rung, verified; a crash mid-rung
   leaves an orphan the reaper removes, including any mount.
 - No leftover accounts, homes, mounts, or dispatchers after the suite.
-- The audit record names the rung that was in force, and a test asserts it
-  matches what the target actually enforced rather than what the route asked
-  for.
+- The audit record names the rung that was in force **on each axis**, and a test
+  asserts it matches what the target actually enforced rather than what the
+  route asked for.
+- A `brokered-key` route carrying an attested rung connects, provisions nothing,
+  and is recorded at that rung.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
 `docs/learnings/0014-target-side-enforcement-learnings.md`. Summary block MUST
-document, per rung: the exact mechanism, what teardown must undo, what the
-reaper must recognise, the target-side prerequisites (so a deployment can meet
-them), and — in one sentence each, in the contract's words — what the rung
-guarantees and what it does not.
+document, per rung and per axis: the exact mechanism, what teardown must undo,
+what the reaper must recognise, the target-side prerequisites (so a deployment
+can meet them, including the systemd version and cgroup mode where a rung
+depends on them), and — in one sentence each, in the contract's words — what the
+rung guarantees and what it does not. Say explicitly which rungs were probed as
+capabilities and how, because 0012's topology has to reproduce it.
