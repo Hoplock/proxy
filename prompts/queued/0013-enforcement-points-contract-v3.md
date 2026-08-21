@@ -49,13 +49,24 @@ So the product's enforcement story is not one line, it is a **ladder**, and
 which rung a route stands on is a policy decision that belongs to the PDP
 (D2) — exactly as the credential method does (D6a).
 
+And it is not one ladder either. "What a session may run" and "what it may
+reach" are separate questions with separate mechanisms, and the second one is
+the one an automated health-check account actually turns on: an account that can
+run exactly `uptime` and `cat`, and can also open a socket to anything in the
+estate, is a pivot point wearing an allow-list. This phase surveys **both
+axes** and lets the server choose a rung on each.
+
 ## In scope
 
 ### 1. The survey, recorded in `docs/PLAN.md`
 
 Enumerate the candidate enforcement points and, for each, state **four** things
-in a single table a reviewer can audit: what it guarantees, what it does not,
-what the target must already provide, and how it fails. At minimum:
+in a table a reviewer can audit: what it guarantees, what it does not, what the
+target must already provide, and how it fails. The candidates fall on two axes
+and the survey keeps them apart, because a route can stand on a different rung
+of each. At minimum:
+
+**Axis 1 — what the session may execute:**
 
 | Candidate | Where it runs |
 | --- | --- |
@@ -66,10 +77,30 @@ what the target must already provide, and how it fails. At minimum:
 | `restrict` key options (no pty, agent, port, X11 forwarding) | target, sshd |
 | Restricted shell + a curated `PATH` directory | target, shell |
 | Per-session `noexec`/`nosuid` home, or a mount namespace | target, kernel |
+| systemd sandboxing — `ProtectSystem=strict`, `ProtectHome=`, `NoNewPrivileges=`, `SystemCallFilter=`, `RestrictSUIDSGID=` — applied by a drop-in on the session's `user-<uid>.slice`, or by a `systemd-run` wrapper behind `command=` | target, systemd + cgroup v2 |
 | MAC confinement (SELinux type, AppArmor profile) | target, kernel |
 | Nothing | — |
 
-Three findings the survey must reach rather than assume, because each one
+**Axis 2 — what the session may reach:**
+
+| Candidate | Where it runs |
+| --- | --- |
+| `permitted_forwards`, `permitted_global_requests` (D5a axis 3, already shipped) | proxy, per channel open and global request — **SSH-channel forwarding only** |
+| `no-port-forwarding` / `restrict` in the ephemeral `authorized_keys` | target, sshd, per connection |
+| systemd `IPAddressDeny=any` plus an `IPAddressAllow=` allow-list on the session's slice | target, systemd + eBPF, cgroup v2 |
+| systemd `PrivateNetwork=yes` — the session's processes get a namespace with loopback and nothing else | target, kernel netns |
+| Per-uid packet filter: `iptables -m owner --uid-owner`, nftables `meta skuid` | target, netfilter |
+| MAC network rules (SELinux socket classes, AppArmor `network` rules) | target, kernel |
+| The target's own ACL, role, or privilege level | target, vendor, **pre-provisioned** |
+| Nothing | — |
+
+`systemd` deserves its two rows rather than a footnote: on a modern Linux fleet
+it is the only rung on either axis that needs no policy module, no custom MAC,
+and no binary installed — it is a drop-in file and a `daemon-reload`. It is
+likely the best cost-to-strength ratio in the whole table, and the survey should
+say so if it agrees.
+
+Five findings the survey must reach rather than assume, because each one
 changes what the tiers can be:
 
 - **Denying the interactive shell is itself an enforcement point, and it is
@@ -88,6 +119,40 @@ changes what the tiers can be:
   available on those routes** — the ladder there stops at the proxy. The
   contract must make that expressible and the mismatch must be an error, not a
   surprise.
+- **Egress is a second axis, and the forwarding policy does not cover it.**
+  `permitted_forwards` governs what may be tunnelled *through SSH channels*; a
+  process the session starts on the target opens its own sockets and never
+  touches a channel, so the proxy cannot see it, let alone deny it. A survey
+  that lists the forwarding policy as the answer to "can this account reach the
+  database" would be wrong in the most expensive direction, and an operator
+  reading the console would believe it. State the boundary of that field
+  explicitly, next to the rungs that do cover it.
+
+  One hazard the survey must record because it lands on 0007's teardown: a
+  per-uid packet filter is only per-session while the uid is, and `useradd`
+  reuses a freed uid. A rule that outlives its account silently attaches to
+  whoever gets that uid next. Any rung that keys on uid therefore makes the
+  filter rule part of the teardown contract and part of what the orphan reaper
+  looks for — the same guarantee as the account itself, or it is not a rung.
+
+- **Some rungs are attested, not applied — and that is what makes appliances
+  reachable.** The bullet above says no target-side rung is available on a
+  `brokered-key` route, and as written that is too absolute: it is true only of
+  rungs the *proxy applies per session*. A router, a firewall, or a filer
+  typically enforces its own command authorisation natively and permanently —
+  IOS privilege levels and RBAC views, Junos login classes with
+  `allow-commands`/`deny-commands`, per-account ACLs — configured once by the
+  network team, not by this product. The session's account already stands
+  behind a boundary at least as strong as anything a Linux rung provides.
+
+  So the ladder has two kinds of rung: **applied** (the proxy configures it,
+  per session, and tears it down) and **attested** (the target enforces it
+  already; the proxy configures nothing and the record says which). Attested
+  rungs are how the appliance estate gets a real enforcement claim instead of
+  "none available", and they are the only kind `brokered-key` can offer.
+  Decide, and write down, what an attestation is worth without verification —
+  an unverified claim in an audit record is a liability, so at minimum name who
+  asserts it and where that assertion lives.
 
 Land the result as an **amendment to D12** (D12 is the decision this refines;
 do not invent a new decision id if the existing one covers it) plus a new
@@ -111,12 +176,26 @@ connection. Decide and document:
   enforcement only. A v2 server that never heard of this field must keep
   working unchanged, and `policy_version` moves to 3 (0006 set that pattern:
   see `control.PolicyVersion`).
-- **Capability advertisement.** A server cannot sensibly choose a rung the proxy
-  cannot provide, and the proxy is the only party that knows what its local
-  material and its targets support. Decide how the proxy says so — the
-  precedent is `policy_version` on `AuthorizeRequest`, and the natural
-  extension is a capability list on the same request. Whatever is chosen, a
-  server that ignores it must still be safe, because of the next point.
+- **Capability advertisement, per target and not only per proxy.** A server
+  cannot sensibly choose a rung that cannot be provided, and what is available
+  depends on the *target* far more than on the proxy: whether it runs systemd,
+  whether cgroup v2 is mounted, whether SELinux is enforcing, whether netfilter
+  is reachable, whether it is a Linux host at all. The proxy is the only party
+  positioned to find that out, because it is the only one that logs in.
+
+  This has an ordering problem worth solving in this phase rather than
+  discovering in 0014: authorize happens **before** the proxy has ever touched
+  the target, so per-target capabilities cannot simply ride on
+  `AuthorizeRequest` for a first-ever connection. The precedent that fits is
+  `/v1/hostkeys/report` (D7): the proxy learns something about a target by
+  connecting and reports it, and the server accumulates it. Evaluate a
+  capability report on the same shape, with the proxy's own capabilities on
+  `AuthorizeRequest` alongside `policy_version` (0006's pattern) and the
+  target's discovered by probe and reported. Decide what a *stale* or *absent*
+  capability record means, and make that answer fail safe.
+
+  Whatever is chosen, a server that ignores all of it must still be safe,
+  because of the next point.
 - **A rung the proxy cannot provide is an outage-class denial** (PLAN §4.3),
   naming the session id — never a silent downgrade to a weaker rung. This is
   D6a's rule for credential methods applied unchanged, and for the same reason:
@@ -141,18 +220,27 @@ phase documented on the field. `cmd/mock-control` fixtures gain the new key so
 - Changing `target_auth` (0007) or the filter engine (0010).
 
 ## Acceptance criteria
-- `docs/PLAN.md` carries the survey table with all four columns filled for every
-  candidate, and D12 is amended rather than duplicated.
+- `docs/PLAN.md` carries the survey tables — **both axes** — with all four
+  columns filled for every candidate, and D12 is amended rather than duplicated.
+- The survey states, in the text and not only in a table cell, what
+  `permitted_forwards` does **not** cover, and which rungs cover it instead.
+- Applied and attested rungs are distinguished in the vocabulary itself, and a
+  `brokered-key` route can carry an attested rung while being refused an applied
+  one.
 - `make openapi-check` passes; `api/README.md` documents the new field, its
   absent-value default, its value set, and the refusal rule, in the style of the
   existing "Absent-value defaults, in one table".
-- `internal/control` tests: the new field round-trips; an absent field means
-  today's behaviour; `Clone` deep-copies it (a cached decision shared between
+- `internal/control` tests: the new fields round-trip; an absent field means
+  today's behaviour; `Clone` deep-copies them (a cached decision shared between
   sessions must not be mutable through it); an unknown value is refused rather
-  than coerced; a policy naming a target-side rung on a `brokered-key` route is
-  refused as a contract violation.
-- The mock server serves the field from fixtures, and a fixture exercising each
-  rung exists.
+  than coerced; a policy naming an **applied** rung on a `brokered-key` route is
+  refused as a contract violation; a rung on either axis can be set
+  independently of the other.
+- The mock server serves the fields from fixtures, and a fixture exercising each
+  rung on each axis exists, including an attested rung on a `brokered-key`
+  route.
+- The capability mechanism has a test for the **absent and stale** cases, and
+  both fail safe.
 - **No behaviour change**: `go test ./...` passes with no test in
   `internal/proxy`, `internal/auth/target`, or `internal/filter` modified.
 
@@ -170,9 +258,10 @@ Per `docs/PROTOCOL.md`, plus the Cross-repo impact section above filled in with
 what you actually found (§4: "None" is a finding and must be written down).
 Move to `implemented/`; add
 `docs/learnings/0013-enforcement-points-contract-v3-learnings.md`. Summary block
-MUST document the rung vocabulary and each rung's guarantee in one line, the
-absent-value default, the capability-advertisement mechanism, the refusal rule,
-and the audit field — 0014 builds from that summary alone.
+MUST document the rung vocabulary for **both axes** and each rung's guarantee in
+one line, which rungs are applied and which attested, the absent-value default,
+the capability-advertisement mechanism (proxy-level and per-target), the refusal
+rule, and the audit field — 0014 builds from that summary alone.
 
 ---
 
@@ -193,8 +282,11 @@ plan, and docs — never code, never a vendored artifact (§5, §6). It must:
 - state which upstream PR it follows and that the PR is merged;
 - record, in **the Control prompt that will implement this** and not only in
   Control's plan, that the authorize response must now be able to name an
-  enforcement rung per route, that the absent value means proxy-side
-  enforcement, and that a rung must never be chosen for a `brokered-key` route;
+  enforcement rung per route **on each of the two axes** (what may execute, what
+  it may reach), that the absent value on both means proxy-side enforcement
+  only, that an *applied* rung must never be chosen for a `brokered-key` route
+  while an *attested* one may be, and that Control now receives and must store
+  per-target capability reports;
 - say **how it searched** for stale references — the grep, not the adjective.
 
 ### B. The Control implementation prompt (queued by the sync PR)
@@ -206,18 +298,26 @@ number in its queue; **do not** reuse a proxy number. Draft body:
 > restriction is enforced, and emit that choice on `/v1/authorize`.
 >
 > **In scope.**
-> - The policy model gains an enforcement rung alongside the existing
->   restricted-exec command list. It is a property of the policy, not of the
+> - The policy model gains an enforcement rung **per axis** alongside the
+>   existing restricted-exec command list: one for what a session may execute,
+>   one for what it may reach. They are properties of the policy, not of the
 >   target: the same target is reached by a break-glass route and an automation
->   route, and they do not deserve the same rung.
+>   route, and they do not deserve the same rungs.
+> - Control stores the **per-target capability reports** the proxy now sends, and
+>   uses them to constrain what an author may choose. This is the half that
+>   makes the appliance estate work: a router advertises no applied rung and an
+>   attested one, and the console must show that as a real enforcement claim
+>   rather than as "unsupported".
 > - **Validation is the substance of this phase, not the field.** Control must
 >   refuse, at policy-authoring time and with an error naming the reason:
->   a target-side rung on a route whose `target_auth` is `brokered-key` (the
->   proxy cannot administer that target); a rung the proxies serving that route
->   have not advertised as available; and an executable allow-list containing a
->   known interpreter when the rung's guarantee depends on the list — the proxy
->   refuses these at runtime, but a policy that can only fail at connect time is
->   a policy that fails in front of a user.
+>   an *applied* rung on a route whose `target_auth` is `brokered-key` (the
+>   proxy cannot administer that target); a rung the proxies serving that route,
+>   or the target itself, have not advertised as available; an egress rung
+>   naming destinations the target's reported mechanism cannot express; and an
+>   executable allow-list containing a known interpreter when the rung's
+>   guarantee depends on the list — the proxy refuses these at runtime, but a
+>   policy that can only fail at connect time is a policy that fails in front of
+>   a user.
 > - The console surfaces the rung as a **guarantee**, in the words the contract
 >   uses, and the audit view shows the rung that was in force for a session.
 > - Conformance tests against the vendored contract for every rung, the absent
