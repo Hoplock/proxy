@@ -76,6 +76,17 @@ type session struct {
 	// handshake error that carries it back is x/crypto's to format, not ours.
 	hostKeyErr error
 
+	// hopPeer is set when the connection came from another proxy extending a
+	// chain rather than from a user's SSH client (routing.IsHopPeer). Such a
+	// session owes a hop trail before it can be authorized.
+	hopPeer bool
+	// chainReady is closed once the upstream proxy has declared the chain.
+	// chainState is written before it closes and read after, under the mutex
+	// because the request arrives on the global-request goroutine.
+	chainReady chan struct{}
+	chainOnce  sync.Once
+	chainState routing.Chain
+
 	mu       sync.Mutex
 	leg      ssh.Conn
 	channels map[ssh.Channel]struct{}
@@ -90,17 +101,18 @@ type session struct {
 func (s *Server) newSession(ctx context.Context, id string, conn *ssh.ServerConn, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request) *session {
 	ctx, cancel := context.WithCancel(ctx)
 	return &session{
-		srv:      s,
-		id:       id,
-		conn:     conn,
-		chans:    chans,
-		greqs:    reqs,
-		ctx:      ctx,
-		cancel:   cancel,
-		started:  s.now(),
-		ready:    make(chan struct{}),
-		channels: make(map[ssh.Channel]struct{}),
-		failure:  make(chan struct{}),
+		srv:        s,
+		id:         id,
+		conn:       conn,
+		chans:      chans,
+		greqs:      reqs,
+		ctx:        ctx,
+		cancel:     cancel,
+		started:    s.now(),
+		ready:      make(chan struct{}),
+		chainReady: make(chan struct{}),
+		channels:   make(map[ssh.Channel]struct{}),
+		failure:    make(chan struct{}),
 	}
 }
 
@@ -111,7 +123,7 @@ func (s *session) run() {
 	go s.setup()
 	go func() {
 		defer s.recoverPanic("global requests")
-		s.serveGlobalRequests(s.greqs, s.legConnWhenReady)
+		s.serveGlobalRequests(s.greqs, s.legConnWhenReady, s.interceptClientRequest)
 	}()
 
 	for newChannel := range s.chans {
@@ -162,8 +174,20 @@ func (s *session) setup() {
 		return
 	}
 
-	s.logf("proxy: session=%s start subject=%s login=%s target=%s client=%s method=%s",
-		s.id, s.identity.Subject, s.login, s.target, s.conn.RemoteAddr(), s.identity.Method)
+	// An inbound chain leg declares where it has been before anything is
+	// authorized: the trail is what carries loop detection and the hop count
+	// (PLAN §6.1), and it reaches Hoplock Control on this hop's own
+	// authorize call.
+	if s.hopPeer {
+		if err := s.awaitHopTrail(); err != nil {
+			s.failSetup(err)
+			return
+		}
+	}
+
+	s.logf("proxy: session=%s start subject=%s login=%s target=%s client=%s method=%s hop_peer=%t trail=%s",
+		s.id, s.identity.Subject, s.login, s.target, s.conn.RemoteAddr(), s.identity.Method,
+		s.hopPeer, s.chain().Trail)
 
 	route, err := s.srv.resolver.Resolve(s.ctx, routing.Request{
 		Identity: s.identity,
@@ -174,13 +198,23 @@ func (s *session) setup() {
 		s.failSetup(&setupError{stage: stageAuthorize, err: err})
 		return
 	}
-	// Next-hop routing is phase 0007; the route is resolved and logged either
-	// way so that the seam is a refusal with a reason, not a silent gap.
-	if err := route.RequireDirect(); err != nil {
-		s.failSetup(&setupError{stage: stageRoute, err: err})
+	s.route = route
+
+	// Where the two route types diverge (PLAN §6.1). A next-hop route is not a
+	// target: the next proxy authenticates this one, authorizes the user
+	// itself, and provisions whatever the far end needs, so none of the
+	// credential machinery below applies to it.
+	switch {
+	case route.IsNextHop():
+		if err := s.openNextHop(); err != nil {
+			s.failSetup(err)
+		}
+		return
+	case !route.IsDirect():
+		s.failSetup(&setupError{stage: stageRoute,
+			err: fmt.Errorf("%w: %q", routing.ErrUnsupportedRoute, route.Type)})
 		return
 	}
-	s.route = route
 
 	// The route carries the credential method Hoplock Control chose for this
 	// connection (D6a) and the session carries the host-key policy (D7); the
@@ -264,7 +298,7 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 	// The target can open channels too (forwarded-tcpip, x11, auth-agent), and
 	// its global requests have to be answered or the connection hangs.
 	go s.serveTargetChannels(legChans)
-	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil })
+	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil }, nil)
 	return nil
 }
 
@@ -364,6 +398,7 @@ func (s *session) connMeta() control.ConnMeta {
 	return control.ConnMeta{
 		SessionID:     s.id,
 		ProxyID:       s.srv.proxyID,
+		HopTrail:      s.chain().Trail,
 		ClientAddr:    s.conn.RemoteAddr().String(),
 		ServerAddr:    s.conn.LocalAddr().String(),
 		ClientVersion: string(s.conn.ClientVersion()),
@@ -462,6 +497,26 @@ func (s *session) subjectID() string {
 		return ""
 	}
 	return s.identity.Subject
+}
+
+// chain returns what the upstream proxy declared about this session. The zero
+// Chain is a user's first hop.
+func (s *session) chain() routing.Chain {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chainState
+}
+
+// setChain records the chain an upstream proxy declared. Only the first
+// declaration counts: a second one would rewrite the loop detection and the hop
+// count of a session that has already been authorized against the first.
+func (s *session) setChain(c routing.Chain) {
+	s.chainOnce.Do(func() {
+		s.mu.Lock()
+		s.chainState = c
+		s.mu.Unlock()
+		close(s.chainReady)
+	})
 }
 
 // setIdentity records who the connection belongs to.

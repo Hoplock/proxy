@@ -355,8 +355,16 @@ func forwardRequest(dst ssh.Channel, req *ssh.Request) {
 // Requests that arrive before the target leg is up wait for it rather than
 // being refused: a refusal the client cannot distinguish from "the server does
 // not support this" would silently disable port forwarding on a race.
-func (s *session) serveGlobalRequests(in <-chan *ssh.Request, dst func() (ssh.Conn, error)) {
+//
+// intercept claims the requests the engine answers itself, and is consulted
+// BEFORE dst: the hop trail (D11) arrives while setup is still waiting for it,
+// so asking for the far connection first would deadlock the session against its
+// own precondition.
+func (s *session) serveGlobalRequests(in <-chan *ssh.Request, dst func() (ssh.Conn, error), intercept func(*ssh.Request) bool) {
 	for req := range in {
+		if intercept != nil && intercept(req) {
+			continue
+		}
 		conn, err := dst()
 		if err != nil {
 			if req.WantReply {

@@ -45,6 +45,65 @@ routing:
   # Optional; defaults to "#".
   target_delimiter: "#"
 
+chain:
+  # Multi-hop routing (docs/PLAN.md, D11 and §6.1). Everything here is optional
+  # and every field describes THIS PROXY: which sessions chain, and in which
+  # direction, is decided by Hoplock Control per connection and delivered in
+  # the route's hop metadata. A proxy configured for both directions still obeys
+  # the one it is told.
+  #
+  # The key this proxy presents to another proxy — to the next hop when it
+  # extends a chain, and to the upstream when it registers a relay. It is this
+  # proxy's own identity, never the user's: the far side authenticates this
+  # proxy and asks Hoplock Control to re-establish the user, so no hop takes
+  # an upstream's word for who is connecting. Leave it empty on a proxy that
+  # never chains; a next-hop route then fails as an outage rather than silently.
+  identity_key_path: "/etc/hoplock/chain_identity"
+  # Optional OpenSSH certificate for that key, for a fleet whose proxies are
+  # certified by a CA. It must name this proxy's id among its principals.
+  identity_cert_path: ""
+  # Most proxies one session may traverse. 0 (the default) means 4. It can only
+  # ever shorten a chain the server allowed, never lengthen one.
+  max_hops: 4
+
+  # Register an outbound relay connection with the proxy above this one, so it
+  # can send sessions here WITHOUT dialling in. This is what removes the inbound
+  # firewall rule for a protected zone. Omit the whole block on a proxy that is
+  # reachable by dialling.
+  upstream:
+    # host:port of the upstream proxy's registration listener. Empty (the
+    # default) registers nowhere.
+    address: ""
+    # The upstream's expected SSH host public key. Required whenever address is
+    # set: this registration is an inbound path for sessions, so an unverified
+    # upstream is one that can be impersonated into receiving them. There is no
+    # trust-on-first-use here — fleet keys are known at deployment time.
+    host_key_path: ""
+    # Bounds on one attempt and on the reconnect delay. All optional.
+    dial_timeout: 15s
+    keepalive_interval: 10s
+    min_backoff: 1s
+    max_backoff: 30s
+
+  # Accept relay registrations from the proxies below this one. Omit the whole
+  # block unless the topology makes this proxy a relay hub.
+  accept:
+    # host:port the registration listener binds to. Empty (the default) accepts
+    # no registrations. It is NOT the SSH listener above: users never reach it.
+    listen_addr: ""
+    # Key the registration listener presents. Empty reuses proxy.host_key_path.
+    host_key_path: ""
+    # Proxies allowed to register, in OpenSSH authorized_keys format. THE
+    # COMMENT ON EACH LINE IS THE PROXY ID that key may register as — a key
+    # naming no id could register as any of them and start receiving their
+    # sessions. One of this and trusted_ca_path is required when listening.
+    authorized_keys_path: ""
+    # CA public keys whose user certificates may register. A certificate must
+    # name the claimed proxy id as a principal.
+    trusted_ca_path: ""
+    # How often the hub pings a registration. Optional.
+    keepalive_interval: 10s
+
 auth:
   # user -> proxy authentication (docs/PLAN.md §4.1).
   user:

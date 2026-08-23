@@ -58,6 +58,20 @@ type server struct {
 	events         []control.RevocationEvent
 	evictedThrough int
 	idCounter      int
+	// authorizations records every authorize call, so a test can assert that
+	// each hop of a chain asked for its own decision rather than inheriting
+	// one (D2, PLAN §6.1).
+	authorizations []authorizeCall
+}
+
+// authorizeCall is one authorize request, reduced to what a test asserts on.
+type authorizeCall struct {
+	ProxyID   string
+	SessionID string
+	Login     string
+	Subject   string
+	Target    string
+	HopTrail  []string
 }
 
 // mfaChallenge is one outstanding out-of-band factor.
@@ -91,6 +105,30 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 		s.hostKeys[hostKeyID(k.Target, k.Fingerprint)] = true
 	}
 	return s
+}
+
+// recordAuthorize remembers one authorize call.
+func (s *server) recordAuthorize(req *control.AuthorizeRequest) {
+	call := authorizeCall{
+		ProxyID:   req.Conn.ProxyID,
+		SessionID: req.Conn.SessionID,
+		Target:    req.Target,
+		HopTrail:  append([]string(nil), req.Conn.HopTrail...),
+	}
+	if req.Identity != nil {
+		call.Login = req.Identity.Login
+		call.Subject = req.Identity.Subject
+	}
+	s.mu.Lock()
+	s.authorizations = append(s.authorizations, call)
+	s.mu.Unlock()
+}
+
+// authorizeCalls returns the authorize calls seen so far, oldest first.
+func (s *server) authorizeCalls() []authorizeCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]authorizeCall(nil), s.authorizations...)
 }
 
 // handler routes the contract endpoints plus the mock-only debug endpoints.
@@ -132,9 +170,27 @@ func (s *server) handleAuthenticateCert(w http.ResponseWriter, r *http.Request) 
 	}
 
 	user, ok := s.fx.user(req.Login)
-	if !ok || !user.hasKeyFingerprint(req.PublicKey.Fingerprint) {
+	if !ok {
 		// The message names neither the login nor the key: an unauthenticated
 		// caller learns nothing about which half was wrong.
+		writeError(w, http.StatusUnauthorized, "unauthorized", "no identity matches the offered key")
+		return
+	}
+
+	// A chain leg presents the PREVIOUS HOP's key, not the user's (D11). The
+	// server recognises the proxy and answers with the user's identity, which
+	// it establishes itself: that is what makes each hop authenticate the hop
+	// in front of it rather than trust what it was told (PLAN §6.1).
+	if hop, isProxy := s.fx.proxyByKey(req.PublicKey.Fingerprint); isProxy {
+		s.logger.Printf("mock: chain leg for %s authenticated as proxy %s", req.Login, hop.ID)
+		writeJSON(w, http.StatusOK, control.AuthenticateResponse{
+			Status:   control.AuthStatusAuthenticated,
+			Identity: user.chainIdentity(hop.ID),
+		})
+		return
+	}
+
+	if !user.hasKeyFingerprint(req.PublicKey.Fingerprint) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no identity matches the offered key")
 		return
 	}
@@ -265,7 +321,9 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, ok := s.fx.route(req.Identity.Login, req.Target)
+	s.recordAuthorize(&req)
+
+	route, ok := s.fx.route(req.Identity.Login, req.Target, req.Conn.ProxyID)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no route permits this identity to reach the target")
 		return
@@ -419,6 +477,7 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	s.batched = nil
 	s.priority = nil
+	s.authorizations = nil
 	s.seenLogs = make(map[string]bool)
 	s.mfa = make(map[string]*mfaChallenge)
 	s.hostKeys = make(map[string]bool)

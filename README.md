@@ -39,9 +39,12 @@ before reading the code.
 > **brokered-key**, a credential held in memory for one session for the
 > appliances and network gear the proxy cannot administer. Hoplock Control
 > chooses between them per route; `auth.target` in `config.example.yaml` holds
-> only the local material each needs. Next are next-hop chaining, channel
-> inspection, command filtering, and the logging pipeline. See `docs/PLAN.md`
-> §10 for the order.
+> only the local material each needs. Chaining is in too: a session can traverse
+> several proxies, each authenticating, authorizing and routing for itself, and
+> a proxy in a protected zone is reached over a connection **it** opened to its
+> upstream — so an enclave needs no inbound firewall rule at all. Next are
+> channel inspection, command filtering, and the logging pipeline. See
+> `docs/PLAN.md` §10 for the order.
 
 ## Requirements
 

@@ -52,6 +52,19 @@ users:
     key_fingerprints:
       - "SHA256:BBBB2222svc2222BBBB2222svc2222BBBB22222222"
 
+# The fleet's own proxies, recognised by the key one presents when it extends a
+# chain to the next (D11). A chain leg authenticates the PREVIOUS HOP; the
+# identity the server answers with is still the user's, established here rather
+# than asserted by the upstream proxy — no hop takes another hop's word for who
+# is connecting (docs/PLAN.md §6.1).
+proxies:
+  - id: proxy-1
+    key_fingerprints:
+      - "SHA256:CCCC3333proxy1CCCC3333proxy1CCCC3333proxy1"
+  - id: proxy-2
+    key_fingerprints:
+      - "SHA256:DDDD4444proxy2DDDD4444proxy2DDDD4444proxy2"
+
 routes:
   # Direct route: alice reaches this host read-only, under a blacklist whose
   # rules each carry their own severity — kill, block, and warn in one policy.
@@ -111,8 +124,14 @@ routes:
   # Next-hop route: the far segment is reachable only through another proxy.
   # The response returns next_hop as the target and carries the host the user
   # asked for in hop metadata.
+  #
+  # `proxy_id` is what makes this a chain rather than a loop: the rule applies
+  # only when proxy-1 asks. The rule below it answers the SAME login and target
+  # for proxy-2, which is the far end and routes directly. Each hop calls
+  # authorize for itself and gets the answer that belongs to where it sits.
   - login: alice
     target: deep.internal.company.com
+    proxy_id: proxy-1
     route_type: nexthop
     next_hop: proxy-2.company.com
     max_hops: 3
@@ -129,6 +148,17 @@ routes:
     permitted_channels: [session]
     filter_policy:
       # No rules on a blacklist means no filtering.
+      mode: blacklist
+
+  # The far end of that chain: the same user and the same target, answered for
+  # the proxy inside the protected zone, which can reach the host itself.
+  - login: alice
+    target: deep.internal.company.com
+    proxy_id: proxy-2
+    route_type: direct
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
       mode: blacklist
 
   # An appliance the proxy cannot administer, under RESTRICTED EXEC (D12): the

@@ -27,6 +27,7 @@ import (
 	"github.com/hoplock/proxy/internal/config"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/proxy"
+	"github.com/hoplock/proxy/internal/relay"
 	"github.com/hoplock/proxy/internal/routing"
 )
 
@@ -131,6 +132,33 @@ func run(configPath string, logger *log.Logger) error {
 		return err
 	}
 
+	// The chain identity is this proxy's own key, presented to other proxies
+	// (D11). It is loaded even when nothing is chained today, so a
+	// misconfigured path fails at startup rather than at the first next-hop
+	// route a user happens to be given.
+	hopSigner, err := loadChainIdentity(cfg.Chain)
+	if err != nil {
+		return err
+	}
+
+	// The relay hub is the upstream half: it holds registrations open for
+	// proxies that cannot be dialled, and the engine opens sessions over them.
+	hub, hubListener, err := startRelayHub(cfg, hostKey, logger)
+	if err != nil {
+		return err
+	}
+	var hubDone chan struct{}
+	if hub != nil {
+		hubDone = make(chan struct{})
+		go func() {
+			defer close(hubDone)
+			if err := hub.Serve(ctx, hubListener); err != nil {
+				logger.Printf("proxy: relay registrations stopped: %v", err)
+			}
+		}()
+		logger.Printf("proxy: accepting relay registrations on %s", hubListener.Addr())
+	}
+
 	server, err := proxy.New(proxy.Options{
 		HostKey:         hostKey,
 		Authenticator:   userAuth,
@@ -139,9 +167,21 @@ func run(configPath string, logger *log.Logger) error {
 		Client:          cache,
 		ProxyID:         cfg.Proxy.ID,
 		TargetDelimiter: cfg.Routing.TargetDelimiter,
+		HopSigner:       hopSigner,
+		RelayOpener:     relayOpener(hub),
+		MaxHops:         cfg.Chain.MaxHops,
 		DialTimeout:     cfg.Dial.DialTimeout,
 		Logger:          logger,
 	})
+	if err != nil {
+		return err
+	}
+
+	// The registrar is the downstream half: this proxy's outbound registration
+	// with the proxy above it, over which that proxy sends sessions here
+	// without any inbound rule (D11). Sessions arrive as connections and are
+	// served by the same engine as any other.
+	registrarDone, err := startRelayRegistrar(ctx, cfg, hopSigner, server, logger)
 	if err != nil {
 		return err
 	}
@@ -169,6 +209,12 @@ func run(configPath string, logger *log.Logger) error {
 
 	serveErr := server.Serve(ctx, listener)
 	<-streamDone
+	if registrarDone != nil {
+		<-registrarDone
+	}
+	if hubDone != nil {
+		<-hubDone
+	}
 	logger.Printf("proxy: stopped")
 	return serveErr
 }
@@ -185,4 +231,145 @@ func loadHostKey(path string) (ssh.Signer, error) {
 		return nil, fmt.Errorf("parse host key %q: %w", path, err)
 	}
 	return signer, nil
+}
+
+// loadChainIdentity loads the key this proxy presents to other proxies, and the
+// certificate for it when the fleet uses a CA. Nil means this proxy does not
+// chain, which the engine reports as an outage on a next-hop route rather than
+// as a denial.
+func loadChainIdentity(cfg config.Chain) (ssh.Signer, error) {
+	if cfg.IdentityKeyPath == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(cfg.IdentityKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read chain identity key: %w", err)
+	}
+	signer, err := ssh.ParsePrivateKey(pem)
+	if err != nil {
+		return nil, fmt.Errorf("parse chain identity key %q: %w", cfg.IdentityKeyPath, err)
+	}
+	if cfg.IdentityCertPath == "" {
+		return signer, nil
+	}
+	certBytes, err := os.ReadFile(cfg.IdentityCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read chain identity certificate: %w", err)
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey(certBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse chain identity certificate %q: %w", cfg.IdentityCertPath, err)
+	}
+	cert, ok := pub.(*ssh.Certificate)
+	if !ok {
+		return nil, fmt.Errorf("chain identity certificate %q is a plain public key", cfg.IdentityCertPath)
+	}
+	certSigner, err := ssh.NewCertSigner(cert, signer)
+	if err != nil {
+		return nil, fmt.Errorf("chain identity certificate %q does not match the key: %w", cfg.IdentityCertPath, err)
+	}
+	return certSigner, nil
+}
+
+// startRelayHub builds the registration listener, when the topology makes this
+// proxy a relay hub.
+func startRelayHub(cfg *config.Config, hostKey ssh.Signer, logger *log.Logger) (*relay.Hub, net.Listener, error) {
+	if !cfg.Chain.AcceptsRegistrations() {
+		return nil, nil, nil
+	}
+	authorizer, err := relay.NewAuthorizer(relay.AuthorizerOptions{
+		AuthorizedKeysPath: cfg.Chain.Accept.AuthorizedKeysPath,
+		TrustedCAPath:      cfg.Chain.Accept.TrustedCAPath,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	// The registration listener may present its own key, but the proxy's host
+	// key is the same identity from a registering proxy's point of view, so it
+	// is the default rather than a second thing to rotate.
+	listenerKey := hostKey
+	if path := cfg.Chain.Accept.HostKeyPath; path != "" {
+		listenerKey, err = loadHostKey(path)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	hub, err := relay.NewHub(relay.HubOptions{
+		HostKey:           listenerKey,
+		Authorizer:        authorizer,
+		KeepaliveInterval: cfg.Chain.Accept.KeepaliveInterval,
+		Logger:            logger,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	l, err := net.Listen("tcp", cfg.Chain.Accept.ListenAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen for relay registrations on %s: %w", cfg.Chain.Accept.ListenAddr, err)
+	}
+	return hub, l, nil
+}
+
+// startRelayRegistrar opens this proxy's outbound registration with its
+// upstream, when it has one.
+func startRelayRegistrar(ctx context.Context, cfg *config.Config, signer ssh.Signer, server *proxy.Server, logger *log.Logger) (chan struct{}, error) {
+	if !cfg.Chain.Registers() {
+		return nil, nil
+	}
+	hostKey, err := loadPublicKey(cfg.Chain.Upstream.HostKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	registrar, err := relay.NewRegistrar(relay.RegistrarOptions{
+		UpstreamAddr:      cfg.Chain.Upstream.Address,
+		ProxyID:           cfg.Proxy.ID,
+		Signer:            signer,
+		HostKeyCallback:   ssh.FixedHostKey(hostKey),
+		Handle:            server.ServeConn,
+		DialTimeout:       cfg.Chain.Upstream.DialTimeout,
+		KeepaliveInterval: cfg.Chain.Upstream.KeepaliveInterval,
+		MinBackoff:        cfg.Chain.Upstream.MinBackoff,
+		MaxBackoff:        cfg.Chain.Upstream.MaxBackoff,
+		Logger:            logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := registrar.Run(ctx); err != nil {
+			// Run only returns for failures a retry cannot fix: this proxy's
+			// own key or the upstream's host key. Sessions already flowing are
+			// left alone; new relay hops to this proxy simply stop arriving.
+			logger.Printf("proxy: relay registration stopped: %v", err)
+		}
+	}()
+	logger.Printf("proxy: registering a relay with %s as %s", cfg.Chain.Upstream.Address, cfg.Proxy.ID)
+	return done, nil
+}
+
+// relayOpener adapts the hub to the engine's interface, keeping a nil hub a
+// nil interface: a typed nil would look like a hub that has no registrations
+// rather than a proxy that hosts none.
+func relayOpener(hub *relay.Hub) proxy.RelayOpener {
+	if hub == nil {
+		return nil
+	}
+	return hub
+}
+
+// loadPublicKey reads one OpenSSH-format public key, used for the upstream's
+// host key. Fleet keys are known at deployment time, so there is no
+// trust-on-first-use here — that is for targets (D7), not for proxies.
+func loadPublicKey(path string) (ssh.PublicKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read public key: %w", err)
+	}
+	key, _, _, _, err := ssh.ParseAuthorizedKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key %q: %w", path, err)
+	}
+	return key, nil
 }

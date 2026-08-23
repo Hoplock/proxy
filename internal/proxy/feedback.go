@@ -46,6 +46,9 @@ const (
 	stageRoute     stage = "route"
 	stageProvision stage = "provision"
 	stageDial      stage = "dial"
+	stageHop       stage = "hop"
+	stageHopDial   stage = "hop-dial"
+	stageRelay     stage = "relay"
 	stageHostKey   stage = "hostkey"
 	stageChannel   stage = "channel"
 )
@@ -85,6 +88,19 @@ func outageDetail(err error) string {
 		return "credentials for the target could not be provisioned"
 	case stageDial:
 		return "the target could not be reached"
+	case stageHop:
+		// Deliberately vague about WHY the chain could not be extended: a loop,
+		// an exceeded hop count, and a missing chain key are all faults in the
+		// estate's own routing, and the operator reads them in the audit log
+		// against the session id the user is given (PLAN §4.3).
+		return "the chain of proxies to this target could not be extended"
+	case stageHopDial:
+		return "the next proxy in the chain could not be reached"
+	case stageRelay:
+		// Named separately from a dial failure because the fix is different:
+		// nothing is unreachable, the next proxy is simply not connected to
+		// this one, and that is what an operator needs to be told.
+		return "the next proxy in the chain is not currently connected"
 	case stageHostKey:
 		return "the target's host key was not accepted"
 	case stageChannel:

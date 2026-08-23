@@ -406,6 +406,7 @@ hoplock/
 │   │   ├── user/           # user→proxy authenticators (cert, password+MFA)
 │   │   └── target/         # proxy→target authenticators (ephemeral, mgmt-cert)
 │   ├── routing/            # target parsing (D1) + route resolution + multi-hop
+│   ├── relay/              # proxy↔proxy relay registrations (D11)
 │   ├── proxy/              # core SSH proxy engine, session lifecycle
 │   ├── channel/            # channel allow-listing + inspection pipeline
 │   ├── filter/             # command filtering (whitelist/blacklist + actions)
@@ -439,6 +440,10 @@ hoplock/
   policy. This is the AD/Okta-ready seam (D4).
 - **`internal/auth/user`** — `UserAuthenticator` interface + implementations.
 - **`internal/auth/target`** — `TargetAuthenticator` interface + implementations.
+- **`internal/relay`** — the transport half of D11: the registration a
+  downstream proxy opens to its upstream, and the channels the upstream opens
+  back over it. It decides nothing; the route says which sessions travel this
+  way.
 - **`internal/proxy`** — accepts the client SSH connection, orchestrates authz +
   route + target dial + channel pumping. Transport-level correctness lives here.
 - **`internal/channel`** — the inspection pipeline (D5). Enforces the permitted
@@ -768,6 +773,66 @@ which is a materially weaker sentence.
   drops. A route naming a `relay` hop with no live registration fails as an
   outage (§4.3) — it is never silently downgraded to `dial`, which would punch
   through the boundary the mode exists to preserve.
+
+#### How a hop is actually opened (phase 0008)
+
+A hop leg is an ordinary SSH connection from one proxy to the next, and the
+direction changes only where its byte stream comes from: a socket this proxy
+dialled, or a channel (`relay-session@hoplock.io`) over a registration the next
+proxy opened to it. Everything above that stream is identical, which is what
+makes "the route decides, the proxy obeys" true rather than aspirational.
+
+On that connection the upstream proxy presents:
+
+- the SSH username `login<delimiter>final_target`, so the next hop parses it
+  with the same D1 rule it applies to a user — **a chained fleet must therefore
+  agree on the delimiter**;
+- its own **chain identity key** (`chain.identity_key_path`), never the user's;
+- the client version `SSH-2.0-Hoplock_Proxy_hop`, which is how the next hop
+  knows to expect a trail before it authorizes anything.
+
+**Chain trust model.** Each hop authenticates the hop in front of it *through
+Hoplock Control*, and Hoplock Control answers with the user's identity, which it
+establishes itself. The proxy asserts nothing about who the user is: it relays a
+key and a login, exactly as it does for a user's own client (§4.1). A hop
+therefore never has to trust an upstream's claim — the trust is in the fleet's
+keys and in the PDP, which is where every other decision in this system already
+lives (D2). It also means a compromised proxy cannot mint an identity: it can
+only offer its own key, and the server decides what that key may assert.
+
+**Hop trail, loops, and the cap.** Immediately after authenticating and before
+opening any channel, the upstream sends a connection-level request
+`hop-trail@hoplock.io` carrying the proxy ids traversed so far, the final
+target, and the cap in force. The next hop records it, forwards it to Hoplock
+Control as `conn.hop_trail`, and refuses the session when:
+
+- its own id is already in the incoming trail, or the route's `next_proxy_id`
+  is (a **loop**); or
+- extending the chain would exceed the **strictest** of the inherited cap, the
+  route's `max_hops`, and the proxy's own `chain.max_hops`
+  (`routing.DefaultMaxHops` when none is set).
+
+Both refusals are outages with the session id (§4.3) plus an audit line naming
+the trail: they are faults in the estate's routing, not decisions about the
+user. The trail carries **no authority** — every entry in it can only cause a
+refusal — so a client that forged one would only restrict itself, and a hop that
+announces itself and then sends no trail is refused rather than served with an
+empty one.
+
+**Relay registration.** `internal/relay` holds both halves. The downstream proxy
+(`chain.upstream`) keeps one outbound SSH connection open to the upstream's
+registration listener, reconnecting with bounded backoff, exactly as the
+revocation stream does one layer up (§6.4). The upstream (`chain.accept`)
+authenticates each registering proxy with the fleet's own material — an
+`authorized_keys` file whose **comment names the proxy id that key may claim**,
+or a trusted CA whose user certificates must name the claimed id as a principal
+— keeps one registration per id, and opens a channel over it per session. The
+registration is proxy-to-proxy plumbing and not part of the Control API: users
+never reach that listener, and it carries no channels from the registrant.
+
+A dropped registration takes the sessions riding it down with the transport, and
+nothing more: the replacement carries new sessions only, and nothing cancels
+work in flight on its own.
 
 ### 6.2 Channels (`internal/channel`, D5)
 

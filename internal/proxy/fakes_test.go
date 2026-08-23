@@ -132,6 +132,9 @@ type harnessOptions struct {
 	// placeholder, which is what most tests want: they are about the engine,
 	// not about which credential it dials with.
 	targetAuth target.TargetAuthenticator
+	// options adjusts the engine options before the server is built, for the
+	// chaining tests: a hop identity, a relay opener, a hop cap.
+	options func(*Options)
 }
 
 // harness is a running proxy with a target behind it and an SSH client in front.
@@ -207,7 +210,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 
 	logs := &syncBuffer{}
-	server, err := New(Options{
+	engineOpts := Options{
 		HostKey:         sshtest.MustGenerateSigner(),
 		Authenticator:   userAuth,
 		Resolver:        resolver,
@@ -218,7 +221,11 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		DialTimeout:     2 * time.Second,
 		Logger:          logs.logger(),
 		NewSessionID:    func() string { return testSessionID },
-	})
+	}
+	if opts.options != nil {
+		opts.options(&engineOpts)
+	}
+	server, err := New(engineOpts)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}

@@ -15,8 +15,8 @@ import (
 	"github.com/hoplock/proxy/internal/identity"
 )
 
-// ErrUnsupportedRoute means Hoplock Control returned a route this proxy
-// cannot serve. Today that is only "nexthop", which phase 0008 implements; it is
+// ErrUnsupportedRoute means Hoplock Control returned a route type this
+// proxy cannot serve — anything that is neither "direct" nor "nexthop". It is
 // an outage from the user's point of view (the proxy is incomplete, they are
 // not forbidden), never a denial.
 var ErrUnsupportedRoute = errors.New("routing: route type is not supported by this proxy")
@@ -88,15 +88,32 @@ func (r *Route) Addr() string {
 // IsDirect reports whether Host is the end host rather than the next proxy.
 func (r *Route) IsDirect() bool { return r.Type == control.RouteTypeDirect }
 
-// RequireDirect is the seam phase 0008 replaces. A proxy that can only serve
-// direct routes calls it before dialling; when chaining lands, the caller
-// dispatches on Type instead and hands a next-hop route to the chain dialler,
-// which is why the route is returned intact rather than dropped here.
-func (r *Route) RequireDirect() error {
-	if r.IsDirect() {
-		return nil
+// IsNextHop reports whether Host is the next proxy in a chain rather than the
+// end host (D11, PLAN §6.1). The engine dispatches on this: a next-hop route is
+// handed to PlanHop and opened as a chain leg, never provisioned with target
+// credentials.
+func (r *Route) IsNextHop() bool { return r.Type == control.RouteTypeNextHop }
+
+// FinalTarget is the host the chain is being built toward on a next-hop route:
+// what this proxy asks the next one for. It falls back to the route's own host
+// only for a direct route, where the two are the same thing.
+func (r *Route) FinalTarget() string {
+	if r.Hop != nil && r.Hop.FinalTarget != "" {
+		return r.Hop.FinalTarget
 	}
-	return fmt.Errorf("%w: %q", ErrUnsupportedRoute, r.Type)
+	if r.IsDirect() {
+		return r.Host
+	}
+	return ""
+}
+
+// MaxHops is the chain cap Hoplock Control set on this route, or zero when
+// it set none. The proxy may only make it stricter (PlanHop).
+func (r *Route) MaxHops() int {
+	if r.Hop == nil {
+		return 0
+	}
+	return r.Hop.MaxHops
 }
 
 // ChannelPermitted reports whether the connection may open a channel of this

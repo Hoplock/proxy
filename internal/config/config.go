@@ -68,6 +68,7 @@ type Config struct {
 	Proxy   Proxy   `yaml:"proxy"`
 	Control Control `yaml:"control"`
 	Routing Routing `yaml:"routing"`
+	Chain   Chain   `yaml:"chain"`
 	Auth    Auth    `yaml:"auth"`
 	Dial    Dial    `yaml:"dial"`
 }
@@ -130,6 +131,93 @@ type Routing struct {
 	// the SSH username. Defaults to DefaultTargetDelimiter.
 	TargetDelimiter string `yaml:"target_delimiter"`
 }
+
+// Chain configures multi-hop routing: how this proxy presents itself to another
+// proxy, how far a chain may go, and — for the relay direction — which upstream
+// it registers with and whether it accepts registrations of its own (D11,
+// PLAN §6.1).
+//
+// None of it decides which sessions chain, or in which direction. That is the
+// route's hop metadata, decided by Hoplock Control per connection (D2); a
+// proxy configured for both directions still obeys the one it is told.
+type Chain struct {
+	// IdentityKeyPath is the private key this proxy presents to another proxy
+	// — to the next hop when it extends a chain, and to the upstream when it
+	// registers a relay. It is this proxy's identity, never the user's:
+	// the far side authenticates THIS PROXY and asks Hoplock Control to
+	// re-establish the user, so nothing takes an upstream's word for who is
+	// connecting. Empty means this proxy cannot chain, and a next-hop route
+	// is refused as an outage.
+	IdentityKeyPath string `yaml:"identity_key_path"`
+	// IdentityCertPath is an optional OpenSSH certificate for that key, for a
+	// fleet whose proxies are certified by a CA rather than listed by hand.
+	// The certificate must name this proxy's id among its principals.
+	IdentityCertPath string `yaml:"identity_cert_path"`
+	// MaxHops caps how many proxies one session may traverse. Zero means
+	// routing.DefaultMaxHops. It can only ever shorten a chain the server
+	// allowed, never lengthen one.
+	MaxHops int `yaml:"max_hops"`
+	// Upstream registers an outbound relay connection with another proxy, so
+	// that proxy can send sessions here without dialling in. This is the half
+	// that removes the inbound firewall rule for a protected zone.
+	Upstream ChainUpstream `yaml:"upstream"`
+	// Accept listens for relay registrations from downstream proxies.
+	Accept ChainAccept `yaml:"accept"`
+}
+
+// ChainUpstream is the downstream half of the relay: this proxy registering
+// with the one above it.
+type ChainUpstream struct {
+	// Address is the "host:port" of the upstream proxy's registration
+	// listener. Empty disables registration entirely.
+	Address string `yaml:"address"`
+	// HostKeyPath is the upstream's expected SSH host public key. REQUIRED
+	// when Address is set: this registration is an inbound path for sessions,
+	// so an unverified upstream is one that can be impersonated into
+	// receiving them. There is no trust-on-first-use here — the fleet's own
+	// keys are known at deployment time, unlike a target's (D7).
+	HostKeyPath string `yaml:"host_key_path"`
+	// DialTimeout bounds one registration attempt. Zero means the package
+	// default.
+	DialTimeout time.Duration `yaml:"dial_timeout"`
+	// KeepaliveInterval is how often this proxy pings the upstream. Zero means
+	// the package default; negative disables the ping.
+	KeepaliveInterval time.Duration `yaml:"keepalive_interval"`
+	// MinBackoff and MaxBackoff bound the reconnect delay. Zero means the
+	// package defaults.
+	MinBackoff time.Duration `yaml:"min_backoff"`
+	MaxBackoff time.Duration `yaml:"max_backoff"`
+}
+
+// ChainAccept is the upstream half of the relay: this proxy holding
+// registrations open for the proxies below it.
+type ChainAccept struct {
+	// ListenAddr is the "host:port" the registration listener binds to. Empty
+	// accepts no registrations, which is the default: a proxy is a relay hub
+	// only where the topology says so.
+	ListenAddr string `yaml:"listen_addr"`
+	// HostKeyPath is the key the registration listener presents. Empty reuses
+	// proxy.host_key_path, which is the same identity from a registering
+	// proxy's point of view.
+	HostKeyPath string `yaml:"host_key_path"`
+	// AuthorizedKeysPath lists the proxies that may register, in OpenSSH
+	// authorized_keys format. THE COMMENT ON EACH LINE IS THE PROXY ID that
+	// key may register as: a key that named no id could register as any of
+	// them and start receiving their sessions.
+	AuthorizedKeysPath string `yaml:"authorized_keys_path"`
+	// TrustedCAPath lists the CA public keys whose user certificates may
+	// register. A certificate must name the claimed proxy id as a principal.
+	TrustedCAPath string `yaml:"trusted_ca_path"`
+	// KeepaliveInterval is how often the hub pings a registration. Zero means
+	// the package default; negative disables the ping.
+	KeepaliveInterval time.Duration `yaml:"keepalive_interval"`
+}
+
+// Registers reports whether this proxy registers a relay with an upstream.
+func (c Chain) Registers() bool { return c.Upstream.Address != "" }
+
+// AcceptsRegistrations reports whether this proxy hosts relay registrations.
+func (c Chain) AcceptsRegistrations() bool { return c.Accept.ListenAddr != "" }
 
 // Auth holds the proxy's authentication planes. Each plane is a pluggable
 // interface with swappable implementations (D4); config chooses which ones run,
@@ -450,12 +538,81 @@ func (c *Config) Validate() error {
 		v.add("routing.target_delimiter", ErrInvalid, err.Error())
 	}
 
+	c.validateChain(&v)
+
 	c.validateAuth(&v)
 
 	if len(v.Fields) > 0 {
 		return &v
 	}
 	return nil
+}
+
+// validateChain checks multi-hop and relay settings (D11). Each half is
+// checked only when the operator asked for it: most proxies neither register
+// nor accept registrations, and the ones that do usually do exactly one.
+func (c *Config) validateChain(v *ValidationError) {
+	if c.Chain.MaxHops < 0 {
+		v.add("chain.max_hops", ErrInvalid, "must not be negative")
+	}
+	if c.Chain.IdentityCertPath != "" && c.Chain.IdentityKeyPath == "" {
+		v.add("chain.identity_key_path", ErrMissing,
+			"a chain identity certificate needs the private key it certifies")
+	}
+
+	if u := c.Chain.Upstream; c.Chain.Registers() {
+		if _, _, err := net.SplitHostPort(u.Address); err != nil {
+			v.add("chain.upstream.address", ErrInvalid, `expected "host:port"`)
+		}
+		if u.HostKeyPath == "" {
+			v.add("chain.upstream.host_key_path", ErrMissing,
+				"the upstream's host key must be known: this registration is an inbound path for sessions")
+		}
+		if c.Chain.IdentityKeyPath == "" {
+			v.add("chain.identity_key_path", ErrMissing,
+				"registering with an upstream needs this proxy's identity key")
+		}
+		for _, d := range []struct {
+			field string
+			value time.Duration
+		}{
+			{"chain.upstream.dial_timeout", u.DialTimeout},
+			{"chain.upstream.min_backoff", u.MinBackoff},
+			{"chain.upstream.max_backoff", u.MaxBackoff},
+		} {
+			if d.value < 0 {
+				v.add(d.field, ErrInvalid, "must not be negative")
+			}
+		}
+	} else if upstreamConfigured(u) {
+		v.add("chain.upstream.address", ErrMissing,
+			"the upstream is configured but has no address to register with")
+	}
+
+	if a := c.Chain.Accept; c.Chain.AcceptsRegistrations() {
+		if _, _, err := net.SplitHostPort(a.ListenAddr); err != nil {
+			v.add("chain.accept.listen_addr", ErrInvalid, `expected "host:port"`)
+		}
+		if a.AuthorizedKeysPath == "" && a.TrustedCAPath == "" {
+			v.add("chain.accept.authorized_keys_path", ErrMissing,
+				"accepting registrations needs an authorized_keys file or a trusted CA; "+
+					"an unauthenticated registration is a way to receive other proxies' sessions")
+		}
+	} else if acceptConfigured(a) {
+		v.add("chain.accept.listen_addr", ErrMissing,
+			"registrations are configured but there is no address to accept them on")
+	}
+}
+
+// upstreamConfigured and acceptConfigured report whether the operator wrote
+// anything SUBSTANTIVE about a half of the relay. Timing settings do not count:
+// they are documented with their defaults in config.example.yaml, and a
+// deployment that leaves those lines in place while disabling the relay has not
+// asked for anything.
+func upstreamConfigured(u ChainUpstream) bool { return u.HostKeyPath != "" }
+
+func acceptConfigured(a ChainAccept) bool {
+	return a.HostKeyPath != "" || a.AuthorizedKeysPath != "" || a.TrustedCAPath != ""
 }
 
 // validateAuth checks the authentication planes. Method names are validated

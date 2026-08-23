@@ -5,7 +5,6 @@ package routing
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -87,8 +86,8 @@ func TestResolveDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if err := route.RequireDirect(); err != nil {
-		t.Errorf("RequireDirect: %v", err)
+	if !route.IsDirect() {
+		t.Errorf("route type = %q, want direct", route.Type)
 	}
 	if got, want := route.Addr(), "host.company.com:2222"; got != want {
 		t.Errorf("Addr() = %q, want %q", got, want)
@@ -160,9 +159,10 @@ func TestResolveOutageIsNotADeny(t *testing.T) {
 	}
 }
 
-// TestResolveNextHopIsReturnedIntact records the phase-0007 seam: the route is
-// resolved and handed back whole, and only the caller's RequireDirect refuses
-// it. Dropping it here would make chaining a rewrite rather than a plug-in.
+// TestResolveNextHopIsReturnedIntact keeps the chaining seam honest: the route
+// is resolved and handed back whole, hop metadata included, because the engine
+// dispatches on the type and PlanHop needs everything the server said about the
+// hop (D11).
 func TestResolveNextHopIsReturnedIntact(t *testing.T) {
 	client := &fakeClient{resp: &control.AuthorizeResponse{
 		RouteType:         control.RouteTypeNextHop,
@@ -170,27 +170,40 @@ func TestResolveNextHopIsReturnedIntact(t *testing.T) {
 		PermittedChannels: []string{"session"},
 		Hop: &control.HopMetadata{
 			FinalTarget: "deep.internal.company.com",
+			NextProxyID: "proxy-2",
 			MaxHops:     3,
-			HopTrail:    []string{"proxy-1"},
 		},
 	}}
-	r, _ := NewResolver(ResolverOptions{Client: client})
+	r, err := NewResolver(ResolverOptions{Client: client})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
 
-	route, err := r.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "deep.internal.company.com"})
+	route, err := r.Resolve(context.Background(), Request{
+		Identity: testIdentity(),
+		Target:   "deep.internal.company.com",
+		Conn:     control.ConnMeta{SessionID: "sess-1", ProxyID: "proxy-1"},
+	})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if route.IsDirect() {
 		t.Error("a nexthop route reported itself as direct")
 	}
-	if err := route.RequireDirect(); !errors.Is(err, ErrUnsupportedRoute) {
-		t.Errorf("RequireDirect() = %v, want errors.Is(..., ErrUnsupportedRoute)", err)
+	if !route.IsNextHop() {
+		t.Error("a nexthop route did not report itself as a next hop")
 	}
 	if route.Hop == nil || route.Hop.FinalTarget != "deep.internal.company.com" {
 		t.Errorf("hop metadata = %+v, want the final target preserved", route.Hop)
 	}
-	if control.IsUnauthorized(route.RequireDirect()) {
-		t.Error("an unsupported route classifies as a deny; it is a proxy limitation")
+	if got, want := route.FinalTarget(), "deep.internal.company.com"; got != want {
+		t.Errorf("FinalTarget() = %q, want %q", got, want)
+	}
+	if got, want := route.MaxHops(), 3; got != want {
+		t.Errorf("MaxHops() = %d, want %d", got, want)
+	}
+	if got, want := route.HopDirection(), control.HopConnectionDial; got != want {
+		t.Errorf("HopDirection() = %q, want %q (an absent direction is a dial)", got, want)
 	}
 }
 
