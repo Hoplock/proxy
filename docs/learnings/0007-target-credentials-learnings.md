@@ -197,8 +197,9 @@ Control's `routes[].target_auth` decides which route uses which.
 - **The management login is opened per operation** (provision, teardown, each
   sweep). Correct and simple; a pooled connection would cut a round trip off
   session setup if profiling ever says it matters.
-- **Confining the ephemeral account itself** — queued as **0013** (survey +
-  contract) and **0014** (implementation). The provisioner writes the account's
+- **Confining the ephemeral account itself** — queued as **0015** (survey +
+  contract) and **0016** (implementation; renumbered from 0013/0014 by the
+  privileged-access revision, PLAN §10). The provisioner writes the account's
   `authorized_keys`, chooses its shell, and owns its home, so it can bound what
   that account may execute at the OS rather than at the proxy: the only
   enforcement point in the system that survives an interactive shell, and the
