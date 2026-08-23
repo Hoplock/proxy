@@ -319,9 +319,9 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   *inputs*, consumed while the PDP decides. So the proxy stays entirely ignorant
   of Qualys, of BMC Helix, and of whatever a customer builds: it asks Control
   for a route and gets one, exactly as today. The framework is Control's `ext/`
-  seam and the shipped integrations are Enterprise's
-  (`docs/CROSS-REPO-PROTOCOL.md` §1). This repository's obligation is the
-  vocabulary in D16 and the recorded cross-repo obligation — nothing more.
+  seam (**M16**) and the shipped integrations are Enterprise's (**E13**), per
+  `docs/CROSS-REPO-PROTOCOL.md` §1. Both downstream decisions exist; this
+  repository's obligation is the vocabulary in D16 and nothing more.
 
   Two consequences do land here, and both are already built. **Revocation is the
   stop path**: when the scan ends or the ticket closes, §6.4's stream is what
@@ -1096,8 +1096,10 @@ Two other things kept their old names on purpose:
   The framework is Control's `ext/`; the two shipped integrations are
   Enterprise's. The proxy never learns that any of them exist.
 - **The drift reconciliation feed** (§5.3). Publishing Hoplock's device changes
-  for a customer's NCM or SIEM to correlate is an outbound integration and
-  belongs to Control, on D15's seam.
+  for a customer's NCM or SIEM to correlate is downstream export, not a new
+  subsystem: the proxy's job is to emit the device configuration-change event as
+  a distinct, queryable audit kind (§7), and Control's store plus Enterprise's
+  SIEM export (E7) carry it the rest of the way.
 - **Credential-vault mode for scanners.** Handing just-in-time credentials to a
   scanner that then connects to the target *directly*, rather than through the
   proxy, is a plausible and much easier-to-sell deployment for Qualys — and it
