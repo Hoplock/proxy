@@ -385,10 +385,35 @@ plan, and docs — never code, never a vendored artifact (§5, §6). It must:
   per-target capability reports;
 - say **how it searched** for stale references — the grep, not the adjective.
 
-### B. The Control implementation prompt (queued by the sync PR)
+### B. The Control-side work — which is mostly *already queued*
 
-Numbered by `hoplock/control`'s own `docs/PROTOCOL.md` — take the next free
-number in its queue; **do not** reuse a proxy number. Draft body:
+**A sync PR queues no prompt.** `docs/CROSS-REPO-PROTOCOL.md` §5 is explicit:
+"a sync adds, renames, and renumbers **no** prompt. If it appears to need to, it
+is not a sync." An earlier draft of this appendix told the sync to queue a
+Control implementation prompt, which contradicts that rule; it is corrected
+here.
+
+It is also unnecessary. The privileged-access revision already landed these
+obligations in the Control prompts that will implement them, per §5's DoD
+("every new obligation landed **in the prompt that will implement it**, not only
+in the plan"). Locate them **by title**, not by number — Control renumbers its
+own queue:
+
+| Obligation | Lands in Control's prompt titled |
+| --- | --- |
+| Storing the proxy's declared capabilities and constraining authoring by them | *Fleet registry, health & config distribution* (M17) |
+| Emitting the rung, the deadline, the caps and the grant context on `/v1/authorize` | *South-bound authorize & route* |
+| The rung and the method actually in force as audit records | *Audit ingest & tamper-evident store* |
+| Authoring validation and the operator-facing refusals | *North-bound API, inventory & policy lifecycle* |
+
+So the sync's job here is the normal one: re-vendor `contract/`, and sharpen
+that existing text from "when the contract carries a deadline" to the field's
+real name, shape, and absent-value default. If — and only if — you find work
+that fits none of those prompts, that is a **roadmap revision** in Control with
+its own PR, not a sync and not an appendix to this one.
+
+The draft below is retained as *content* for sharpening that text, not as a
+prompt to create:
 
 > **Objective.** Let an operator choose, per policy, *where* a command
 > restriction is enforced, and emit that choice on `/v1/authorize`.

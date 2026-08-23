@@ -179,6 +179,18 @@ sync nothing left to invent — the obligations are:
 - The `ephemeral-account` method exists and Enterprise's eventual device policy
   authoring hangs off it.
 
+Each of those already has a home in Control's queue, landed by the
+privileged-access revision. The sync **updates that existing text** — replacing
+"when the contract carries a ladder" with the field's real name, shape, and
+absent-value default — and per `CROSS-REPO-PROTOCOL.md` §5 it **queues no new
+prompt**. Locate them by title, since Control renumbers its own queue:
+*Contract vendoring & conformance harness* (the version bump itself),
+*Fleet registry, health & config distribution* (which platforms and methods a
+proxy advertises), *South-bound authorize & route* (authoring and emitting the
+ladder), and *Audit ingest & tamper-evident store* (the ladder entry actually
+used, and the ephemeral-account mapping event). If you find work that fits none
+of them, that is a roadmap revision in Control with its own PR.
+
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`, plus the Cross-repo impact section. Move to
 `implemented/`; add
