@@ -219,15 +219,175 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   docs, and the audit record use the same two words for the same two things.
 
   **Where** either mode is enforced is a separate question, opened by phase
-  0013. Both tiers above are enforced *in the proxy, at the `exec` request*, so
+  0015. Both tiers above are enforced *in the proxy, at the `exec` request*, so
   both stop meaning anything the moment a route permits an interactive shell —
   which this decision says in as many words. The ephemeral method (D6, §5.1)
   creates the account, writes its `authorized_keys`, and chooses its shell, so
   on those routes the same policy can be enforced by sshd and the kernel
   instead, where it also survives a connection that never went through a proxy.
-  0013 surveys those enforcement points and gives Hoplock Control the vocabulary
-  to choose one per route; 0014 implements them. This decision is amended there
+  0015 surveys those enforcement points and gives Hoplock Control the vocabulary
+  to choose one per route; 0016 implements them. This decision is amended there
   rather than replaced.
+- **D13 — Ephemeral accounts on devices the proxy cannot administer as a host
+  (new, phase 0013).** D6a split target credentials into `ephemeral-user` for
+  hosts that accept provisioning and `brokered-key` for everything else, on the
+  grounds that "a router, a firewall, a storage filer, a hypervisor, or an OT
+  controller can do none of that". That is true of *POSIX* provisioning and only
+  of POSIX provisioning. A FortiGate cannot run `useradd`, has no
+  `authorized_keys` and no home directory — but it can create an administrator,
+  set its password or public key, scope it to an access profile, restrict it to
+  a source address, and delete it again. Those are the same operations D6
+  performs; the transport and the vocabulary differ, not the model.
+
+  So the ephemeral model reaches this gear, and what stands between them is not
+  the credential method but the absence of a **device driver layer**: something
+  that knows how to say "create this account" to one platform.
+  `ephemeral-account` is a third method, and a driver is the per-platform
+  implementation of its operations. The route **names the platform**; the proxy
+  never sniffs a banner and guesses, because guessing wrong means running
+  configuration commands against the wrong parser.
+
+  Three properties D6 inherited from the operating system are unavailable here,
+  and each is replaced rather than assumed:
+
+  - **Expiry.** OpenSSH's `expiry-time` makes an ephemeral key die whether or
+    not the proxy is alive (§5.1); most device platforms have no equivalent. So
+    expiry becomes a per-target posture the **PDP selects** — target-enforced
+    where the platform can do it, proxy-enforced where it cannot, or explicitly
+    accepted as a risk — and the posture in force is in the audit record.
+    §5.1's rule that a fleet unable to express expiry is refused holds for the
+    target-enforced posture; it is not a rule about every fleet.
+  - **The account name as the registry.** `hl-<tag>-<login>-<token>` needs 31
+    characters and many platforms cap administrator names far below that. A
+    driver therefore *declares* its limit, and below 32 the name gives up its
+    readable login segment rather than its reaper prefix or its uniqueness token
+    (§5.3). Attribution moves into a mapping event the proxy emits on D8's
+    priority path — which makes that event load-bearing in a way it never is on
+    Linux, where the target itself names the user. Lose the event and
+    attribution exists nowhere.
+  - **Invisibility.** Creating a POSIX user disturbs nothing anyone watches.
+    Creating a device administrator is a **configuration change**: it lands in
+    config-change logs, backup diffs, and drift detection, twice per session.
+    Hoplock's own drivers therefore never persist the account to saved
+    configuration — a reload is then a free reaper — and the noise is answered
+    by *publishing* the changes for correlation, never by suppressing the
+    device's own logging of them (§5.3).
+
+  **Customer-written drivers are a first-class case**, not an afterthought: the
+  estates that need this most are the ones running a platform nobody else has.
+  The seam is declarative first — a driver is a document naming the connect
+  mode, the command sequence per operation, expected prompts, error patterns,
+  and the platform's declared limits — with a subprocess contract as the escape
+  hatch and a compiled SDK deliberately deferred. A customer driver may persist
+  accounts where a Hoplock driver may not; it declares that it does, and every
+  session it serves records it.
+
+- **D14 — The server sends a ladder of credential methods, not one (amends D6a,
+  new, phase 0013).** D6a said an unsatisfiable method is a clean denial and
+  "never a silent fallback to a different method". The rule is right and its
+  conclusion was too narrow: it optimises for never connecting with the wrong
+  credential at the cost of not connecting at all — and a session that does not
+  happen produces no recording, no command policy, and no audit trail. For a
+  product whose first claim is reaching the devices nothing else reaches, denial
+  is frequently the worse security outcome.
+
+  What made fallback unacceptable was never degradation; it was the **proxy**
+  choosing. So `target_auth` becomes an **ordered list the PDP authors**: the
+  proxy walks it top-down, stops at the first entry it can satisfy, and records
+  which one that was. Nothing is proxy-invented — a single-entry list is exactly
+  D6a's original behaviour, and a PDP that will not accept degradation on a
+  target writes one. D6a's actual rule survives untouched: the proxy never
+  connects with a method the server did not name.
+
+  The rung in force is an **audit fact, not a user-facing one**. It goes to the
+  record and the operator surface; the user is told nothing. "You got the weaker
+  credential" tells an attacker which targets are softest and tells an honest
+  user nothing they can act on. This is the one place §4.3's disclosure rule
+  does not apply, and the reason is that the information is about the estate
+  rather than about the user's own request.
+
+- **D15 — External authorization context belongs to Hoplock Control (new, phase
+  0015).** Some access is legitimate only while something outside this system
+  says so: a vulnerability scan is running, a change ticket is approved and
+  inside its window, an incident is open. Hoplock must learn that in two
+  directions — an inbound **push** ("a scan is starting against targetX") and an
+  outbound **probe** ("is this access legitimate right now?") — and customers
+  must be able to integrate systems nobody here has heard of.
+
+  None of that is the proxy's. D2 says the proxy originates no policy, and a
+  push that grants access and a probe that validates one are both policy
+  *inputs*, consumed while the PDP decides. So the proxy stays entirely ignorant
+  of Qualys, of BMC Helix, and of whatever a customer builds: it asks Control
+  for a route and gets one, exactly as today. The framework is Control's `ext/`
+  seam and the shipped integrations are Enterprise's
+  (`docs/CROSS-REPO-PROTOCOL.md` §1). This repository's obligation is the
+  vocabulary in D16 and the recorded cross-repo obligation — nothing more.
+
+  Two consequences do land here, and both are already built. **Revocation is the
+  stop path**: when the scan ends or the ticket closes, §6.4's stream is what
+  ends a session already in flight. And **caching must not outlive the window**,
+  which needs nothing new, because the cache hint is server-owned — a PDP
+  granting time-boxed access simply omits it.
+
+  Three design constraints the framework must honour are recorded here because
+  this repository owns the cross-repo protocol. Push and probe are **not
+  redundant**: push is fast and spoofable, probe is authoritative and needs the
+  external system reachable, so a push opens a pending window and a probe
+  confirms at authorize time, failing closed for privileged grants. A push is
+  **untrusted input naming a target** and must be constrained to a
+  pre-registered scope for that integration — otherwise the push endpoint *is*
+  an access-granting API. And replay, clock skew, and a server-side ceiling on
+  window length belong to the framework, not to each integration, or the first
+  customer-written provider becomes the weakest one.
+
+- **D16 — Unbounded privilege is bounded by time and by the record, not by
+  command policy (new, phase 0015).** A vulnerability scanner needs root and
+  changes its command set with every content update. Every tier of D12's ladder
+  is worthless against it by construction — there is no argv shape to name, and
+  no rule list survives an interpreter. The product must say that plainly rather
+  than imply a filter is watching.
+
+  What actually constrains such access is three things, and they are what the
+  contract must express: it **did not exist before the window** (D6/D13); it
+  ends at a **deadline the proxy enforces locally** — so it holds when the
+  revocation stream is down, which is precisely when an immortal root session is
+  least acceptable; and it was **recorded outside the target's reach**. That
+  last is the strongest claim in the system and the reason capture is not
+  optional here: root on a target can disable its auditing and scrub its traces;
+  it cannot touch a session captured in the proxy. A route may therefore require
+  capture, and a proxy that cannot record — not even to its disk buffer —
+  refuses it.
+
+  The record must also say **why** access was granted. `decision_id` correlates
+  a decision; nothing carries the ticket, the scan, or the window. A structured
+  grant context does, and the proxy treats it as opaque: logged, never parsed,
+  and never the basis of a decision the proxy makes itself.
+
+- **D17 — Machine identities need a different connection model (amends D2, new,
+  phase 0018).** D2's "one decision per connection" is safe because connections
+  are short: a snapshot enforced for the life of a ten-minute session is not
+  standing authorization. Machine-to-machine health checking breaks that
+  assumption from both ends. An estate of 350,000 targets polled every minute is
+  ~5,800 new connections per second — five figures of authorize load, an SSH
+  handshake per check, and, on `ephemeral-user` or `ephemeral-account` routes,
+  an account creation per check, which is not a thing that can be done. Yet the
+  natural fix — one persistent connection per (automation, target) with a
+  channel per check — is exactly the standing authorization D2 exists to
+  prevent.
+
+  Both halves are right, so the resolution is to **bound the snapshot rather
+  than the connection**: a long-lived machine connection carries a maximum
+  snapshot age and re-authorizes when it expires, with the revocation stream
+  still the fast path. The connection survives; the decision does not. Audit
+  granularity moves with it — the unit of record becomes the channel, not the
+  connection.
+
+  Those numbers are arithmetic, not measurement, and they rest on an assumption
+  worth testing before it is designed for: most large estates health-check
+  network devices over SNMP or streaming telemetry rather than SSH, and those
+  that use SSH typically do so every five to fifteen minutes, not every sixty
+  seconds. Phase 0017 exists to replace the arithmetic with measurement, and it
+  runs first for that reason.
 
 ---
 
@@ -330,21 +490,25 @@ type ProvisionedAccess struct {
 }
 ```
 
-There are **two production implementations** (D6a), and Hoplock Control
+There are **three production implementations** (D6a, D13), and Hoplock Control
 picks between them per route in its authorize response — never proxy-local
 config, because one proxy routinely fronts estates that need different
-methods:
+methods. Since D14 the response carries an **ordered list** rather than a single
+method, and the proxy uses the first entry it can satisfy:
 
 | Method | What it does | For |
 | --- | --- | --- |
 | `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it afterwards (D6, §5) | Linux/BSD fleets that accept a provisioning account |
 | `brokered-key` | Uses a per-target credential held for the session and never written to disk | Appliances, network and OT gear: anything that cannot create users |
+| `ephemeral-account` | Creates a short-lived administrator on a device through a platform driver and removes it afterwards (D13, §5.3) | Network, security and OT appliances that can create accounts but are not POSIX hosts |
 
 `static-key` remains as the development placeholder from phase 0005 —
-`brokered-key` is what it grows into. A method the proxy does not implement,
-or has no local material for, is a clean session denial (an outage-class
-failure, §4.3): never a silent fallback to a different method, which would
-mean connecting with credentials the server did not choose.
+`brokered-key` is what it grows into. A method the proxy does not implement, or
+has no local material for, is **skipped**, and the next entry in the server's
+list is tried (D14). Exhausting the list is a clean session denial (an
+outage-class failure, §4.3). What has never been permitted, and still is not, is
+the proxy connecting with a method the server did not name: a single-entry list
+therefore behaves exactly as D6a originally specified.
 
 On the wire (contract v2, phase 0006) this is `target_auth`: a `method` from
 the table above plus a method-scoped `params` string map — `username`,
@@ -499,6 +663,79 @@ process environment, both keyed by the reference and read on demand rather than
 cached. **A Hoplock Control that mints per-session credentials implements this
 interface**; it arrives as another `target_auth` method plus a source, and
 nothing that touches a credential changes.
+
+### 5.3 `ephemeral-account` — a short-lived administrator on a device (D13)
+
+The lifecycle mirrors §5.1 exactly — log in privileged, create the account,
+install the credential, connect, remove it on teardown — and every step is
+executed by a **driver** for the named platform rather than by POSIX commands.
+The route names the platform; nothing is inferred from a banner.
+
+A driver **declares its platform's constraints**, and the provisioner reads
+those declarations rather than assuming Linux:
+
+| Declaration | Why the provisioner needs it |
+| --- | --- |
+| Maximum account-name length | Selects the naming scheme below |
+| Whether expiry can be enforced on the device | Selects the expiry posture (D13) |
+| Whether account creation persists across reload | Hoplock drivers must answer "no"; a customer driver may answer "yes" and have it recorded |
+| Which credential kinds it accepts (password, public key) | The route's `credential_kind` must be one of them |
+| Whether the account can be pinned to a source address | A free extra restriction where it exists |
+
+**Naming under a constrained limit.** With a declared limit of *X*:
+
+- *X* ≥ 32 — the §5.1 scheme unchanged: `hl-<proxy tag>-<login>-<token>`.
+- 11 ≤ *X* < 32 — `hl-` + a 4-character proxy tag + an (*X*−7)-character token,
+  base36 throughout. The readable login segment is what is dropped, because a
+  six-character truncation of `automation-disk-check` reads as attributable when
+  it is not, while its absence is honest. The reaper prefix and the uniqueness
+  token both survive: without the first, one proxy's reaper deletes another's
+  live accounts; without the second, two concurrent sessions share an account
+  and each teardown removes the other's access.
+- *X* < 11 — the route is refused (outage-class, §4.3). Below that the token
+  falls under four base36 characters, and a name that short is both
+  collision-prone and *guessable* — and on password credentials the account name
+  is half the credential pair.
+
+Base36 rather than hex is not cosmetic: at *X* = 12 the token is five characters,
+worth ~26 bits in base36 against 20 in hex, and that difference lands exactly
+where the budget is tightest.
+
+**Collision behaviour differs from §5.1.** The ephemeral provisioner treats an
+existing account idempotently, which is safe when the name encodes the session.
+With a short token an existing account is more plausibly *another live
+session's*, so the device path verifies non-existence and, on collision,
+**retries with a fresh token** — it never adopts. A small retry budget, then
+refusal.
+
+**Attribution lives in the log, so the log is mandatory.** On a constrained
+platform the account name carries no login, so the proxy emits a mapping event
+— account name, session id, subject, target, platform, the rung and posture in
+force — on D8's **priority path**, not batched. A route whose driver declares a
+constrained limit is refused if the proxy has no logging path at all, not even
+its disk buffer: attribution that exists in exactly one place must actually
+reach that place. This is the same fail-closed rule as D16's required capture,
+reached from a different direction.
+
+**Configuration-change noise is documented, not suppressed.** Two config changes
+per session, per device, land in the customer's backup diffs and drift
+detection. Hoplock does not offer to hide them — teaching an operator to
+exclude privileged-account creation from change logging would remove the record
+that makes Hoplock's own actions reviewable. The shipped answer is a documented
+note (exclude `hl-*` account objects from drift *alerting*, not from logging),
+and the real answer is a **reconciliation feed**: Control publishes every change
+Hoplock made — device, object, timestamp, session, identity — for the customer's
+NCM or SIEM to correlate and auto-close. That inverts the problem, because an
+`hl-*` object appearing on a device that Hoplock never reported is then a
+high-quality detection rather than noise. It is an outbound integration and so
+reuses D15's provider seam in Control rather than growing its own.
+
+Account **pooling** — pre-creating administrators and rotating only their
+credentials — is recorded here as the named alternative for customers who can
+consume neither, and rejected as the default: it caps concurrency per device,
+leaves a pool member holding a live credential after a proxy crash, and demotes
+the product's claim from "no standing accounts" to "no standing credentials",
+which is a materially weaker sentence.
 
 ---
 
@@ -749,13 +986,28 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0010 | Command filtering + policy actions      | `internal/filter`: restricted exec (enforced), filtered exec, interactive best-effort |
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
-| 0013 | Enforcement points — contract v3         | survey of where policy is actually enforced (D12 amendment), server-chosen enforcement rung + proxy capability advertisement in `api/` |
-| 0014 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem), teardown + reaper + e2e |
+| 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
+| 0014 | FortiOS device drivers                  | `internal/auth/target/device`: the FortiGate/FortiSwitch drivers, device provisioner, device reaper, fake-device tests |
+| 0015 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
+| 0016 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
+| 0017 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
+| 0018 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
-> **Renumbering note (this revision).** Phase 0006 is new: it revises the
+> **Renumbering note (privileged-access revision).** Phases 0013, 0014, 0017 and
+> 0018 are new, and the two enforcement-point phases moved down to make room for
+> the device work they now depend on: **0013→0015, 0014→0016**. Only queued
+> prompts were renumbered (`docs/PROTOCOL.md` §6); implemented prompts 0001–0007
+> keep their frozen names. Anything written before this revision that hands work
+> to "0013" means the enforcement-point contract, now **0015**, and "0014" means
+> target-side enforcement, now **0016** — including D12's own closing paragraph,
+> which was updated in place. The contract version numbering follows the same
+> shift: v3 is now phase 0013 (device provisioning) and the enforcement-point
+> revision becomes **v4**.
+>
+> **Renumbering note (contract-v2 revision).** Phase 0006 is new: it revises the
 > management contract so the vocabulary in D5a/D6a/D11 exists *before* anything
 > is built against the old one. Under `docs/PROTOCOL.md` §6, queued prompts were
 > renumbered to keep implementation order — **0006→0007, 0007→0008, 0008→0009,
@@ -839,3 +1091,76 @@ Two other things kept their old names on purpose:
   operator/audit surface. These are the product's north-bound features and they
   live in Hoplock Control. The proxy's job is to enforce a decision and
   to explain a denial well enough to be traced (§4.3) — not to author one.
+- **External-system integrations** — the push receiver, the probe providers, the
+  provider registry, and the shipped Qualys and BMC Helix integrations (D15).
+  The framework is Control's `ext/`; the two shipped integrations are
+  Enterprise's. The proxy never learns that any of them exist.
+- **The drift reconciliation feed** (§5.3). Publishing Hoplock's device changes
+  for a customer's NCM or SIEM to correlate is an outbound integration and
+  belongs to Control, on D15's seam.
+- **Credential-vault mode for scanners.** Handing just-in-time credentials to a
+  scanner that then connects to the target *directly*, rather than through the
+  proxy, is a plausible and much easier-to-sell deployment for Qualys — and it
+  forfeits session capture, which D16 identifies as the control that makes an
+  unbounded-privilege grant defensible at all. It is a separate product surface,
+  not a proxy feature, and it is out of scope until that trade is deliberately
+  accepted.
+- **A compiled plugin SDK for device drivers** (D13). The declarative driver
+  document and the subprocess contract come first; the seam is shaped so an SDK
+  can be added without moving `TargetAuthenticator`.
+
+---
+
+## 13. Reference use cases
+
+Three customer-shaped scenarios, recorded so a session can check its work
+against them by name instead of re-deriving them. They are not phases; each is
+served by several, and the phase table says which.
+
+### UC1 — Privileged access to network and security appliances
+
+A telco estate of ~300,000 devices — FortiGates and FortiSwitches first — that
+cannot run an endpoint agent, cannot create POSIX users, and often cannot
+enforce credential expiry. Operators need just-in-time privileged access with
+per-session attribution, and the estate is exactly the population that gains
+most from an inline enforcement point because nothing else can reach it.
+
+Served by: D13 (method + driver layer), D14 (ladder), §5.3 (naming, expiry
+posture, config-change noise), phases 0013–0014, with the device enforcement
+rung in 0015–0016.
+
+### UC2 — Machine-to-machine automation with a fixed command set
+
+An automation host runs several distinct automations against the same targets.
+Each has its own credential, its own permitted executables, and no business
+holding an interactive shell. This is the use case the policy vocabulary is
+sharpest on — `restricted_exec` plus `permitted_requests` without `pty-req` or
+`shell` is a genuine boundary rather than a guardrail (D12) — and the one where
+"one identity per automation" matters most: policy hangs off the identity, so
+automations sharing a credential can only ever be given the union of their
+permissions.
+
+Two constraints belong in customer-facing docs rather than being discovered:
+shell pipelines are not expressible under `restricted_exec` by design (no shell
+is interposed, so a pipeline needs a vetted wrapper binary — which is also the
+natural fit for a forced-command rung), and `login` is never the identity: the
+codebase forbids keying decisions on it, so per-automation separation must come
+from the credential.
+
+Served by: existing D5a/D12 vocabulary, plus D17 and phases 0017–0018 once the
+estate is large enough for connection-per-check to stop being viable.
+
+### UC3 — Scanners and ticket-scoped access
+
+A vulnerability scanner needs root, changes its command set with every content
+update, and must not hold access to a target it is not currently scanning.
+Legitimacy is asserted by an external system — a scan starting, a change ticket
+inside its window — which Hoplock learns by push or by probe. Command policy
+cannot constrain this access; time, scope, and an out-of-reach recording can.
+
+The honest claim for this use case is *just-in-time, scoped, and recorded* —
+never *filtered*. Marketing, docs, and the audit record use those words.
+
+Served by: D15 (where the integrations live — not here), D16 (deadline, grant
+context, required capture), D6/D13 for the credential, §6.4's revocation stream
+for the stop path, and phase 0015 for the contract.

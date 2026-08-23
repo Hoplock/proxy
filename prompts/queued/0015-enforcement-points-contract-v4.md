@@ -1,24 +1,36 @@
-# 0013 — Enforcement points: survey & contract v3
+# 0015 — Enforcement points: survey & contract v4
 
-> New phase, queued after 0012. It comes **after** the prototype gate rather
-> than before it because the question it answers is comparative — "which of the
-> available enforcement points is strongest" is only answerable once both
-> credential methods (0007), all three policy axes (0009), and both exec tiers
-> (0010) exist to compare against. It comes **before** 0014 for the reason 0006
+> Renumbered from 0013 by the privileged-access revision (PLAN §10) and widened
+> there. It comes **after** the prototype gate because the question it answers is
+> comparative — "which of the available enforcement points is strongest" is only
+> answerable once the credential methods (0007, 0014), all three policy axes
+> (0009), and both exec tiers (0010) exist to compare against. It now waits for
+> the **device** method too (0013, 0014), because a device platform's own RBAC is
+> a candidate rung and a survey that omits it would be answering a smaller
+> question than the product asks. It comes **before** 0016 for the reason 0006
 > came before 0009: the vocabulary is revised before anything is built against
 > it.
+>
+> It also carries the **session-bounds vocabulary** for UC3 (PLAN §13) — deadline,
+> grant context, required capture (D16). Those are not enforcement points, but
+> they are contract fields on the same object in the same revision, and splitting
+> them into a fourth contract bump would cost Control a third sync for no gain.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
 - `docs/CROSS-REPO-PROTOCOL.md` — **required**: this phase changes `api/`, which
   is a shared surface. Section 2 (upstream merges first), Section 4 (the
   Cross-repo impact section this PR owes), Section 5 (sync PR conventions).
-- `docs/PLAN.md` — especially §2 (**D12**, D5a, D6a), §5.1 (what the ephemeral
-  provisioner already does to a target), §6.3 (the three tiers).
+- `docs/PLAN.md` — especially §2 (**D12**, **D16**, D5a, D6a, D13), §5.1 (what
+  the ephemeral provisioner already does to a target), §5.3 (what a device
+  driver controls and what it declares), §6.3 (the three tiers), §13 (UC2 and
+  UC3, which this phase serves).
 - `docs/learnings/` — read summaries; open `0006` (how a contract revision is
   shaped and versioned), `0007` (what the ephemeral provisioner controls on the
-  target: the account, its `authorized_keys`, its shell, its home) and `0010`
-  (the restricted-exec policy object and what it can and cannot promise).
+  target: the account, its `authorized_keys`, its shell, its home), `0010`
+  (the restricted-exec policy object and what it can and cannot promise), and
+  `0013`/`0014` (what a device driver declares, and what a FortiOS access
+  profile can actually constrain).
 
 ## Objective
 Answer, and write down, **where** each policy claim is actually enforced — then
@@ -26,7 +38,7 @@ give Hoplock Control the vocabulary to choose an enforcement point per route,
 and the proxy the vocabulary to say which points it can provide.
 
 Enforce nothing. This phase revises `docs/PLAN.md`, `api/control.yaml`, and
-`internal/control`; 0014 implements what it names.
+`internal/control`; 0016 implements what it names.
 
 ## Why this phase exists
 
@@ -79,6 +91,7 @@ of each. At minimum:
 | Per-session `noexec`/`nosuid` home, or a mount namespace | target, kernel |
 | systemd sandboxing — `ProtectSystem=strict`, `ProtectHome=`, `NoNewPrivileges=`, `SystemCallFilter=`, `RestrictSUIDSGID=` — applied by a drop-in on the session's `user-<uid>.slice`, or by a `systemd-run` wrapper behind `command=` | target, systemd + cgroup v2 |
 | MAC confinement (SELinux type, AppArmor profile) | target, kernel |
+| **Device RBAC** — the platform's own command authorization bound to the ephemeral account (a FortiOS access profile, an IOS privilege level or parser view, a Junos login class) | target, vendor, **per session** (D13) |
 | Nothing | — |
 
 **Axis 2 — what the session may reach:**
@@ -91,7 +104,8 @@ of each. At minimum:
 | systemd `PrivateNetwork=yes` — the session's processes get a namespace with loopback and nothing else | target, kernel netns |
 | Per-uid packet filter: `iptables -m owner --uid-owner`, nftables `meta skuid` | target, netfilter |
 | MAC network rules (SELinux socket classes, AppArmor `network` rules) | target, kernel |
-| The target's own ACL, role, or privilege level | target, vendor, **pre-provisioned** |
+| The target's own ACL, role, or privilege level, **pre-provisioned** | target, vendor |
+| **Trusted-host / source-address pinning on the ephemeral device account** — where the driver declares the platform supports it (§5.3) | target, vendor, **per session** (D13) |
 | Nothing | — |
 
 `systemd` deserves its two rows rather than a footnote: on a modern Linux fleet
@@ -118,7 +132,28 @@ changes what the tiers can be:
   changes nothing on the target by definition, so **no target-side rung is
   available on those routes** — the ladder there stops at the proxy. The
   contract must make that expressible and the mismatch must be an error, not a
-  surprise.
+  surprise. Since D14 the route names an *ordered list* of methods, so the
+  coupling is now conditional: a route whose ladder is
+  `[ephemeral-user, brokered-key]` can reach a target-side rung on its first
+  entry and not on its second. Decide, and write down, whether a rung is
+  therefore a property of the route (and a degraded method makes it
+  unavailable — refuse, or run without it?) or a property of each ladder entry.
+  Either answer is defensible; an unstated one produces a session whose audit
+  record claims a rung that was never applied, which is the failure this whole
+  phase exists to prevent.
+- **A device's own RBAC may be the strongest rung in the system, and it is not
+  Linux.** On the `ephemeral-account` method (D13) the proxy creates the
+  administrator, so it chooses that administrator's access profile, role, or
+  privilege level — enforcement by the platform's own command authorizer, ahead
+  of anything the proxy could parse, and effective against a connection that
+  never went through a proxy at all. The survey must fill all four columns for it
+  as for any other candidate, and must be specific about the failure mode that
+  has no Linux analogue: vendor RBAC is **coarse and named**, so "the profile
+  that permits diagnostics" is only as good as the vendor's grouping, and the
+  survey should say where that grouping leaks (a diagnostic command with a shell
+  escape, a profile that includes configuration write). Read 0014's learnings
+  before writing this row; do not characterise FortiOS access profiles from
+  memory.
 - **Egress is a second axis, and the forwarding policy does not cover it.**
   `permitted_forwards` governs what may be tunnelled *through SSH channels*; a
   process the session starts on the target opens its own sockets and never
@@ -174,7 +209,7 @@ connection. Decide and document:
   docs.
 - **The absent-value default must be exactly today's behaviour** — proxy-side
   enforcement only. A v2 server that never heard of this field must keep
-  working unchanged, and `policy_version` moves to 3 (0006 set that pattern:
+  working unchanged, and `policy_version` moves to 4 (0006 set that pattern:
   see `control.PolicyVersion`).
 - **Capability advertisement, per target and not only per proxy.** A server
   cannot sensibly choose a rung that cannot be provided, and what is available
@@ -184,7 +219,7 @@ connection. Decide and document:
   positioned to find that out, because it is the only one that logs in.
 
   This has an ordering problem worth solving in this phase rather than
-  discovering in 0014: authorize happens **before** the proxy has ever touched
+  discovering in 0016: authorize happens **before** the proxy has ever touched
   the target, so per-target capabilities cannot simply ride on
   `AuthorizeRequest` for a first-ever connection. The precedent that fits is
   `/v1/hostkeys/report` (D7): the proxy learns something about a target by
@@ -204,20 +239,72 @@ connection. Decide and document:
 - **The audit record carries the rung that was actually in force**, not the one
   requested. The whole point is that the claim differs per rung.
 
+### 2a. Session bounds and access context (D16, UC3)
+
+Four fields on the authorize response, unrelated to *where* policy is enforced
+but bounding *how long* and *on what grounds* a session exists. They ride this
+revision because they are the same object and the same version bump.
+
+- **A session deadline.** Today nothing expresses one: `CacheHint.ttl_seconds`
+  bounds decision *reuse* and `ephemeral-user`'s `lifetime_seconds` bounds the
+  *credential*, but an already-open session outlives both. Add an absolute
+  deadline the **proxy enforces locally**, so it holds when the revocation
+  stream is down — which is exactly when an immortal root session is least
+  acceptable, and the reason this is not "just use revocation". Decide and
+  document: absolute instant or duration-from-authorize (prefer the instant —
+  a duration re-anchors on every hop of a chained route, which silently
+  multiplies the window); what the user is told at expiry (§4.3 says the close
+  is explained, and this one is not a denial); and whether a warning precedes
+  it. Applies to any route, not only privileged ones.
+- **Required session capture.** A route may demand that the session is recorded,
+  and a proxy that cannot record refuses it (outage-class, §4.3). Buffering to
+  local disk **counts** as recording — the 0011 pipeline's disk buffer is a
+  resilience path, not a degraded mode — so the refusal triggers only when there
+  is no path at all. This is the compensating control that makes D16's
+  unbounded-privilege grant defensible, so name it after what it guarantees, and
+  make the check happen before the target leg is dialled rather than after.
+- **Grant context.** Structured: the external system, its reference (ticket,
+  scan, incident), and the window it asserted. Plus an `additional_context`
+  admitting either a string or an object, because the systems on the other end
+  differ more than a fixed schema can absorb. **The proxy treats all of it as
+  opaque**: it is copied to every log record for the session, never parsed,
+  never matched against, never the basis of a proxy-side decision. Say that on
+  the field, in the contract, in those words — the next reader's instinct will
+  be to make policy out of it, and D2 says that decision was already made
+  upstream. It is not shown to the user on denial (§4.3: a denial stays vague).
+- **Concurrency caps** (UC2). A per-subject and/or per-target ceiling on live
+  sessions, enforced by the proxy against its own `SessionRegistry` — live
+  session count is knowable *only* to the proxy, which is why this is a field
+  here rather than a decision Control can make alone from `ConnMeta`. Exceeding
+  it is a **policy denial** (vague, §4.3), not an outage. Both scopes are
+  optional and independent; absent means uncapped, which is today's behaviour.
+
+Absent-value defaults for all four are "today's behaviour", per the rule below.
+
 ### 3. `internal/control`
 
 Types, `Clone`, validation, and the mock server, following 0006's shape exactly:
 every new field gets its JSON tag, its absent-value default, and its consuming
 phase documented on the field. `cmd/mock-control` fixtures gain the new key so
-0014 and 0012's topology can select rungs; `fixtures.example.yaml` and
+0016 and 0012's topology can select rungs; `fixtures.example.yaml` and
 `api/README.md`'s fixture table move with them.
 
 ## Out of scope
 - **Enforcing anything.** No provisioning changes, no scripts, no shell
-  configuration, no mount work — all 0014.
+  configuration, no mount work — all 0016.
 - Authoring SELinux or AppArmor policy for customer fleets. The survey records
   what the rung requires; shipping fleet policy modules is not this product.
-- Changing `target_auth` (0007) or the filter engine (0010).
+- Changing `target_auth`'s methods or ladder semantics (0007, 0013) or the
+  filter engine (0010).
+- **Building anything that consumes the grant context.** The push receiver, the
+  probe providers, the Qualys and BMC Helix integrations, and the provider
+  registry are all Control's and Enterprise's (D15, PLAN §12). This phase adds
+  the field the proxy carries and logs, and nothing else. If you find yourself
+  writing an HTTP client to ask an external system anything, you are in the
+  wrong repository.
+- **Enforcing the session deadline.** The field and its validation land here;
+  the timer that closes a live session belongs to the proxy engine. Queue it if
+  no phase covers it.
 
 ## Acceptance criteria
 - `docs/PLAN.md` carries the survey tables — **both axes** — with all four
@@ -241,6 +328,15 @@ phase documented on the field. `cmd/mock-control` fixtures gain the new key so
   route.
 - The capability mechanism has a test for the **absent and stale** cases, and
   both fail safe.
+- The session-bounds fields (§2a) each round-trip, each default to today's
+  behaviour when absent, and each have a documented row in `api/README.md`'s
+  absent-value table. `additional_context` accepts both a string and an object
+  and survives `Clone` without aliasing.
+- A test asserts the grant context is **not** consulted by any decision path:
+  the type carries no comparison or matching helper, and nothing outside
+  `internal/logging`'s record construction reads its fields.
+- The device-RBAC row is written from 0014's learnings, and the PR says which
+  FortiOS behaviour it relied on.
 - **No behaviour change**: `go test ./...` passes with no test in
   `internal/proxy`, `internal/auth/target`, or `internal/filter` modified.
 
@@ -257,11 +353,11 @@ warns about.
 Per `docs/PROTOCOL.md`, plus the Cross-repo impact section above filled in with
 what you actually found (§4: "None" is a finding and must be written down).
 Move to `implemented/`; add
-`docs/learnings/0013-enforcement-points-contract-v3-learnings.md`. Summary block
+`docs/learnings/0015-enforcement-points-contract-v4-learnings.md`. Summary block
 MUST document the rung vocabulary for **both axes** and each rung's guarantee in
 one line, which rungs are applied and which attested, the absent-value default,
 the capability-advertisement mechanism (proxy-level and per-target), the refusal
-rule, and the audit field — 0014 builds from that summary alone.
+rule, and the audit field — 0016 builds from that summary alone.
 
 ---
 
@@ -275,7 +371,7 @@ one describing a field that does.
 ### A. The sync PR (text only, immediately after this merges)
 
 Branch `claude/sync-enforcement-points`, commit
-`docs(sync): follow proxy contract v3 enforcement points`. It changes prompts,
+`docs(sync): follow proxy contract v4 enforcement points`. It changes prompts,
 plan, and docs — never code, never a vendored artifact (§5, §6). It must:
 
 - re-vendor `contract/` by Control's own `make contract-sync` (never by hand);
