@@ -38,6 +38,13 @@ type fixtures struct {
 	ProxyToken string `yaml:"proxy_token"`
 	// Users are matched by login for both authentication flows.
 	Users []fixtureUser `yaml:"users"`
+	// Proxies are the fleet's own proxies, recognised by the key they present
+	// when one of them extends a chain to another (D11). A chain leg is
+	// authenticated as the PREVIOUS HOP, and the identity it is answered with
+	// is the user's — re-established here, by the PDP, rather than asserted by
+	// the upstream proxy. This is the mock's model of the chain trust model in
+	// PLAN §6.1; a real Control would key it off the fleet's own registry.
+	Proxies []fixtureProxy `yaml:"proxies"`
 	// Routes are evaluated in order; the first match wins. No match is a deny.
 	Routes []fixtureRoute `yaml:"routes"`
 	// HostKeys configures the trust-on-first-use behaviour (D7).
@@ -72,6 +79,15 @@ type fixtureUser struct {
 	Password string `yaml:"password"`
 	// MFA configures the out-of-band second factor for the password flow.
 	MFA fixtureMFA `yaml:"mfa"`
+}
+
+// fixtureProxy is one proxy in the fleet.
+type fixtureProxy struct {
+	// ID is the proxy id, as it appears in conn.proxy_id and in a hop trail.
+	ID string `yaml:"id"`
+	// KeyFingerprints are the SHA256 fingerprints of the keys this proxy may
+	// present when it authenticates a chain leg.
+	KeyFingerprints []string `yaml:"key_fingerprints"`
 }
 
 // fixtureIdentity mirrors control.Identity in YAML form.
@@ -112,6 +128,11 @@ const (
 type fixtureRoute struct {
 	Login  string `yaml:"login"`
 	Target string `yaml:"target"`
+	// ProxyID restricts the rule to the proxy asking. Empty (or "*") matches
+	// any proxy. It is what lets one fixture file describe a chain: the same
+	// login and target answer "nexthop" at the edge proxy and "direct" at the
+	// one behind it, which is exactly how a route differs per hop.
+	ProxyID string `yaml:"proxy_id"`
 	// RouteType is "direct" or "nexthop".
 	RouteType string `yaml:"route_type"`
 	// ResolvedTarget overrides the host returned for a direct route. Empty
@@ -395,6 +416,21 @@ func (f *fixtures) validate() error {
 		}
 	}
 
+	seenProxies := make(map[string]bool, len(f.Proxies))
+	for i, p := range f.Proxies {
+		switch {
+		case p.ID == "":
+			add("proxies[%d].id is required", i)
+		case seenProxies[p.ID]:
+			add("proxies[%d].id %q is duplicated", i, p.ID)
+		default:
+			seenProxies[p.ID] = true
+		}
+		if len(p.KeyFingerprints) == 0 {
+			add("proxies[%d] (%s) has no key_fingerprints; it could authenticate no chain leg", i, p.ID)
+		}
+	}
+
 	for i, r := range f.Routes {
 		switch control.RouteType(r.RouteType) {
 		case control.RouteTypeDirect:
@@ -509,13 +545,26 @@ func (f *fixtures) user(login string) (*fixtureUser, bool) {
 	return nil, false
 }
 
-// route returns the first rule matching login and target.
-func (f *fixtures) route(login, target string) (*fixtureRoute, bool) {
+// route returns the first rule matching login, target, and the asking proxy.
+func (f *fixtures) route(login, target, proxyID string) (*fixtureRoute, bool) {
 	for i := range f.Routes {
 		r := &f.Routes[i]
 		if (r.Login == wildcard || r.Login == login) &&
-			(r.Target == wildcard || r.Target == target) {
+			(r.Target == wildcard || r.Target == target) &&
+			(r.ProxyID == "" || r.ProxyID == wildcard || r.ProxyID == proxyID) {
 			return r, true
+		}
+	}
+	return nil, false
+}
+
+// proxyByKey returns the fleet proxy that owns a key fingerprint.
+func (f *fixtures) proxyByKey(fingerprint string) (*fixtureProxy, bool) {
+	for i := range f.Proxies {
+		for _, known := range f.Proxies[i].KeyFingerprints {
+			if known == fingerprint {
+				return &f.Proxies[i], true
+			}
 		}
 	}
 	return nil, false
@@ -659,6 +708,24 @@ func (u *fixtureUser) identity() *control.Identity {
 		Groups:      u.Identity.Groups,
 		Claims:      u.Identity.Claims,
 	}
+}
+
+// ClaimChainHop names the proxy whose key authenticated a chain leg. The
+// identity itself is the user's, issued by the server: a hop learns who is
+// connecting from the PDP, never from the proxy in front of it (PLAN §6.1).
+const ClaimChainHop = "chain_hop_proxy_id"
+
+// chainIdentity is the identity answered to a chain leg: the user's, with the
+// hop that presented the key recorded on it for audit.
+func (u *fixtureUser) chainIdentity(hop string) *control.Identity {
+	id := u.identity()
+	claims := make(map[string]string, len(id.Claims)+1)
+	for k, v := range id.Claims {
+		claims[k] = v
+	}
+	claims[ClaimChainHop] = hop
+	id.Claims = claims
+	return id
 }
 
 // usesV2Vocabulary reports whether a response carries any field the phase 0006

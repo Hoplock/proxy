@@ -234,6 +234,149 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestValidateChain covers the D11 settings. Each half of the relay is
+// independently optional, and the checks are about the two ways a chain can be
+// misconfigured into being unsafe: registering with an upstream nobody verified,
+// and accepting registrations nobody authenticated.
+func TestValidateChain(t *testing.T) {
+	valid := func() Config {
+		return Config{
+			Proxy:   Proxy{ID: "proxy-1", ListenAddr: "0.0.0.0:2222", HostKeyPath: "/etc/host_key"},
+			Control: Control{BaseURL: "https://control.example.com"},
+			Routing: Routing{TargetDelimiter: DefaultTargetDelimiter},
+			Auth: Auth{
+				User: UserAuth{Methods: DefaultUserAuthMethods()},
+				Target: TargetAuth{
+					Method:    TargetAuthMethodStaticKey,
+					StaticKey: StaticKeyAuth{KeyPath: "/etc/target_key"},
+				},
+			},
+			Chain: Chain{
+				IdentityKeyPath: "/etc/chain_identity",
+				MaxHops:         3,
+				Upstream: ChainUpstream{
+					Address:     "upstream.example.com:2223",
+					HostKeyPath: "/etc/upstream_host_key.pub",
+				},
+				Accept: ChainAccept{
+					ListenAddr:         "0.0.0.0:2223",
+					AuthorizedKeysPath: "/etc/relay_authorized_keys",
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name      string
+		mutate    func(*Config)
+		wantField string
+		wantCause error
+	}{
+		{name: "both halves configured"},
+		{
+			name:   "no chaining at all",
+			mutate: func(c *Config) { c.Chain = Chain{} },
+		},
+		{
+			name: "registering without knowing the upstream's host key",
+			mutate: func(c *Config) {
+				c.Chain.Upstream.HostKeyPath = ""
+			},
+			wantField: "chain.upstream.host_key_path",
+			wantCause: ErrMissing,
+		},
+		{
+			name: "registering without an identity to register as",
+			mutate: func(c *Config) {
+				c.Chain.IdentityKeyPath = ""
+				c.Chain.Accept = ChainAccept{}
+			},
+			wantField: "chain.identity_key_path",
+			wantCause: ErrMissing,
+		},
+		{
+			name: "an upstream with no address",
+			mutate: func(c *Config) {
+				c.Chain.Upstream.Address = ""
+				c.Chain.Accept = ChainAccept{}
+			},
+			wantField: "chain.upstream.address",
+			wantCause: ErrMissing,
+		},
+		{
+			name: "an upstream address with no port",
+			mutate: func(c *Config) {
+				c.Chain.Upstream.Address = "upstream.example.com"
+			},
+			wantField: "chain.upstream.address",
+			wantCause: ErrInvalid,
+		},
+		{
+			name: "accepting registrations from anyone",
+			mutate: func(c *Config) {
+				c.Chain.Accept.AuthorizedKeysPath = ""
+			},
+			wantField: "chain.accept.authorized_keys_path",
+			wantCause: ErrMissing,
+		},
+		{
+			name: "authorized keys with nowhere to listen",
+			mutate: func(c *Config) {
+				c.Chain.Accept.ListenAddr = ""
+				c.Chain.Upstream = ChainUpstream{}
+			},
+			wantField: "chain.accept.listen_addr",
+			wantCause: ErrMissing,
+		},
+		{
+			name:      "a negative hop cap",
+			mutate:    func(c *Config) { c.Chain.MaxHops = -1 },
+			wantField: "chain.max_hops",
+			wantCause: ErrInvalid,
+		},
+		{
+			name: "a certificate with no key",
+			mutate: func(c *Config) {
+				c.Chain.IdentityKeyPath = ""
+				c.Chain.IdentityCertPath = "/etc/chain_identity-cert.pub"
+				c.Chain.Upstream = ChainUpstream{}
+			},
+			wantField: "chain.identity_key_path",
+			wantCause: ErrMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := valid()
+			if tt.mutate != nil {
+				tt.mutate(&cfg)
+			}
+
+			err := cfg.Validate()
+			if tt.wantField == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			var verr *ValidationError
+			if !errors.As(err, &verr) {
+				t.Fatalf("Validate() = %v (%T), want *ValidationError", err, err)
+			}
+			if len(verr.Fields) != 1 {
+				t.Fatalf("Validate() reported %d fields (%v), want 1", len(verr.Fields), err)
+			}
+			if got := verr.Fields[0].Field; got != tt.wantField {
+				t.Errorf("field = %q, want %q", got, tt.wantField)
+			}
+			if !errors.Is(err, tt.wantCause) {
+				t.Errorf("cause = %v, want errors.Is(..., %v)", err, tt.wantCause)
+			}
+		})
+	}
+}
+
 func TestValidateReportsAllFields(t *testing.T) {
 	cfg := Config{Routing: Routing{TargetDelimiter: "x"}}
 
@@ -630,5 +773,13 @@ func TestExampleConfigCarriesTheProxySettings(t *testing.T) {
 	}
 	if cfg.Auth.Target.StaticKey.KeyPath == "" {
 		t.Error("the example config does not set auth.target.static_key.key_path")
+	}
+	// The relay halves ship disabled: a proxy is a hub, or registers with one,
+	// only where the topology says so.
+	if cfg.Chain.Registers() || cfg.Chain.AcceptsRegistrations() {
+		t.Error("the example config enables a relay half by default")
+	}
+	if got, want := cfg.Chain.MaxHops, 4; got != want {
+		t.Errorf("Chain.MaxHops = %d, want %d", got, want)
 	}
 }

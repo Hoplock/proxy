@@ -397,22 +397,6 @@ func TestEmptyChannelAllowListDeniesTheSession(t *testing.T) {
 	}
 }
 
-// TestNextHopRouteIsRefusedAsAnOutage covers the 0007 seam: the route is
-// understood, cannot be served yet, and says so as a service limitation rather
-// than as a denial.
-func TestNextHopRouteIsRefusedAsAnOutage(t *testing.T) {
-	h := newHarness(t, harnessOptions{routeType: control.RouteTypeNextHop})
-
-	text, _ := runAndCollect(t, h, "uptime")
-
-	if strings.Contains(text, user.DenyMessage) {
-		t.Errorf("next-hop refusal %q reads as a denial", text)
-	}
-	if !strings.Contains(text, "route this proxy cannot serve yet") {
-		t.Errorf("user saw %q, want it to name the unsupported route", text)
-	}
-}
-
 // TestMalformedUsernameExplainsTheEncoding covers the one failure the user can
 // fix themselves: the target rides in the username (D1), and a user who typed a
 // bare login cannot guess that.

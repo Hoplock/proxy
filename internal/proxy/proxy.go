@@ -63,8 +63,24 @@ type Options struct {
 	// ProxyID identifies this proxy on every management call. Required.
 	ProxyID string
 	// TargetDelimiter splits the SSH username into login and target (D1).
-	// Required, and validated by config.
+	// Required, and validated by config. It is also the delimiter this proxy
+	// uses when it asks the NEXT hop for a target, so a chained fleet must
+	// agree on it.
 	TargetDelimiter string
+	// HopSigner is the key this proxy presents to the next proxy in a chain
+	// (D11, PLAN §6.1). It is this proxy's own identity, not the user's: the
+	// next hop authenticates the previous hop through Hoplock Control and
+	// re-establishes the user's identity itself, so nothing takes an upstream's
+	// word for who is connecting. Nil refuses next-hop routes as an outage.
+	HopSigner ssh.Signer
+	// RelayOpener reaches a next proxy that registered an outbound relay with
+	// this one (D11). Nil refuses relay hops; a relay hop is never downgraded
+	// to a dial.
+	RelayOpener RelayOpener
+	// MaxHops caps how many proxies one session may traverse. Zero means
+	// routing.DefaultMaxHops. It can only make a chain shorter than
+	// Hoplock Control allowed, never longer (D2).
+	MaxHops int
 	// DialTimeout bounds the target leg. Zero means DefaultDialTimeout.
 	DialTimeout time.Duration
 	// AuthTimeout bounds an unauthenticated connection. Zero means
@@ -99,6 +115,9 @@ type Server struct {
 	client        control.Client
 	proxyID       string
 	delimiter     string
+	hopSigner     ssh.Signer
+	relay         RelayOpener
+	maxHops       int
 	dialTimeout   time.Duration
 	authTimeout   time.Duration
 	serverVersion string
@@ -141,6 +160,9 @@ func New(opts Options) (*Server, error) {
 		client:        opts.Client,
 		proxyID:       opts.ProxyID,
 		delimiter:     opts.TargetDelimiter,
+		hopSigner:     opts.HopSigner,
+		relay:         opts.RelayOpener,
+		maxHops:       opts.MaxHops,
 		dialTimeout:   opts.DialTimeout,
 		authTimeout:   opts.AuthTimeout,
 		serverVersion: opts.ServerVersion,
@@ -151,6 +173,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if s.dialTimeout <= 0 {
 		s.dialTimeout = DefaultDialTimeout
+	}
+	if s.maxHops <= 0 {
+		s.maxHops = routing.DefaultMaxHops
 	}
 	if s.authTimeout == 0 {
 		s.authTimeout = DefaultAuthTimeout
@@ -209,6 +234,19 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	return serveErr
 }
 
+// ServeConn runs one client connection this proxy did not accept itself.
+//
+// It exists for relayed sessions (D11): a proxy in a protected zone has no
+// inbound listener, and its sessions arrive as channels on the registration it
+// opened to its upstream. Such a channel is a byte stream carrying exactly what
+// a socket would, so it is served by the same engine rather than by a second
+// implementation of the session lifecycle.
+func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
+	s.conns.Add(1)
+	defer s.conns.Done()
+	s.handleConn(ctx, conn)
+}
+
 // handleConn runs one client connection from handshake to teardown.
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	sessionID := s.newSessionID()
@@ -249,6 +287,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	_ = conn.SetDeadline(time.Time{})
 
 	sess := s.newSession(ctx, sessionID, sshConn, chans, reqs)
+	// A peer that identified itself as another proxy extending a chain owes a
+	// hop trail before its session can be authorized (routing.IsHopPeer).
+	sess.hopPeer = routing.IsHopPeer(string(sshConn.ClientVersion()))
 	s.add(sess)
 	defer s.remove(sess)
 	sess.run()

@@ -258,6 +258,33 @@ A `relay` hop with no live registration is an **outage**, never a silent
 downgrade to `dial`: dialling would punch through exactly the boundary the mode
 exists to preserve, at the moment an operator is least able to see it.
 
+The registration itself is **proxy-to-proxy plumbing and not part of this
+contract**: it is an SSH connection the downstream proxy opens to its upstream,
+authenticated with the fleet's own keys or CA (`internal/relay`, PLAN §6.1).
+The server names the direction and the proxy id; how the two proxies then reach
+each other is theirs.
+
+#### What a chained hop sends this API (phase 0008)
+
+Each hop of a chain runs the whole flow for itself — there is no "trusted
+upstream" shortcut, because a proxy that accepted one would be a proxy an
+attacker only has to compromise once:
+
+- **`POST /v1/auth/cert`** carries the **previous hop's** public key, with the
+  user's `login` from the SSH username. A server recognising the key as one of
+  its own proxies answers with the **user's** identity, which it establishes
+  itself; it never receives an identity assertion from the proxy. (The mock
+  models this with its `proxies[]` fixtures.)
+- **`POST /v1/authorize`** carries `conn.hop_trail`: the proxy ids the session
+  has already travelled through, oldest first, empty on the user's first hop.
+  It is what makes the server's view of a chain match the proxies'.
+
+The trail travels between proxies as an SSH connection-level request
+(`hop-trail@hoplock.io`) sent before any channel is opened. It carries no
+authority: every entry in it can only cause a refusal — a loop, or the hop cap
+— so forging one restricts the forger. The authority on a chain leg is the
+previous hop's key, above.
+
 ### Exec tiers (`filter_policy.exec_mode`, D12, phase 0010)
 
 "Seen reliably" is not "cannot be evaded", and the two must not blur, so the
@@ -474,8 +501,9 @@ startup, and every problem in a file is reported at once.
 | --- | --- |
 | `proxy_token` | Bearer token required on every `/v1` request. Empty disables proxy auth. |
 | `users[]` | `login`, `identity` (`subject`, `display_name`, `source`, `principals`, `groups`, `claims`), `key_fingerprints` (accepted for cert auth), `password`, and `mfa`. |
+| `proxies[]` | The fleet's own proxies: `id` plus `key_fingerprints`. A cert-auth call offering one of these keys is a **chain leg** (D11): the mock answers with the requested login's identity plus a `chain_hop_proxy_id` claim naming the hop, modelling a server that authenticates the previous hop and re-establishes the user itself. |
 | `users[].mfa` | `required`, `decision` (`approve`/`deny`), `pending_polls` (how many polls stay pending before resolving — this is what makes MFA deterministic), `poll_after_ms`, `ttl_ms`, `prompt`. |
-| `routes[]` | Matched in order, first match wins; no match is a `401`. `login` and `target` accept `*`. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` + `hop_connection` + `next_proxy_id` (nexthop only), `target_port`, `permissions`, `permitted_channels`, `permitted_requests`, `permitted_forwards`, `permitted_global_requests`, `target_auth`, `filter_policy`, and `cache`. |
+| `routes[]` | Matched in order, first match wins; no match is a `401`. `login`, `target`, and `proxy_id` accept `*` (`proxy_id` may also be omitted). `proxy_id` matches `conn.proxy_id`, which is how one fixture file describes a chain: the same login and target answer `nexthop` at the edge proxy and `direct` at the one behind it. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` + `hop_connection` + `next_proxy_id` (nexthop only), `target_port`, `permissions`, `permitted_channels`, `permitted_requests`, `permitted_forwards`, `permitted_global_requests`, `target_auth`, `filter_policy`, and `cache`. |
 | `routes[].permitted_requests` | `types` (from `pty-req`, `shell`, `exec`, `env`, `x11-req`, `auth-agent-req`) and `subsystems` (by name). **Omit the key** to leave requests unpoliced; write `{}` to deny every one. |
 | `routes[].permitted_forwards` | `direct_tcpip` and `forwarded_tcpip`, each a list of `host` + optional `port` or `port_range` (`from`/`to`). Omit the key to leave destinations unpoliced; an empty direction denies it. |
 | `routes[].permitted_global_requests` | `types`, e.g. `[tcpip-forward]`. Omit the key to relay everything; `types: []` denies all of them. |
