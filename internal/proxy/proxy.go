@@ -21,6 +21,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/channel"
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/routing"
 )
 
@@ -78,6 +79,11 @@ type Options struct {
 	// this one (D11). Nil refuses relay hops; a relay hop is never downgraded
 	// to a dial.
 	RelayOpener RelayOpener
+	// Recorder is the telemetry pipeline (PLAN §7, D8). Nil records nothing,
+	// which is what the engine's own tests and a proxy without a configured
+	// Hoplock Control log destination run with; every capture point is a no-op
+	// then rather than a branch in the transport.
+	Recorder *logging.Shipper
 	// Inspectors is the channel inspection pipeline's registry (PLAN §6.2,
 	// D5): channel types mapped to their ordered inspector chains. Nil
 	// registers nothing, which is the pure passthrough this engine ships with
@@ -125,6 +131,7 @@ type Server struct {
 	delimiter     string
 	hopSigner     ssh.Signer
 	relay         RelayOpener
+	recorder      *logging.Shipper
 	inspectors    *channel.Registry
 	maxHops       int
 	dialTimeout   time.Duration
@@ -171,6 +178,7 @@ func New(opts Options) (*Server, error) {
 		delimiter:     opts.TargetDelimiter,
 		hopSigner:     opts.HopSigner,
 		relay:         opts.RelayOpener,
+		recorder:      opts.Recorder,
 		inspectors:    opts.Inspectors,
 		maxHops:       opts.MaxHops,
 		dialTimeout:   opts.DialTimeout,

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/config"
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/proxy"
 	"github.com/hoplock/proxy/internal/relay"
 	"github.com/hoplock/proxy/internal/routing"
@@ -159,6 +161,32 @@ func run(configPath string, logger *log.Logger) error {
 		logger.Printf("proxy: accepting relay registrations on %s", hubListener.Addr())
 	}
 
+	// The telemetry pipeline is built before the engine because every session
+	// records into it, and it is closed after the engine stops serving: the
+	// last session's records are shipped rather than abandoned, and whatever
+	// still cannot be delivered lands in the disk buffer for the next run
+	// (PLAN §7, D8). It ships to the REST client rather than the caching one —
+	// there is nothing to cache about a log record, and the cache's stale-mode
+	// rules are about decisions.
+	recorder, err := logging.New(logging.Options{
+		Client:          rest,
+		BatchSize:       cfg.Logging.BatchSize,
+		FlushInterval:   cfg.Logging.FlushInterval,
+		QueueSize:       cfg.Logging.QueueSize,
+		BufferDir:       cfg.Logging.BufferDir,
+		SendTimeout:     cfg.Logging.SendTimeout,
+		RetryMin:        cfg.Logging.RetryMin,
+		RetryMax:        cfg.Logging.RetryMax,
+		MaxPayloadBytes: cfg.Logging.MaxPayloadBytes,
+		Logf:            logger.Printf,
+	})
+	if err != nil {
+		return err
+	}
+	if cfg.Logging.BufferDir == "" {
+		logger.Printf("proxy: no logging.buffer_dir configured; records are lost if Hoplock Control is unreachable")
+	}
+
 	server, err := proxy.New(proxy.Options{
 		HostKey:         hostKey,
 		Authenticator:   userAuth,
@@ -171,6 +199,7 @@ func run(configPath string, logger *log.Logger) error {
 		RelayOpener:     relayOpener(hub),
 		MaxHops:         cfg.Chain.MaxHops,
 		DialTimeout:     cfg.Dial.DialTimeout,
+		Recorder:        recorder,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -208,6 +237,7 @@ func run(configPath string, logger *log.Logger) error {
 		version, listener.Addr(), cfg.Proxy.ID, cfg.Control.BaseURL, targetAuth.Name())
 
 	serveErr := server.Serve(ctx, listener)
+	closeRecorder(recorder, logger)
 	<-streamDone
 	if registrarDone != nil {
 		<-registrarDone
@@ -218,6 +248,23 @@ func run(configPath string, logger *log.Logger) error {
 	logger.Printf("proxy: stopped")
 	return serveErr
 }
+
+// closeRecorder ships what the last sessions queued.
+//
+// It runs on a fresh context rather than the server's, which is already
+// cancelled by the time Serve returns: shutting down is exactly when the
+// remaining records matter, and inheriting a cancelled context would abandon
+// them to the disk buffer for no reason.
+func closeRecorder(recorder *logging.Shipper, logger *log.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), logShutdownTimeout)
+	defer cancel()
+	if err := recorder.Close(ctx); err != nil {
+		logger.Printf("proxy: telemetry not fully shipped on shutdown: %v", err)
+	}
+}
+
+// logShutdownTimeout bounds the final telemetry flush.
+const logShutdownTimeout = 10 * time.Second
 
 // loadHostKey reads the proxy's own SSH host key, the identity every client
 // pins the proxy by.

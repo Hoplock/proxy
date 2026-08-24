@@ -13,6 +13,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/filter"
+	"github.com/hoplock/proxy/internal/logging"
 )
 
 // This file states phase 0010's claims the way a customer would: each of the
@@ -24,6 +25,36 @@ import (
 
 func policy(mode control.FilterMode, rules ...control.FilterRule) *control.FilterPolicy {
 	return &control.FilterPolicy{Mode: mode, Rules: rules}
+}
+
+// awaitCommandPolicy waits for the command-policy record for one outcome.
+//
+// Phase 0010 asserted these against the proxy's log, because the transport that
+// was to carry them did not exist yet. It does now (PLAN §7, D8): the events go
+// to Hoplock Control as policy_decision records, with the field names 0010
+// pinned preserved as attributes. What is asserted here moved; what is asserted
+// about did not.
+func awaitCommandPolicy(h *harness, outcome filter.Outcome) control.LogRecord {
+	h.t.Helper()
+	rec, ok := h.awaitRecord(func(r control.LogRecord) bool {
+		return r.Kind == control.LogKindPolicyDecision &&
+			r.Attributes[logging.AttrEvent] == filter.EventCommandPolicy &&
+			r.Attributes[logging.AttrOutcome] == string(outcome)
+	})
+	if !ok {
+		h.t.Fatalf("no command-policy record with outcome %q was produced", outcome)
+	}
+	return rec
+}
+
+// wantAttrs fails unless the record carries every key/value given.
+func wantAttrs(t *testing.T, rec control.LogRecord, want map[string]string) {
+	t.Helper()
+	for key, value := range want {
+		if got := rec.Attributes[key]; got != value {
+			t.Errorf("record attribute %s = %q, want %q", key, got, value)
+		}
+	}
 }
 
 // TestABlacklistedCommandIsBlockedAndSaysSo is the first sentence of command
@@ -54,22 +85,30 @@ func TestABlacklistedCommandIsBlockedAndSaysSo(t *testing.T) {
 		t.Errorf("target ran %v, want nothing: the refusal happens at the proxy", got)
 	}
 
-	// The audit event exists, on the priority path, naming the tier.
-	logs := h.logs.String()
-	for _, want := range []string{
-		"priority=" + string(filter.PriorityImmediate),
-		"event=" + filter.EventCommandPolicy,
-		"tier=" + string(filter.TierFiltered),
-		"outcome=" + string(filter.OutcomeBlocked),
-	} {
-		if !strings.Contains(logs, want) {
-			t.Errorf("the audit trail is missing %q", want)
-		}
+	// The audit event exists, and it is critical — which is what puts it on
+	// the priority endpoint rather than in a batch (D8).
+	rec := awaitCommandPolicy(h, filter.OutcomeBlocked)
+	if rec.Severity != control.SeverityCritical {
+		t.Errorf("a blocked command was recorded as %q, want critical", rec.Severity)
 	}
-	// The command the user was refused, and the rule that refused it, are in
-	// the operator's record — which is the half the terminal never gets.
-	if !strings.Contains(logs, "cat /etc/shadow*") {
-		t.Error("the audit trail does not name the rule that matched")
+	if !recordedOnPriorityPath(h, rec.RecordID) {
+		t.Error("a blocked command did not take the priority path")
+	}
+	wantAttrs(t, rec, map[string]string{
+		logging.AttrPriority: string(filter.PriorityImmediate),
+		logging.AttrEvent:    filter.EventCommandPolicy,
+		logging.AttrTier:     string(filter.TierFiltered),
+		logging.AttrOutcome:  string(filter.OutcomeBlocked),
+		logging.AttrCommand:  "cat /etc/shadow",
+	})
+	if rec.SessionID != testSessionID {
+		t.Errorf("record session = %q, want %q", rec.SessionID, testSessionID)
+	}
+	// The rule that refused it is in the operator's record — the half the
+	// terminal never gets.
+	if !strings.Contains(rec.Attributes[logging.AttrDetail], "cat /etc/shadow*") {
+		t.Errorf("the audit record detail %q does not name the rule that matched",
+			rec.Attributes[logging.AttrDetail])
 	}
 	if strings.Contains(text, "cat /etc/shadow*") || strings.Contains(strings.ToLower(text), "blacklist") {
 		t.Errorf("user saw %q, which discloses the policy's contents", text)
@@ -99,8 +138,8 @@ func TestAWhitelistBlocksWhatItDoesNotName(t *testing.T) {
 	if got := h.target.Commands(); len(got) != 1 || got[0] != "uptime" {
 		t.Errorf("target ran %v, want [uptime]", got)
 	}
-	if logs := h.logs.String(); !strings.Contains(logs, "outcome="+string(filter.OutcomeAllowed)) {
-		t.Error("allow_and_log ran the command without recording it")
+	if rec := awaitCommandPolicy(h, filter.OutcomeAllowed); rec.Severity != control.SeverityInfo {
+		t.Errorf("allow_and_log was recorded as %q, want info: nothing is waiting on it", rec.Severity)
 	}
 }
 
@@ -133,8 +172,8 @@ func TestWarnAndContinueWarnsAndThenRuns(t *testing.T) {
 	if got := h.target.Commands(); len(got) != 1 || got[0] != "sudo systemctl restart nginx" {
 		t.Errorf("target ran %v, want the command to have reached it", got)
 	}
-	if logs := h.logs.String(); !strings.Contains(logs, "outcome="+string(filter.OutcomeWarned)) {
-		t.Error("the warning produced no audit event")
+	if rec := awaitCommandPolicy(h, filter.OutcomeWarned); rec.Severity != control.SeverityWarn {
+		t.Errorf("a warned command was recorded as %q, want warn", rec.Severity)
 	}
 }
 
@@ -165,8 +204,9 @@ func TestKillSessionEndsTheWholeSessionWithAReason(t *testing.T) {
 	// The whole connection ends, not just the channel: the policy killed the
 	// session, not the command.
 	waitFor(t, func() bool { return client.Wait() != nil }, "the client connection to be closed")
-	if logs := h.logs.String(); !strings.Contains(logs, "outcome="+string(filter.OutcomeKilled)) {
-		t.Error("the session kill produced no audit event")
+	rec := awaitCommandPolicy(h, filter.OutcomeKilled)
+	if rec.Severity != control.SeverityCritical || !recordedOnPriorityPath(h, rec.RecordID) {
+		t.Error("a session kill did not reach Hoplock Control on the priority path")
 	}
 }
 
@@ -214,10 +254,10 @@ func TestRestrictedExecRunsTheApprovedShapeAndDeniesEverythingElse(t *testing.T)
 	if got := h.target.Commands(); len(got) != 1 || got[0] != "/usr/bin/systemctl status app-web" {
 		t.Errorf("target ran %v, want only the approved vector", got)
 	}
-	if logs := h.logs.String(); !strings.Contains(logs, "tier="+string(filter.TierRestricted)) ||
-		!strings.Contains(logs, "guarantee="+string(filter.GuaranteeEnforcement)) {
-		t.Error("the audit trail does not record the boundary that decided")
-	}
+	wantAttrs(t, awaitCommandPolicy(h, filter.OutcomeBlocked), map[string]string{
+		logging.AttrTier:      string(filter.TierRestricted),
+		logging.AttrGuarantee: string(filter.GuaranteeEnforcement),
+	})
 }
 
 // TestTheShellWrapperCrossesTheGuardrailAndNotTheBoundary is the bypass test
@@ -315,17 +355,17 @@ func TestInteractiveInspectionRecordsWithoutTouchingTheStream(t *testing.T) {
 		t.Errorf("target received %q, want the keystrokes unchanged (%q)", got, typed)
 	}
 
-	waitFor(t, func() bool {
-		return strings.Contains(h.logs.String(), "tier="+string(filter.TierInteractive))
-	}, "the interactive audit event")
-
-	logs := h.logs.String()
-	if !strings.Contains(logs, "enforced=false") ||
-		!strings.Contains(logs, "outcome="+string(filter.OutcomeObserved)) {
-		t.Error("the interactive event does not record that nothing was enforced")
-	}
-	if !strings.Contains(logs, `command="rm -rf /var"`) {
-		t.Error("the interactive event does not name the reassembled command")
+	rec := awaitCommandPolicy(h, filter.OutcomeObserved)
+	wantAttrs(t, rec, map[string]string{
+		logging.AttrTier:     string(filter.TierInteractive),
+		logging.AttrEnforced: "false",
+		logging.AttrCommand:  "rm -rf /var",
+	})
+	// An observed match on a rule that would have killed the session is still
+	// critical: "someone typed this" is the signal, and enforced=false is on
+	// the record for whoever reads it (D12).
+	if rec.Severity != control.SeverityCritical {
+		t.Errorf("an observed kill_session match was recorded as %q, want critical", rec.Severity)
 	}
 
 	// The session is still the user's: an audit signal does not end it.

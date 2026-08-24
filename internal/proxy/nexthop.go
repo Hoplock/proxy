@@ -80,6 +80,7 @@ func (s *session) openNextHop() error {
 	go s.serveTargetChannels(legChans)
 	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil }, nil, relayRequests)
 
+	s.recordHopLeg(plan)
 	s.logf("proxy: session=%s hop leg up direction=%s next=%s addr=%s trail=%s final=%s max_hops=%d",
 		s.id, plan.Direction, hopName(plan), hopAddr(plan), plan.Chain.Trail, plan.FinalTarget,
 		plan.Chain.MaxHops)

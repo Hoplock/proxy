@@ -47,8 +47,12 @@ before reading the code.
 > apart on purpose: **restricted exec**, a default-deny list of parsed argument
 > vectors that is sold as enforcement, and **filtered exec**, a pattern rule
 > list that is a guardrail — plus best-effort inspection of interactive
-> sessions, which reports and never enforces. Next is the logging pipeline. See
-> `docs/PLAN.md` §10 for the order.
+> sessions, which reports and never enforces. Everything a session does is now
+> recorded and shipped: metadata, in-channel requests, policy decisions and
+> replay-friendly stream capture go to Hoplock Control in **batches**, a blocked
+> command goes **immediately** on its own endpoint, and an outage buffers to
+> local disk and drains in order when the link returns. Next is the full
+> end-to-end topology and its CI gate. See `docs/PLAN.md` §10 for the order.
 
 ## Requirements
 

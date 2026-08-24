@@ -21,6 +21,7 @@ import (
 	"github.com/hoplock/proxy/internal/filter"
 	"github.com/hoplock/proxy/internal/filter/inspect"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/routing"
 )
 
@@ -61,6 +62,11 @@ type session struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	started time.Time
+
+	// rec is this session's telemetry recorder (PLAN §7). It is nil when the
+	// proxy was built without a Shipper, and every capture point tolerates
+	// that, so the transport never branches on whether logging is configured.
+	rec *logging.SessionRecorder
 
 	// ready is closed when setup has finished, successfully or not. route,
 	// pipe, setupErr, and the target leg are written before it closes and only
@@ -117,6 +123,7 @@ func (s *Server) newSession(ctx context.Context, id string, conn *ssh.ServerConn
 		chainReady: make(chan struct{}),
 		channels:   make(map[ssh.Channel]struct{}),
 		failure:    make(chan struct{}),
+		rec:        s.recorder.Session(logging.SessionInfo{SessionID: id, ProxyID: s.proxyID}),
 	}
 }
 
@@ -192,6 +199,7 @@ func (s *session) setup() {
 	s.logf("proxy: session=%s start subject=%s login=%s target=%s client=%s method=%s hop_peer=%t trail=%s",
 		s.id, s.identity.Subject, s.login, s.target, s.conn.RemoteAddr(), s.identity.Method,
 		s.hopPeer, s.chain().Trail)
+	s.recordStart()
 
 	route, err := s.srv.resolver.Resolve(s.ctx, routing.Request{
 		Identity: s.identity,
@@ -203,11 +211,12 @@ func (s *session) setup() {
 		return
 	}
 	s.route = route
+	s.recordAuthorize(route)
 
 	// Command policy belongs to this connection, not to the proxy: the engine
 	// is compiled from this route's filter policy and attached to this
 	// session's own inspector chain (PLAN §6.3, D2, D12).
-	inspectors, err := s.commandInspectors(route)
+	inspectors, err := s.sessionInspectors(route)
 	if err != nil {
 		s.failSetup(&setupError{stage: stageRoute, err: err})
 		return
@@ -261,6 +270,7 @@ func (s *session) setup() {
 		return
 	}
 	s.access = access
+	s.recordCredential(route, access)
 
 	if err := s.dialTarget(access); err != nil {
 		s.failSetup(err)
@@ -271,34 +281,45 @@ func (s *session) setup() {
 		s.id, s.route.Addr(), s.route.Type, s.route.Permissions, s.route.PermittedChannels)
 }
 
-// commandInspectors builds the inspector registry for this session: the
+// sessionInspectors builds the inspector registry for this session: the
 // proxy-wide chains, plus command policy when this connection's policy can ever
-// say no (PLAN §6.3).
+// say no (PLAN §6.3), plus this session's stream capture (PLAN §7).
 //
 // A policy that does not compile fails the session closed. It should be
 // unreachable — the contract validates the same shape on the way in — and that
 // is exactly why it must not be treated as "no policy": the one reading of "the
 // policy could not be understood" that is never available is the one that lets
 // a command run.
-func (s *session) commandInspectors(route *routing.Route) (*channel.Registry, error) {
+func (s *session) sessionInspectors(route *routing.Route) (*channel.Registry, error) {
 	engine, err := filter.New(route.Filter)
 	if err != nil {
 		return nil, err
 	}
-	if !engine.Filters() {
-		// A blacklist with no rules filters nothing, and a session with no
-		// inspectors keeps phase 0009's straight-copy path: no wrapper, no
-		// per-command work, nothing to say about any command.
+
+	// A blacklist with no rules filters nothing, and a proxy with no telemetry
+	// pipeline captures nothing. When neither has anything to attach, the
+	// session keeps phase 0009's straight-copy path: no wrapper, no per-command
+	// work, nothing to say about any command.
+	if !engine.Filters() && s.rec == nil {
 		return s.srv.inspectors, nil
 	}
+
 	reg := s.srv.inspectors.Clone()
-	inspect.Register(reg, inspect.Options{
-		Engine: engine,
-		// Until phase 0011 ships the batching/priority transport, audit events
-		// go to the proxy log with the priority marker they will carry there.
-		Audit: filter.LogSink(s.logf),
-	})
-	s.logf("proxy: session=%s command policy tier=%s mode=%s", s.id, engine.Tier(), engine.Mode())
+	if engine.Filters() {
+		inspect.Register(reg, inspect.Options{
+			// The audit sink is the telemetry pipeline (PLAN §7, D8): a blocked
+			// command is a critical record and takes the priority endpoint, so
+			// it is at Hoplock Control before the batch it would have waited
+			// in. A proxy without a pipeline discards the events rather than
+			// failing the session over them.
+			Audit:  s.rec.AuditSink(),
+			Engine: engine,
+		})
+		s.logf("proxy: session=%s command policy tier=%s mode=%s", s.id, engine.Tier(), engine.Mode())
+	}
+	// Stream capture is registered after the command inspectors, so a command
+	// the filter refuses is refused before the recorder is asked for anything.
+	logging.Register(reg, s.rec)
 	return reg, nil
 }
 
@@ -367,6 +388,7 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 func (s *session) failSetup(err error) {
 	s.setupErr = err
 	s.logf("proxy: session=%s setup failed: %v", s.id, err)
+	s.recordFailure(err)
 
 	// Whoever delivers the message (an open session channel, or a channel the
 	// client opens moments later) signals it; if nobody can, the connection is
@@ -482,6 +504,7 @@ func (s *session) kill(reason string) {
 	s.mu.Unlock()
 
 	s.logf("proxy: session=%s killed: %s", s.id, reason)
+	s.recordKill(reason)
 	text := bannerPrefix + reason
 	for _, ch := range channels {
 		writeUser(ch, text)
@@ -539,6 +562,7 @@ func (s *session) close() {
 	if s.identity != nil {
 		subject = s.identity.Subject
 	}
+	s.recordEnd()
 	s.logf("proxy: session=%s end subject=%s target=%s duration=%s",
 		s.id, subject, s.target, s.srv.now().Sub(s.started).Round(time.Millisecond))
 }

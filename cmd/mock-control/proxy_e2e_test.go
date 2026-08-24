@@ -19,6 +19,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/config"
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/proxy"
 	"github.com/hoplock/proxy/internal/routing"
 	"github.com/hoplock/proxy/internal/sshtest"
@@ -44,13 +45,47 @@ type e2eStack struct {
 	proxy    *proxy.Server
 	addr     string
 	clientKe ssh.Signer
+	// recorder is the telemetry pipeline the proxy records into, and bufferDir
+	// is its local resilience buffer (PLAN §7). Both are always present: a
+	// stack that did not record would prove nothing about the pipeline every
+	// other test in this file exercises implicitly.
+	recorder  *logging.Shipper
+	bufferDir string
+	// gate makes Hoplock Control unreachable on demand, for the outage test.
+	gate *controlGate
+}
+
+// e2eOptions configure the stack. The zero value is the direct-route session
+// every earlier phase's test wants: cert auth, a session channel, no command
+// policy.
+type e2eOptions struct {
+	// permittedChannels is the route's channel allow-list. Nil means
+	// ["session"]; an explicitly empty slice denies everything.
+	permittedChannels []string
+	// filterPolicy is the route's command policy. Nil means an empty
+	// blacklist, which filters nothing.
+	filterPolicy *fixtureFilterPolicy
+	// password, when set, adds password authentication for the fixture user
+	// and enables the password-mfa plane on the proxy.
+	password string
+	// logging adjusts the telemetry pipeline's options.
+	logging func(*logging.Options)
 }
 
 // startE2E builds the whole path: fixtures naming this test's key and target,
 // the mock server, the real management client, the authentication planes, and
 // the proxy.
-func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
+func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 	t.Helper()
+
+	permittedChannels := opts.permittedChannels
+	if permittedChannels == nil {
+		permittedChannels = []string{"session"}
+	}
+	filterPolicy := fixtureFilterPolicy{Mode: string(control.FilterModeBlacklist)}
+	if opts.filterPolicy != nil {
+		filterPolicy = *opts.filterPolicy
+	}
 
 	tgt, err := sshtest.StartTarget(sshtest.Options{
 		Exec: func(command string) ([]byte, []byte, uint32) {
@@ -80,6 +115,7 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 				Groups:  []string{"engineering"},
 			},
 			KeyFingerprints: []string{ssh.FingerprintSHA256(clientKey.PublicKey())},
+			Password:        opts.password,
 		}},
 		Routes: []fixtureRoute{{
 			Login:             "alice",
@@ -88,14 +124,19 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 			TargetPort:        tgt.Port(),
 			Permissions:       "deployGroup",
 			PermittedChannels: permittedChannels,
-			FilterPolicy:      fixtureFilterPolicy{Mode: string(control.FilterModeBlacklist)},
+			FilterPolicy:      filterPolicy,
 		}},
 		HostKeys: fixtureHostKeys{Decision: string(control.HostKeyAccept)},
 	}
-	m := startMock(t, fx, serverOptions{})
+	gate := &controlGate{}
+	m := startGatedMock(t, fx, gate)
 
+	methods := []string{string(control.AuthMethodCert)}
+	if opts.password != "" {
+		methods = append(methods, string(control.AuthMethodPasswordMFA))
+	}
 	userAuth, err := user.NewFromConfig(
-		config.UserAuth{Methods: []string{string(control.AuthMethodCert)}},
+		config.UserAuth{Methods: methods},
 		user.Options{Client: m.client},
 	)
 	if err != nil {
@@ -111,6 +152,32 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
+	// The telemetry pipeline is real, and so is its disk buffer: these tests
+	// are the only place the whole path — capture point, batch, priority
+	// endpoint, buffer, drain — meets the contract as it is actually served.
+	bufferDir := t.TempDir()
+	logOpts := logging.Options{
+		Client:        m.client,
+		BatchSize:     e2eBatchSize,
+		FlushInterval: e2eFlushInterval,
+		BufferDir:     bufferDir,
+		RetryMin:      20 * time.Millisecond,
+		RetryMax:      50 * time.Millisecond,
+		Logf:          t.Logf,
+	}
+	if opts.logging != nil {
+		opts.logging(&logOpts)
+	}
+	recorder, err := logging.New(logOpts)
+	if err != nil {
+		t.Fatalf("logging.New: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = recorder.Close(ctx)
+	})
+
 	server, err := proxy.New(proxy.Options{
 		HostKey:         sshtest.MustGenerateSigner(),
 		Authenticator:   userAuth,
@@ -119,6 +186,7 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 		Client:          m.client,
 		ProxyID:         "proxy-e2e",
 		TargetDelimiter: config.DefaultTargetDelimiter,
+		Recorder:        recorder,
 		NewSessionID:    func() string { return e2eSessionID },
 	})
 	if err != nil {
@@ -144,8 +212,26 @@ func startE2E(t *testing.T, permittedChannels []string) *e2eStack {
 		}
 	})
 
-	return &e2eStack{mock: m, target: tgt, proxy: server, addr: listener.Addr().String(), clientKe: clientKey}
+	return &e2eStack{
+		mock:      m,
+		target:    tgt,
+		proxy:     server,
+		addr:      listener.Addr().String(),
+		clientKe:  clientKey,
+		recorder:  recorder,
+		bufferDir: bufferDir,
+		gate:      gate,
+	}
 }
+
+// e2eBatchSize and e2eFlushInterval are deliberately unhelpful to a test that
+// wants to see a record: the batch is bigger than a short session produces and
+// the interval is longer than any test runs. Anything that arrives before a
+// deliberate flush arrived because it was critical (D8).
+const (
+	e2eBatchSize     = 64
+	e2eFlushInterval = time.Minute
+)
 
 // dial connects to the proxy the way a user's SSH client would, with the
 // target encoded in the username (D1).
@@ -168,7 +254,7 @@ func (s *e2eStack) dial(t *testing.T) *ssh.Client {
 // authenticates to the proxy, is authorized to a direct target by the real
 // management contract, runs a command, and gets its output and exit status.
 func TestEndToEndDirectRoute(t *testing.T) {
-	stack := startE2E(t, []string{"session"})
+	stack := startE2E(t, e2eOptions{})
 	client := stack.dial(t)
 
 	t.Run("exec returns output and status", func(t *testing.T) {
@@ -269,7 +355,7 @@ func TestEndToEndDirectRoute(t *testing.T) {
 // route that permits nothing refuses the session it was asked for, and says so
 // in the generic terms a denial is allowed (PLAN §4.3).
 func TestEndToEndChannelDenial(t *testing.T) {
-	stack := startE2E(t, []string{})
+	stack := startE2E(t, e2eOptions{permittedChannels: []string{}})
 	client := stack.dial(t)
 
 	session, err := client.NewSession()
@@ -297,7 +383,7 @@ func TestEndToEndChannelDenial(t *testing.T) {
 // TestEndToEndUnauthorizedTarget covers a deny from the real server: the
 // fixtures have no route for this target, so authorize answers 401.
 func TestEndToEndUnauthorizedTarget(t *testing.T) {
-	stack := startE2E(t, []string{"session"})
+	stack := startE2E(t, e2eOptions{})
 
 	client, err := ssh.Dial("tcp", stack.addr, &ssh.ClientConfig{
 		User:            "alice" + config.DefaultTargetDelimiter + "forbidden.example.com",
