@@ -78,7 +78,7 @@ func (s *session) openNextHop() error {
 
 	s.setLeg(legConn)
 	go s.serveTargetChannels(legChans)
-	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil }, nil)
+	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil }, nil, relayRequests)
 
 	s.logf("proxy: session=%s hop leg up direction=%s next=%s addr=%s trail=%s final=%s max_hops=%d",
 		s.id, plan.Direction, hopName(plan), hopAddr(plan), plan.Chain.Trail, plan.FinalTarget,

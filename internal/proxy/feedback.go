@@ -133,11 +133,26 @@ func connectingText(target string) string {
 	return bannerPrefix + "connecting to " + target + "..."
 }
 
-// deniedChannelText is what a client is told when it opens a channel type the
-// connection's policy does not permit. It is the generic denial: naming the
-// permitted set would let a client map the policy one channel at a time.
-func deniedChannelText(channelType string) string {
-	return user.DenyMessage + " Channel type " + channelType + " is not available on this session."
+// deniedText renders a pipeline denial for the user: the generic denial from
+// PLAN §4.3, followed by the clause internal/channel supplied for what was
+// refused.
+//
+// The split is the point. The deny/outage rule has one implementation
+// (user.FailureMessageFor and DenyMessage); the pipeline contributes only the
+// clause naming the thing the client asked for, and never the permitted set —
+// which would let a client map the policy one probe at a time.
+func deniedText(reason string) string {
+	if reason == "" {
+		return user.DenyMessage
+	}
+	return user.DenyMessage + " " + reason
+}
+
+// deniedChannelReason is the clause for a channel refused before the pipeline
+// could speak for itself. It exists only for the unreachable nil-pipeline
+// guard: with a pipeline, every clause comes from internal/channel.
+func deniedChannelReason(channelType string) string {
+	return "Channel type " + channelType + " is not available on this session."
 }
 
 // errChannelNotPermitted is the allow-list refusing a channel. It wraps the

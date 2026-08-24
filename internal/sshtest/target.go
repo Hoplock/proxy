@@ -49,12 +49,14 @@ type Target struct {
 	wg     sync.WaitGroup
 	closed chan struct{}
 
-	mu       sync.Mutex
-	logins   []string
-	keys     []ssh.PublicKey
-	commands []string
-	ptys     int
-	envs     []string
+	mu         sync.Mutex
+	logins     []string
+	keys       []ssh.PublicKey
+	commands   []string
+	ptys       int
+	envs       []string
+	subsystems []string
+	globals    []string
 }
 
 // StartTarget starts a target on a loopback port.
@@ -170,6 +172,24 @@ func (t *Target) Envs() []string {
 	return append([]string(nil), t.envs...)
 }
 
+// Subsystems are the subsystem requests the target received, by name. A test
+// asserting that sftp was denied needs to see that nothing reached the target,
+// not merely that the client was told no.
+func (t *Target) Subsystems() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.subsystems...)
+}
+
+// GlobalRequests are the connection-level requests the target received, by
+// type. It is how a test tells "the client was refused" from "the listener was
+// never created": a tcpip-forward that reaches here has already made one.
+func (t *Target) GlobalRequests() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.globals...)
+}
+
 // Close stops the target and waits for its connections to end.
 func (t *Target) Close() error {
 	select {
@@ -205,7 +225,7 @@ func (t *Target) handleConn(conn net.Conn) {
 	}
 	defer func() { _ = sshConn.Close() }()
 
-	go ssh.DiscardRequests(reqs)
+	go t.handleGlobalRequests(reqs)
 
 	var wg sync.WaitGroup
 	for newChannel := range chans {
@@ -228,6 +248,15 @@ func (t *Target) handleConn(conn net.Conn) {
 		}(channel, requests, newChannel.ChannelType())
 	}
 	wg.Wait()
+}
+
+// handleGlobalRequests records the connection-level requests the target is sent
+// and answers them, which is what a real sshd does for tcpip-forward.
+func (t *Target) handleGlobalRequests(in <-chan *ssh.Request) {
+	for req := range in {
+		t.record(func() { t.globals = append(t.globals, req.Type) })
+		reply(req, true)
+	}
 }
 
 // handleSession implements just enough of an sshd session to prove a proxy
@@ -264,9 +293,40 @@ func (t *Target) handleSession(ch ssh.Channel, in <-chan *ssh.Request) {
 			return
 		case "shell":
 			reply(req, true)
+			go t.drainSessionRequests(in)
 			status := t.shell(ch)
 			sendExit(ch, status)
 			return
+		case "subsystem":
+			var payload struct{ Name string }
+			if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+				reply(req, false)
+				return
+			}
+			t.record(func() { t.subsystems = append(t.subsystems, payload.Name) })
+			reply(req, true)
+			go t.drainSessionRequests(in)
+			// A subsystem is a program on the far side of the same byte
+			// stream, so the echo shell stands in for one exactly as it does
+			// for an interactive login.
+			status := t.shell(ch)
+			sendExit(ch, status)
+			return
+		default:
+			reply(req, false)
+		}
+	}
+}
+
+// drainSessionRequests answers the requests that keep arriving once a shell or
+// subsystem is running. A terminal resize is the usual one, and a real sshd
+// answers it while the program runs — a fake that stopped reading would hang
+// any client that sent one.
+func (t *Target) drainSessionRequests(in <-chan *ssh.Request) {
+	for req := range in {
+		switch req.Type {
+		case "window-change", "signal":
+			reply(req, true)
 		default:
 			reply(req, false)
 		}
