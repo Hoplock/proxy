@@ -16,6 +16,7 @@ import (
 
 	"github.com/hoplock/proxy/internal/auth/target"
 	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/channel"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
 	"github.com/hoplock/proxy/internal/routing"
@@ -60,10 +61,11 @@ type session struct {
 	started time.Time
 
 	// ready is closed when setup has finished, successfully or not. route,
-	// setupErr, and the target leg are written before it closes and only read
-	// after, which is what makes them safe to read without a lock.
+	// pipe, setupErr, and the target leg are written before it closes and only
+	// read after, which is what makes them safe to read without a lock.
 	ready    chan struct{}
 	route    *routing.Route
+	pipe     *channel.Pipeline
 	setupErr error
 	access   *target.ProvisionedAccess
 
@@ -123,7 +125,7 @@ func (s *session) run() {
 	go s.setup()
 	go func() {
 		defer s.recoverPanic("global requests")
-		s.serveGlobalRequests(s.greqs, s.legConnWhenReady, s.interceptClientRequest)
+		s.serveGlobalRequests(s.greqs, s.legConnWhenReady, s.interceptClientRequest, policeRequests)
 	}()
 
 	for newChannel := range s.chans {
@@ -199,6 +201,22 @@ func (s *session) setup() {
 		return
 	}
 	s.route = route
+
+	// Every policy answer about a channel from here on comes from the
+	// pipeline, which is built as soon as there is a policy to build it from
+	// and before ready closes, so no channel handler ever sees a half-built
+	// one (PLAN §6.2).
+	pipe, err := channel.New(channel.Options{
+		Policy:     route,
+		Inspectors: s.srv.inspectors,
+		SessionID:  s.id,
+		Logf:       s.logf,
+	})
+	if err != nil {
+		s.failSetup(&setupError{stage: stageRoute, err: err})
+		return
+	}
+	s.pipe = pipe
 
 	// Where the two route types diverge (PLAN §6.1). A next-hop route is not a
 	// target: the next proxy authenticates this one, authorizes the user
@@ -298,7 +316,7 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 	// The target can open channels too (forwarded-tcpip, x11, auth-agent), and
 	// its global requests have to be answered or the connection hangs.
 	go s.serveTargetChannels(legChans)
-	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil }, nil)
+	go s.serveGlobalRequests(legReqs, func() (ssh.Conn, error) { return s.conn, nil }, nil, relayRequests)
 	return nil
 }
 

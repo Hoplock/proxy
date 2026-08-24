@@ -19,6 +19,7 @@ import (
 
 	"github.com/hoplock/proxy/internal/auth/target"
 	"github.com/hoplock/proxy/internal/auth/user"
+	"github.com/hoplock/proxy/internal/channel"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/routing"
 )
@@ -77,6 +78,12 @@ type Options struct {
 	// this one (D11). Nil refuses relay hops; a relay hop is never downgraded
 	// to a dial.
 	RelayOpener RelayOpener
+	// Inspectors is the channel inspection pipeline's registry (PLAN §6.2,
+	// D5): channel types mapped to their ordered inspector chains. Nil
+	// registers nothing, which is the pure passthrough this engine ships with
+	// — the command filter (0010) and the session recorder (0011) attach here
+	// rather than inside the transport.
+	Inspectors *channel.Registry
 	// MaxHops caps how many proxies one session may traverse. Zero means
 	// routing.DefaultMaxHops. It can only make a chain shorter than
 	// Hoplock Control allowed, never longer (D2).
@@ -102,8 +109,9 @@ type Options struct {
 // It terminates the client's SSH connection, authorizes it against the
 // Hoplock Control, opens a fresh SSH connection to the target, and proxies
 // every channel between the two. Both legs are decrypted inside the process,
-// which is what later phases inspect (0008) and filter (0009); this phase
-// establishes the transport and the session lifecycle underneath them.
+// and internal/channel is what inspects them: the transport here opens,
+// forwards, and pumps, and every policy answer about a channel, a request, or a
+// destination comes from the pipeline (PLAN §6.2, D5a).
 //
 // It also implements control.SessionRegistry, so Hoplock Control's
 // revocation stream can end a session that is already in flight (PLAN §6.4).
@@ -117,6 +125,7 @@ type Server struct {
 	delimiter     string
 	hopSigner     ssh.Signer
 	relay         RelayOpener
+	inspectors    *channel.Registry
 	maxHops       int
 	dialTimeout   time.Duration
 	authTimeout   time.Duration
@@ -162,6 +171,7 @@ func New(opts Options) (*Server, error) {
 		delimiter:     opts.TargetDelimiter,
 		hopSigner:     opts.HopSigner,
 		relay:         opts.RelayOpener,
+		inspectors:    opts.Inspectors,
 		maxHops:       opts.MaxHops,
 		dialTimeout:   opts.DialTimeout,
 		authTimeout:   opts.AuthTimeout,

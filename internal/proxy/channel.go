@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/hoplock/proxy/internal/channel"
 )
 
 // SSH channel and request names this engine reasons about by name. Everything
 // else is forwarded generically (D5): the proxy proxies channel types it has
-// never heard of, and only Hoplock Control's allow-list decides which are
-// allowed to exist.
+// never heard of, and internal/channel is what decides which may exist, which
+// requests they may carry, and where they may go (PLAN §6.2).
 const (
 	channelSession = "session"
 
@@ -31,6 +33,17 @@ const (
 // exit-status and closes immediately; this stops one that does not from pinning
 // the client's channel open.
 const exitGrace = 5 * time.Second
+
+// policing says whether a connection-level request stream is the client's, and
+// therefore carries the session's own policy (D5a axis 3). The target's
+// requests travel the other way and are relayed: the allow-list is about what
+// this session may ask its target for.
+type policing bool
+
+const (
+	policeRequests policing = true
+	relayRequests  policing = false
+)
 
 // openedChannel is the result of opening the far side of a channel.
 type openedChannel struct {
@@ -53,9 +66,9 @@ func (s *session) handleClientChannel(nc ssh.NewChannel) {
 		s.rejectChannel(nc, ssh.ConnectionFailed, err)
 		return
 	}
-	if !s.route.ChannelPermitted(nc.ChannelType()) {
-		s.logf("proxy: session=%s channel %q refused: not permitted by policy", s.id, nc.ChannelType())
-		_ = nc.Reject(ssh.Prohibited, deniedChannelText(nc.ChannelType()))
+	insp, decision := s.openChannel(nc, channel.FromClient)
+	if decision.Denied() {
+		_ = nc.Reject(ssh.Prohibited, deniedText(decision.Reason))
 		return
 	}
 	leg, err := s.legConnWhenReady()
@@ -63,20 +76,38 @@ func (s *session) handleClientChannel(nc ssh.NewChannel) {
 		s.rejectChannel(nc, ssh.ConnectionFailed, err)
 		return
 	}
-	s.forwardChannel(nc, leg)
+	s.forwardChannel(nc, leg, insp, decision.PayloadOr(nc.ExtraData()))
+}
+
+// openChannel puts a channel open through the pipeline: the channel-type
+// allow-list, and — for direct-tcpip and forwarded-tcpip — the destination
+// inside the payload, which is where a port forward's whole meaning lives
+// (PLAN §6.2, D5a).
+func (s *session) openChannel(nc ssh.NewChannel, dir channel.Direction) (*channel.Inspection, channel.Decision) {
+	if s.pipe == nil {
+		// Unreachable: the pipeline exists before ready closes, and nothing
+		// opens a channel before then. Denying rather than trusting a nil is
+		// the only reading of "no policy" that cannot open a session.
+		return nil, channel.Deny(deniedChannelReason(nc.ChannelType()))
+	}
+	return s.pipe.Open(s.ctx, channel.OpenEvent{
+		ChannelType: nc.ChannelType(),
+		Direction:   dir,
+		Payload:     nc.ExtraData(),
+	})
 }
 
 // handleTargetChannel proxies a channel the target opened towards the client
-// (forwarded-tcpip, x11, auth-agent). The allow-list applies in this direction
-// too: a channel the session may not open is not one it may be handed.
+// (forwarded-tcpip, x11, auth-agent). The pipeline applies in this direction
+// too: a channel the session may not open is not one it may be handed, and a
+// forwarded-tcpip has its own destination list for exactly the same reason.
 func (s *session) handleTargetChannel(nc ssh.NewChannel) {
-	if s.route == nil || !s.route.ChannelPermitted(nc.ChannelType()) {
-		s.logf("proxy: session=%s target-opened channel %q refused: not permitted by policy",
-			s.id, nc.ChannelType())
-		_ = nc.Reject(ssh.Prohibited, deniedChannelText(nc.ChannelType()))
+	insp, decision := s.openChannel(nc, channel.FromTarget)
+	if decision.Denied() {
+		_ = nc.Reject(ssh.Prohibited, deniedText(decision.Reason))
 		return
 	}
-	s.forwardChannel(nc, s.conn.Conn)
+	s.forwardChannel(nc, s.conn.Conn, insp, decision.PayloadOr(nc.ExtraData()))
 }
 
 // serveTargetChannels accepts channel opens coming from the target.
@@ -91,9 +122,11 @@ func (s *session) serveTargetChannels(chans <-chan ssh.NewChannel) {
 	}
 }
 
-// forwardChannel opens the matching channel on dst and pumps both sides.
-func (s *session) forwardChannel(nc ssh.NewChannel, dst ssh.Conn) {
-	farCh, farReqs, err := dst.OpenChannel(nc.ChannelType(), nc.ExtraData())
+// forwardChannel opens the matching channel on dst and pumps both sides. data
+// is the open payload the pipeline passed, which is nc.ExtraData() unless an
+// inspector replaced it.
+func (s *session) forwardChannel(nc ssh.NewChannel, dst ssh.Conn, insp *channel.Inspection, data []byte) {
+	farCh, farReqs, err := dst.OpenChannel(nc.ChannelType(), data)
 	if err != nil {
 		// Relay the far side's own rejection verbatim where there is one: the
 		// client asked a question the target answered, and inventing a reason
@@ -111,7 +144,7 @@ func (s *session) forwardChannel(nc ssh.NewChannel, dst ssh.Conn) {
 		_ = farCh.Close()
 		return
 	}
-	s.pump(nearCh, nearReqs, farCh, farReqs)
+	s.pump(nearCh, nearReqs, farCh, farReqs, insp)
 }
 
 // handleSessionChannel proxies a session channel, and is where this engine's
@@ -139,6 +172,8 @@ func (s *session) handleSessionChannel(nc ssh.NewChannel) {
 		grace     <-chan time.Time
 		ready     = s.ready
 		opened    chan openedChannel
+		insp      *channel.Inspection
+		openData  = nc.ExtraData()
 		targetCh  ssh.Channel
 		targetReq <-chan *ssh.Request
 	)
@@ -173,8 +208,17 @@ func (s *session) handleSessionChannel(nc ssh.NewChannel) {
 		case <-ready:
 			ready = nil // a closed channel is always ready; stop selecting on it
 			pending = s.setupErr
-			if pending == nil && !s.route.ChannelPermitted(channelSession) {
-				pending = errChannelNotPermitted(channelSession)
+			if pending == nil {
+				// The session channel goes through the same pipeline as every
+				// other channel; it just cannot be refused with a rejection,
+				// because it was accepted before the policy existed. The
+				// refusal therefore arrives as an explained close below.
+				var decision channel.Decision
+				insp, decision = s.openChannel(nc, channel.FromClient)
+				if decision.Denied() {
+					pending = errChannelNotPermitted(channelSession)
+				}
+				openData = decision.PayloadOr(openData)
 			}
 			if pending != nil {
 				// Do not report yet unless the client has asked for something.
@@ -199,7 +243,7 @@ func (s *session) handleSessionChannel(nc ssh.NewChannel) {
 					opened <- openedChannel{err: err}
 					return
 				}
-				ch, reqs, err := leg.OpenChannel(channelSession, nc.ExtraData())
+				ch, reqs, err := leg.OpenChannel(channelSession, openData)
 				opened <- openedChannel{ch: ch, reqs: reqs, err: err}
 			}()
 
@@ -223,20 +267,72 @@ func (s *session) handleSessionChannel(nc ssh.NewChannel) {
 		}
 	}
 
+	// The requests the client made while the target leg was coming up are
+	// replayed in order, and policed on the way through: the axis is about the
+	// request, not about when it happened to arrive (PLAN §6.2, D5a).
 	for _, req := range queued {
-		forwardRequest(targetCh, req)
+		relay, alive := s.policeRequest(clientCh, insp, req)
+		if relay {
+			forwardRequest(targetCh, req)
+		}
+		if !alive {
+			_ = targetCh.Close()
+			return
+		}
 	}
-	s.pump(clientCh, clientReqs, targetCh, targetReq)
+	s.pump(clientCh, clientReqs, targetCh, targetReq, insp)
+}
+
+// policeRequest applies the in-channel request axis to one request the client
+// made (PLAN §6.2, D5a axis 2). It reports whether the request may be relayed,
+// and whether the channel has anything left to do afterwards.
+//
+// A denial is never a bare close, and never a silent one either. The request is
+// answered, the reason goes to the channel's stderr, and — when what was
+// refused is the request that would have started the work — the channel ends
+// with a non-zero exit status so a script sees a failure rather than an empty
+// success (PLAN §4.3). Refusing a pty leaves the channel alive on purpose:
+// "CI may run commands but never gets an interactive terminal" is a session
+// that still runs the command.
+func (s *session) policeRequest(ch ssh.Channel, insp *channel.Inspection, req *ssh.Request) (relay, alive bool) {
+	decision := insp.Request(s.ctx, channel.RequestEvent{
+		Direction: channel.FromClient,
+		Type:      req.Type,
+		WantReply: req.WantReply,
+		Payload:   req.Payload,
+	})
+	if !decision.Denied() {
+		req.Payload = decision.PayloadOr(req.Payload)
+		return true, true
+	}
+
+	if req.WantReply {
+		_ = req.Reply(false, nil)
+	}
+	writeUser(ch, deniedText(decision.Reason))
+	if !channel.RequestStartsExecution(req.Type) {
+		return false, true
+	}
+	sendExitStatus(ch, exitProxyFailure)
+	_ = ch.Close()
+	return false, false
 }
 
 // pump moves every byte and every request between the two halves of a channel
 // until both are done, then closes both.
 //
-// near is the client's side, far the target's. The asymmetry that matters is
-// the exit status: it is captured rather than forwarded as it arrives, and
-// replayed once the target's output has been drained, so a client cannot see
-// "the command finished" before the output the command produced.
-func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.Channel, farReqs <-chan *ssh.Request) {
+// near is the side that opened the channel, far the side it was forwarded to —
+// which is the client and the target respectively for everything the client
+// opens, and the other way round for a channel the target opened back. The
+// asymmetry that matters is the exit status: it is captured rather than
+// forwarded as it arrives, and replayed once the target's output has been
+// drained, so a client cannot see "the command finished" before the output the
+// command produced.
+//
+// insp is the channel's inspection. Every stream goes through it, and on a
+// channel with no stream inspectors it hands each one straight back, so an
+// un-inspected channel is the same four io.Copy calls phase 0005 shipped.
+func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.Channel, farReqs <-chan *ssh.Request, insp *channel.Inspection) {
 	var (
 		all      sync.WaitGroup
 		output   sync.WaitGroup
@@ -246,42 +342,51 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 		reqsDone = make(chan struct{})
 	)
 
-	// client → target
+	nearDir := insp.Opener()
+	farDir := nearDir.Opposite()
+
+	// near → far
 	all.Add(1)
 	go func() {
 		defer all.Done()
-		_, _ = io.Copy(far, near)
+		_, _ = io.Copy(far, insp.Reader(s.ctx, nearDir, false, near))
 		_ = far.CloseWrite()
 	}()
 	all.Add(1)
 	go func() {
 		defer all.Done()
-		_, _ = io.Copy(far.Stderr(), near.Stderr())
+		_, _ = io.Copy(far.Stderr(), insp.Reader(s.ctx, nearDir, true, near.Stderr()))
 	}()
 
-	// target → client
+	// far → near
 	output.Add(2)
 	all.Add(1)
 	go func() {
 		defer all.Done()
 		defer output.Done()
-		_, _ = io.Copy(near, far)
+		_, _ = io.Copy(near, insp.Reader(s.ctx, farDir, false, far))
 	}()
 	all.Add(1)
 	go func() {
 		defer all.Done()
 		defer output.Done()
-		_, _ = io.Copy(near.Stderr(), far.Stderr())
+		_, _ = io.Copy(near.Stderr(), insp.Reader(s.ctx, farDir, true, far.Stderr()))
 	}()
 	go func() {
 		output.Wait()
 		close(drained)
 	}()
 
-	// Requests, both ways.
+	// Requests, both ways. The near side's are policed when near is the client
+	// — a request axis is about what this session may ask its target for — and
+	// relayed when the target opened the channel.
 	all.Add(1)
 	go func() {
 		defer all.Done()
+		if nearDir == channel.FromClient {
+			s.forwardClientRequests(nearReqs, near, far, insp)
+			return
+		}
 		forwardRequests(nearReqs, far, nil)
 	}()
 	all.Add(1)
@@ -319,6 +424,23 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 	all.Wait()
 }
 
+// forwardClientRequests relays the client's in-channel requests through the
+// request axis. A denial that leaves the channel with nothing left to do closes
+// both halves, which unwinds the pump.
+func (s *session) forwardClientRequests(in <-chan *ssh.Request, near, far ssh.Channel, insp *channel.Inspection) {
+	for req := range in {
+		relay, alive := s.policeRequest(near, insp, req)
+		if relay {
+			forwardRequest(far, req)
+		}
+		if !alive {
+			_ = near.Close()
+			_ = far.Close()
+			return
+		}
+	}
+}
+
 // forwardRequests relays channel requests, letting intercept claim the ones the
 // engine handles itself. A claimed request is answered here so a client that
 // asked for a reply still gets one.
@@ -350,7 +472,8 @@ func forwardRequest(dst ssh.Channel, req *ssh.Request) {
 
 // serveGlobalRequests relays connection-level requests (keepalives,
 // tcpip-forward, no-more-sessions) to the far connection, which dst supplies
-// once it exists.
+// once it exists, and applies the global-request allow-list to the ones the
+// client made (D5a axis 3).
 //
 // Requests that arrive before the target leg is up wait for it rather than
 // being refused: a refusal the client cannot distinguish from "the server does
@@ -360,13 +483,25 @@ func forwardRequest(dst ssh.Channel, req *ssh.Request) {
 // BEFORE dst: the hop trail (D11) arrives while setup is still waiting for it,
 // so asking for the far connection first would deadlock the session against its
 // own precondition.
-func (s *session) serveGlobalRequests(in <-chan *ssh.Request, dst func() (ssh.Conn, error), intercept func(*ssh.Request) bool) {
+func (s *session) serveGlobalRequests(in <-chan *ssh.Request, dst func() (ssh.Conn, error), intercept func(*ssh.Request) bool, police policing) {
 	for req := range in {
 		if intercept != nil && intercept(req) {
 			continue
 		}
 		conn, err := dst()
 		if err != nil {
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+			continue
+		}
+		// After dst() the route exists, and with it the pipeline: waiting for
+		// the far connection is also what makes the policy available. A denied
+		// request is answered false and goes no further — relaying a
+		// tcpip-forward and then refusing the forwarded-tcpip channels it
+		// produces would still leave the listener standing on the target
+		// (PLAN §6.2).
+		if police == policeRequests && s.pipe != nil && s.pipe.GlobalRequest(s.ctx, req.Type).Denied() {
 			if req.WantReply {
 				_ = req.Reply(false, nil)
 			}

@@ -355,11 +355,16 @@ func TestChannelNotPermittedIsRefused(t *testing.T) {
 // TestPermittedChannelOtherThanSessionIsProxied is the same allow-list from the
 // other side: a permitted non-session channel is forwarded generically, without
 // the engine knowing anything about what it carries (D5).
+//
+// The payload is a real direct-tcpip one because phase 0009 reads it: the route
+// here polices no destinations (permitted_forwards is absent), so any
+// destination passes, but a payload the proxy cannot parse is a denial and
+// would be testing the wrong thing.
 func TestPermittedChannelOtherThanSessionIsProxied(t *testing.T) {
 	h := newHarness(t, harnessOptions{permittedChannels: []string{channelSession, "direct-tcpip"}})
 	client := h.mustDial(h.username())
 
-	ch, reqs, err := client.OpenChannel("direct-tcpip", nil)
+	ch, reqs, err := client.OpenChannel("direct-tcpip", directTCPIP("db.internal", 5432))
 	if err != nil {
 		t.Fatalf("OpenChannel: %v", err)
 	}

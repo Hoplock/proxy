@@ -118,6 +118,16 @@ type harnessOptions struct {
 	// permittedChannels is the route's channel allow-list. Nil means
 	// ["session"]; an explicitly empty slice denies everything.
 	permittedChannels []string
+	// permittedRequests is the in-channel request policy (D5a axis 2). Nil is
+	// the contract's absent value: not policed, which is what a v1 server
+	// meant.
+	permittedRequests *control.RequestPolicy
+	// permittedForwards is the forwarding destination policy (D5a axis 3a).
+	// Nil is not policed.
+	permittedForwards *control.ForwardPolicy
+	// permittedGlobalRequests is the connection-level request policy (D5a
+	// axis 3b). Nil relays everything.
+	permittedGlobalRequests *control.GlobalRequestPolicy
 	// routeType overrides the route type; empty means direct.
 	routeType control.RouteType
 	// authorize replaces the whole authorize behaviour.
@@ -181,13 +191,16 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	if client.authorize == nil {
 		client.authorize = func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
 			return &control.AuthorizeResponse{
-				RouteType:         routeType,
-				Target:            host,
-				TargetPort:        port,
-				Permissions:       "testGroup",
-				PermittedChannels: permitted,
-				FilterPolicy:      control.FilterPolicy{Mode: control.FilterModeBlacklist},
-				DecisionID:        "decision-1",
+				RouteType:               routeType,
+				Target:                  host,
+				TargetPort:              port,
+				Permissions:             "testGroup",
+				PermittedChannels:       permitted,
+				PermittedRequests:       opts.permittedRequests,
+				PermittedForwards:       opts.permittedForwards,
+				PermittedGlobalRequests: opts.permittedGlobalRequests,
+				FilterPolicy:            control.FilterPolicy{Mode: control.FilterModeBlacklist},
+				DecisionID:              "decision-1",
 			}, nil
 		}
 	}
