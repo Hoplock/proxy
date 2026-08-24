@@ -624,6 +624,7 @@ func TestUnimplementedTargetAuthMethodIsAnOutage(t *testing.T) {
 			Permissions:       "testGroup",
 			PermittedChannels: []string{channelSession},
 			TargetAuth:        &control.TargetAuth{Method: "control-minted"},
+			FilterPolicy:      control.FilterPolicy{Mode: control.FilterModeBlacklist},
 			DecisionID:        "decision-1",
 		}, nil
 	}
@@ -698,7 +699,8 @@ func TestBrokeredCredentialDoesNotReachTheSessionLog(t *testing.T) {
 				Method: control.TargetAuthBrokeredKey,
 				Params: map[string]string{"credential_ref": "core-switch"},
 			},
-			DecisionID: "decision-1",
+			FilterPolicy: control.FilterPolicy{Mode: control.FilterModeBlacklist},
+			DecisionID:   "decision-1",
 		}, nil
 	}
 

@@ -18,6 +18,8 @@ import (
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/channel"
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/filter"
+	"github.com/hoplock/proxy/internal/filter/inspect"
 	"github.com/hoplock/proxy/internal/identity"
 	"github.com/hoplock/proxy/internal/routing"
 )
@@ -202,13 +204,22 @@ func (s *session) setup() {
 	}
 	s.route = route
 
+	// Command policy belongs to this connection, not to the proxy: the engine
+	// is compiled from this route's filter policy and attached to this
+	// session's own inspector chain (PLAN §6.3, D2, D12).
+	inspectors, err := s.commandInspectors(route)
+	if err != nil {
+		s.failSetup(&setupError{stage: stageRoute, err: err})
+		return
+	}
+
 	// Every policy answer about a channel from here on comes from the
 	// pipeline, which is built as soon as there is a policy to build it from
 	// and before ready closes, so no channel handler ever sees a half-built
 	// one (PLAN §6.2).
 	pipe, err := channel.New(channel.Options{
 		Policy:     route,
-		Inspectors: s.srv.inspectors,
+		Inspectors: inspectors,
 		SessionID:  s.id,
 		Logf:       s.logf,
 	})
@@ -258,6 +269,37 @@ func (s *session) setup() {
 
 	s.logf("proxy: session=%s target leg up target=%s route=%s permissions=%s channels=%v",
 		s.id, s.route.Addr(), s.route.Type, s.route.Permissions, s.route.PermittedChannels)
+}
+
+// commandInspectors builds the inspector registry for this session: the
+// proxy-wide chains, plus command policy when this connection's policy can ever
+// say no (PLAN §6.3).
+//
+// A policy that does not compile fails the session closed. It should be
+// unreachable — the contract validates the same shape on the way in — and that
+// is exactly why it must not be treated as "no policy": the one reading of "the
+// policy could not be understood" that is never available is the one that lets
+// a command run.
+func (s *session) commandInspectors(route *routing.Route) (*channel.Registry, error) {
+	engine, err := filter.New(route.Filter)
+	if err != nil {
+		return nil, err
+	}
+	if !engine.Filters() {
+		// A blacklist with no rules filters nothing, and a session with no
+		// inspectors keeps phase 0009's straight-copy path: no wrapper, no
+		// per-command work, nothing to say about any command.
+		return s.srv.inspectors, nil
+	}
+	reg := s.srv.inspectors.Clone()
+	inspect.Register(reg, inspect.Options{
+		Engine: engine,
+		// Until phase 0011 ships the batching/priority transport, audit events
+		// go to the proxy log with the priority marker they will carry there.
+		Audit: filter.LogSink(s.logf),
+	})
+	s.logf("proxy: session=%s command policy tier=%s mode=%s", s.id, engine.Tier(), engine.Mode())
+	return reg, nil
 }
 
 // identify recovers who the connection belongs to and what it asked for.

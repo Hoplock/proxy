@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"sync/atomic"
 
 	"golang.org/x/crypto/ssh"
 
@@ -57,6 +59,10 @@ type Pipeline struct {
 	registry  *Registry
 	sessionID string
 	logf      func(format string, args ...any)
+	// channels numbers the channels opened on this connection, so each one can
+	// be named in an audit record and correlated across the calls an inspector
+	// gets for it.
+	channels atomic.Uint64
 }
 
 // New returns a pipeline for one connection.
@@ -130,7 +136,7 @@ func (p *Pipeline) Open(ctx context.Context, ev OpenEvent) (*Inspection, Decisio
 		}
 		d := p.attribute(inspector, opener.InspectOpen(ctx, &ev))
 		switch d.Action {
-		case ActionDeny:
+		case ActionDeny, ActionTerminate:
 			return nil, p.denied(d, "channel %s %s: %s denied it", ev.Direction, ev.ChannelType, d.By)
 		case ActionMutate:
 			ev.Payload = d.Payload
@@ -145,6 +151,7 @@ func (p *Pipeline) Open(ctx context.Context, ev OpenEvent) (*Inspection, Decisio
 		pipe: p,
 		info: Info{
 			SessionID: p.sessionID,
+			ChannelID: p.nextChannelID(),
 			Type:      ev.ChannelType,
 			Opener:    ev.Direction,
 			Forward:   ev.Forward,
@@ -207,7 +214,7 @@ func (i *Inspection) Request(ctx context.Context, ev RequestEvent) Decision {
 	for _, inspector := range i.requests {
 		d := i.pipe.attribute(inspector, inspector.InspectRequest(ctx, &ev))
 		switch d.Action {
-		case ActionDeny:
+		case ActionDeny, ActionTerminate:
 			if ancillary {
 				i.pipe.flagged(d, "request %s on %s: denial downgraded, the request carries no policy",
 					ev.Type, ev.Channel.Type)
@@ -216,13 +223,31 @@ func (i *Inspection) Request(ctx context.Context, ev RequestEvent) Decision {
 			return i.pipe.denied(d, "request %s on %s: %s denied it", ev.Type, ev.Channel.Type, d.By)
 		case ActionMutate:
 			ev.Payload = d.Payload
+			if d.Notice == "" {
+				// A replacement payload does not withdraw an earlier
+				// inspector's notice to the user.
+				d.Notice = decision.Notice
+			}
 			decision = d
 		case ActionFlag:
 			i.pipe.flagged(d, "request %s on %s", ev.Type, ev.Channel.Type)
+			// A flag with a notice is the warn-and-continue shape: the event
+			// proceeds and the caller shows the user the notice, so the
+			// decision has to survive rather than be dropped for an Allow.
+			if d.Notice != "" && decision.Action == ActionAllow {
+				decision = d
+			}
 		case ActionAllow:
 		}
 	}
 	return decision
+}
+
+// nextChannelID names the next channel opened on this connection. The id is
+// scoped to the session, which is what an audit record needs: a channel is only
+// ever discussed alongside the session it belongs to.
+func (p *Pipeline) nextChannelID() string {
+	return p.sessionID + "/" + strconv.FormatUint(p.channels.Add(1), 10)
 }
 
 // policeRequest applies axis 2 to one request, filling in the parsed subsystem

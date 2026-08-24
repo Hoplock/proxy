@@ -148,6 +148,16 @@ func deniedText(reason string) string {
 	return user.DenyMessage + " " + reason
 }
 
+// noticeText renders a notice attached to an event that was allowed: a warning
+// about a command that is about to run, rather than a refusal.
+//
+// It carries the proxy's own prefix because that is the whole point of a
+// warning — the user has to be able to tell a line the proxy wrote from output
+// of the command they ran.
+func noticeText(notice string) string {
+	return bannerPrefix + notice
+}
+
 // deniedChannelReason is the clause for a channel refused before the pipeline
 // could speak for itself. It exists only for the unreachable nil-pipeline
 // guard: with a pipeline, every clause comes from internal/channel.

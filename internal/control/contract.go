@@ -411,6 +411,16 @@ type FilterPolicy struct {
 	RestrictedExec *RestrictedExecPolicy `json:"restricted_exec,omitempty"`
 }
 
+// Validate checks a filter policy against the contract, including the rule that
+// the two exec tiers are alternatives rather than layers (D12).
+//
+// It is exported for the same reason AuthorizeResponse.Validate is: the policy
+// engine in internal/filter compiles this shape and must fail closed on
+// anything the wire refuses, and two almost-correct copies of one rule
+// eventually disagree — with the disagreement landing on whichever of them a
+// server is talking to.
+func (p FilterPolicy) Validate() error { return p.validate() }
+
 // Exec returns the exec tier this policy selects, resolving the absent-value
 // default so callers never have to decide what an empty ExecMode meant.
 func (p FilterPolicy) Exec() ExecMode {

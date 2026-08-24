@@ -128,6 +128,9 @@ type harnessOptions struct {
 	// permittedGlobalRequests is the connection-level request policy (D5a
 	// axis 3b). Nil relays everything.
 	permittedGlobalRequests *control.GlobalRequestPolicy
+	// filterPolicy is the connection's command policy (PLAN §6.3). Nil means
+	// an empty blacklist, which filters nothing.
+	filterPolicy *control.FilterPolicy
 	// routeType overrides the route type; empty means direct.
 	routeType control.RouteType
 	// authorize replaces the whole authorize behaviour.
@@ -185,6 +188,10 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	if routeType == "" {
 		routeType = control.RouteTypeDirect
 	}
+	filterPolicy := control.FilterPolicy{Mode: control.FilterModeBlacklist}
+	if opts.filterPolicy != nil {
+		filterPolicy = *opts.filterPolicy
+	}
 
 	client := &fakeClient{hostKey: opts.hostKey}
 	client.authorize = opts.authorize
@@ -199,7 +206,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 				PermittedRequests:       opts.permittedRequests,
 				PermittedForwards:       opts.permittedForwards,
 				PermittedGlobalRequests: opts.permittedGlobalRequests,
-				FilterPolicy:            control.FilterPolicy{Mode: control.FilterModeBlacklist},
+				FilterPolicy:            filterPolicy,
 				DecisionID:              "decision-1",
 			}, nil
 		}
