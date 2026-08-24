@@ -74,9 +74,10 @@ prefer finishing a smaller, correct slice over reading more.
   the contract Hoplock Control vendors (D3), so a change under `api/` creates an
   obligation in another repository — and that work has no prompt number, so
   nothing in *this* file covers it. That one does: the ordering (upstream merges
-  first), the downstream-impact check your PR owes, and the conventions for a
-  sync PR. It lists the shared surfaces in its Section 1; if your change touches
-  none of them, you do not need to read it.
+  first), the downstream-impact check your PR owes — including the ready-to-run
+  sync kickoff it must hand the user for each affected repository (§4) — and the
+  conventions for a sync PR. It lists the shared surfaces in its Section 1; if
+  your change touches none of them, you do not need to read it.
 - **Match the codebase.** Mirror existing structure, naming, error handling, and
   test style. Add the per-file license header (see PLAN §8).
 - **No secrets in code or logs.** Never log the initial-auth password. Never

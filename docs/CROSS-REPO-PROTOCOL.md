@@ -85,7 +85,8 @@ downstream repository, which has no way of knowing the change happened.
    **Cross-repo impact** heading (Section 4).
 2. It merges.
 3. One **sync PR** per affected repository (Section 5), opened against its
-   `main`.
+   `main`, run in a fresh session from the kickoff the upstream PR handed over
+   (Section 4).
 4. Each sync PR names the upstream PR it follows and confirms it is merged.
 
 A sync PR **changes text, not behaviour**. It updates the prompts, plan, and
@@ -136,6 +137,31 @@ What to actually check, at minimum:
 - whether a queued prompt already covers the area. If one does, the obligation
   belongs **in that prompt**, not only in the plan — a session reads its prompt
   closely and skims the plan.
+
+### Hand over a runnable sync kickoff
+
+An obligation that is written down but not runnable is one somebody has to
+reconstruct later, from a merged PR body, in a repository they have not opened.
+That reconstruction is the step that silently does not happen. So the impact
+section does not stop at naming the work — **for each repository with
+obligations it ends with a ready-to-run sync kickoff, already filled in**:
+
+- the prompt is the "Downstream sync" block in `docs/KICKOFF.md`, verbatim
+  except for its blanks;
+- `<upstream PR URL>` is this PR, `<short-description>` is the branch suffix the
+  sync should use, and the obligations line carries the obligations just stated
+  above it;
+- a repository answered **"None"** gets no kickoff — there is nothing to run.
+
+The session that opens the upstream PR **also puts each kickoff in its reply to
+the user**, naming the repository to run it in and saying plainly that it needs
+a **fresh session with that repository checked out**. The PR body is the durable
+copy; the reply is what actually gets pasted, and a sync that is never started
+is indistinguishable from one that was never owed.
+
+Neither the kickoff nor the reply makes the sync the upstream session's to do.
+The ordering in §2 is unchanged: upstream merges first, and the sync runs
+afterwards, in its own session, against the downstream repository.
 
 ---
 
