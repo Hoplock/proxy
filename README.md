@@ -42,8 +42,12 @@ before reading the code.
 > only the local material each needs. Chaining is in too: a session can traverse
 > several proxies, each authenticating, authorizing and routing for itself, and
 > a proxy in a protected zone is reached over a connection **it** opened to its
-> upstream — so an enclave needs no inbound firewall rule at all. Next are
-> channel inspection, command filtering, and the logging pipeline. See
+> upstream — so an enclave needs no inbound firewall rule at all. Channels are
+> policed on all three policy axes, and commands on two tiers that are named
+> apart on purpose: **restricted exec**, a default-deny list of parsed argument
+> vectors that is sold as enforcement, and **filtered exec**, a pattern rule
+> list that is a guardrail — plus best-effort inspection of interactive
+> sessions, which reports and never enforces. Next is the logging pipeline. See
 > `docs/PLAN.md` §10 for the order.
 
 ## Requirements

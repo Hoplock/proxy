@@ -302,13 +302,34 @@ func (s *session) policeRequest(ch ssh.Channel, insp *channel.Inspection, req *s
 		Payload:   req.Payload,
 	})
 	if !decision.Denied() {
+		// A permitted-but-flagged request carries a notice: the warn-and-
+		// continue half of command policy, where the command runs and the user
+		// hears about it before it does (PLAN §6.3).
+		if decision.Notice != "" {
+			writeUser(ch, noticeText(decision.Notice))
+		}
 		req.Payload = decision.PayloadOr(req.Payload)
 		return true, true
 	}
 
 	if req.WantReply {
-		_ = req.Reply(false, nil)
+		// A command policy's refusal is answered affirmatively and then
+		// reported as the channel's own failure below: the request was
+		// permitted, the command it carried was not, and a false reply would
+		// make the client print its own generic error instead of reading the
+		// reason (PLAN §4.3, and the same argument failChannel makes).
+		_ = req.Reply(decision.CommandFailure, nil)
 	}
+
+	// A policy that ends the session says so and then ends it, on every channel
+	// at once rather than on this one: the same path a revocation takes, for
+	// the same reason — a terminated session must never look like a crash
+	// (PLAN §4.3, §6.4).
+	if decision.Terminates() {
+		s.kill(decision.Reason)
+		return false, false
+	}
+
 	writeUser(ch, deniedText(decision.Reason))
 	if !channel.RequestStartsExecution(req.Type) {
 		return false, true

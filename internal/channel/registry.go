@@ -12,11 +12,14 @@ const AnyChannel = "*"
 
 // Registry maps channel types to their ordered inspector chains.
 //
-// It is built once, from config and policy, and shared by every session on the
-// proxy: an inspector is a stateless decider, and per-session state belongs in
-// the Inspection the pipeline hands back. Registration order is the chain
-// order, which is the whole point — a specific rule placed before a broad one
-// has to decide first (PLAN §6.3).
+// There are two layers of it, and the difference is where the inspector's
+// knowledge comes from. The proxy-wide registry is built once from config and
+// shared by every session. On top of that, a session whose POLICY defines an
+// inspector — command filtering is per connection (D2), so its engine is too —
+// layers its own registry with Clone and registers into the copy. Registration
+// order is the chain order, which is the whole point: a specific rule placed
+// before a broad one has to decide first (PLAN §6.3), and a session's own
+// inspectors run after the proxy-wide ones for the same reason.
 //
 // The zero Registry is not usable; a nil *Registry is, and registers nothing,
 // which is what a proxy with no inspectors configured passes in.
@@ -42,6 +45,22 @@ func (r *Registry) Register(channelType string, inspectors ...Inspector) {
 		r.byType = make(map[string][]Inspector)
 	}
 	r.byType[channelType] = append(r.byType[channelType], inspectors...)
+}
+
+// Clone returns a copy that can be extended without touching the original: the
+// per-session layer described above. A nil *Registry clones to an empty one, so
+// a proxy with no configured inspectors is not a special case.
+func (r *Registry) Clone() *Registry {
+	clone := NewRegistry()
+	if r == nil {
+		return clone
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for channelType, chain := range r.byType {
+		clone.byType[channelType] = append([]Inspector(nil), chain...)
+	}
+	return clone
 }
 
 // Inspectors returns the chain for a channel type: the inspectors registered

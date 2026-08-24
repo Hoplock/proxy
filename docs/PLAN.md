@@ -409,7 +409,8 @@ hoplock/
 │   ├── relay/              # proxy↔proxy relay registrations (D11)
 │   ├── proxy/              # core SSH proxy engine, session lifecycle
 │   ├── channel/            # channel allow-listing + inspection pipeline
-│   ├── filter/             # command filtering (whitelist/blacklist + actions)
+│   ├── filter/             # command policy engine (pure logic: the three tiers)
+│   │   └── inspect/        # the engine attached to the channel pipeline (SSH-facing)
 │   ├── logging/            # session capture, batching, priority flush, buffer
 │   └── sshtest/            # test support: in-process SSH target + key helpers
 ├── api/                    # API contract (OpenAPI/JSON Schema) — source of truth
@@ -448,8 +449,12 @@ hoplock/
   route + target dial + channel pumping. Transport-level correctness lives here.
 - **`internal/channel`** — the inspection pipeline (D5). Enforces the permitted
   channel allow-list; hosts pluggable per-channel inspectors.
-- **`internal/filter`** — command policy engine (D5/filtering); pure logic, fed
-  by the channel pipeline.
+- **`internal/filter`** — command policy engine (D5/D12); pure logic, no SSH
+  types, fed by the channel pipeline. Its `inspect` subpackage is the SSH-facing
+  half: the inspectors that read a command out of an `exec` request or an
+  interactive stream, decide what the user is told, and emit the audit event.
+  The split is what lets the tier sold as a boundary be tested exhaustively
+  against the strings an attacker sends.
 - **`internal/logging`** — session recorder + shipper (D8).
 
 ---
@@ -878,6 +883,14 @@ work in flight on its own.
   **inspectors**. In v1 the list is empty (pure passthrough) for everything except
   where filtering attaches. Inspectors must be **zero-copy where possible** and add
   no latency when none are registered for a channel type.
+  There are two layers of registration, because there are two sources of an
+  inspector's knowledge: a **proxy-wide** registry built from config and shared
+  by every session, and a **per-session** layer for inspectors carrying a
+  policy that is per connection (D2) — command filtering is one, so its engine
+  is compiled from the route and registered into a clone of the proxy-wide
+  registry for that session alone. An inspector can allow, flag, mutate, deny,
+  or **terminate** (deny and end the session, phase 0010's `kill_session`); the
+  session teardown is the transport's to perform, never an inspector's.
 
 ### 6.3 Command filtering (`internal/filter`, D5-answers 12–14)
 
@@ -928,6 +941,48 @@ visible to a reviewer.
 
 The audit event records which tier decided, so a later review can tell a
 boundary from a guardrail without re-reading the policy.
+
+**How each tier behaves in the code (phase 0010).** The engine is
+`internal/filter` — pure logic, no SSH types — and `internal/filter/inspect`
+attaches it to the pipeline as two inspectors on the `session` channel:
+
+- **The exec inspector enforces.** A blocked command is delivered as the
+  channel's OWN failure — the request is answered affirmatively, the reason goes
+  to the channel's stderr, and the channel ends with a non-zero exit status —
+  because a false reply to the request makes a client print its own generic
+  error and stop reading, losing the sentence PLAN §4.3 requires. That is the
+  one place command policy differs from the request axis (D5a axis 2), which
+  refuses the *request* and is correctly answered with a protocol-level refusal.
+  `kill_session` tells the user and then ends the whole session, the same path a
+  revocation takes. `warn_and_continue` writes a proxy-prefixed notice and lets
+  the command run.
+- **The user is told THAT policy stopped them and nothing else.** Never the
+  pattern, the mode, the permitted executables, or which tier decided. The
+  operator-authored `message` on a rule is the only policy-derived text a user
+  sees, and the server owns keeping internals out of it.
+- **Restricted exec parses, and refuses anything it cannot parse into exactly
+  one argument vector.** Quoting and quote removal are modelled; every shell
+  metacharacter is refused outside single quotes — including the globbing
+  characters, which are inert to the parser but not to the target: sshd hands an
+  exec string to the user's login shell, so an approved `*` is a `*` the target
+  expands. A policy that means a literal glob writes it quoted.
+- **The interactive tier reports and nothing else.** It reassembles lines from
+  the client's keystrokes (backspace, `^U`, `^C`, and ANSI escape sequences are
+  handled; anything cleverer is not), records what policy would have said with
+  `enforced=false`, and never denies a request, never ends a session, and never
+  writes a byte to the stream — a warning injected into a raw-mode terminal is
+  itself corruption, and a command already typed cannot be un-typed. Enforcement
+  on an interactive route is restricted exec, or the target-side enforcement
+  points phase 0015 opens; it is never this.
+
+**The audit event (D8, consumed by 0011).** Every decision worth recording —
+a rule matched, or the command was blocked, warned about, or killed the session
+— emits one `command.policy` event with `priority: immediate`, carrying `tier`,
+`guarantee` (`enforcement` | `guardrail` | `audit_signal`), `action`, `outcome`,
+`enforced`, the command, and the operator-only `detail` naming what decided.
+Until 0011 ships the batching/priority transport these go to the proxy log as
+one line each, with the same field names; 0011 changes where they go, not what
+they are called.
 
 ---
 

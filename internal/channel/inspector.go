@@ -66,6 +66,17 @@ const (
 	// rest of the chain does not run: a decision that has already been made
 	// cannot be widened by whatever comes next.
 	ActionDeny
+	// ActionTerminate refuses the event AND ends the session. It is a denial
+	// first — everything that treats ActionDeny as "this does not happen"
+	// treats this the same way — and the session teardown is the transport's
+	// to perform, because session lifecycle is not an inspector's to reach
+	// into.
+	//
+	// It exists for phase 0010's kill_session action (PLAN §6.3): a policy
+	// that can only refuse the command in front of it cannot express "this
+	// user is done", and an inspector that killed the session itself would be
+	// a decider holding a connection handle.
+	ActionTerminate
 )
 
 // String names the action for a log line.
@@ -77,6 +88,8 @@ func (a Action) String() string {
 		return "mutate"
 	case ActionDeny:
 		return "deny"
+	case ActionTerminate:
+		return "terminate"
 	default:
 		return "allow"
 	}
@@ -96,6 +109,30 @@ type Decision struct {
 	Detail string
 	// Payload replaces the event's payload when Action is ActionMutate.
 	Payload []byte
+	// Notice is text shown to the user alongside an event that was NOT
+	// refused: the warn-and-continue half of a command policy, where the point
+	// is that the command runs and the user hears about it (PLAN §6.3).
+	//
+	// It is separate from Reason because the two are read at opposite ends of
+	// a decision, and a single field would eventually be written by an
+	// inspector that meant the other one. Like Reason it is user-visible, so
+	// it discloses nothing about the policy that produced it.
+	Notice string
+	// CommandFailure marks a denial for delivery as the CHANNEL's own failure —
+	// an affirmative reply to the request, the reason on the channel's stderr,
+	// and a non-zero exit status — rather than as a protocol-level refusal of
+	// the request itself.
+	//
+	// What was refused is the difference. A request the session may never make
+	// (D5a axis 2) is refused as a request, and the client's own "request
+	// failed" is then accurate. A command policy refuses the COMMAND that a
+	// permitted request carried (PLAN §6.3): the exec was allowed to happen and
+	// what it produced is a refusal, so it is reported the way every other
+	// command failure is. An SSH client that gets a false reply prints its own
+	// generic error and stops reading, which would lose the sentence the user
+	// needs — and PLAN §4.3 is explicit that a blocked command says it was
+	// blocked.
+	CommandFailure bool
 	// By names the inspector that decided, empty when the pipeline's own
 	// policy did.
 	By string
@@ -119,8 +156,36 @@ func Flag(detail string) Decision { return Decision{Action: ActionFlag, Detail: 
 // Mutate lets the event through with a replacement payload.
 func Mutate(payload []byte) Decision { return Decision{Action: ActionMutate, Payload: payload} }
 
-// Denied reports whether the event was refused.
-func (d Decision) Denied() bool { return d.Action == ActionDeny }
+// Terminate refuses the event and ends the session, with the clause the user is
+// shown.
+func Terminate(reason string) Decision { return Decision{Action: ActionTerminate, Reason: reason} }
+
+// TerminateWithDetail refuses the event and ends the session, adding an
+// operator-only detail the user never sees.
+func TerminateWithDetail(reason, detail string) Decision {
+	return Decision{Action: ActionTerminate, Reason: reason, Detail: detail}
+}
+
+// Warn lets the event through and shows the user a notice about it.
+func Warn(notice, detail string) Decision {
+	return Decision{Action: ActionFlag, Notice: notice, Detail: detail}
+}
+
+// AsCommandFailure marks a denial for delivery as the channel's own failure.
+// See Decision.CommandFailure.
+func (d Decision) AsCommandFailure() Decision {
+	d.CommandFailure = true
+	return d
+}
+
+// Denied reports whether the event was refused. A terminating decision refuses
+// the event too: ending the session is what happens *in addition*, and a caller
+// that only asks "may this proceed" must never read it as a yes.
+func (d Decision) Denied() bool { return d.Action == ActionDeny || d.Action == ActionTerminate }
+
+// Terminates reports whether the session must end. Only the transport acts on
+// it; the pipeline treats it as the denial it also is.
+func (d Decision) Terminates() bool { return d.Action == ActionTerminate }
 
 // PayloadOr returns the decision's replacement payload, or fallback when the
 // decision left the payload alone.
@@ -136,6 +201,13 @@ type Info struct {
 	// SessionID is the proxy session the channel belongs to, and the support
 	// reference a user is given for a failure (PLAN §4.3).
 	SessionID string
+	// ChannelID names this channel within the session, assigned by the
+	// pipeline when the channel is opened. It is what lets an inspector
+	// correlate its own events across the calls it gets for one channel — the
+	// request that turned a session channel into an interactive shell, and the
+	// stream that then carries the keystrokes — and what names the channel in
+	// an audit record.
+	ChannelID string
 	// Type is the SSH channel type.
 	Type string
 	// Opener is the side that opened the channel.
