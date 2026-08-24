@@ -71,6 +71,7 @@ type Config struct {
 	Chain   Chain   `yaml:"chain"`
 	Auth    Auth    `yaml:"auth"`
 	Dial    Dial    `yaml:"dial"`
+	Logging Logging `yaml:"logging"`
 }
 
 // Proxy describes the local SSH listener and this proxy's own identity.
@@ -123,6 +124,44 @@ type Dial struct {
 	// DefaultTargetPort is used when Hoplock Control's route names no
 	// port. Zero means the package default (22).
 	DefaultTargetPort int `yaml:"default_target_port"`
+}
+
+// Logging configures the telemetry pipeline (PLAN §7, D8): how records are
+// batched on the way to Hoplock Control, and where they wait when it cannot be
+// reached.
+//
+// Nothing here decides WHAT is recorded. What a session records is the
+// architecture's answer, not an operator's: a proxy that could be configured to
+// capture less would be a proxy whose audit trail is a local setting (D2).
+// These are throughput and resilience knobs only.
+type Logging struct {
+	// BufferDir is the local resilience buffer's directory. Records that
+	// cannot be delivered are written here and drained when Hoplock Control
+	// returns; it is a buffer and never the destination (PLAN §7).
+	//
+	// Empty disables buffering, which means an outage LOSES records. That is
+	// the honest reading of "no buffer" and it is why the example config sets
+	// a path.
+	BufferDir string `yaml:"buffer_dir"`
+	// BatchSize is how many records accumulate before a batch is shipped.
+	// Zero means the package default.
+	BatchSize int `yaml:"batch_size"`
+	// FlushInterval is how long a partial batch waits. Zero means the package
+	// default; negative sends only on a full batch or a critical record.
+	FlushInterval time.Duration `yaml:"flush_interval"`
+	// QueueSize bounds the records held between the capture points and the
+	// shipping goroutine. Zero means the package default. A full queue spills
+	// to the buffer rather than blocking a session.
+	QueueSize int `yaml:"queue_size"`
+	// SendTimeout bounds one delivery attempt. Zero means the package default.
+	SendTimeout time.Duration `yaml:"send_timeout"`
+	// RetryMin and RetryMax bound the backoff between drain attempts after an
+	// outage. Zero means the package defaults.
+	RetryMin time.Duration `yaml:"retry_min"`
+	RetryMax time.Duration `yaml:"retry_max"`
+	// MaxPayloadBytes caps one stream-capture record's payload; larger reads
+	// are split across records. Zero means the package default.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
 }
 
 // Routing holds the rules for deriving the target from the SSH username (D1).
@@ -524,6 +563,9 @@ func (c *Config) Validate() error {
 		{"control.cache.max_ttl", c.Control.Cache.MaxTTL},
 		{"control.cache.stale_after", c.Control.Cache.StaleAfter},
 		{"dial.dial_timeout", c.Dial.DialTimeout},
+		{"logging.send_timeout", c.Logging.SendTimeout},
+		{"logging.retry_min", c.Logging.RetryMin},
+		{"logging.retry_max", c.Logging.RetryMax},
 	} {
 		if d.value < 0 {
 			v.add(d.field, ErrInvalid, "must not be negative")
@@ -538,6 +580,8 @@ func (c *Config) Validate() error {
 		v.add("routing.target_delimiter", ErrInvalid, err.Error())
 	}
 
+	c.validateLogging(&v)
+
 	c.validateChain(&v)
 
 	c.validateAuth(&v)
@@ -551,6 +595,27 @@ func (c *Config) Validate() error {
 // validateChain checks multi-hop and relay settings (D11). Each half is
 // checked only when the operator asked for it: most proxies neither register
 // nor accept registrations, and the ones that do usually do exactly one.
+// validateLogging checks the telemetry knobs. It is deliberately permissive
+// about zero — every field defaults in internal/logging — and strict about the
+// values that would silently break delivery.
+func (c *Config) validateLogging(v *ValidationError) {
+	for _, n := range []struct {
+		field string
+		value int
+	}{
+		{"logging.batch_size", c.Logging.BatchSize},
+		{"logging.queue_size", c.Logging.QueueSize},
+		{"logging.max_payload_bytes", c.Logging.MaxPayloadBytes},
+	} {
+		if n.value < 0 {
+			v.add(n.field, ErrInvalid, "must not be negative")
+		}
+	}
+	if c.Logging.RetryMin > 0 && c.Logging.RetryMax > 0 && c.Logging.RetryMax < c.Logging.RetryMin {
+		v.add("logging.retry_max", ErrInvalid, "must not be shorter than logging.retry_min")
+	}
+}
+
 func (c *Config) validateChain(v *ValidationError) {
 	if c.Chain.MaxHops < 0 {
 		v.add("chain.max_hops", ErrInvalid, "must not be negative")

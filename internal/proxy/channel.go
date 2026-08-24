@@ -90,11 +90,16 @@ func (s *session) openChannel(nc ssh.NewChannel, dir channel.Direction) (*channe
 		// the only reading of "no policy" that cannot open a session.
 		return nil, channel.Deny(deniedChannelReason(nc.ChannelType()))
 	}
-	return s.pipe.Open(s.ctx, channel.OpenEvent{
+	insp, decision := s.pipe.Open(s.ctx, channel.OpenEvent{
 		ChannelType: nc.ChannelType(),
 		Direction:   dir,
 		Payload:     nc.ExtraData(),
 	})
+	// Both answers are recorded, and the refusal is the one that goes out
+	// immediately: a channel that was allowed is context, a channel that was
+	// refused is the event (PLAN §7, D8).
+	s.recordChannel(nc.ChannelType(), dir, nc.ExtraData(), insp, decision)
+	return insp, decision
 }
 
 // handleTargetChannel proxies a channel the target opened towards the client
@@ -301,6 +306,9 @@ func (s *session) policeRequest(ch ssh.Channel, insp *channel.Inspection, req *s
 		WantReply: req.WantReply,
 		Payload:   req.Payload,
 	})
+	// Recorded before the payload can be replaced below: the record is of what
+	// the client asked for, not of what an inspector rewrote it into.
+	s.recordRequest(insp, req, decision)
 	if !decision.Denied() {
 		// A permitted-but-flagged request carries a notice: the warn-and-
 		// continue half of command policy, where the command runs and the user
@@ -435,14 +443,30 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 	exitMu.Lock()
 	captured := exitReq
 	exitMu.Unlock()
+	status, haveStatus := 0, false
 	if captured != nil {
 		// exit-status and exit-signal never want a reply (RFC 4254 §6.10).
 		_, _ = near.SendRequest(captured.Type, false, captured.Payload)
+		if captured.Type == requestExitStatus {
+			status, haveStatus = exitStatusOf(captured.Payload)
+		}
 	}
 
 	_ = near.Close()
 	_ = far.Close()
 	all.Wait()
+	// The close record is made after the pump has fully unwound, so a stream
+	// chunk can never be recorded after the channel it belongs to was closed.
+	s.recordChannelClose(insp, status, haveStatus)
+}
+
+// exitStatusOf reads the status out of an exit-status request (RFC 4254 §6.10).
+func exitStatusOf(payload []byte) (int, bool) {
+	var msg struct{ Status uint32 }
+	if err := ssh.Unmarshal(payload, &msg); err != nil {
+		return 0, false
+	}
+	return int(msg.Status), true
 }
 
 // forwardClientRequests relays the client's in-channel requests through the
@@ -522,11 +546,15 @@ func (s *session) serveGlobalRequests(in <-chan *ssh.Request, dst func() (ssh.Co
 		// tcpip-forward and then refusing the forwarded-tcpip channels it
 		// produces would still leave the listener standing on the target
 		// (PLAN §6.2).
-		if police == policeRequests && s.pipe != nil && s.pipe.GlobalRequest(s.ctx, req.Type).Denied() {
-			if req.WantReply {
-				_ = req.Reply(false, nil)
+		if police == policeRequests && s.pipe != nil {
+			decision := s.pipe.GlobalRequest(s.ctx, req.Type)
+			s.recordGlobalRequest(req.Type, decision.Denied(), decision)
+			if decision.Denied() {
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+				continue
 			}
-			continue
 		}
 		ok, payload, err := conn.SendRequest(req.Type, req.WantReply, req.Payload)
 		if err != nil {

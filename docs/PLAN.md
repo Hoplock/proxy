@@ -1039,6 +1039,59 @@ the session-kill hook it defines is implemented by the proxy in 0005.
   *during* a session are acceptable to capture (they should already be
   considered compromised and rotated).
 
+**Implemented shape (phase 0011).** `internal/logging` has three layers, and the
+seam between them is what makes each testable alone:
+
+- A **`SessionRecorder`** turns what happened on one session into
+  `control.LogRecord`s. It owns the schema — the `kind`, the `severity`, and the
+  attribute keys a security team's queries are written against — and touches
+  neither the network nor the disk. A nil recorder records nothing, which is how
+  every capture point stays free of a "is logging configured" branch.
+- A **`Shipper`** delivers them. One goroutine owns delivery; capture points hand
+  it records over a channel and never block on the network, which is what lets a
+  recorder sit inside the decision that blocked a command.
+- A **disk buffer** catches what could not be delivered, one directory per
+  session, and drains it in order on recovery.
+
+**Severity decides the endpoint.** `critical` takes `/v1/logs/priority`;
+everything else rides a batch. That is the whole rule, and it is why no capture
+point has to remember which path its event belongs on. A critical record does
+both halves of D8 rather than choosing between them: the delivery goroutine
+flushes the in-flight batch *first* and then posts the record, so the context of
+a blocked command reaches Hoplock Control no later than the block itself. What
+is critical: a policy refusal (channel, request, destination, global request), a
+session kill, and a command-policy decision whose action was `block_command` or
+`kill_session` — whether or not it was enforced, because an interactive-tier
+match that only *observed* the command someone would have been blocked for is
+exactly the signal a SOC wants now (D12). A service outage is `warn`, not
+`critical`: an unreachable target is not a security event, and putting every
+network blip on the priority path would make the path meaningless.
+
+**The buffer is a buffer.** While anything is owed to the server, new records
+join it on disk rather than overtaking it — an outage costs latency, never
+fidelity or ordering. Segments are named by a global sequence, so lexical order
+is delivery order across sessions as well as within one; a priority segment
+drains to the priority endpoint, because an outage must not downgrade a blocked
+command to ordinary telemetry. A previous run's segments are adopted on start,
+which is the crash case the buffer exists for.
+
+**Capture is observation.** The stream recorder attaches to the `session`
+channel only — a forward's audit value is its destination, recorded when the
+channel opens (D5a axis 3a), not its bytes — and hands every byte straight on.
+A chunk is one read off the wire, verbatim, with the offset of its first byte
+and its ordinal: the ttyrec/asciinema model with the framing left to the reader,
+so a replay concatenates one direction's chunks in sequence order and sleeps the
+offsets. A `pty-req` writes a replay header carrying the terminal geometry.
+
+**Redaction is structural.** No capture point is ever handed the initial-auth
+password: the user authenticator returns an identity, never a credential. The
+end-to-end test asserts it against every stored record *and* every byte in the
+disk buffer, so the property stays structural rather than becoming a filter
+somebody has to remember to apply.
+
+Still out of scope: tamper-evident/append-only storage at the destination
+(Section 12), and coalescing keystroke-sized chunks into fewer records.
+
 ---
 
 ## 8. Cross-cutting conventions

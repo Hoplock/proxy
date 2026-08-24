@@ -39,6 +39,33 @@ dial:
   # Port used when Hoplock Control's route names none. Optional.
   default_target_port: 22
 
+logging:
+  # Telemetry pipeline (docs/PLAN.md §7, D8). These are throughput and
+  # resilience knobs only: WHAT a session records is the architecture's answer,
+  # not an operator's.
+  #
+  # Local resilience buffer. When Hoplock Control is unreachable, records are
+  # written here — one directory per session — and drained in order when it
+  # returns. It is a buffer and never the destination. Leaving it empty means
+  # an outage loses records.
+  buffer_dir: "/var/lib/hoplock/proxy/logbuf"
+  # How many records accumulate before a batch is shipped. Optional.
+  batch_size: 64
+  # How long a partial batch waits. Optional; negative ships only on a full
+  # batch or a critical record.
+  flush_interval: 5s
+  # Records held between the capture points and the shipping goroutine.
+  # Optional. A full queue spills to buffer_dir rather than blocking a session.
+  queue_size: 4096
+  # Bounds one delivery attempt. Optional.
+  send_timeout: 10s
+  # Backoff between drain attempts after an outage. Optional.
+  retry_min: 1s
+  retry_max: 30s
+  # Caps one stream-capture record's payload; larger reads split across
+  # records. Optional.
+  max_payload_bytes: 32768
+
 routing:
   # Single character separating the login from the target hostname in the SSH
   # username, e.g. "alice#host.company.com" (docs/PLAN.md, D1).

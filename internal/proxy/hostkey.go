@@ -41,6 +41,7 @@ func (s *session) hostKeyCallback(_ string, remote net.Addr, key ssh.PublicKey) 
 	if resp.Decision != control.HostKeyAccept {
 		return s.recordHostKeyErr(fmt.Errorf("%w (%s)", ErrHostKeyRejected, resp.Reason))
 	}
+	s.recordHostKey(key, resp.Known)
 	if !resp.Known {
 		s.logf("proxy: session=%s target=%s host key %s trusted on first use, reported to Hoplock Control",
 			s.id, remote, ssh.FingerprintSHA256(key))

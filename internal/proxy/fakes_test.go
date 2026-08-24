@@ -16,6 +16,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/target"
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/routing"
 	"github.com/hoplock/proxy/internal/sshtest"
 )
@@ -41,6 +42,8 @@ type fakeClient struct {
 	mu             sync.Mutex
 	authorizeCalls []control.AuthorizeRequest
 	hostKeyCalls   []control.HostKeyReportRequest
+	batchRecords   []control.LogRecord
+	prioRecords    []control.LogRecord
 }
 
 var _ control.Client = (*fakeClient)(nil)
@@ -82,12 +85,37 @@ func (c *fakeClient) ReportHostKey(_ context.Context, req *control.HostKeyReport
 	return &control.HostKeyReportResponse{Decision: control.HostKeyAccept, Known: false}, nil
 }
 
-func (c *fakeClient) IngestLogBatch(context.Context, *control.LogBatchRequest) (*control.LogBatchResponse, error) {
-	return &control.LogBatchResponse{}, nil
+func (c *fakeClient) IngestLogBatch(_ context.Context, req *control.LogBatchRequest) (*control.LogBatchResponse, error) {
+	c.mu.Lock()
+	c.batchRecords = append(c.batchRecords, req.Records...)
+	c.mu.Unlock()
+	return &control.LogBatchResponse{Accepted: len(req.Records)}, nil
 }
 
-func (c *fakeClient) IngestPriorityLog(context.Context, *control.LogPriorityRequest) (*control.LogPriorityResponse, error) {
-	return &control.LogPriorityResponse{Accepted: true}, nil
+func (c *fakeClient) IngestPriorityLog(_ context.Context, req *control.LogPriorityRequest) (*control.LogPriorityResponse, error) {
+	c.mu.Lock()
+	c.prioRecords = append(c.prioRecords, req.Record)
+	c.mu.Unlock()
+	return &control.LogPriorityResponse{Accepted: true, ReceiptID: "receipt"}, nil
+}
+
+// records is everything delivered on either path, batch records first. The
+// priority path is separate so a test can assert not just that a record exists
+// but that it did not wait in a batch (D8).
+func (c *fakeClient) records() []control.LogRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]control.LogRecord, 0, len(c.batchRecords)+len(c.prioRecords))
+	out = append(out, c.batchRecords...)
+	out = append(out, c.prioRecords...)
+	return out
+}
+
+// priorityRecords is what took the immediate path.
+func (c *fakeClient) priorityRecords() []control.LogRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]control.LogRecord(nil), c.prioRecords...)
 }
 
 func (c *fakeClient) hostKeyReports() []control.HostKeyReportRequest {
@@ -158,6 +186,10 @@ type harness struct {
 	server *Server
 	addr   string
 	logs   *syncBuffer
+	// shipper is the telemetry pipeline the engine records into (PLAN §7). It
+	// is a real one, wired to fakeClient, so a test asserting "the record
+	// exists" is asserting about the same path production uses.
+	shipper *logging.Shipper
 }
 
 func newHarness(t *testing.T, opts harnessOptions) *harness {
@@ -230,6 +262,24 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 
 	logs := &syncBuffer{}
+	// A long flush interval on purpose: a test that sees a record on the
+	// priority path saw it because it was critical, not because a tick
+	// happened to fire.
+	shipper, err := logging.New(logging.Options{
+		Client:        client,
+		BatchSize:     testBatchSize,
+		FlushInterval: time.Minute,
+		BufferDir:     t.TempDir(),
+		Logf:          logs.logger().Printf,
+	})
+	if err != nil {
+		t.Fatalf("logging.New: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shipper.Close(ctx)
+	})
 	engineOpts := Options{
 		HostKey:         sshtest.MustGenerateSigner(),
 		Authenticator:   userAuth,
@@ -240,6 +290,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		TargetDelimiter: testDelimiter,
 		DialTimeout:     2 * time.Second,
 		Logger:          logs.logger(),
+		Recorder:        shipper,
 		NewSessionID:    func() string { return testSessionID },
 	}
 	if opts.options != nil {
@@ -270,13 +321,79 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	})
 
 	return &harness{
-		t:      t,
-		target: tgt,
-		client: client,
-		server: server,
-		addr:   listener.Addr().String(),
-		logs:   logs,
+		t:       t,
+		target:  tgt,
+		client:  client,
+		server:  server,
+		addr:    listener.Addr().String(),
+		logs:    logs,
+		shipper: shipper,
 	}
+}
+
+// testBatchSize keeps a batch small enough that an ordinary session fills one
+// without the test having to flush, and large enough that filling one is not
+// the same thing as recording a single event.
+const testBatchSize = 8
+
+// flushRecords delivers everything the session queued, so a test can assert on
+// the whole record rather than on whatever a tick happened to have sent.
+func (h *harness) flushRecords() {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.shipper.Flush(ctx); err != nil {
+		h.t.Fatalf("flush telemetry: %v", err)
+	}
+}
+
+// records is every record delivered so far, flushing first.
+func (h *harness) records() []control.LogRecord {
+	h.t.Helper()
+	h.flushRecords()
+	return h.client.records()
+}
+
+// awaitRecord waits for a record matching want, flushing on each attempt. It
+// exists for the capture points that finish on their own goroutine — a stream
+// inspector reassembling a line, a channel closing — where the client call has
+// already returned.
+func (h *harness) awaitRecord(want func(control.LogRecord) bool) (control.LogRecord, bool) {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		for _, rec := range h.records() {
+			if want(rec) {
+				return rec, true
+			}
+		}
+		if time.Now().After(deadline) {
+			return control.LogRecord{}, false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// recordedOnPriorityPath reports whether a record reached Hoplock Control on
+// the dedicated priority endpoint rather than inside a batch (D8).
+func recordedOnPriorityPath(h *harness, recordID string) bool {
+	h.t.Helper()
+	for _, rec := range h.client.priorityRecords() {
+		if rec.RecordID == recordID {
+			return true
+		}
+	}
+	return false
+}
+
+// recordOfKind is the first record of a kind, or a failure.
+func (h *harness) recordOfKind(kind control.LogKind) control.LogRecord {
+	h.t.Helper()
+	rec, ok := h.awaitRecord(func(r control.LogRecord) bool { return r.Kind == kind })
+	if !ok {
+		h.t.Fatalf("no %s record was produced", kind)
+	}
+	return rec
 }
 
 // targetHostPort is the stand-in target as a route would name it.
