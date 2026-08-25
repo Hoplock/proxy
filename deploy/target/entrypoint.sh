@@ -17,7 +17,11 @@ install_key() {
 	fi
 	cat "$src" > "$dest"
 	chmod 600 "$dest"
-	chown "$owner" "$dest"
+	# The DIRECTORY's ownership matters as much as the file's: sshd's StrictModes
+	# refuses a key under an .ssh someone else owns, and reports it only in the
+	# target's own log — at the proxy it is an indistinguishable
+	# "unable to authenticate".
+	chown "$owner" "$dest" "$(dirname "$dest")"
 }
 
 # ephemeral-user (D6): the management certificate's key, on the provisioning

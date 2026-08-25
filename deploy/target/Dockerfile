@@ -25,6 +25,7 @@ RUN apt-get update \
 RUN mkdir -p /run/sshd /root/.ssh /etc/ssh/sshd_config.d && chmod 700 /root/.ssh \
  && useradd -m -s /bin/sh netadmin \
  && mkdir -p /home/netadmin/.ssh && chmod 700 /home/netadmin/.ssh \
+ && chown -R netadmin:netadmin /home/netadmin \
  && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
  && grep -q '^Include /etc/ssh/sshd_config.d/\*.conf' /etc/ssh/sshd_config \
     || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config

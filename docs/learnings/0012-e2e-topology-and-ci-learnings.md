@@ -180,6 +180,14 @@ The topology turns it off, applying each directive only if this `sshd`
 understands it (`sshd -t` after appending each), so an older or newer base image
 still boots. See the known gaps below for what this means beyond the test rig.
 
+A third one is not a setting but a file mode: **`.ssh` must be owned by its
+account**, not only the `authorized_keys` inside it. `useradd -m` creates the
+home; a later `mkdir -p /home/netadmin/.ssh` as root does not, and `StrictModes`
+then refuses every key under it. The target says so in its own log and the proxy
+sees only `ssh: unable to authenticate` — so the symptom points at the
+credential, which is the one thing that is fine. `install_key` in the entrypoint
+now chowns the directory alongside the file.
+
 ### Fixtures are rendered, not committed
 
 `deploy/gen-material.sh` generates every key into `deploy/keys/` and renders
