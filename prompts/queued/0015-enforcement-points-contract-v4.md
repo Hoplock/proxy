@@ -303,8 +303,12 @@ phase documented on the field. `cmd/mock-control` fixtures gain the new key so
   writing an HTTP client to ask an external system anything, you are in the
   wrong repository.
 - **Enforcing the session deadline.** The field and its validation land here;
-  the timer that closes a live session belongs to the proxy engine. Queue it if
-  no phase covers it.
+  the timer that closes a live session belongs to the proxy engine and is
+  **phase 0022**, which also answers the two questions this phase leaves open —
+  what the user is told at expiry, and whether a warning precedes it. 0022
+  cannot start until this phase merges, so leaving the field unusable blocks it:
+  if you change the field's shape from what is specified above, say so plainly
+  in the learnings, because 0022 is written against it.
 
 ## Acceptance criteria
 - `docs/PLAN.md` carries the survey tables — **both axes** — with all four
