@@ -78,6 +78,27 @@ prefer finishing a smaller, correct slice over reading more.
   sync kickoff it must hand the user for each affected repository (§4) — and the
   conventions for a sync PR. It lists the shared surfaces in its Section 1; if
   your change touches none of them, you do not need to read it.
+- **A rename is not done until nothing points at the old name.** Renaming or
+  deleting a path, file, exported identifier, config key, or make target leaves
+  dangling references that nothing fails to compile over. A queued prompt that
+  sends a future session to a directory you deleted costs that session more than
+  the rename saved it. So before requesting merge, grep the **whole repository**
+  for the old name — `prompts/`, `docs/`, `README.md`, `Makefile`, the
+  workflows, and code comments — not just the package you were working in.
+
+  Two kinds of hit, handled differently:
+  - a **live reference** — anything a future session would follow — is updated;
+  - a **historical record** is not rewritten. A learnings file describes what
+    its phase shipped and stays true to that; give it a one-line pointer to the
+    new name instead of editing its body.
+
+  `docs/CROSS-REPO-PROTOCOL.md` §4 asks for the same grep across consuming
+  repositories, but only for a change to a **shared surface** — and its §1 tells
+  you to stop reading when your change touches none. This rule is the local half
+  and it applies to **every** rename. Phase 0012 renamed `deploy/sshd/` to
+  `deploy/target/`, touched no shared surface, and left a queued prompt and two
+  test comments pointing at a directory it had just deleted.
+
 - **Match the codebase.** Mirror existing structure, naming, error handling, and
   test style. Add the per-file license header (see PLAN §8).
 - **No secrets in code or logs.** Never log the initial-auth password. Never
@@ -92,6 +113,7 @@ prefer finishing a smaller, correct slice over reading more.
 - [ ] Linter (`golangci-lint run`) passes, or new findings are justified.
 - [ ] New/changed behavior has unit tests; integration tests updated if relevant.
 - [ ] `docs/PLAN.md` updated if the architecture changed.
+- [ ] Anything renamed or deleted leaves no dangling references (Section 3).
 - [ ] The prompt file moved from `prompts/queued/` → `prompts/implemented/`
       (same filename) in this PR.
 - [ ] A learnings file added to `docs/learnings/` (Section 5).

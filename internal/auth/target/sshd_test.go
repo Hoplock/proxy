@@ -16,7 +16,7 @@ import (
 )
 
 // This file is the same phase's tests against a REAL sshd, in the container
-// deploy/sshd builds. Everything else in this package runs against a fake host
+// deploy/target builds. Everything else in this package runs against a fake host
 // whose account database is a text file, which is the right trade for a test
 // that has to run everywhere — but it cannot answer the two questions only a
 // real sshd can:
@@ -51,7 +51,7 @@ func requireSSHD(t *testing.T) *sshdTarget {
 	t.Helper()
 	addr := os.Getenv(envSSHDAddr)
 	if addr == "" {
-		t.Skipf("%s is not set; run `make test-sshd` to bring up deploy/sshd", envSSHDAddr)
+		t.Skipf("%s is not set; run `make test-sshd` to bring up deploy/target", envSSHDAddr)
 	}
 	host, portText, ok := strings.Cut(addr, ":")
 	if !ok {

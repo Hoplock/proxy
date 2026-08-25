@@ -1205,6 +1205,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0017 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
 | 0018 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
 | 0019 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
+| 0020 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

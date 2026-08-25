@@ -158,9 +158,25 @@ field; 0011 ships it). A record that says "boundary" for a session that ran at a
 weaker rung is the only outcome here worse than not shipping the feature.
 
 ### Topology and CI (`deploy/`)
-Extend the 0012 topology and `deploy/sshd`: a target and fixtures exercising each
-rung, including an automation-style route whose account may run exactly two
-binaries.
+Extend 0012's topology: a target and fixtures exercising each rung, including an
+automation-style route whose account may run exactly two binaries.
+
+The target image is `deploy/target/` — 0012 folded the old `deploy/sshd/` into
+it, and it now backs both `make test-sshd` and the full topology. Routes go in
+`deploy/control/fixtures.template.yaml` (the **mock** Hoplock Control's fixtures
+inside this repository's rig — not the sibling Control repo, which vendors only
+`api/control.yaml`), and scenarios go in `TestTopology`
+(`test/e2e/scenarios_test.go`). Two things that will bite: those subtests are
+ordered deliberately — the outage scenario stops Hoplock Control and the
+ephemeral-leak check runs last — so new groups go before the outage one; and
+`sshBaseArgs` in `test/e2e/harness_test.go` is shared by every scenario, so pass
+per-scenario client options rather than changing it.
+
+Two settings in that image are load-bearing and must survive whatever you add:
+`UsePAM yes` (without it sshd refuses every account `useradd` created, before it
+looks at the key) and `PerSourcePenalties no` (a proxy is one source address, so
+its own failed authentications get it blocked from the target). Both are
+explained in `deploy/README.md`.
 
 ## Out of scope
 - **Applying any rung on a `brokered-key` route.** The target is unmodifiable by
@@ -181,8 +197,8 @@ binaries.
 - A device rung is rendered onto an `ephemeral-account` session against the fake
   FortiOS device from 0014, refused cleanly where the platform cannot deliver
   the named guarantee, and recorded with what it actually enforces.
-Against a real `sshd` (extend `deploy/sshd` and `make test-sshd`, 0007), for
-each rung 0015 named:
+Against a real `sshd` (extend `deploy/target/` and `make test-sshd`, 0007 — the
+image 0012 unified), for each rung 0015 named:
 
 - **The bypass test, per rung.** With an allow-list naming only `cat`, assert
   that `cat` works and that `sh -c 'cat /etc/shadow'`, an uploaded script, and —
