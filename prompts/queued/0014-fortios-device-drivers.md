@@ -168,6 +168,33 @@ a config-mode error). CI must not need a real appliance.
   file. Add the assertion, do not rely on review.
 - `go build ./... && go vet ./... && go test ./...` and `golangci-lint run` pass.
 
+## The e2e topology obligation
+
+Phase 0012 built the five-node topology in `deploy/` and the scenario suite in
+`test/e2e` (see its learnings, and `deploy/README.md`). **A phase that changes
+what a session can do owes it a scenario there** — a change proven only by unit
+tests is a change nobody has watched a real SSH client survive.
+
+Concretely: add the route to `deploy/control/fixtures.template.yaml` (that file
+is the **mock** Hoplock Control's fixtures inside this repository's test rig —
+it is not the sibling Control repo, which vendors only `api/control.yaml`), and
+add a subtest to `TestTopology` in `test/e2e/scenarios_test.go`. Each fixture
+route names the scenarios it backs, so a failing scenario leads to one rule
+rather than to a search — keep that up.
+
+Two things that will bite:
+
+- `TestTopology`'s subtests are **ordered deliberately**. The telemetry
+  assertions read what earlier scenarios produced, the outage scenario stops
+  Hoplock Control, and the ephemeral-leak check runs last so it sees everything.
+  New groups go before the outage scenario.
+- `sshBaseArgs` in `test/e2e/harness_test.go` is shared by every scenario.
+  Changing it changes all of them at once; pass per-scenario options instead.
+
+If this phase genuinely cannot be represented in the topology, **say so
+explicitly in the learnings and say why**. "No e2e scenario" is a finding worth
+writing down; an omission is indistinguishable from an oversight.
+
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
 `docs/learnings/0014-fortios-device-drivers-learnings.md`. The summary block MUST

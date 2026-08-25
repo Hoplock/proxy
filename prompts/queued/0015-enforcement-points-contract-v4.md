@@ -340,6 +340,22 @@ phase documented on the field. `cmd/mock-control` fixtures gain the new key so
 - **No behaviour change**: `go test ./...` passes with no test in
   `internal/proxy`, `internal/auth/target`, or `internal/filter` modified.
 
+## The e2e topology obligation
+
+This phase writes a contract and connects to nothing, so it owes no scenario in
+0012's `test/e2e` suite. It does owe the rig two things, and they are easy to
+miss because nothing fails to compile:
+
+- `cmd/mock-control` must **accept** the new vocabulary — `fixtures.go`,
+  `fixtures.example.yaml`. Fixture decoding is strict, so an unknown key is a
+  startup failure, not a warning.
+- `deploy/control/fixtures.template.yaml` must still load. That file is the mock
+  Control's fixtures inside this repository's test rig — not the sibling Control
+  repo, which vendors only `api/control.yaml`. `make e2e-up` fails loudly if it
+  does not, but only if somebody runs it, so run it.
+
+The phase that consumes this vocabulary owes the scenarios.
+
 ## Cross-repo impact
 
 This phase changes `api/`, which `hoplock/control` vendors read-only (D3).

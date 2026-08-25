@@ -144,8 +144,13 @@ A per-credential circuit breaker in `internal/auth/target`.
 
 ### 6. Prove it end to end
 
-Extend `deploy/` and `test/e2e` (0012 owns both; each fixture route names the
-scenarios it backs):
+Extend `deploy/` and `test/e2e` (0012 owns both). Routes go in
+`deploy/control/fixtures.template.yaml` — the **mock** Hoplock Control's
+fixtures inside this repository's rig, not the sibling Control repo — and each
+route names the scenarios it backs. Scenarios go in `TestTopology`
+(`test/e2e/scenarios_test.go`), whose subtests are ordered deliberately: put
+these before the outage scenario, which stops Hoplock Control. Do not change the
+shared `sshBaseArgs`.
 
 - A route whose `brokered-key` `credential_ref` names material the target does
   **not** accept. Assert the client is told an outage naming a refused
