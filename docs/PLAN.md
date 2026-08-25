@@ -679,7 +679,12 @@ session and serialise on the target's account-database lock, so a busy proxy has
 a **per-target provisioning ceiling that no amount of proxy capacity moves**. It
 has not been measured; phase 0017 owns measuring it. Account churn also means
 UID churn, and a reused UID inherits ownership of anything a deleted account
-left behind.
+left behind — which today it does *immediately*, because provisioning takes
+whatever uid the target's allocator offers and that is the lowest free one.
+Phase **0021** makes allocation non-reusing and fails closed where it cannot;
+phase **0016**'s filesystem confinement is the other half, leaving nothing
+outside the home to inherit. Teardown deliberately does not sweep the
+filesystem for a departing uid: see 0021 for why that is the wrong fix.
 
 The trade-off a user actually feels is different, and is accepted deliberately:
 **one person in two windows cannot see their own work, and cannot reattach to
@@ -1252,6 +1257,8 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0018 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
 | 0019 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
 | 0020 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
+| 0021 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0016's confinement) |
+| 0022 | Session deadline & lifetime            | enforce 0015's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

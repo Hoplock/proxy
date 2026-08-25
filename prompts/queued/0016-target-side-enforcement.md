@@ -192,6 +192,11 @@ explained in `deploy/README.md`.
   MAC rung, implement the hook that *uses* an existing profile and document the
   prerequisite; authoring fleet policy is not this product.
 - Changing the filter engine (0010) or the credential methods (0007).
+- **UID allocation.** Phase 0021 owns it. The two phases are halves of one fix —
+  0021 stops a fresh account inheriting a torn-down one's uid, and the
+  filesystem rung here stops there being anything outside the home to inherit —
+  so neither may assume the other has landed. Say in the learnings what a
+  confined account can still leave behind, because 0021's author needs it.
 
 ## Acceptance criteria
 - A device rung is rendered onto an `ephemeral-account` session against the fake
