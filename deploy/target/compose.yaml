@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# The target node on its own, published on a host port, for `make test-sshd`:
+# the phase-0007 credential tests run on the host and need to reach a real sshd.
+# The full topology is deploy/compose.yaml, where this same image is a node with
+# no published port at all.
+services:
+  target:
+    build:
+      context: ..
+      dockerfile: target/Dockerfile
+    volumes:
+      - ../keys:/material:ro
+    ports:
+      - "127.0.0.1:${HOPLOCK_SSHD_PORT:-2022}:22"

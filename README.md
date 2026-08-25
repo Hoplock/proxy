@@ -59,7 +59,7 @@ before reading the code.
 - Go **1.25** or newer (CI builds and tests on the latest stable release)
 - [`golangci-lint`](https://golangci-lint.run) v2 (for `make lint`)
 - Python 3 with `openapi-spec-validator` (for `make openapi-check` only)
-- Docker with `compose`, and `ssh-keygen` (for `make test-sshd` only)
+- Docker with `compose`, and `ssh-keygen` (for `make e2e` and `make test-sshd`)
 
 ## Build and run
 
@@ -70,6 +70,7 @@ make test-sshd                  # credential tests against a real sshd (needs do
 make vet                        # go vet
 make lint                       # golangci-lint
 make license-check              # every .go file carries the license header
+make vulncheck                  # vulnerabilities reachable from this module (see below)
 
 ./bin/hoplock-proxy --version
 ./bin/mock-control --version
@@ -82,6 +83,41 @@ cp config.example.yaml config.yaml   # then edit
 make run-proxy CONFIG=config.yaml
 make run-mock LISTEN=127.0.0.1:8080
 ```
+
+## The end-to-end topology
+
+The whole system runs in containers — Hoplock Control, an SSH client, three
+proxies, and a real `sshd` — on networks that make its segmentation claims
+checkable: the client node has no route to the target, and the proxy in the
+protected zone accepts no inbound connection at all. The scenario suite in
+`test/e2e` drives it with a real OpenSSH client and asserts on what that client
+was actually told.
+
+```sh
+make e2e        # up, run the scenario suite, tear down
+make e2e-up     # up, and leave it running to debug a failure
+make e2e-down   # stop it and delete everything it generated
+```
+
+It is the prototype's acceptance gate and runs on every pull request.
+[`deploy/README.md`](deploy/README.md) explains the nodes, the networks, the
+fixtures, and how to debug a failing scenario.
+
+## Supply-chain check
+
+`make vulncheck` reports vulnerabilities **reachable from this module's code**
+(`govulncheck`'s default symbol-level analysis, not a plain dependency scan).
+`golang.org/x/crypto/ssh` is this proxy's SSH implementation rather than an
+incidental dependency, so the `govulncheck` CI job gates every pull request.
+
+It needs network access to `https://vuln.go.dev`. Some development sandboxes
+deny it with an opaque `403`, which the target reports as a skip rather than as
+a broken tool — CI is where this check must pass, and it is deliberately not a
+required local step in `docs/PROTOCOL.md`'s Definition of Done.
+
+The job **can go red with no code change**, when a new advisory lands against a
+dependency already in `go.mod`. That is the signal working: upgrade the
+dependency, or record an explicit dated justification. Never delete the job.
 
 ## Control API
 
@@ -113,7 +149,8 @@ per connection (`docs/PLAN.md`, D2).
 | `cmd/mock-control` | reference/mock Control API for dev and CI                |
 | `internal/`         | the implementation packages (see `docs/PLAN.md` §3)           |
 | `api/`              | Control API contract — source of truth                     |
-| `deploy/`           | container fixtures: `sshd/` today, the full e2e topology in the final phase |
+| `deploy/`           | the end-to-end container topology (see its README)            |
+| `test/`             | the e2e scenario suite and the topology's config checks       |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
 | `prompts/`          | queued and implemented phase prompts                          |
 

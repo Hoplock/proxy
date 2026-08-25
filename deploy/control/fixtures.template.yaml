@@ -1,0 +1,412 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# Fixtures for the mock Hoplock Control in the end-to-end topology
+# (deploy/compose.yaml, docs/PLAN.md §9).
+#
+# This file is a TEMPLATE: deploy/gen-material.sh renders it to fixtures.yaml
+# with the SHA256 fingerprints of the keys it generates. A fingerprint cannot be
+# written down before its key exists, which is why neither the keys nor the
+# rendered fixtures are committed.
+#
+# Everything the scenario suite asserts on is decided here. Each route below
+# names the scenarios it backs, so a failing scenario leads to one rule rather
+# than to a search. The credentials are test data; no real secret belongs here.
+
+proxy_token: "e2e-proxy-token"
+
+users:
+  # The interactive user. Certificate-only: the topology's proxies enable no
+  # password method, so there is no MFA path to drive here.
+  - login: alice
+    identity:
+      subject: alice@example.com
+      display_name: Alice Example
+      source: fixture
+      principals: [alice]
+      groups: [engineering, sre]
+      claims:
+        department: platform
+    key_fingerprints:
+      - "@@FP_USER_ALICE@@"
+
+  # The machine account. It runs commands and never needs a terminal, which is
+  # what makes it the right principal for the restricted-exec and forwarding
+  # routes below.
+  - login: svc-deploy
+    identity:
+      subject: svc-deploy@example.com
+      source: fixture
+      groups: [deployers]
+    key_fingerprints:
+      - "@@FP_USER_SVC@@"
+
+# The fleet's own proxies, recognised by the key one presents when it extends a
+# chain to the next (D11). The identity the far hop is answered with is still
+# the user's, established here — no hop takes another hop's word for who is
+# connecting (docs/PLAN.md §6.1).
+proxies:
+  - id: proxy-direct
+    key_fingerprints:
+      - "@@FP_CHAIN_DIRECT@@"
+  - id: proxy-nexthop
+    key_fingerprints:
+      - "@@FP_CHAIN_NEXTHOP@@"
+  - id: proxy-zone
+    key_fingerprints:
+      - "@@FP_CHAIN_ZONE@@"
+
+routes:
+  # ---------------------------------------------------------------- direct ---
+  # The everyday route: a Linux host reached directly, with just-in-time
+  # accounts (D6). Scenarios: direct exec, interactive shell, sftp denied while
+  # shell succeeds, the four filter actions, tcpip-forward refused, ephemeral
+  # user created and removed, batched + priority logs, and the outage path when
+  # this server is stopped.
+  - login: alice
+    target: host.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    # Axis 2 (D5a): sftp is denied by name while the shell stays. The channel
+    # allow-list above cannot express that — both ride `session`.
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    # Axis 3 (D5a): an empty list is a deny, and this is what "may never open a
+    # listener" looks like. Remote forwarding is a connection-level request, so
+    # the channel allow-list never sees it.
+    permitted_global_requests:
+      types: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        key_type: ed25519
+        lifetime_seconds: "900"
+    filter_policy:
+      # One policy, three of the four actions, each on its own rule. Neither
+      # `reboot` nor `shutdown` exists on the target image, so a rule that
+      # failed to fire could not do damage — the assertion is the proxy's own
+      # answer, not the absence of a crater.
+      mode: blacklist
+      rules:
+        - match: "reboot*"
+          action: block_command
+          message: "Reboots go through the change process."
+        - match: "shutdown*"
+          action: kill_session
+          message: "Destructive command. This session has been terminated."
+        - match: "sudo *"
+          action: warn_and_continue
+          message: "Privileged command — this is recorded."
+
+  # Axis 2, the other way round: commands are allowed and a terminal is not.
+  # Scenario: `ssh -tt host cmd` is refused, `ssh host cmd` succeeds.
+  - login: alice
+    target: nopty.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # Axis 1: an empty channel allow-list. Scenario: the session channel itself
+  # is refused, and the client is told which channel type, and nothing else.
+  - login: alice
+    target: nochan.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: []
+    # A working credential on purpose: the refusal this route exists to
+    # demonstrate must be the channel policy, not a session that never got as
+    # far as one.
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # --------------------------------------------------------------- nexthop ---
+  # Chained in `dial` mode: the edge proxy opens the leg to the next hop, which
+  # therefore needs an inbound rule. Both hops run the whole flow for
+  # themselves; the far end's answer is the rule below it.
+  - login: alice
+    target: deep.company.com
+    proxy_id: proxy-nexthop
+    route_type: nexthop
+    next_hop: proxy-direct
+    target_port: 2222
+    hop_connection: dial
+    next_proxy_id: proxy-direct
+    max_hops: 3
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    filter_policy:
+      mode: blacklist
+
+  - login: alice
+    target: deep.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        key_type: ed25519
+    filter_policy:
+      mode: blacklist
+
+  # Chained in `relay` mode (D11): proxy-zone has registered an OUTBOUND
+  # connection with proxy-nexthop, which opens a channel over it. The protected
+  # zone needs no inbound rule at all — and `next_hop` below is a name that
+  # cannot resolve, so a session that arrives has provably travelled over the
+  # registration rather than over a dial.
+  - login: alice
+    target: zone.company.com
+    proxy_id: proxy-nexthop
+    route_type: nexthop
+    next_hop: proxy-zone.no-inbound.invalid
+    target_port: 22
+    hop_connection: relay
+    next_proxy_id: proxy-zone
+    max_hops: 3
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    filter_policy:
+      mode: blacklist
+
+  - login: alice
+    target: zone.company.com
+    proxy_id: proxy-zone
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        key_type: ed25519
+    filter_policy:
+      mode: blacklist
+
+  # A relay hop naming a registration that does not exist. `next_hop` is the
+  # address of a proxy that IS dialable and would serve this session happily —
+  # so a proxy that quietly downgraded a relay hop to a dial would pass. It is
+  # refused as an outage instead.
+  - login: alice
+    target: ghost.company.com
+    proxy_id: proxy-nexthop
+    route_type: nexthop
+    next_hop: proxy-direct
+    target_port: 2222
+    hop_connection: relay
+    next_proxy_id: proxy-absent
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      mode: blacklist
+
+  # A loop: the far hop routes straight back to the proxy the session came
+  # from. Neither proxy can see the whole chain; the hop trail is what makes
+  # this detectable at all.
+  - login: alice
+    target: loop.company.com
+    proxy_id: proxy-nexthop
+    route_type: nexthop
+    next_hop: proxy-direct
+    target_port: 2222
+    hop_connection: dial
+    next_proxy_id: proxy-direct
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      mode: blacklist
+
+  - login: alice
+    target: loop.company.com
+    proxy_id: proxy-direct
+    route_type: nexthop
+    next_hop: proxy-nexthop
+    target_port: 2222
+    hop_connection: dial
+    next_proxy_id: proxy-nexthop
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      mode: blacklist
+
+  # The hop cap: one hop is all this route allows, and extending the chain
+  # would need two.
+  - login: alice
+    target: hopcap.company.com
+    proxy_id: proxy-nexthop
+    route_type: nexthop
+    next_hop: proxy-direct
+    target_port: 2222
+    hop_connection: dial
+    next_proxy_id: proxy-direct
+    max_hops: 1
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      mode: blacklist
+
+  # ------------------------------------------------------------ svc-deploy ---
+  # Forwarding destinations (D5a, axis 2 for direct-tcpip): the tunnel may
+  # reach exactly one host and port. Allowing the channel type alone would
+  # permit tunnelling anywhere, which is the whole point of this axis.
+  - login: svc-deploy
+    target: fwd.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: deployGroup
+    permitted_channels: [session, direct-tcpip]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    permitted_forwards:
+      direct_tcpip:
+        - host: target
+          port: 22
+      # The target may not open forwards back at all.
+      forwarded_tcpip: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # RESTRICTED exec (D12, the enforced tier): the command is parsed into an
+  # argument vector and must be covered completely by one entry, or it is
+  # denied. Nothing is passed through a shell to be re-expanded — which is what
+  # the filtered route below cannot say about itself.
+  - login: svc-deploy
+    target: appliance.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: applianceReadOnly
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          - executable: /bin/uptime
+            form: exact
+            argv: []
+          - executable: /bin/echo
+            form: positional
+            args:
+              - kind: any
+
+  # FILTERED exec (D12, the guardrail tier) on the same estate. The pattern
+  # rules are anchored on the whole command, so the shell wrapper the
+  # restricted route denies gets past here. The two tiers are demonstrably
+  # different things, in the product and not only in unit tests.
+  - login: svc-deploy
+    target: filtered.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: deployGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+      rules:
+        - match: "/bin/ls *"
+          action: block_command
+          message: "Directory listings are not permitted from this account."
+
+  # The fourth action, and the other filter mode: a whitelist, where anything
+  # no rule matched is blocked by the mode itself.
+  - login: svc-deploy
+    target: allowlist.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: deployGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: whitelist
+      rules:
+        - match: "/bin/echo *"
+          action: allow_and_log
+
+  # Nothing else is routed. A target with no rule here is a 401, which is the
+  # denial half of the disclosure rule (PLAN §4.3): fixtures say yes explicitly.
+
+events:
+  heartbeat_ms: 5000
+  replay_buffer: 128
+
+host_keys:
+  # Trust-on-first-use (D7): the target's host key is generated per container
+  # start, so there is nothing to pre-seed.
+  decision: accept
