@@ -82,7 +82,20 @@ At minimum, and each reported with its methodology so a later run is comparable:
   here.
 - **The provisioning cost** of `ephemeral-user`, measured separately, so the
   claim in D17 that per-check provisioning is infeasible is a number rather than
-  an assertion.
+  an assertion. Two distinct numbers, not one:
+  - the cost of a single provision/teardown cycle, which is what D17's
+    arithmetic needs;
+  - **the ceiling on concurrent provisioning against one target.** `useradd`
+    and `userdel` serialise on the target's account-database lock, so a target
+    fronted by a busy proxy has a per-target ceiling that no amount of proxy
+    capacity moves — a different limit from every other measurement here, which
+    are all per-proxy. `docs/PLAN.md` §5.1 records this ceiling as unmeasured
+    and names this phase as the one that measures it, so leaving it out means
+    going back and amending the plan.
+
+    Report what saturates: the lock, home-directory creation, or the NSS
+    backend. A fleet on a directory-backed NSS will not behave like one on flat
+    files, and the sizing guidance has to say which was measured.
 
 ### 3. Sizing guidance in `docs/PLAN.md`
 
@@ -113,6 +126,9 @@ labelled measured or derived — never presented as the other.
 - The cache-key finding is stated explicitly — either "the shape suits the UC2
   pattern, here is the hit rate" or "it does not, here is the proposed key and
   the prompt that would change it".
+- The per-target concurrent-provisioning ceiling is a measured number with its
+  saturation point named, and `docs/PLAN.md` §5.1's "it has not been measured"
+  is replaced by it.
 - The customer question about SSH-versus-SNMP health checking is asked and its
   answer recorded, including "not yet known".
 - **No behaviour change**: no file outside the harness, `docs/`, and the
@@ -122,5 +138,6 @@ labelled measured or derived — never presented as the other.
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
 `docs/learnings/0017-scale-harness-and-sizing-learnings.md`. The summary block
 MUST carry the headline numbers, the hardware they were taken on, the cache-key
-finding, and a one-line verdict on whether D17's premise survived contact with
-measurement — 0018's author reads that line first and may reasonably stop there.
+finding, the per-target provisioning ceiling and what saturated, and a one-line
+verdict on whether D17's premise survived contact with measurement — 0018's
+author reads that line first and may reasonably stop there.

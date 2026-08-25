@@ -27,7 +27,10 @@ Add end-to-end coverage for the two things 0012 could not reach:
    client — the topology's proxies are certificate-only;
 2. **two concurrent sessions provisioning on one target**, which is the exact
    situation the ephemeral principal's uniqueness token exists for and which no
-   test in the tree exercises.
+   test in the tree exercises. `docs/PLAN.md` §5.1's *Why a per-session account*
+   says what that token is actually protecting — read it before writing the
+   assertions, because it is what makes "the two accounts are different" the
+   interesting claim rather than a triviality.
 
 Change no production behaviour. If either scenario finds a defect, that is a
 finding: fix it if it is small and obviously correct, otherwise write it up and
