@@ -614,7 +614,9 @@ Robustness requirements:
   clean up leftovers on startup and periodically.
 - **Concurrency**: two sessions for the same username on the same target must not
   clobber each other's users/keys — use per-(user,target) coordination or unique
-  ephemeral principals.
+  ephemeral principals. These two are **not** equivalent, and the reasons the
+  second was chosen are not the ones this requirement states; see *Why a
+  per-session account* below.
 - **Failure isolation**: a provisioning failure denies the session cleanly; it
   never leaves a half-created user.
 
@@ -629,9 +631,9 @@ concrete form, and later phases depend on all three:
   `hl-<proxy tag>-<login>-<token>`, where the tag is a digest of this proxy's
   id. The reaper finds orphans by that prefix, which is why a crash — the case
   that destroys every in-memory record — is still recoverable; the tag stops one
-  proxy from sweeping another's live sessions on a shared target; the token is
-  the answer to concurrency (unique principals, not coordination), so two
-  sessions for one login never share an account or a teardown.
+  proxy from sweeping another's live sessions on a shared target; and the token
+  makes each session's account unique, so two sessions for one login never share
+  an account or a teardown.
 - **Sweeps happen on the provisioning path, not only on a timer.** A restarted
   proxy has no idea which targets it owes cleanup on, so the first successful
   provisioning on a target triggers a (rate-limited, background) sweep of it.
@@ -643,6 +645,50 @@ concrete form, and later phases depend on all three:
   working whether or not this proxy is alive to remove it. A proxy configured
   for a fleet whose sshd cannot express that refuses the route rather than
   serving it with a key that never expires.
+
+**Why a per-session account.** The requirement above frames concurrency as
+sessions clobbering each other's teardown. That framing is the weakest argument
+for unique principals and, taken alone, would not justify their cost: teardown
+of a shared account is a refcount problem, and a refcount is solvable. The
+reasons that actually carry the decision are these, in order:
+
+- **The account is where per-session enforcement is rendered.** §6 and D15 make
+  the enforcement rung a *per-session* choice, and phase 0016 renders it onto
+  the account itself — `authorized_keys` options, shell and `PATH`, filesystem
+  confinement, a session deadline. One account cannot carry two rungs. Two
+  sessions with identical permissions today are not two sessions with identical
+  confinement tomorrow, and retrofitting per-session accounts underneath a
+  shared-account model is a rewrite, not a change.
+- **A shared account is a route around the proxy.** Same uid means the second
+  session can attach to the first's `tmux` or `screen` socket, signal its
+  processes, and read its history and files. That is one user inheriting
+  another's live terminal *without the proxy seeing a channel open* — and every
+  policy claim in §6 is made about channels the proxy sees. For a product whose
+  claim is per-session enforcement, sharing the account is a hole in the claim
+  rather than an untidiness.
+- **Attribution has to survive on the target.** `who`, `last`, file ownership,
+  and the target's own auditd are where a customer correlates. Two sessions on
+  one account are indistinguishable there, however well the proxy logged them.
+  The account name is the join key back to the session id (§7).
+- **Credential lifetime is per session.** Each account's `authorized_keys`
+  carries its own `expiry-time`; one shared account is one key with whichever
+  lifetime happened to land first.
+
+**What it costs, recorded rather than glossed.** `useradd` and `userdel` run per
+session and serialise on the target's account-database lock, so a busy proxy has
+a **per-target provisioning ceiling that no amount of proxy capacity moves**. It
+has not been measured; phase 0017 owns measuring it. Account churn also means
+UID churn, and a reused UID inherits ownership of anything a deleted account
+left behind.
+
+The trade-off a user actually feels is different, and is accepted deliberately:
+**one person in two windows cannot see their own work, and cannot reattach to
+their earlier session.** "Run `tmux` on the target" is the normal answer to
+that, and per-session accounts are precisely what removes it — because session
+isolation and reattachability are the same mechanism seen from two sides, and
+this product cannot have the first without giving up the second. A user who
+needs a durable working session should be given a longer session, not a shared
+account.
 
 ### 5.2 `brokered-key` — a credential held only for the session (D6a)
 
