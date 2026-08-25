@@ -219,12 +219,30 @@ repository. Do not delete the job.
 fails, because the failure is an opaque `403` that reads like a broken tool. It
 is deliberately **not** in `docs/PROTOCOL.md`'s Definition of Done.
 
-> **Open item.** The prompt asks for the gate to be seen failing once, by
-> temporarily downgrading `golang.org/x/crypto` to v0.44.0. The development
-> sandbox this phase was implemented in cannot reach `vuln.go.dev` at all (the
-> egress gateway answers `403`), so that had to be done against CI rather than
-> locally — see the PR for the run that shows the `x/crypto/ssh` findings and
-> the commit that reverted the downgrade.
+**The gate has been seen failing** — "a gate nobody has seen fail is not known
+to be a gate". The sandbox this phase was implemented in cannot reach
+`vuln.go.dev` at all (the egress gateway answers `403`), so the verification ran
+in CI: commit `96ad70f` downgraded `golang.org/x/crypto` to v0.44.0, the
+`govulncheck` job failed with exit code 3 reporting **9 vulnerabilities
+reachable from this module's code**, all in `x/crypto/ssh`, and the next commit
+reverted it. Every trace landed in a path this repository actually owns:
+
+```
+GO-2025-4134  Unbounded memory consumption
+  #1: internal/proxy/proxy.go:297: proxy.Server.handleConn calls ssh.NewServerConn
+GO-2026-5017  Client can cause server deadlock on unexpected responses
+  #6: internal/proxy/channel.go:559: proxy.session.serveGlobalRequests calls ssh.mux.SendRequest
+GO-2026-5015  Server panic during CheckHostKey/Authenticate
+  #1: internal/relay/authz.go:111: relay.Authorizer.Authenticate calls ssh.CertChecker.Authenticate
+GO-2026-5020  Infinite loop on large channel writes
+  #1: internal/auth/target/admin.go:171: target.sshAdminDialer.Dial calls ssh.NewClientConn
+```
+
+It also found "1 vulnerability in packages you import and 6 vulnerabilities in
+modules you require" that it did **not** fail on, because this module's code
+never calls into them. That is the symbol-level analysis doing exactly the job
+it was chosen for: nine real findings, seven suppressed as unreachable, no
+judgement call left to a human deciding whether to care.
 
 ### Hardening/cleanup
 
