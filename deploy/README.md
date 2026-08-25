@@ -80,16 +80,21 @@ rule rather than to a search.
 - **`PerSourcePenalties no`.** A decrypting proxy is a *single source address*
   to every target it fronts — that is the deployment model, and it collides with
   sshd's per-source abuse defences, which exist to slow down many distinct
-  attackers rather than one trusted enforcement point. A session whose user was
-  refused at the proxy (a denied pty, a denied channel, a blocked command) ends
-  with the proxy abandoning its target connection, sometimes mid-handshake, and
-  OpenSSH ≥ 9.8 scores that as a failed authentication against the proxy's
-  address. A handful of those and it starts dropping the proxy outright —
+  attackers rather than one trusted enforcement point. Anything that makes the
+  proxy's credential fail against a target is scored against the **proxy's**
+  address, not the user who triggered it, so on OpenSSH ≥ 9.8 a handful of
+  failures gets the proxy dropped outright —
   `drop connection #0 from [proxy] ... penalty: failed authentication` — which
   surfaces at the proxy as a bare `connection reset by peer` and reads like a
-  network fault. The entrypoint turns it off, and applies each directive only if
-  this `sshd` understands it. **A real fleet has to make the same decision
-  deliberately**; see the learnings file's known gaps.
+  network fault. Phase 0012 hit exactly this, from a `.ssh` directory owned by
+  root, and one misconfigured route took out every scenario on that proxy.
+
+  Turning it off is right for a target reachable only through a proxy: the
+  defence has no distinct sources left to distinguish. It also keeps this suite
+  honest — prompt 0019's containment scenarios have to be proven by the proxy's
+  own behaviour, not by the target giving up on it. The entrypoint applies each
+  directive only if this `sshd` understands it. **A real fleet has to make the
+  same decision deliberately**; `prompts/queued/0019-*` is the proxy-side half.
 
 `make test-sshd` runs the phase-0007 credential tests against this same image
 on its own (`target/compose.yaml`), published on a host port.

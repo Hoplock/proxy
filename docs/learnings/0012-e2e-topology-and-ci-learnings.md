@@ -31,6 +31,12 @@
   operational finding, not a test artefact); the fixtures are **rendered**, not
   committed; `govulncheck` needs `vuln.go.dev` and is deliberately **not** in the
   Definition of Done.
+- Follow-up prompt created:
+  `prompts/queued/0019-target-auth-failure-containment.md` — a refused
+  proxy→target credential is currently reported as "the target could not be
+  reached" and retried forever, and because a proxy is one source address that
+  gets the whole proxy blocked from the target. Appended rather than inserted;
+  nothing in 0013–0018 depends on it.
 - What the NEXT session must know: a phase that changes routing, policy, or
   credentials owes a scenario here. Add the route to
   `deploy/control/fixtures.template.yaml` (each route names the scenarios it
@@ -167,18 +173,29 @@ Connection closed by authenticating user netadmin 172.19.0.2 port 50018 [preauth
 drop connection #0 from [172.19.0.2] on [172.19.0.4]:22 penalty: failed authentication
 ```
 
-A decrypting proxy is a *single source address* to every target it fronts. When
-a user is refused at the proxy — a denied pty, a denied channel, a blocked
-command — the proxy abandons the target connection it had already started,
-sometimes mid-handshake, and OpenSSH ≥ 9.8's `PerSourcePenalties` (on by
-default) scores that as a failed authentication against the proxy's address.
-After enough of them sshd drops the proxy outright, and at the proxy it looks
-like a network fault. `proxy-zone`, which served three sessions, was unaffected;
-`proxy-direct`, which serves most of the suite, was blocked within seconds.
+The proximate cause was the `.ssh` ownership bug below: the proxy offered the
+brokered key, sshd refused it, and the Go client ran out of methods and closed —
+a genuine failed authentication, correctly scored. **What generalises is the
+blast radius.** A decrypting proxy is a *single source address* to every target
+it fronts, so OpenSSH ≥ 9.8 scores those failures against the proxy rather than
+against the user who triggered them. `proxy-direct`, which serves most of the
+suite, was blocked from the target within seconds; `proxy-zone`, which serves
+three sessions, never noticed. One misconfigured route had become an outage for
+every user of that target — and at the proxy it looked like a network fault,
+because `dialTarget` in `internal/proxy/session.go` tags a credential rejection
+`stageDial` and tells the user *"the target could not be reached"*.
 
-The topology turns it off, applying each directive only if this `sshd`
+Be careful about what this does **not** show. An earlier reading of it — that
+the proxy abandons target connections mid-handshake when a user is refused at
+the proxy — is wrong, and the green run refutes it: zero `[preauth]` closes and
+zero penalty drops across the whole suite, including every scenario where the
+user was refused a pty, a channel, or a command. Those refusals happen after the
+target leg is already up. The exposure is credential failure, not churn.
+
+The topology turns the defence off, applying each directive only if this `sshd`
 understands it (`sshd -t` after appending each), so an older or newer base image
-still boots. See the known gaps below for what this means beyond the test rig.
+still boots. It stays off deliberately: `0019`'s containment scenarios have to be
+proven by the proxy's own behaviour, not by the target giving up on it.
 
 A third one is not a setting but a file mode: **`.ssh` must be owned by its
 account**, not only the `authorized_keys` inside it. `useradd -m` creates the
@@ -273,15 +290,14 @@ opens: EOF`) on a machine loaded with other processes; it did not reproduce in
 - **Password + MFA.** The topology's proxies are certificate-only, so the
   keyboard-interactive MFA flow (0004) has no e2e coverage; its unit and mock
   tests remain the only evidence.
-- **Per-source abuse defences on real targets.** The finding above is not
-  confined to the test rig: any target running OpenSSH ≥ 9.8 with default
-  `PerSourcePenalties` will eventually start dropping a busy proxy, because the
-  proxy is one address making many connections and abandoning some of them
-  mid-handshake. Two halves to it, and neither is in this phase's scope: the
-  proxy could stop abandoning target connections it has begun (tear down after
-  the handshake completes rather than during it), and the deployment guide will
-  have to tell operators what their targets need configured. Worth its own
-  prompt.
+- **Per-source abuse defences on real targets** — now
+  `prompts/queued/0019-target-auth-failure-containment.md`. The finding above is
+  not confined to the test rig: on any target running OpenSSH ≥ 9.8 with default
+  `PerSourcePenalties`, a proxy whose credential is wrong for that target gets
+  itself blocked from it for every user, and currently reports the result as
+  "the target could not be reached". 0019 classifies a credential rejection as
+  its own thing, contains it with a per-credential circuit breaker, says so
+  honestly, and writes the deployment note operators need.
 - **Concurrency.** Every scenario is sequential. Two sessions provisioning on
   one target at the same time is exactly what the ephemeral principal's token
   exists for (PLAN §5.1), and nothing here exercises it.

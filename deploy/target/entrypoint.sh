@@ -36,22 +36,29 @@ install_key /material/brokered_key.pub /home/netadmin/.ssh/authorized_keys netad
 ssh-keygen -A >/dev/null
 
 # A decrypting proxy is a SINGLE SOURCE ADDRESS to every target it fronts. That
-# is not incidental, it is the deployment model — and it collides head-on with
-# sshd's per-source abuse defences, which exist to slow down many distinct
-# attackers rather than one trusted enforcement point.
+# is not incidental, it is the deployment model — and it collides with sshd's
+# per-source abuse defences, which exist to slow down many distinct attackers
+# rather than one trusted enforcement point.
 #
-# OpenSSH 9.8's PerSourcePenalties is the sharp one. A session whose user was
-# refused at the proxy (a denied pty, a denied channel, a blocked command) ends
-# with the proxy abandoning its target connection, sometimes mid-handshake, and
-# sshd scores that as a failed authentication against the proxy's address. A few
-# of those and it starts dropping the proxy outright:
+# OpenSSH 9.8's PerSourcePenalties is the sharp one. Anything that makes the
+# proxy's credential fail against a target — a stale brokered key, a rotated
+# management certificate, an authorized_keys the account cannot read — is scored
+# as a failed authentication against the PROXY's address, not against the user
+# who happened to trigger it. A handful of those and sshd stops answering the
+# proxy at all:
 #
 #   drop connection #0 from [proxy] on [target]:22 penalty: failed authentication
 #
 # which surfaces at the proxy as a bare "connection reset by peer" and looks
-# like a network fault. Turning it off here is right for a target that is
-# reachable ONLY through a proxy: the defence has no distinct sources to
-# distinguish. A real fleet needs the same decision made deliberately.
+# like a network fault. One misconfigured route becomes an outage for every user
+# of that target. Phase 0012 hit exactly this (a .ssh directory owned by root),
+# and prompt 0019 is the proxy-side answer.
+#
+# Turning it off is right for a target reachable ONLY through a proxy: the
+# defence has no distinct sources left to distinguish. It also keeps the e2e
+# suite honest — phase 0019's containment scenarios have to be proven by the
+# proxy's own behaviour, not by the target giving up on it. A real fleet needs
+# the same decision made deliberately.
 #
 # Each directive is applied only if this sshd understands it, so a base image
 # with an older (or newer) OpenSSH still starts rather than failing to boot on
