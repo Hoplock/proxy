@@ -1114,30 +1114,69 @@ Still out of scope: tamper-evident/append-only storage at the destination
 - **Errors/logging**: no secrets in error strings; structured logging internally.
 - **Testing**: unit tests per package; table-driven where sensible; the mock
   Hoplock Control backs integration tests.
-- **CI**: `go build ./...`, `go vet ./...`, `go test ./...`, a linter
-  (`golangci-lint`), and the e2e job (Section 9). See D9.
+- **CI**: six jobs gate a pull request (`.github/workflows/ci.yml`):
+  `build-test` (`go build`, `go vet`, `go test -race`, on the go.mod floor and
+  on `GO_VERSION`), `lint` (`golangci-lint`), `openapi` (validates
+  `api/control.yaml`), `license` (per-file headers), `e2e` (Section 9), and
+  `govulncheck`. See D9.
+
+  **`govulncheck` is a gate rather than a periodic chore because of what this
+  project's dependency tree is.** `golang.org/x/crypto/ssh` is not incidental
+  here — it is the proxy's SSH implementation, and its advisory rate is high:
+  the v0.44.0 → v0.55.0 bump alone crossed 15 fixed advisories, around six of
+  them server-side DoS and panic issues in `x/crypto/ssh` itself, landing in
+  exactly the paths §6 builds on. It runs `govulncheck ./...` with the default
+  symbol-level analysis, so it reports only vulnerabilities **reachable** from
+  this module's code and does not cry wolf about packages the proxy never calls
+  into. It **can go red with no code change**, when a new advisory lands against
+  a dependency already in `go.mod`: that is the intended signal, and the answer
+  is to upgrade, or to record an explicit dated justification — never to delete
+  the job. It needs network access to `https://vuln.go.dev`, which some
+  development sandboxes deny with an opaque 403, so `make vulncheck` reports
+  that case as a skip and the check is deliberately absent from
+  `docs/PROTOCOL.md`'s Definition of Done. CI is where it must pass.
 
 ---
 
 ## 9. Test topology (answer to Q21)
 
-**Yes — the full 5-node topology fits inside one GitHub Actions runner** using
-Docker containers on a shared Docker network (via `docker compose` in
-`deploy/`), no external infrastructure required for the prototype:
+**Yes — the full topology fits inside one GitHub Actions runner** using Docker
+containers on shared Docker networks (`docker compose` in `deploy/`), no
+external infrastructure required. It is the prototype's acceptance gate: the
+scenario suite in `test/e2e` drives it and the `e2e` CI job runs both on every
+pull request. `deploy/README.md` is the operator's guide to it.
 
-| Node                | Container                              |
-| ------------------- | -------------------------------------- |
-| Hoplock Control   | `cmd/mock-control`                  |
-| User (SSH client)   | thin image running the test client     |
-| Proxy (direct)    | `cmd/proxy` configured for direct    |
-| Proxy (next-hop)  | `cmd/proxy` configured to chain      |
-| Target (sshd)       | an `sshd` image with the mgmt cert     |
+| Node role           | Container                                      |
+| ------------------- | ---------------------------------------------- |
+| Hoplock Control     | `cmd/mock-control`, fixture-driven             |
+| User (SSH client)   | a thin image running a real OpenSSH client     |
+| Proxy (direct)      | `cmd/proxy` reaching the target itself         |
+| Proxy (next-hop)    | `cmd/proxy` reaching the target only by chaining |
+| Target (sshd)       | an `sshd` image with the mgmt cert and a standing appliance account |
 
-The GitHub Actions job builds the images, `docker compose up`s the topology, runs
-scenario tests (direct route, next-hop route, blocked command, channel denial,
-provisioning + teardown, logging), and tears down. Real geo/anycast/scale testing
-needs real infrastructure and is **out of scope** for the prototype; the compose
-topology validates behavior, not distribution.
+The compose file runs **two** containers in the downstream-proxy role, because
+the two hop connection directions (D11) make incompatible demands on one:
+`dial` needs a downstream that accepts an inbound connection, and the entire
+point of `relay` is a downstream that accepts none. `proxy-zone` is that second
+one — no published port, its SSH listener bound to loopback inside its own
+container, and the route that reaches it names an address that cannot resolve,
+so a relayed session that arrives has provably travelled over the registration
+it opened outbound. A relay scenario run against a proxy that does listen would
+prove nothing.
+
+The networks are load-bearing, not decoration. The user node is not on the
+target's network, so "the target is reachable only through a proxy" is a
+property of the topology; and the next-hop proxy is not on it either, so a
+chained session that reached the target cannot have been served locally.
+
+The suite covers both hop directions, all three policy axes (D5a), both
+credential methods (D6, D6a), both exec tiers (D12), the four match actions,
+loop and hop-cap refusal, both branches of the disclosure rule (§4.3), and the
+telemetry pipeline including outage buffering and drain (D8).
+
+Real geo/anycast/scale testing needs real infrastructure and is **out of scope**
+for the prototype; the compose topology validates behavior, not distribution.
+Phase 0017 takes up sizing with a synthetic harness.
 
 ---
 
@@ -1165,6 +1204,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0016 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
 | 0017 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
 | 0018 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
+| 0019 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

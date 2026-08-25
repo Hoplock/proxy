@@ -1,0 +1,88 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# proxy-zone: a proxy inside a protected zone (D11).
+#
+# Two things about it are the whole point:
+#
+#   - its SSH listener is bound to LOOPBACK, so nothing on any network can open
+#     a connection to it. No inbound firewall rule exists or is needed;
+#   - it registers an OUTBOUND relay connection with proxy-nexthop, and every
+#     session it serves arrives over that registration.
+#
+# The route that reaches it names an address that cannot resolve, so a session
+# that got here cannot have been dialled. See config.example.yaml for what
+# every field means.
+
+proxy:
+  id: "proxy-zone"
+  listen_addr: "127.0.0.1:2222"
+  host_key_path: "/material/hostkey_proxy_zone"
+
+control:
+  base_url: "http://control:8080"
+  token: "e2e-proxy-token"
+  cache:
+    max_ttl: 0s
+    stale_after: 30s
+
+dial:
+  dial_timeout: 15s
+  default_target_port: 22
+
+logging:
+  # The resilience buffer is what the outage scenario asserts on: with control
+  # stopped, records land here and drain in order when it returns (D8).
+  buffer_dir: "/var/lib/hoplock/logbuf"
+  batch_size: 8
+  flush_interval: 2s
+  queue_size: 1024
+  send_timeout: 5s
+  retry_min: 500ms
+  retry_max: 5s
+  max_payload_bytes: 32768
+
+routing:
+  target_delimiter: "#"
+
+chain:
+  identity_key_path: "/material/chain_proxy_zone"
+  max_hops: 4
+  # The outbound registration. The upstream's host key is pinned rather than
+  # trusted on first use: this registration is an inbound path for sessions, so
+  # an unverified upstream is one that can be impersonated into sending them.
+  upstream:
+    address: "proxy-nexthop:2223"
+    host_key_path: "/material/hostkey_proxy_nexthop.pub"
+    dial_timeout: 10s
+    keepalive_interval: 5s
+    min_backoff: 500ms
+    max_backoff: 5s
+
+auth:
+  user:
+    # Certificate only. There is no password/MFA scenario in this topology, and
+    # offering a method no fixture can satisfy would just prompt for a secret
+    # that can never work.
+    methods: ["cert"]
+  target:
+    # The FALLBACK only: every route in the fixtures names its own target_auth,
+    # which is the server's choice per route (D6a). Both production methods are
+    # configured below because this one proxy fronts both estates.
+    method: "brokered-key"
+    ephemeral_user:
+      management_key_path: "/material/management_key"
+      provisioning_user: "root"
+      shell: "sh -c"
+      home_base: "/home"
+      target_shell: "/bin/sh"
+      key_expiry: true
+      timeout: 30s
+      reaper:
+        interval: 1m
+        grace: 5m
+    brokered_key:
+      source: "dir"
+      username: "netadmin"
+      dir: "/material/brokered"
+      file_suffix: ".key"

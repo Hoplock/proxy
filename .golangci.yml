@@ -2,6 +2,13 @@
 # Run with `make lint`; formatting is applied with `make fmt`.
 version: "2"
 
+run:
+  # Lint the e2e scenario suite as well. It is behind the `e2e` build tag
+  # because it needs Docker and costs minutes, so without this it would be
+  # invisible to every check the repository has.
+  build-tags:
+    - e2e
+
 linters:
   enable:
     - errcheck

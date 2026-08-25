@@ -23,5 +23,8 @@ config.local.yaml
 .vscode/
 *.swp
 
-# Generated per run by `make test-sshd`; never committed.
-deploy/sshd/keys/
+# Generated per run by deploy/gen-material.sh; never committed. The fixtures
+# name keys by fingerprint, so they cannot exist before the keys do.
+deploy/keys/
+deploy/bin/
+deploy/control/fixtures.yaml

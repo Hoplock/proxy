@@ -1,0 +1,108 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# The full end-to-end topology (docs/PLAN.md §9): every node of the system, on
+# Docker networks that make the segmentation claims true rather than asserted.
+#
+# Node roles:
+#   control        the mock Hoplock Control — every decision comes from here
+#   user           the SSH client the scenario suite drives
+#   proxy-direct   an edge proxy that reaches the target itself
+#   proxy-nexthop  an edge proxy that reaches the target only by chaining
+#   proxy-zone     a proxy in a protected zone: it accepts NO inbound
+#                  connection from any network and reaches its upstream over an
+#                  outbound relay registration (D11)
+#   target         a real sshd, with the prerequisites both credential methods
+#                  need (D6, D6a)
+#
+# Networks, and what each one is load-bearing for:
+#   edge   user ↔ the two reachable proxies ↔ control
+#   core   the proxies that may reach the target ↔ target ↔ control. It is
+#          `internal`, and the user node is NOT on it: the target is reachable
+#          only through a proxy, which is the claim the whole topology exists
+#          to make checkable.
+#   relay  proxy-zone's outbound path to proxy-nexthop's registration
+#          listener, and nothing else.
+#
+# proxy-nexthop is deliberately absent from `core`. A chained session that
+# reached the target therefore travelled through a second proxy — it could not
+# have been served locally.
+
+services:
+  control:
+    build:
+      context: .
+      dockerfile: control/Dockerfile
+    command:
+      - "-listen"
+      - "0.0.0.0:8080"
+      - "-fixtures"
+      - "/etc/hoplock/fixtures.yaml"
+      - "-log-dir"
+      - "/var/log/hoplock"
+    volumes:
+      - ./control/fixtures.yaml:/etc/hoplock/fixtures.yaml:ro
+    networks: [edge, core]
+    ports:
+      # The scenario suite reads /debug/logs from the host. Bound to loopback:
+      # this is a test fixture, not a service.
+      - "127.0.0.1:18080:8080"
+
+  target:
+    build:
+      context: .
+      dockerfile: target/Dockerfile
+    volumes:
+      - ./keys:/material:ro
+    networks: [core]
+
+  proxy-direct:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    command: ["-config", "/etc/hoplock/config.yaml"]
+    volumes:
+      - ./proxy/proxy-direct.yaml:/etc/hoplock/config.yaml:ro
+      - ./keys:/material:ro
+    networks: [edge, core]
+
+  proxy-nexthop:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    command: ["-config", "/etc/hoplock/config.yaml"]
+    volumes:
+      - ./proxy/proxy-nexthop.yaml:/etc/hoplock/config.yaml:ro
+      - ./keys:/material:ro
+    networks: [edge, relay]
+
+  proxy-zone:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    command: ["-config", "/etc/hoplock/config.yaml"]
+    volumes:
+      - ./proxy/proxy-zone.yaml:/etc/hoplock/config.yaml:ro
+      - ./keys:/material:ro
+    # No `ports`, and its SSH listener is bound to loopback inside the
+    # container (proxy/proxy-zone.yaml). Nothing on any network can open a
+    # connection to it; sessions arrive only over the registration it opened.
+    networks: [core, relay]
+
+  user:
+    build:
+      context: .
+      dockerfile: user/Dockerfile
+    command: ["sleep", "infinity"]
+    volumes:
+      - ./keys:/material:ro
+    # `edge` only. The target is on `core`, so this node cannot reach it by any
+    # route other than a proxy.
+    networks: [edge]
+
+networks:
+  edge:
+  core:
+    internal: true
+  relay:
+    internal: true
