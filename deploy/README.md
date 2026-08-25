@@ -65,7 +65,7 @@ who has the image — so regenerating never requires a rebuild.
 Each route says which scenarios it backs, so a failing scenario leads to one
 rule rather than to a search.
 
-## Two things the target image must not change
+## Three things the target image must not change
 
 - **`UsePAM yes`.** `useradd` leaves a new account with a locked password, and
   with `UsePAM no` `sshd` refuses it outright — *"not allowed because account is
@@ -76,6 +76,20 @@ rule rather than to a search.
   provisioning account D6 needs, and `netadmin` is the account that already
   exists for `brokered-key` (D6a) — the appliance the proxy cannot administer. A
   scenario that finds `netadmin` modified has found a bug.
+
+- **`PerSourcePenalties no`.** A decrypting proxy is a *single source address*
+  to every target it fronts — that is the deployment model, and it collides with
+  sshd's per-source abuse defences, which exist to slow down many distinct
+  attackers rather than one trusted enforcement point. A session whose user was
+  refused at the proxy (a denied pty, a denied channel, a blocked command) ends
+  with the proxy abandoning its target connection, sometimes mid-handshake, and
+  OpenSSH ≥ 9.8 scores that as a failed authentication against the proxy's
+  address. A handful of those and it starts dropping the proxy outright —
+  `drop connection #0 from [proxy] ... penalty: failed authentication` — which
+  surfaces at the proxy as a bare `connection reset by peer` and reads like a
+  network fault. The entrypoint turns it off, and applies each directive only if
+  this `sshd` understands it. **A real fleet has to make the same decision
+  deliberately**; see the learnings file's known gaps.
 
 `make test-sshd` runs the phase-0007 credential tests against this same image
 on its own (`target/compose.yaml`), published on a host port.

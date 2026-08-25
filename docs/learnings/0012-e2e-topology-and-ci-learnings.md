@@ -25,9 +25,12 @@
   that does listen proves nothing.
 - Decisions affected: none changed. D5a, D6/D6a, D8, D11, D12 and §4.3 all now
   have end-to-end evidence rather than unit-test evidence.
-- Gotchas: the target image must keep **`UsePAM yes`** or every `ephemeral-user`
-  session fails; the fixtures are **rendered**, not committed; `govulncheck`
-  needs `vuln.go.dev` and is deliberately **not** in the Definition of Done.
+- Gotchas: the target image must keep **`UsePAM yes`** (or every
+  `ephemeral-user` session fails) and **`PerSourcePenalties no`** (or sshd blocks
+  the proxy after a handful of refused sessions — see below, it is a real
+  operational finding, not a test artefact); the fixtures are **rendered**, not
+  committed; `govulncheck` needs `vuln.go.dev` and is deliberately **not** in the
+  Definition of Done.
 - What the NEXT session must know: a phase that changes routing, policy, or
   credentials owes a scenario here. Add the route to
   `deploy/control/fixtures.template.yaml` (each route names the scenarios it
@@ -145,12 +148,37 @@ topology. Keys are mounted and installed by an entrypoint rather than baked in
 (material in an image is material shared by everyone who has it), and host keys
 are generated at start for the same reason.
 
-**`UsePAM yes` is load-bearing.** `useradd` leaves a new account with a locked
+**Two sshd settings are load-bearing.**
+
+`UsePAM yes`: `useradd` leaves a new account with a locked
 password; with `UsePAM no`, `sshd` refuses it — *"not allowed because account is
 locked"* — before it ever looks at the key the proxy just installed, and every
 `ephemeral-user` session fails with an unhelpful *"unable to authenticate"* on
 the proxy side. The stock Debian `sshd_config` has it; the risk is someone
-"hardening" it away. It is called out in `deploy/README.md`.
+"hardening" it away.
+
+`PerSourcePenalties no` — and this one is a **product finding, not a test
+artefact**. The first CI run failed with every proxy-direct scenario after the
+first fifteen or so reporting `connection reset by peer` from the target. The
+target's own log said why:
+
+```
+Connection closed by authenticating user netadmin 172.19.0.2 port 50018 [preauth]
+drop connection #0 from [172.19.0.2] on [172.19.0.4]:22 penalty: failed authentication
+```
+
+A decrypting proxy is a *single source address* to every target it fronts. When
+a user is refused at the proxy — a denied pty, a denied channel, a blocked
+command — the proxy abandons the target connection it had already started,
+sometimes mid-handshake, and OpenSSH ≥ 9.8's `PerSourcePenalties` (on by
+default) scores that as a failed authentication against the proxy's address.
+After enough of them sshd drops the proxy outright, and at the proxy it looks
+like a network fault. `proxy-zone`, which served three sessions, was unaffected;
+`proxy-direct`, which serves most of the suite, was blocked within seconds.
+
+The topology turns it off, applying each directive only if this `sshd`
+understands it (`sshd -t` after appending each), so an older or newer base image
+still boots. See the known gaps below for what this means beyond the test rig.
 
 ### Fixtures are rendered, not committed
 
@@ -219,6 +247,15 @@ opens: EOF`) on a machine loaded with other processes; it did not reproduce in
 - **Password + MFA.** The topology's proxies are certificate-only, so the
   keyboard-interactive MFA flow (0004) has no e2e coverage; its unit and mock
   tests remain the only evidence.
+- **Per-source abuse defences on real targets.** The finding above is not
+  confined to the test rig: any target running OpenSSH ≥ 9.8 with default
+  `PerSourcePenalties` will eventually start dropping a busy proxy, because the
+  proxy is one address making many connections and abandoning some of them
+  mid-handshake. Two halves to it, and neither is in this phase's scope: the
+  proxy could stop abandoning target connections it has begun (tear down after
+  the handshake completes rather than during it), and the deployment guide will
+  have to tell operators what their targets need configured. Worth its own
+  prompt.
 - **Concurrency.** Every scenario is sequential. Two sessions provisioning on
   one target at the same time is exactly what the ephemeral principal's token
   exists for (PLAN §5.1), and nothing here exercises it.

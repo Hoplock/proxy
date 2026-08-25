@@ -22,10 +22,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server procps iproute2 \
  && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /run/sshd /root/.ssh && chmod 700 /root/.ssh \
+RUN mkdir -p /run/sshd /root/.ssh /etc/ssh/sshd_config.d && chmod 700 /root/.ssh \
  && useradd -m -s /bin/sh netadmin \
  && mkdir -p /home/netadmin/.ssh && chmod 700 /home/netadmin/.ssh \
- && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+ && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+ && grep -q '^Include /etc/ssh/sshd_config.d/\*.conf' /etc/ssh/sshd_config \
+    || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 
 COPY target/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
