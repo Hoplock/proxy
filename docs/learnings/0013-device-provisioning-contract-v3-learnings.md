@@ -209,6 +209,11 @@ phase.
 
 ### Follow-ups
 
+> **Update:** follow-up 1 below is now queued as
+> `prompts/queued/0023-close-the-login-fallback.md`, which closes the fallback
+> on every method and every path rather than only on the contract. The body of
+> this section is left as it was written.
+
 No new prompts were queued. Two things are recorded here instead:
 
 1. **`brokered-key` still falls back to `identity.Login` for its username**
