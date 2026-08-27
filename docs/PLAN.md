@@ -528,6 +528,34 @@ API**; `credential_ref` selects material the proxy already holds. An absent
 `target_auth` leaves the proxy on its locally configured method, which is what
 a v1 server implies and what phase 0005 does today.
 
+**As written down (contract v3, phase 0013).** D14's ladder is
+`target_auth_ladder`, an ordered array of exactly those objects. The two shapes
+are alternatives and never layers — a response carrying both is refused — and a
+v2 single object reads as a one-entry ladder, so D6a's original behaviour is
+what a v2 server keeps getting. Absent still means "use local config"; an empty
+ladder is a **denial**, on the same absent-versus-empty rule as
+`permitted_channels: []`. `ephemeral-account` adds `platform`,
+`credential_kind`, and `expiry_posture` to the parameter vocabulary (§5.3), and
+**`username` becomes required** on every method where the proxy names the
+account it provisions (`ephemeral-user`, `ephemeral-account`, `static-key`) —
+it used to default to `identity.Login`, a client-typed string that §4.1 forbids
+as the basis of an authorization decision. `brokered-key` keeps its v2
+behaviour, because the account it uses is a standing one an operator chose; that
+its username still falls back to the login is a known gap, recorded in 0013's
+learnings rather than closed there.
+
+One field beside the credential travels with the route, because the estate D13
+reaches needs it: **`algorithm_profile`**, a server-named preset selecting which
+SSH key exchanges, host-key algorithms, ciphers, and MACs the proxy may offer on
+the proxy→target leg. It is per route rather than proxy-wide on purpose — a
+fleet-wide knob weakens every leg in the fleet to serve the oldest device on it
+— and it is a named preset (`default`, `legacy-rsa-sha1`, `legacy-device`)
+rather than an algorithm list, so it cannot be widened one identifier at a time
+and the audit record names something a reviewer understands. Anything but
+`default` is a weakening and emits its own audit event, on D14's sibling rule
+for methods. The rung in force and the profile in force are both **audit facts,
+not user-facing ones** (D14): §4.3's disclosure rule does not apply to either.
+
 Both interfaces take/return `identity.Identity` (not booleans) so that AD/Okta
 claims flow through unchanged (D4/D8-answers question 8).
 
@@ -790,6 +818,23 @@ NCM or SIEM to correlate and auto-close. That inverts the problem, because an
 `hl-*` object appearing on a device that Hoplock never reported is then a
 high-quality detection rather than noise. It is an outbound integration and so
 reuses D15's provider seam in Control rather than growing its own.
+
+**As written down (phase 0013).** The contract half is in §4.2 above: the
+`ephemeral-account` method, its four required parameters, and the ladder that
+lets a PDP rank it above or below a standing credential. The Go half is
+`internal/auth/target/device` — a `Driver` interface covering the four
+operations above (create, credential, remove, enumerate), the `Capabilities`
+struct carrying the declarations this section tabulates, and a registry keyed on
+the contract's `platform`, for which an unregistered platform is an
+outage-class denial and never the nearest driver. Declarations are **data**: a
+driver states them and the provisioner reads them, so that the decisions above —
+which naming scheme, which posture, refuse or serve — are made in one place
+rather than inside each driver. `Driver` is also the shape the declarative
+driver document and the subprocess contract (D13) become implementations of,
+rather than a second seam beside it. Phase 0013 ships **no driver** and nothing
+that connects; the invariant that a Hoplock-shipped driver may not declare
+`PersistsAcrossReload` is a test over the shipped registry rather than a comment
+on the field.
 
 Account **pooling** — pre-creating administrators and rotating only their
 credentials — is recorded here as the named alternative for customers who can

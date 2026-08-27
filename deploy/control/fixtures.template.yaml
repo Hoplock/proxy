@@ -84,6 +84,10 @@ routes:
     target_auth:
       method: ephemeral-user
       params:
+        # Required since contract v3 on every provisioning method (0013). It
+        # used to default to the identity's login; a login is a client-typed
+        # string and must never name an account on a target.
+        username: alice
         key_type: ed25519
         lifetime_seconds: "900"
     filter_policy:
@@ -180,6 +184,8 @@ routes:
     target_auth:
       method: ephemeral-user
       params:
+        # Required since contract v3 (0013).
+        username: alice
         key_type: ed25519
     filter_policy:
       mode: blacklist
@@ -220,6 +226,8 @@ routes:
     target_auth:
       method: ephemeral-user
       params:
+        # Required since contract v3 (0013).
+        username: alice
         key_type: ed25519
     filter_policy:
       mode: blacklist

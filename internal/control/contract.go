@@ -26,19 +26,23 @@ const (
 )
 
 // PolicyVersion is the highest policy vocabulary this client implements, sent
-// as AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12, phase 0006).
+// as AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12/D13/D14, phases 0006
+// and 0013).
 //
 // Version 1 was the phase 0002/0003 vocabulary: permitted_channels and a
 // filter rule list. Version 2 adds in-channel requests, forwarding
 // destinations, global requests, target_auth, hop connection direction, and
-// the exec enforcement mode.
+// the exec enforcement mode. Version 3 (phase 0013) adds the ordered credential
+// ladder (D14), the ephemeral-account method and its device-driver parameters
+// (D13), the per-route algorithm profile, and the requirement that every
+// provisioning method names its username.
 //
 // The server must not answer with policy fields introduced after the version
 // the proxy declares. That is what makes it safe for this client to refuse an
 // authorize response carrying a field it does not understand rather than
 // dropping it: an unknown field may be a restriction, and a dropped
 // restriction is a silently widened policy.
-const PolicyVersion = 2
+const PolicyVersion = 3
 
 // QueryLastEventID is the query parameter carrying the last event the proxy
 // processed, so the server can replay the gap after a reconnect (PLAN §6.4).
@@ -251,8 +255,37 @@ type AuthorizeResponse struct {
 	// TargetAuth is the credential method the server chose for this route
 	// (D6a, consumed by phase 0007). Nil means the proxy uses its locally
 	// configured method, which is v1 behaviour.
-	TargetAuth   *TargetAuth  `json:"target_auth,omitempty"`
-	FilterPolicy FilterPolicy `json:"filter_policy"`
+	//
+	// It is the v2 shape and it is kept, not polymorphised: TargetAuthLadder
+	// below is the v3 shape, and a response setting both is refused. Read the
+	// route's credentials through Ladder rather than through either field, so
+	// that no caller has to know which shape the server chose.
+	TargetAuth *TargetAuth `json:"target_auth,omitempty"`
+	// TargetAuthLadder is the ORDERED list of credential methods the server
+	// named for this route (D14, contract v3, walked by phase 0014).
+	//
+	// Three states, and they are three different policies:
+	//
+	//   - NIL (absent) — the server named no method; the proxy uses its
+	//     locally configured one. This is what a v1 server implies and what
+	//     phase 0005 does today.
+	//   - NON-NIL AND EMPTY — the server named no method it will accept, which
+	//     is a DENIAL, not "use local config". It is the same absent-versus-
+	//     empty rule as permitted_channels: [] and it fails toward deny.
+	//   - NON-EMPTY — walk it top-down and use the first entry this proxy can
+	//     satisfy; exhausting it is an outage-class denial (PLAN §4.3).
+	//
+	// The pointer is what carries the first two states apart, which is why this
+	// is *TargetAuthLadder and not TargetAuthLadder. Do not "simplify" it to a
+	// value type: a plain slice with omitempty serialises an empty ladder as an
+	// absent one, turning a denial into a locally configured credential.
+	TargetAuthLadder *TargetAuthLadder `json:"target_auth_ladder,omitempty"`
+	// AlgorithmProfile names the SSH algorithm set the proxy may offer on the
+	// proxy→target leg for this route (contract v3, applied by phase 0014).
+	// Empty means AlgorithmProfileDefault: nothing beyond the library defaults.
+	// Anything else is a weakening and is audited as one.
+	AlgorithmProfile AlgorithmProfile `json:"algorithm_profile,omitempty"`
+	FilterPolicy     FilterPolicy     `json:"filter_policy"`
 	// Hop is set when RouteType is RouteTypeNextHop.
 	Hop *HopMetadata `json:"hop,omitempty"`
 	// DecisionID correlates this decision with the server's audit trail.
@@ -260,6 +293,48 @@ type AuthorizeResponse struct {
 	// Cache is the server's permission to reuse this decision for a bounded
 	// time. Absent means do not cache (PLAN §6.4).
 	Cache *CacheHint `json:"cache,omitempty"`
+}
+
+// Ladder returns the credential methods the server named for this route, in
+// the order it named them, and whether it named any at all.
+//
+// It is the ONE place the v2 single object and the v3 ordered list are read,
+// so that nothing downstream has to know which shape a given server speaks:
+//
+//   - named == false — the server named nothing; the proxy falls back to its
+//     locally configured method (v1/v2 absent behaviour).
+//   - named == true with an empty ladder — the server named nothing it will
+//     accept. That is a DENIAL and must not be confused with the line above.
+//   - named == true with entries — walk them top-down (D14).
+//
+// A v2 response carrying a single target_auth object reads as a ONE-ENTRY
+// ladder, which is exactly D6a's original behaviour: the proxy uses that method
+// or the session fails. A response carrying both shapes never reaches here —
+// Validate refuses it.
+//
+// The returned slice aliases the response. Callers that keep it past the
+// decision's lifetime take a Clone, exactly as they do for every other policy
+// field.
+func (r *AuthorizeResponse) Ladder() (rungs []TargetAuth, named bool) {
+	if r == nil {
+		return nil, false
+	}
+	if r.TargetAuthLadder != nil {
+		return []TargetAuth(*r.TargetAuthLadder), true
+	}
+	if r.TargetAuth != nil {
+		return []TargetAuth{*r.TargetAuth}, true
+	}
+	return nil, false
+}
+
+// Profile returns the algorithm profile this route runs on, resolving the
+// absent-value default so no caller has to decide what an empty one meant.
+func (r *AuthorizeResponse) Profile() AlgorithmProfile {
+	if r == nil || r.AlgorithmProfile == "" {
+		return AlgorithmProfileDefault
+	}
+	return r.AlgorithmProfile
 }
 
 // CacheHint is Hoplock Control authorising the proxy to reuse this

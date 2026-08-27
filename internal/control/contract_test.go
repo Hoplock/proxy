@@ -187,7 +187,11 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 		// The phase 0006 vocabulary (D5a, D6a, D11, D12).
 		{"TargetAuth", "method", []string{
 			string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
-			string(TargetAuthStaticKey)}},
+			string(TargetAuthEphemeralAccount), string(TargetAuthStaticKey)}},
+		// The phase 0013 vocabulary (D13, D14).
+		{"AuthorizeResponse", "algorithm_profile", []string{
+			string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
+			string(AlgorithmProfileLegacyDevice)}},
 		{"FilterPolicy", "exec_mode", []string{
 			string(ExecModeFiltered), string(ExecModeRestricted)}},
 		{"RestrictedCommand", "form", []string{
@@ -347,6 +351,7 @@ func TestSpecDocumentsTheV2PolicySchemas(t *testing.T) {
 		"permitted_forwards":        "ForwardPolicy",
 		"permitted_global_requests": "GlobalRequestPolicy",
 		"target_auth":               "TargetAuth",
+		"target_auth_ladder":        "TargetAuthLadder",
 	} {
 		ref := "#/components/schemas/AuthorizeResponse/properties/" + field + "/$ref"
 		node, ok := resolveRef(doc, ref)
@@ -408,6 +413,15 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		string(ArgumentLiteral), string(ArgumentPrefix), string(ArgumentOneOf),
 		string(ArgumentAny),
 		string(HopConnectionDial), string(HopConnectionRelay),
+		// The phase 0013 vocabulary (D13, D14).
+		"target_auth_ladder", "algorithm_profile", "platform", "credential_kind",
+		"expiry_posture", "lifetime_seconds", "target_auth_rung",
+		string(TargetAuthEphemeralAccount),
+		string(CredentialKindPassword), string(CredentialKindPublicKey),
+		string(ExpiryPostureTargetEnforced), string(ExpiryPostureProxyEnforced),
+		string(ExpiryPostureAcceptedRisk),
+		string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
+		string(AlgorithmProfileLegacyDevice),
 	} {
 		if !strings.Contains(readme, name) {
 			t.Errorf("%s does not document %q", readmePath, name)

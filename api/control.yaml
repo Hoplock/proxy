@@ -50,7 +50,31 @@ info:
     the change that was breaking anyway (PLAN §11): `ConnMeta.bastion_id` is
     now `proxy_id`, and `GET /v1/bastions/{bastion_id}/events` is now
     `GET /v1/proxies/{proxy_id}/events`.
-  version: 2.0.0
+
+    ## Policy vocabulary v3 (phase 0013)
+
+    Again the endpoints are untouched. What v3 adds is the vocabulary for
+    reaching an estate the proxy cannot administer as a POSIX host (PLAN D13,
+    D14):
+
+    - `target_auth_ladder` — an **ordered** list of credential methods the
+      proxy walks top-down, replacing the single `target_auth` object. Both
+      present is refused; absent still means "use local config"; an empty
+      ladder is a **denial**.
+    - the `ephemeral-account` method and its device-driver parameters —
+      `platform`, `credential_kind`, `expiry_posture`, `lifetime_seconds`.
+    - `algorithm_profile` — a per-route, server-named preset for the legs whose
+      devices speak nothing a modern default enables.
+    - `username` becomes **required** on every provisioning method
+      (`ephemeral-user`, `ephemeral-account`, `static-key`). This is the one
+      break in v3, and it is deliberate: the parameter used to default to the
+      identity's `login`, a client-typed string that must never be the basis of
+      an authorization decision.
+
+    `policy_version` is therefore `3`. Every other v3 field is additive with a
+    documented absent-value default, and each default is the behaviour a v2
+    server already produced.
+  version: 3.0.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -647,7 +671,10 @@ components:
           description: |
             The highest **policy vocabulary** version this proxy implements.
             Absent means `1` (the phase 0002/0003 vocabulary: `permitted_channels`
-            and `filter_policy.rules` only). The current vocabulary is `2`.
+            and `filter_policy.rules` only). Version `2` added the phase 0006
+            policy axes; the current vocabulary is `3`, which added the
+            credential ladder, the `ephemeral-account` method, and the
+            per-route algorithm profile.
 
             The server MUST NOT answer with policy fields introduced after this
             version. That constraint is what makes the proxy's fail-closed rule
@@ -707,6 +734,45 @@ components:
           $ref: '#/components/schemas/GlobalRequestPolicy'
         target_auth:
           $ref: '#/components/schemas/TargetAuth'
+        target_auth_ladder:
+          $ref: '#/components/schemas/TargetAuthLadder'
+        algorithm_profile:
+          type: string
+          enum: [default, legacy-rsa-sha1, legacy-device]
+          description: |
+            Which SSH algorithm set the proxy may offer on the **proxy→target**
+            leg for this route (contract v3, applied by phase 0014).
+
+            Much of the estate `ephemeral-account` exists to reach speaks key
+            exchanges, host-key algorithms, ciphers, and MACs that a modern SSH
+            library does not enable by default, and without a way to say so
+            those routes simply do not connect.
+
+            Two properties make that safe, and it needs both. The profile is
+            **named by the server, per route** — never a proxy-wide config
+            knob, which would weaken every leg in the fleet to serve the oldest
+            device on it. And it is a **named preset**, not an algorithm list,
+            so it cannot be widened one algorithm at a time by someone who does
+            not know what they are enabling, and the audit record names
+            something a reviewer understands.
+
+            - `default` — nothing beyond the library defaults. **Absent ⇒
+              `default`**, and it is the only profile that is not a weakening.
+            - `legacy-rsa-sha1` — additionally offers RSA with SHA-1 signatures
+              (`ssh-rsa`) for host keys and public-key authentication. Separate
+              from the profile below so a route needing only this does not also
+              get CBC and SHA-1 key exchange.
+            - `legacy-device` — `legacy-rsa-sha1` plus the SHA-1 key exchanges,
+              CBC ciphers, and SHA-1 MACs that appliance firmware of that era
+              offers.
+
+            Anything other than `default` is a **weakening and emits its own
+            audit event** (`algorithm_profile` in the record), on D14's sibling
+            rule for credential methods: an operator learns that a route runs on
+            SHA-1 from the record, not by reading policy. An unknown profile is
+            refused rather than coerced — coercing to `default` would deny every
+            route on the estate this exists for, and coercing to the widest
+            would weaken a leg nobody asked to weaken.
         filter_policy:
           $ref: '#/components/schemas/FilterPolicy'
         hop:
@@ -917,17 +983,28 @@ components:
         an **outage-class denial** (PLAN §4.3): the session fails and says so.
         It is never a fallback to a different method, which would mean
         connecting with credentials the server did not choose.
+
+        **Contract v3 supersedes this single object with `target_auth_ladder`**
+        (D14), an ordered list of exactly these entries. The two are
+        alternatives, never layers: a response carrying both is refused. A v2
+        server keeps sending this object and it keeps meaning what it meant.
       required: [method]
       properties:
         method:
           type: string
-          enum: [ephemeral-user, brokered-key, static-key]
+          enum: [ephemeral-user, brokered-key, ephemeral-account, static-key]
           description: |
             `ephemeral-user` — create a short-lived OS user and key on the
             target and remove them afterwards (D6, PLAN §5.1).
             `brokered-key` — use a per-target credential held only for the
             session and never written to disk (PLAN §5.2), for devices the
             proxy cannot administer.
+            `ephemeral-account` — create a short-lived administrator on a device
+            through a platform driver and remove it afterwards (D13, PLAN §5.3).
+            The same lifecycle as `ephemeral-user` in a different vocabulary
+            over a different transport: an appliance cannot run `useradd`, but
+            it can create an administrator, set its credential, scope it, pin it
+            to a source address, and delete it again.
             `static-key` — the development placeholder from phase 0005; it is
             named here so a fixture can select it, and it is not a production
             method.
@@ -947,22 +1024,125 @@ components:
             parameter may be a constraint, and dropping a constraint widens
             access.
 
+            **`username` is REQUIRED on every provisioning method** —
+            `ephemeral-user`, `ephemeral-account`, and `static-key` alike
+            (contract v3). Before v3 it defaulted to the identity's `login`,
+            which is a **client-typed string** the proxy must never base an
+            authorization decision on; letting it name an OS or device account
+            was that rule leaking through the back door. The account name is
+            what the target's own audit trail, its file ownership, and — on a
+            password credential — half the credential pair are made of, so the
+            server names it or there is no route. `brokered-key` is deliberately
+            not in that set: it logs into an account that already exists and was
+            chosen by an operator.
+
             Documented parameters today:
 
-            - `ephemeral-user`: `username` (the OS user to create; absent means
-              derive it from the identity's login), `key_type` (e.g.
-              `ed25519`), `lifetime_seconds` (upper bound on the provisioned
-              credential's life).
-            - `brokered-key`: `username` (the standing account to log in as)
+            - `ephemeral-user`: `username` (**required**: the OS user to
+              create), `key_type` (e.g. `ed25519`; absent leaves the proxy's
+              default), `lifetime_seconds` (upper bound on the provisioned
+              credential's life; absent leaves it unbounded by the route).
+            - `brokered-key`: `username` (the standing account to log in as;
+              absent derives it from the identity's login, unchanged from v2)
               and `credential_ref` (an **opaque handle** naming local material
-              on the proxy). No credential material travels on this API in
-              v2 — `credential_ref` selects it, it does not carry it.
-            - `static-key`: `username`.
+              on the proxy). No credential material travels on this API —
+              `credential_ref` selects it, it does not carry it.
+            - `ephemeral-account` (D13, PLAN §5.3): `username` (**required**),
+              `platform` (**required**: which driver; it is **never inferred**
+              from a banner, because guessing wrong means running configuration
+              commands against the wrong parser), `credential_kind`
+              (**required**: `password` or `publickey`), `expiry_posture`
+              (**required**: `target-enforced`, `proxy-enforced`, or
+              `accepted-risk`), and `lifetime_seconds` (**required unless the
+              posture is `accepted-risk`** — a posture that enforces an expiry
+              with no expiry to enforce is a statement with no content).
+            - `static-key`: `username` (**required**).
+
+            None of the four `ephemeral-account` parameters has an absent-value
+            default, on purpose. `platform` is never guessed. A
+            `credential_kind` default would hand out the weaker of two
+            materially different exposures — a password is a reusable secret
+            that lands in the device's running configuration and often in its
+            own logs, a public key is not — to a policy that never said so. And
+            "the risk was accepted" is a sentence somebody writes down, never
+            one a proxy infers from an omission.
+
+            A **posture or credential kind the driver cannot satisfy is a
+            skipped ladder entry** (D14), not a downgrade to the other one: the
+            proxy walks on to the next rung and never substitutes. PLAN §5.1's
+            rule that a fleet unable to express expiry is refused holds for
+            `target-enforced` and only for it.
+
+            An entry the proxy cannot **read** — an unknown method, a malformed
+            `platform`, an unknown kind or posture, a missing required
+            parameter — is a contract violation that refuses the whole response,
+            not a rung to skip. That distinction is what stops a server hiding a
+            constraint in an entry the proxy would silently drop. Whether a
+            driver for a well-formed `platform` actually exists is not asked
+            here: customer-written drivers are a first-class case (D13), so the
+            set of platforms is open and an unregistered one is an outage-class
+            denial at provisioning time.
 
             Values are never logged, never echoed in an error, and never
             written to disk.
           example:
             username: svc-net
+            credential_ref: appliance-fleet-2026
+
+    TargetAuthLadder:
+      type: array
+      description: |
+        The **ordered** list of credential methods the server named for this
+        route (D14, contract v3, walked by phase 0014).
+
+        The proxy walks it **top-down and uses the first entry it can satisfy**.
+        An entry naming a method this build does not implement, or has no local
+        material for, or whose driver cannot meet its declared terms, is
+        **skipped**; exhausting the ladder is a clean session denial
+        (outage-class, PLAN §4.3).
+
+        What has never been permitted, and still is not, is the proxy connecting
+        with a method the server did not name. D6a's rule survives D14 untouched
+        — what changed is who may author the fallback, not whether one exists. A
+        PDP that will not accept degradation on a target writes a **one-entry
+        ladder**, which behaves exactly as D6a originally specified.
+
+        Three states, and they are three different policies:
+
+        - **Absent ⇒ the proxy uses its locally configured method** (v1/v2
+          behaviour, and what a server that never heard of this field implies).
+        - **Present and empty (`[]`) ⇒ a denial.** The server named no method it
+          will accept. It is the same absent-versus-empty rule as
+          `permitted_channels: []`, and it fails toward deny.
+        - **Present and non-empty ⇒ walk it in order.**
+
+        `target_auth` and `target_auth_ladder` are alternatives, never layers:
+        a response setting **both is refused** by the proxy, on the same
+        reasoning as `restricted_exec` beside a non-empty `rules` list (D12) —
+        two statements of which credential to use, disagreeing, have no
+        defensible resolution.
+
+        The rung actually used is recorded as an **audit fact and not a
+        user-facing one**: the record and the operator surface carry
+        `target_auth_method` and `target_auth_rung` (the 0-based index), and the
+        user is told nothing (D14). This is the one place PLAN §4.3's disclosure
+        rule does not apply, and the reason is that the information is about the
+        estate rather than about the user's own request — "you got the weaker
+        credential" tells an attacker which targets are softest and tells an
+        honest user nothing they can act on. Do not "fix" that.
+      items:
+        $ref: '#/components/schemas/TargetAuth'
+      example:
+        - method: ephemeral-account
+          params:
+            username: hoplock
+            platform: fortios
+            credential_kind: publickey
+            expiry_posture: target-enforced
+            lifetime_seconds: '900'
+        - method: brokered-key
+          params:
+            username: netadmin
             credential_ref: appliance-fleet-2026
 
     CacheHint:

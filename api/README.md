@@ -61,11 +61,29 @@ they only work together:
 
 The second rule would make any server upgrade a fleet-wide outage, so the proxy
 declares what it can read: `AuthorizeRequest.policy_version` carries the highest
-vocabulary it implements (absent means `1`; the current value is `2`, exported
+vocabulary it implements (absent means `1`; the current value is `3`, exported
 as `control.PolicyVersion`). **The server MUST NOT answer with policy fields
 introduced after that version.** A server that respects it can add vocabulary
 freely; a server that ignores it is caught at the first response instead of
 having its policy quietly thinned.
+
+### The v2→v3 revision
+
+Phase 0013 revises the vocabulary again, for the estate the proxy cannot
+administer as a POSIX host (PLAN D13, D14) — see "Policy vocabulary v3" below.
+The endpoints are again untouched, and every v3 field is additive with a
+documented absent-value default **except one**, called out here because it is
+the only break:
+
+**`username` becomes required on every provisioning method** —
+`ephemeral-user`, `ephemeral-account`, and `static-key`. Until v3 it defaulted
+to the identity's `login`, which is a **client-typed string**
+(`internal/identity` says in as many words that `Login` must never be the basis
+of an authorization decision), and letting it name an OS or device account was
+that rule leaking through the back door. A v2 server that omitted it now gets
+its route refused as a contract violation, loudly, at the first authorize call.
+`brokered-key` is deliberately not in that set: it logs into an account that
+already exists and was chosen by an operator, and its v2 behaviour is unchanged.
 
 ### The v1→v2 rename
 
@@ -119,7 +137,11 @@ One call shapes the whole session. The response carries:
   channel** (D5);
 - `permitted_requests`, `permitted_forwards`, `permitted_global_requests`: the
   other two policy axes (D5a) — see "Policy vocabulary v2" below;
-- `target_auth`: which target credential method to use (D6a), below;
+- `target_auth`: which target credential method to use (D6a), below — or
+  `target_auth_ladder`, the ordered list that supersedes it in v3 (D14). **Both
+  present is refused**;
+- `algorithm_profile`: the per-route SSH algorithm preset for the proxy→target
+  leg (v3), below;
 - `filter_policy`: an ordered `rules` list, each rule a `match` pattern with
   **its own** `action` (`allow_and_log`, `block_command`, `warn_and_continue`,
   `kill_session`) and an optional operator `message`, plus a `mode`
@@ -149,6 +171,8 @@ Nothing below is enforced yet; each field names the phase that consumes it.
 | `permitted_forwards` | destinations are **not policed** (v1) | an allow-list per direction; an empty direction denies it | 0009 |
 | `permitted_global_requests` | global requests are **relayed unpoliced** (v1) | an allow-list; `{}` denies all of them | 0009 |
 | `target_auth` | the proxy uses its **locally configured** method (v1) | the server's choice for this route | 0007 |
+| `target_auth_ladder` | the proxy uses its **locally configured** method (v1/v2) | an ordered ladder; `[]` **denies the session** | 0014 |
+| `algorithm_profile` | `default` — nothing beyond the library defaults | a named preset; anything but `default` is a weakening | 0014 |
 | `hop.connection` | `dial` (the original next-hop behaviour) | `dial` or `relay` | 0008 |
 | `filter_policy.exec_mode` | `filtered` (the v1 rule list) | `filtered` or `restricted` | 0010 |
 | `policy_version` (request) | `1` | the vocabulary the proxy implements | — |
@@ -228,9 +252,10 @@ account), never the selection.
 
 | `method` | What it does | Documented `params` |
 | --- | --- | --- |
-| `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it (D6, PLAN §5.1) | `username`, `key_type`, `lifetime_seconds` |
+| `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it (D6, PLAN §5.1) | `username` (**required**), `key_type`, `lifetime_seconds` |
 | `brokered-key` | Uses a per-target credential held for the session and never written to disk (PLAN §5.2) | `username`, `credential_ref` |
-| `static-key` | The phase 0005 development placeholder; not a production method | `username` |
+| `ephemeral-account` | Creates a short-lived administrator on a device through a platform driver and removes it (D13, PLAN §5.3) | `username`, `platform`, `credential_kind`, `expiry_posture` (**all required**), `lifetime_seconds` |
+| `static-key` | The phase 0005 development placeholder; not a production method | `username` (**required**) |
 
 `params` is an open string map **on purpose**: a future Hoplock Control that
 mints per-session target credentials arrives as another `method` plus its own
@@ -244,6 +269,150 @@ A method the proxy does not implement, or has no local material for, is an
 **outage-class denial** (PLAN §4.3): the session fails and says it is an outage.
 It is never a fallback to another method, which would mean connecting with
 credentials the server did not choose.
+
+## Policy vocabulary v3
+
+Contract v3 (phase 0013) is the vocabulary for routing a session to a device the
+proxy cannot administer as a POSIX host: an ordered credential ladder, the
+`ephemeral-account` method and the driver parameters it needs, and a per-route
+algorithm profile for the legs that connect on nothing modern.
+
+Nothing below is enforced yet — phase 0014 walks the ladder, drives the drivers,
+and applies the profile. The one thing that *is* enforced here is the contract
+gate: a response the proxy cannot read exactly is refused as a contract
+violation (an outage, never a deny).
+
+### The credential ladder (`target_auth_ladder`, D14, phase 0014)
+
+`target_auth` said which single method to use, and an unsatisfiable one was a
+clean denial. That rule optimises for never connecting with the wrong credential
+at the cost of not connecting at all — and a session that does not happen
+produces no recording, no command policy, and no audit trail. For a product
+whose first claim is reaching the devices nothing else reaches, denial is
+frequently the worse security outcome.
+
+What made a fallback unacceptable was never degradation; it was **the proxy
+choosing**. So the field becomes an ordered list the PDP authors:
+
+```json
+"target_auth_ladder": [
+  {"method": "ephemeral-account",
+   "params": {"username": "hoplock", "platform": "fortios",
+              "credential_kind": "publickey", "expiry_posture": "target-enforced",
+              "lifetime_seconds": "900"}},
+  {"method": "brokered-key",
+   "params": {"username": "netadmin", "credential_ref": "edge-fleet-2026"}}
+]
+```
+
+The proxy walks it **top-down and uses the first entry it can satisfy**. An
+entry naming a method this build does not implement, or has no local material
+for, or whose driver cannot meet its declared terms, is **skipped**. Exhausting
+the ladder is an outage-class denial (PLAN §4.3). Nothing is proxy-invented: a
+**one-entry ladder** is exactly D6a's original behaviour, and a PDP that will
+not accept degradation on a target writes one.
+
+| Shape | Means |
+| --- | --- |
+| Absent | The proxy uses its **locally configured** method (v1/v2 behaviour) |
+| `[]` | **A denial.** The server named no method it will accept — the same absent-versus-empty rule as `permitted_channels: []` |
+| Non-empty | Walk it in order |
+| Both `target_auth` and `target_auth_ladder` | **A contract violation the proxy refuses**, on the `restricted_exec`-beside-`rules` precedent (D12): two statements of which credential to use, disagreeing, have no defensible resolution |
+
+A v2 server keeps sending a single `target_auth` object, and the proxy reads it
+as a one-entry ladder. Both shapes are read through one accessor
+(`AuthorizeResponse.Ladder`), so nothing downstream has to know which shape a
+given server speaks.
+
+**The rung used is an audit fact, not a user-facing one.** The record and the
+operator surface carry `target_auth_method` and `target_auth_rung` (the 0-based
+index); the user is told nothing. This is the one place PLAN §4.3's disclosure
+rule does not apply, and the reason is that the information is about the estate
+rather than about the user's own request: "you got the weaker credential" tells
+an attacker which targets are softest and tells an honest user nothing they can
+act on. It is written down here so a later reader does not "fix" it.
+
+**Read versus satisfy.** An entry the proxy cannot *read* — unknown method,
+malformed `platform`, unknown credential kind or posture, a missing required
+parameter — is a contract violation that refuses the **whole response**, not a
+rung to skip. Only an entry the proxy cannot *satisfy* is skipped. Keeping the
+two apart is what stops a server hiding a constraint in an entry the proxy would
+silently drop.
+
+### Ephemeral accounts on devices (`ephemeral-account`, D13, phase 0014)
+
+A FortiGate cannot run `useradd`, has no `authorized_keys` and no home
+directory — but it can create an administrator, set its password or public key,
+scope it to an access profile, restrict it to a source address, and delete it
+again. Those are the same operations `ephemeral-user` performs; the transport
+and the vocabulary differ, not the model. The per-platform implementation is a
+**driver** (`internal/auth/target/device`), and the route **names the platform**
+— the proxy never sniffs a banner and guesses, because guessing wrong means
+running configuration commands against the wrong parser.
+
+| Param | Values | Absent means |
+| --- | --- | --- |
+| `username` | The account name the proxy provisions | **Refused** (contract violation) |
+| `platform` | Which driver, e.g. `fortios`. Lowercase letters, digits, single hyphens | **Refused** — never inferred |
+| `credential_kind` | `password` or `publickey` | **Refused** |
+| `expiry_posture` | `target-enforced`, `proxy-enforced`, `accepted-risk` | **Refused** |
+| `lifetime_seconds` | Whole seconds | **Refused** unless the posture is `accepted-risk` |
+
+None of them has an absent-value default, and that is the point. `platform` is
+never guessed. A `credential_kind` default would hand out the weaker of two
+materially different exposures — a password is a reusable secret that lands in
+the device's running configuration and often in its own logs, a public key is
+not — to a policy that never said so. And "the risk was accepted" is a sentence
+somebody writes down, never one a proxy infers from an omission. A posture that
+enforces an expiry with no expiry to enforce is a statement with no content, so
+`lifetime_seconds` is required wherever the posture claims enforcement.
+
+**The expiry posture exists because OpenSSH's `expiry-time` does not.** On a
+POSIX host an ephemeral key dies whether or not the proxy is alive (PLAN §5.1);
+most device platforms have no equivalent, so the PDP selects the posture per
+target and the posture in force is in the audit record. PLAN §5.1's rule that a
+fleet unable to express expiry is refused holds for `target-enforced` and **only**
+for it.
+
+**A posture or credential kind the driver cannot satisfy is a skipped ladder
+entry, not a downgrade.** The proxy walks on to the next rung; it never
+substitutes a password for a key, or proxy-enforced expiry for target-enforced.
+
+Whether a driver for a well-formed `platform` exists is **not** a contract
+question. D13 makes customer-written drivers a first-class case, so the set of
+platforms is open and the contract cannot enumerate it; a platform the proxy has
+no driver for is an outage-class denial at provisioning time, and never the
+nearest driver. A proxy advertises the platforms it carries
+(`device.Registry.Platforms`), and a server should not name one it has not been
+told about.
+
+### Algorithm profile (`algorithm_profile`, phase 0014)
+
+Much of that estate speaks key exchanges, ciphers, host-key algorithms, and MACs
+that a modern SSH library does not enable by default, and without a way to say
+so those routes simply do not connect. So the profile for the **proxy→target**
+leg is named by the server, per route.
+
+| Profile | What it adds |
+| --- | --- |
+| `default` | Nothing. The absent-value default, and the only profile that is not a weakening |
+| `legacy-rsa-sha1` | RSA with SHA-1 signatures (`ssh-rsa`) for host keys and public-key auth |
+| `legacy-device` | `legacy-rsa-sha1` plus the SHA-1 key exchanges, CBC ciphers, and SHA-1 MACs that appliance firmware of that era offers |
+
+Two properties make this safe and it needs both. It is **per route, named by the
+server** — never a proxy-wide config knob, which would weaken every leg in the
+fleet to serve the oldest device on it, and a fleet-wide `sed` is exactly how
+that happens. And it is a **named preset**, not an algorithm list, so it cannot
+be widened one algorithm at a time by someone who does not know what they are
+enabling, and the audit record names something a reviewer understands rather
+than a string of identifiers they have to decode.
+
+Anything but `default` is a weakening and **emits its own audit event**
+(`algorithm_profile` in the record), on D14's sibling rule for credential
+methods: an operator learns that a route runs on SHA-1 from the record, not by
+reading policy. An unknown profile is refused rather than coerced — coercing to
+`default` would deny every route on the estate this exists for, and coercing to
+the widest would weaken a leg nobody asked to weaken.
 
 ### Hop connection direction (`hop.connection`, D11, phase 0008)
 
@@ -457,6 +626,12 @@ Requests/responses: `AuthenticateCertRequest`, `AuthenticatePasswordRequest`,
 `CacheInvalidateEvent`. The v2 policy vocabulary adds `RequestPolicy`,
 `ForwardPolicy`, `ForwardDestination`, `PortRange`, `GlobalRequestPolicy`,
 `TargetAuth`, `RestrictedExecPolicy`, `RestrictedCommand`, and `ArgumentSpec`.
+The v3 vocabulary adds `TargetAuthLadder`, `CredentialKind`, `ExpiryPosture`,
+and `AlgorithmProfile`, plus the `Param*` constants naming the parameters the
+contract defines. `AuthorizeResponse.Ladder` is the one accessor that reads both
+credential shapes, and `AuthorizeResponse.Profile` resolves the profile's
+absent-value default; call those rather than reading the fields, so no caller
+has to know which vocabulary a given server speaks.
 
 Every payload has a `Clone` method, and `AuthorizeResponse.Clone` is the single
 deep copy the cache and `internal/routing` both use: a decision is handed to many
@@ -507,7 +682,9 @@ startup, and every problem in a file is reported at once.
 | `routes[].permitted_requests` | `types` (from `pty-req`, `shell`, `exec`, `env`, `x11-req`, `auth-agent-req`) and `subsystems` (by name). **Omit the key** to leave requests unpoliced; write `{}` to deny every one. |
 | `routes[].permitted_forwards` | `direct_tcpip` and `forwarded_tcpip`, each a list of `host` + optional `port` or `port_range` (`from`/`to`). Omit the key to leave destinations unpoliced; an empty direction denies it. |
 | `routes[].permitted_global_requests` | `types`, e.g. `[tcpip-forward]`. Omit the key to relay everything; `types: []` denies all of them. |
-| `routes[].target_auth` | `method` (`ephemeral-user`, `brokered-key`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
+| `routes[].target_auth` | `method` (`ephemeral-user`, `brokered-key`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
+| `routes[].target_auth_ladder` | The v3 ordered ladder: a list of the same `method` + `params` entries. Omit to leave the proxy on its configured method; write `[]` to deny the session. Setting it **beside** `target_auth` fails at startup, exactly as the client would refuse it. |
+| `routes[].algorithm_profile` | `default` (the default), `legacy-rsa-sha1`, or `legacy-device`. |
 | `routes[].hop_connection` | `dial` (default) or `relay` for a nexthop route. `relay` requires `next_proxy_id`. |
 | `routes[].filter_policy` | `mode` plus ordered `rules` (each `match` + `action` + optional `message`), and `exec_mode` (`filtered`, the default, or `restricted`) with `restricted_exec`. Setting `restricted_exec` beside a rule list fails at startup, exactly as the client would refuse it. |
 | `routes[].filter_policy.restricted_exec` | `commands[]`: `executable` plus either `form: exact` with `argv`, or `form: positional` with `args[]` (`kind` of `literal`/`prefix`/`oneof`/`any`, `value`/`values`, `optional`). Anything not covered by a spec is denied. |
@@ -557,3 +734,7 @@ process exits.
    working.
 5. If the change alters the architecture, update `docs/PLAN.md` in the same PR
    (PROTOCOL §3).
+6. If the change touches this contract at all, it touches a **shared surface**:
+   `hoplock/control` vendors `api/` read-only (D3). Follow
+   `docs/CROSS-REPO-PROTOCOL.md` — upstream merges first (§2), and the PR owes a
+   `## Cross-repo impact` section with a ready-to-run sync kickoff (§4).
