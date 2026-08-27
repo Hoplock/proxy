@@ -42,6 +42,26 @@ type Target struct {
 	// trust belongs to the proxy in both directions, and this field is how a
 	// provisioner borrows it instead of duplicating it.
 	HostKeyCallback ssh.HostKeyCallback
+	// Ladder is the ORDERED list of credential methods Hoplock Control named
+	// for this route (D14, contract v3). The Selector walks it top-down,
+	// setting Auth to each rung in turn, and stops at the first one this proxy
+	// can satisfy.
+	//
+	// The pointer carries three states and they are not interchangeable: nil is
+	// "the server named none", a non-nil empty ladder is A DENIAL, and a
+	// non-empty one is the list to walk. Phase 0013's contract types make the
+	// same distinction for the same reason — collapsing empty into absent turns
+	// a denial into a connection on the proxy's own credential.
+	Ladder *control.TargetAuthLadder
+	// SessionID identifies the session this provisioning belongs to. The device
+	// method needs it: on a constrained platform the mapping event is the only
+	// place the account is tied to anything, and an event that cannot be joined
+	// to a session is not attribution (PLAN §5.3).
+	SessionID string
+	// Rung is which entry of Ladder produced Auth, counting from one. It is set
+	// by the Selector and read for the audit record: D14 makes the rung in
+	// force an audit fact, and the user is told nothing about it.
+	Rung int
 }
 
 // Addr is the "host:port" to dial.
@@ -83,6 +103,17 @@ type ProvisionedAccess struct {
 	// than once and MUST run even if the session crashed; callers use Close,
 	// which enforces the once-only part for every implementation.
 	Teardown func(context.Context) error
+	// Method is the credential method that actually provisioned this access,
+	// and Rung is its position in the server's ladder, counting from one (D14).
+	//
+	// They exist because the ladder makes "which credential did this session
+	// get" a question with more than one possible answer, and the audit record
+	// has to name the entry that was USED rather than the entry that was asked
+	// for. It is an audit fact and never a user-facing one: telling a user they
+	// got the weaker credential tells an attacker which targets are softest and
+	// tells an honest user nothing they can act on (D14).
+	Method string
+	Rung   int
 
 	once sync.Once
 	err  error

@@ -263,6 +263,8 @@ func (s *session) setup() {
 		Host:            route.Host,
 		Port:            route.Port,
 		Auth:            route.TargetAuth,
+		Ladder:          route.TargetAuthLadder,
+		SessionID:       s.id,
 		HostKeyCallback: s.hostKeyCallback,
 	})
 	if err != nil {

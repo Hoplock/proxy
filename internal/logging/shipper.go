@@ -274,6 +274,26 @@ func (s *Shipper) RecordPriority(rec control.LogRecord) {
 	}
 }
 
+// Deliverable reports whether a record emitted now has somewhere to go.
+//
+// It is not "is Hoplock Control reachable". A DISK BUFFER IS A LOGGING PATH: a
+// record written to it is owed to the server rather than lost, and PLAN §5.3's
+// fail-closed rule turns on exactly that distinction — a route whose
+// attribution exists only in one record is refused when there is nowhere to put
+// it, and served when only the network destination is down.
+//
+// With no buffer configured the network is the only path, and a record already
+// counted as dropped is the proof that it is not there.
+func (s *Shipper) Deliverable() bool {
+	if s == nil || s.client == nil {
+		return false
+	}
+	if s.buffer != nil {
+		return true
+	}
+	return s.dropped.Load() == 0
+}
+
 // Flush delivers everything queued and then tries to drain the disk buffer. It
 // is what tests wait on, and what a shutdown uses to avoid abandoning records
 // that were one interval away from being sent.

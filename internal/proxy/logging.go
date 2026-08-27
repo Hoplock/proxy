@@ -101,17 +101,31 @@ func (s *session) recordHopLeg(plan *routing.HopPlan) {
 // configuration otherwise, which is the same precedence Provision itself
 // applies — so the record says what happened rather than what was asked for.
 func (s *session) recordCredential(route *routing.Route, access *target.ProvisionedAccess) {
-	method := s.srv.targetAuth.Name()
-	if route.TargetAuth != nil && route.TargetAuth.Method != "" {
-		method = string(route.TargetAuth.Method)
+	// Since contract v3 the server sends a LADDER, so "which method" is a
+	// question with more than one possible answer and the record must name the
+	// one that was USED (D14). The provisioner reports it; the route's first
+	// entry is only the fallback for a method that does not.
+	method := access.Method
+	if method == "" {
+		method = s.srv.targetAuth.Name()
+		if route.TargetAuth != nil && route.TargetAuth.Method != "" {
+			method = string(route.TargetAuth.Method)
+		}
 	}
 	account := ""
 	if access.ClientConfig != nil {
 		account = access.ClientConfig.User
 	}
-	s.rec.Provisioning(fmt.Sprintf("target access provisioned by %s", method), logging.Attrs{}.
+	attrs := logging.Attrs{}.
 		Set(logging.AttrCredentialMethod, method).
-		Set(logging.AttrTargetAccount, account))
+		Set(logging.AttrTargetAccount, account)
+	if access.Rung > 0 {
+		// The rung in force is an AUDIT fact and never a user-facing one (D14):
+		// "you got the weaker credential" tells an attacker which targets are
+		// softest and tells an honest user nothing they can act on.
+		attrs = attrs.Set(logging.AttrCredentialRung, strconv.Itoa(access.Rung))
+	}
+	s.rec.Provisioning(fmt.Sprintf("target access provisioned by %s", method), attrs)
 }
 
 // recordHostKey captures a target host key the proxy accepted (D7).

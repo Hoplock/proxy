@@ -36,18 +36,29 @@ const (
 	AttrError          = "error"           // the failure text, never a credential
 
 	// Route and policy (the authorize record).
-	AttrRouteType         = "route_type"         // direct or nexthop
-	AttrPermissions       = "permissions"        // the opaque permission-set name
-	AttrDecisionID        = "decision_id"        // correlates with Hoplock Control's own trail
-	AttrTargetPort        = "target_port"        //
-	AttrFinalTarget       = "final_target"       // the end host, on a chained session
-	AttrHopNextProxy      = "hop_next_proxy"     // the proxy this leg hands off to (D11)
-	AttrHopConnection     = "hop_connection"     // dial or relay: this leg's direction (D11)
-	AttrExecMode          = "exec_mode"          // filtered or restricted (D12)
-	AttrFilterMode        = "filter_mode"        // whitelist or blacklist
-	AttrCredentialMethod  = "credential_method"  // the target-credential method (D6a)
-	AttrTargetAccount     = "target_account"     // the account the proxy connected to the target as
-	AttrPermittedChannels = "permitted_channels" //
+	AttrRouteType        = "route_type"        // direct or nexthop
+	AttrPermissions      = "permissions"       // the opaque permission-set name
+	AttrDecisionID       = "decision_id"       // correlates with Hoplock Control's own trail
+	AttrTargetPort       = "target_port"       //
+	AttrFinalTarget      = "final_target"      // the end host, on a chained session
+	AttrHopNextProxy     = "hop_next_proxy"    // the proxy this leg hands off to (D11)
+	AttrHopConnection    = "hop_connection"    // dial or relay: this leg's direction (D11)
+	AttrExecMode         = "exec_mode"         // filtered or restricted (D12)
+	AttrFilterMode       = "filter_mode"       // whitelist or blacklist
+	AttrCredentialMethod = "credential_method" // the target-credential method (D6a)
+	AttrTargetAccount    = "target_account"    // the account the proxy connected to the target as
+	AttrCredentialRung   = "credential_rung"   // which entry of the server's ladder was used (D14)
+	AttrPlatform         = "platform"          // the device platform a driver served (D13)
+	AttrExpiryPosture    = "expiry_posture"    // who enforces the account's end (D13)
+	AttrAccessProfile    = "access_profile"    // the platform's own scope for a device account
+	AttrLifetimeSeconds  = "lifetime_seconds"  // how long a provisioned credential was meant to live
+	AttrNameConstrained  = "name_constrained"  // true when the account name had to drop its login segment
+	// AttrPersistsAcrossReload and AttrPersistenceReason carry a driver's
+	// persistence declaration onto the session it served, so a standing-account
+	// risk is recorded where the risk is taken (D13).
+	AttrPersistsAcrossReload = "persists_across_reload"
+	AttrPersistenceReason    = "persistence_reason"
+	AttrPermittedChannels    = "permitted_channels" //
 
 	// Channels, requests, and forwarding.
 	AttrChannelID   = "channel_id"   // names the channel within the session
