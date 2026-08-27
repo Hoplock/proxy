@@ -86,6 +86,22 @@ A `TargetAuthenticator` for `ephemeral-account`, structured like the
   `maxPrincipalLen = 32` and a 14-character login segment — generalise it over a
   declared limit without changing what it produces on Linux, and keep its
   existing tests green as the proof.
+
+  **Do not entrench where the login segment's value comes from.** Today
+  `ephemeral.go` resolves it as `p.str(ParamUsername, id.Login)` and hands the
+  result to `newPrincipal`, and that `id.Login` fallback is a **known defect**:
+  `internal/identity/identity.go` says `Login` is what the user typed at their
+  SSH client and "must never be the basis of an authorization decision", which
+  choosing an account name is. **Prompt 0023 owns closing it**, for every method
+  at once, and it closes it here too precisely because you are about to share
+  this function rather than fork it.
+
+  So: take the account name you are handed, thread it through, and **add no
+  second reader of `id.Login`** — not in the device provisioner, not in a
+  generalised `newPrincipal`, not as a "temporary" default. `ephemeral-account`
+  already requires `username` on the route (contract v3), so nothing you write
+  needs a fallback at all. If you find yourself wanting one, that is the finding
+  0023 exists for: say so in your learnings rather than writing it.
 - **Collision retry, never adoption** (§5.3). The POSIX path's idempotent
   "already exists" is unsafe here: verify non-existence, retry with a fresh
   token on collision, refuse after a small budget.

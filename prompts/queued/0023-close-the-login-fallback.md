@@ -3,14 +3,6 @@
 > New prompt, queued last on purpose. It closes the **final** path by which a
 > string the user typed at their SSH client can become the account the proxy
 > logs into a target as.
->
-> It runs after everything currently queued because each of 0014, 0016, 0019 and
-> 0021 touches the account or the credential, and closing the fallback under
-> them would be closing a moving target. It is deliberately **not** urgent: the
-> contract already forbids the dangerous half (phase 0013 made `username`
-> required on `ephemeral-user`, `ephemeral-account`, and `static-key`). What
-> survives is the local-configuration path and one method the contract still
-> lets omit — and "closed except when the server says nothing" is not closed.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -30,6 +22,50 @@
   made `username` required on three of four methods and recorded this phase's
   work as its named follow-up). Also open **0014** and **0016** if they exist by
   the time you run: both name accounts on a target.
+
+## Why it is queued here, and not earlier
+
+Recorded because it was argued, and because the obvious objection ("this is a
+correctness defect, run it first") deserves an answer a future session can check
+rather than take on trust.
+
+**It is not blocked by, and does not block, the phases ahead of it.** There is
+exactly one account-naming path — `newPrincipal(prefix, login)` in
+`internal/auth/target/principal.go`, fed from `ephemeral.go`. 0014 *shares* that
+function rather than forking it (its prompt says to generalise it "without
+changing what it produces on Linux"), and 0016 and 0021 operate on an account
+that is already named. So no phase ahead invents a second answer, and fixing the
+source once fixes every consumer whenever it happens. An earlier draft of this
+prompt claimed the opposite — that closing the fallback under 0014–0021 would be
+"closing a moving target" — and that was wrong; it is corrected here rather than
+quietly deleted, because it is the kind of reasoning that gets re-derived.
+
+**What actually keeps it late is the cost of moving it.** Inserting before 0014
+renumbers nine queued prompts, and `0014`–`0022` are cited roughly seventy times
+across `docs/PLAN.md`, the other queued prompts, and `docs/learnings/`. PROTOCOL
+§3 makes chasing every one of those references mandatory, and a queued prompt
+pointing at a number that no longer exists is the exact failure that section was
+written about. That is a large, error-prone change to buy ordering that nothing
+technically requires.
+
+**And the defect has no live exploit path.** `Login` is not an arbitrary
+attacker-chosen string: it must be a login Hoplock Control authenticated. What
+is wrong is narrower and still real — the account is selected by an input this
+system's own rules say never to key a decision on, and `Login` is explicitly not
+guaranteed stable across logins, so the same person can map to different target
+accounts and different people can map to the same one. Design integrity, not an
+open door.
+
+**The one thing that could not wait has been handled without moving anything:**
+0014's prompt now carries an explicit instruction not to entrench the login
+segment's source or add a second `id.Login` reader while it generalises
+`principal.go`. That is where the session doing the work will read it, which the
+plan alone would not guarantee.
+
+> The contract already forbids the dangerous half — phase 0013 made `username`
+> required on `ephemeral-user`, `ephemeral-account`, and `static-key`. What
+> survives is the local-configuration path and one method the contract still
+> lets omit, and "closed except when the server says nothing" is not closed.
 
 ## The defect
 
