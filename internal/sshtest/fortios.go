@@ -107,6 +107,12 @@ type FakeFortiOS struct {
 
 // StartFortiOS starts a fake device on a loopback port.
 func StartFortiOS(opts FortiOSOptions) (*FakeFortiOS, error) {
+	return StartFortiOSOn("127.0.0.1:0", opts)
+}
+
+// StartFortiOSOn starts a fake device on a given address, for the end-to-end
+// topology, where it has to be reachable from another container.
+func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	hostKey := opts.HostKey
 	if hostKey == nil {
 		var err error
@@ -162,7 +168,7 @@ func StartFortiOS(opts FortiOSOptions) (*FakeFortiOS, error) {
 	cfg.AddHostKey(hostKey)
 	d.config = cfg
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("sshtest: listen: %w", err)
 	}

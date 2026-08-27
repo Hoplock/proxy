@@ -26,6 +26,7 @@ func TestTopology(t *testing.T) {
 	t.Run("channel policy", testChannelPolicy)
 	t.Run("command policy", testCommandPolicy)
 	t.Run("target credentials", testTargetCredentials)
+	t.Run("device credentials", testDeviceCredentials)
 	t.Run("denial disclosure", testDenialDisclosure)
 	t.Run("telemetry", testTelemetry)
 	// Stops Hoplock Control, so nothing may run after it but the leak check.
@@ -49,6 +50,12 @@ func testIsolation(t *testing.T) {
 
 	if r := execIn(t, nodeUser, "getent", "hosts", nodeTarget); r.code == 0 {
 		t.Errorf("the user node can reach the target directly; it must only reach it through a proxy\n%s", r)
+	}
+	// The appliance is on the same terms as the target, and the claim matters
+	// more there: a device the proxy provisions administrators on is a device
+	// nobody should be able to reach around the proxy.
+	if r := execIn(t, nodeUser, "getent", "hosts", nodeDevice); r.code == 0 {
+		t.Errorf("the user node can reach the appliance directly; the device scenarios would prove nothing\n%s", r)
 	}
 	// The relay claim (D11): the zone proxy is not reachable from where users
 	// are, and its listener is bound to loopback inside its own container
@@ -390,6 +397,105 @@ func testTargetCredentials(t *testing.T) {
 	})
 }
 
+// --- device credentials (D13, D14, PLAN §5.3) --------------------------------
+
+// testDeviceCredentials is phase 0014 against a real SSH client.
+//
+// The device node is a CLI over SSH with no useradd, no authorized_keys and no
+// home directory — the gear D13 exists for. What these scenarios watch is that
+// a session to it gets an administrator that did not exist a moment earlier, is
+// attributable to the person who opened it, and is gone afterwards.
+func testDeviceCredentials(t *testing.T) {
+	t.Run("a device session logs in as an administrator the proxy created", func(t *testing.T) {
+		before := deviceAccounts(t)
+
+		s := aliceOn(proxyDirect, "fortigate.company.com")
+		// The device answers `show system admin` with its administrator table,
+		// which is both a real command and the one that proves which account
+		// the proxy connected as: the table it prints contains that account.
+		s.command = "show system admin"
+		r := ssh(t, s)
+		wantExit(t, r, "ephemeral-account", 0)
+
+		// FortiOS accepts 35-character names, which is above PLAN §5.3's
+		// threshold, so the readable scheme survives here and the account on
+		// the device names the person it belongs to.
+		var created string
+		for _, name := range strings.Split(r.stdout, "\n") {
+			name = strings.Trim(strings.TrimSpace(name), `"`)
+			if strings.HasPrefix(name, "hl-") && strings.Contains(name, "-alice-") {
+				created = name
+			}
+		}
+		if created == "" {
+			t.Fatalf("ephemeral-account: the device's administrator table shows no hl-<tag>-alice-<token> account\n%s", r)
+		}
+		for _, name := range before {
+			if name == created {
+				t.Fatalf("ephemeral-account: %q existed before the session; the account must not have been adopted", created)
+			}
+		}
+	})
+
+	t.Run("the administrator is removed when the session ends", func(t *testing.T) {
+		s := aliceOn(proxyDirect, "fortigate.company.com")
+		s.command = "show system admin"
+		r := ssh(t, s)
+		wantExit(t, r, "ephemeral-account", 0)
+
+		// Teardown runs as the session closes, so the check is polled rather
+		// than immediate — but it is bounded, because "eventually" is not the
+		// guarantee: a standing administrator on a firewall is exactly what
+		// this method exists to prevent.
+		waitFor(t, "the device administrator to be removed", func() bool {
+			accounts, err := tryDeviceAccounts()
+			if err != nil {
+				return false
+			}
+			for _, name := range accounts {
+				if strings.HasPrefix(name, "hl-") {
+					return false
+				}
+			}
+			return true
+		})
+		if !strings.Contains(r.stdout, "hl-") {
+			t.Errorf("ephemeral-account: the session never saw its own account\n%s", r)
+		}
+	})
+
+	t.Run("the device's own administrator is never touched", func(t *testing.T) {
+		accounts := deviceAccounts(t)
+		found := false
+		for _, name := range accounts {
+			if name == "admin" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the device's own administrator is gone; the proxy must only ever remove what it created (have: %v)", accounts)
+		}
+	})
+
+	// D14: an unsatisfiable first entry is skipped and the session is served by
+	// the next one. Nothing here is proxy-invented — the ladder, and its order,
+	// are the server's.
+	t.Run("an unsatisfiable ladder entry falls through to the next", func(t *testing.T) {
+		s := aliceOn(proxyDirect, "ladder.company.com")
+		s.command = "/bin/echo ladder-ok"
+		r := ssh(t, s)
+		wantExit(t, r, "ladder fall-through", 0)
+		wantContains(t, r, "ladder fall-through", "ladder-ok")
+
+		// The rung in force is an AUDIT fact and never a user-facing one (D14):
+		// the client was told nothing about which credential it got, and the
+		// record says which one that was.
+		if strings.Contains(r.stderr, "ephemeral-account") || strings.Contains(r.stderr, "brokered") {
+			t.Errorf("the client was told which credential rung it got:\n%s", r.stderr)
+		}
+	})
+}
+
 // --- disclosure (PLAN §4.3) --------------------------------------------------
 
 // testDenialDisclosure is the deny half of the rule: vague, and identical
@@ -594,5 +700,19 @@ func testNoEphemeralLeak(t *testing.T) {
 	homes := execIn(t, nodeTarget, "sh", "-c", "ls /home")
 	if strings.Contains(homes.stdout, "hl-") {
 		t.Errorf("ephemeral home directories left on the target:\n%s", homes.stdout)
+	}
+
+	// The same check on the appliance. It matters more there, not less: FortiOS
+	// has no expiry field, so nothing but the proxy's own teardown and its
+	// reaper ever removes one of these — and what is left behind is a
+	// privileged administrator rather than an unprivileged shell account.
+	var onDevice []string
+	for _, name := range deviceAccounts(t) {
+		if strings.HasPrefix(name, "hl-") {
+			onDevice = append(onDevice, name)
+		}
+	}
+	if len(onDevice) > 0 {
+		t.Errorf("device administrators left on the appliance after the suite:\n%s", strings.Join(onDevice, "\n"))
 	}
 }

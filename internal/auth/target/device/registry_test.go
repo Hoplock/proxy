@@ -87,6 +87,36 @@ func TestShippedDriversDoNotPersistAccounts(t *testing.T) {
 	}
 }
 
+// TestPersistenceIsAllowedOnlyWithAWrittenReason is phase 0014's amendment to
+// D13, and the reason for it.
+//
+// The original rule was that a Hoplock driver may never declare
+// PersistsAcrossReload. Phase 0014 found it unsatisfiable on the platform D13
+// itself named: FortiOS has no runtime-only configuration plane, so a FortiGate
+// driver can be honest or it can ship. The bar moved from "must be false" to
+// "must be justified in writing" — which is still a bar a change made in
+// passing cannot clear, because it asks for a claim about the PLATFORM that
+// somebody can check against the vendor's documentation.
+func TestPersistenceIsAllowedOnlyWithAWrittenReason(t *testing.T) {
+	reg := NewRegistry()
+	forced := fixtureDriver{
+		platform: "forced-platform",
+		caps: Capabilities{
+			MaxAccountNameLen: 32,
+			CredentialKinds:   []control.CredentialKind{control.CredentialKindPassword},
+
+			PersistsAcrossReload: true,
+			PersistenceReason:    "the platform commits every configuration change to non-volatile storage and offers no per-command alternative",
+		},
+	}
+	if err := reg.Register(forced); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := CheckShipped(reg); err != nil {
+		t.Fatalf("CheckShipped rejected a driver that persists because its platform gives it no choice, and said so: %v", err)
+	}
+}
+
 // TestUnknownPlatformIsRefusedNeverGuessed covers the registry's central
 // promise: a platform with no driver is an outage-class denial, and never the
 // nearest driver.

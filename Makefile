@@ -60,6 +60,7 @@ e2e: e2e-up
 e2e-build:
 	CGO_ENABLED=0 GOOS=linux $(GO) build -ldflags "$(LDFLAGS)" -o $(DEPLOY_DIR)/bin/hoplock-proxy ./cmd/proxy
 	CGO_ENABLED=0 GOOS=linux $(GO) build -ldflags "$(LDFLAGS)" -o $(DEPLOY_DIR)/bin/mock-control ./cmd/mock-control
+	CGO_ENABLED=0 GOOS=linux $(GO) build -ldflags "$(LDFLAGS)" -o $(DEPLOY_DIR)/bin/hoplock-fake-device ./cmd/fake-device
 
 ## e2e-up: generate key material and start the topology (leaves it running,
 ## which is what makes a failing scenario debuggable)

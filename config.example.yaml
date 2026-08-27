@@ -230,3 +230,50 @@ auth:
       file_suffix: ".key"
       # env source: the variable is "<env_prefix><REF>", upper-cased.
       env_prefix: "HOPLOCK_BROKERED_"
+
+    # ephemeral-account (D13, PLAN §5.3): a short-lived ADMINISTRATOR on a
+    # device the proxy cannot administer as a host. A FortiGate cannot run
+    # useradd and has no authorized_keys, but it can create an administrator,
+    # scope it to an access profile, restrict it to a source address, and delete
+    # it again — the same operations, in the platform's own vocabulary, through
+    # a driver for the platform the route NAMES. Nothing is inferred from a
+    # banner: guessing wrong runs configuration commands against the wrong
+    # parser, on a device that is somebody's production network.
+    ephemeral_account:
+      # The privileged administrator this proxy logs into devices as. It needs
+      # rights to create and delete administrators, and nothing else.
+      admin_user: "hoplock-mgmt"
+      # Its password comes from the ENVIRONMENT, named here. The password is
+      # deliberately not a field in this file: a device management credential in
+      # a configuration file is one in a backup, a bug report, and a container
+      # image layer.
+      password_env: "HOPLOCK_DEVICE_ADMIN_PASSWORD"
+      # Or a private key, for devices that hold one for this administrator.
+      # Either this or password_env is required.
+      key_path: ""
+      # The platform drivers this proxy registers, and therefore the platforms
+      # it advertises to Hoplock Control. Empty means every driver this build
+      # ships. A route naming a platform with no driver is an outage-class
+      # denial, never the nearest driver.
+      platforms: []
+      # The platform authorization scope created administrators are given.
+      # Empty means the driver's own default, which on FortiOS is `prof_admin`.
+      #
+      # Read that default as a placeholder rather than a control: FortiOS has no
+      # built-in read-only profile, and Fortinet's own documentation notes that
+      # prof_admin often ships with the same permissions as super_admin. WHICH
+      # profile a route gets is a policy question that phase 0015 gives a
+      # vocabulary and phase 0016 applies.
+      access_profile: ""
+      # The address devices see this proxy connect from. Where a driver declares
+      # it can pin an account to a source address, this is what it is pinned to.
+      # Empty means no pin — a restriction not applied, rather than one applied
+      # loosely.
+      source_address: ""
+      # The orphan sweep. Its defaults (2m/10m) are TIGHTER than the POSIX
+      # method's, and that is the point: no device platform this build has a
+      # driver for can expire an account by itself, so the sweep is the primary
+      # removal path rather than a backstop for a crashed proxy.
+      reaper:
+        interval: "2m"
+        grace: "10m"

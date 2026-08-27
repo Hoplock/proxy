@@ -14,6 +14,9 @@
 #                  outbound relay registration (D11)
 #   target         a real sshd, with the prerequisites both credential methods
 #                  need (D6, D6a)
+#   device         a fake FortiOS appliance (cmd/fake-device): a CLI over SSH
+#                  with no useradd and no authorized_keys, which is what the
+#                  ephemeral-account method exists for (D13)
 #
 # Networks, and what each one is load-bearing for:
 #   edge   user ↔ the two reachable proxies ↔ control
@@ -56,11 +59,42 @@ services:
       - ./keys:/material:ro
     networks: [core]
 
+  # The appliance. It is on `core` for the same reason the target is: reachable
+  # through a proxy and by nothing else. Its administrator password arrives in
+  # the environment rather than in a file, which is also how the proxy reads it
+  # — a device management credential in a config file is one in a backup.
+  device:
+    build:
+      context: .
+      dockerfile: device/Dockerfile
+    command:
+      - "-listen"
+      - "0.0.0.0:22"
+      - "-hostname"
+      - "FGT-E2E"
+      - "-admin"
+      - "hoplock-mgmt"
+      - "-debug"
+      - "0.0.0.0:8081"
+    environment:
+      HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
+    networks: [core]
+    ports:
+      # The scenario suite reads the administrator table from the host, the same
+      # way it reads control's /debug/logs. A real appliance would be asked over
+      # its CLI; asserting the proxy's cleanup through the CLI the proxy uses
+      # would be asserting on the thing under test.
+      - "127.0.0.1:18081:8081"
+
   proxy-direct:
     build:
       context: .
       dockerfile: proxy/Dockerfile
     command: ["-config", "/etc/hoplock/config.yaml"]
+    environment:
+      # The device method reads the appliance administrator's password from the
+      # environment, never from its configuration file.
+      HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
     volumes:
       - ./proxy/proxy-direct.yaml:/etc/hoplock/config.yaml:ro
       - ./keys:/material:ro
