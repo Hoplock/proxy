@@ -14,8 +14,10 @@ package control
 // two almost-correct copies.
 //
 // The rule when adding a field to any of these types: if it is a slice, a map,
-// or a pointer, it needs a line here and a case in cache_test.go's mutation
-// test. Missing one is silent until two sessions collide.
+// or a pointer, it needs a line here and a case in a mutation test —
+// TestCloneIsolatesEveryMutableField in policy_test.go for the v2 vocabulary,
+// TestCloneIsolatesTheLadder in ladder_test.go for v3. Missing one is silent
+// until two sessions collide.
 
 func cloneStrings(in []string) []string {
 	if in == nil {
@@ -82,6 +84,27 @@ func (a *TargetAuth) Clone() *TargetAuth {
 		}
 	}
 	return out
+}
+
+// Clone deep-copies a credential ladder, entry by entry and parameter by
+// parameter.
+//
+// The ladder is what a session walks to decide which credential it connects
+// with, so a cached decision that shared its backing array with a live session
+// would let one connection reorder — or rewrite the parameters of — another
+// connection's credentials. Nil and empty are kept apart here as carefully as
+// they are on the wire: cloning an empty ladder must not produce an absent one,
+// because the first denies the session and the second falls back to local
+// configuration.
+func (l *TargetAuthLadder) Clone() *TargetAuthLadder {
+	if l == nil {
+		return nil
+	}
+	out := make(TargetAuthLadder, len(*l))
+	for i, entry := range *l {
+		out[i] = *entry.Clone()
+	}
+	return &out
 }
 
 // Clone deep-copies a filter policy, both tiers included.
@@ -152,6 +175,7 @@ func (r *AuthorizeResponse) Clone() *AuthorizeResponse {
 	out.PermittedForwards = r.PermittedForwards.Clone()
 	out.PermittedGlobalRequests = r.PermittedGlobalRequests.Clone()
 	out.TargetAuth = r.TargetAuth.Clone()
+	out.TargetAuthLadder = r.TargetAuthLadder.Clone()
 	out.FilterPolicy = r.FilterPolicy.Clone()
 	out.Hop = r.Hop.Clone()
 	out.Cache = r.Cache.Clone()

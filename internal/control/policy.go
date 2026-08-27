@@ -3,6 +3,8 @@
 
 package control
 
+import "encoding/json"
+
 // This file carries the policy vocabulary added by phase 0006 (PLAN D5a, D6a,
 // D11, D12): the two channel axes a channel-type allow-list cannot express, the
 // server's choice of target credential method, and the exec enforcement mode.
@@ -249,10 +251,205 @@ const (
 	// session and never written to disk (PLAN §5.2), for the appliances, network
 	// gear, and OT devices the proxy cannot administer.
 	TargetAuthBrokeredKey TargetAuthMethod = "brokered-key"
+	// TargetAuthEphemeralAccount creates a short-lived administrator on a
+	// device through a platform driver and removes it afterwards (D13, PLAN
+	// §5.3). It is the same lifecycle as TargetAuthEphemeralUser in a different
+	// vocabulary over a different transport: a FortiGate cannot run useradd,
+	// but it can create an administrator, set its credential, scope it, and
+	// delete it again.
+	TargetAuthEphemeralAccount TargetAuthMethod = "ephemeral-account"
 	// TargetAuthStaticKey is the development placeholder from phase 0005. It is
 	// named in the contract so a fixture can select it; it is not a production
 	// method.
 	TargetAuthStaticKey TargetAuthMethod = "static-key"
+)
+
+// Provisioning methods are the ones where the proxy NAMES THE ACCOUNT it logs
+// in as, rather than being handed one. Every one of them requires the username
+// parameter (contract v3, phase 0013).
+//
+// Before v3 the username defaulted to identity.Identity.Login, and Login is a
+// CLIENT-TYPED STRING — internal/identity says in as many words that it must
+// never be the basis of an authorization decision. Letting it name an OS or
+// device account is that rule leaking through the back door: the account name
+// is what the target's own audit trail, its file ownership, and (on a password
+// credential) half the credential pair are made of. So the server names it, or
+// there is no route.
+//
+// brokered-key is deliberately not in this set: it logs into an account that
+// already exists and is chosen by the operator, and phase 0007's behaviour for
+// it is unchanged. Its username fallback is the same leak reached from a
+// different direction and is recorded as a follow-up rather than fixed here.
+func (m TargetAuthMethod) requiresUsername() bool {
+	switch m {
+	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount, TargetAuthStaticKey:
+		return true
+	default:
+		return false
+	}
+}
+
+// Parameter names the contract defines for target_auth entries (api/README.md,
+// "Target credentials"). They are scoped to their method: username means the
+// account to create for ephemeral-user and the account that already exists for
+// brokered-key, which is why each method reads its own.
+//
+// The contract owns the VOCABULARY — which values these may take and which of
+// them a method requires — and that is what Validate checks. Whether a proxy
+// implements every parameter an entry carries is a different question with a
+// different answer, and internal/auth/target answers it at provision time
+// (ErrUnknownParam): an unknown parameter may be a constraint, and a proxy that
+// cannot honour one must not connect. Do not move that check here and do not
+// duplicate it — two almost-correct copies of one rule eventually disagree.
+const (
+	// ParamUsername names the account on the target. Required on every
+	// provisioning method (see requiresUsername).
+	ParamUsername = "username"
+	// ParamKeyType selects the ephemeral key algorithm (ephemeral-user).
+	ParamKeyType = "key_type"
+	// ParamLifetimeSeconds bounds how long the provisioned credential stays
+	// valid, in whole seconds.
+	ParamLifetimeSeconds = "lifetime_seconds"
+	// ParamCredentialRef selects which local material a brokered-key session
+	// uses. It is an opaque handle, never credential material (D6a).
+	ParamCredentialRef = "credential_ref"
+	// ParamPlatform names the device driver an ephemeral-account route needs
+	// (D13). It is required and never inferred: guessing from a banner means
+	// running configuration commands against the wrong parser.
+	ParamPlatform = "platform"
+	// ParamCredentialKind says which credential an ephemeral-account driver
+	// should install (D13).
+	ParamCredentialKind = "credential_kind"
+	// ParamExpiryPosture says who, if anyone, enforces the account's expiry
+	// (D13).
+	ParamExpiryPosture = "expiry_posture"
+)
+
+// CredentialKind is the credential an ephemeral-account driver installs on the
+// device (D13, PLAN §5.3).
+//
+// A driver DECLARES which kinds its platform accepts; a route naming a kind the
+// driver does not accept is a skipped ladder entry (D14), not a downgrade to
+// the other kind. The proxy never substitutes one for the other, because the
+// two have materially different exposure and the server chose.
+type CredentialKind string
+
+const (
+	// CredentialKindPassword installs a generated password. It is a reusable
+	// secret that lands in the device's running configuration and, on many
+	// platforms, in its own logs.
+	CredentialKindPassword CredentialKind = "password"
+	// CredentialKindPublicKey installs a generated public key. Nothing secret
+	// reaches the device.
+	CredentialKindPublicKey CredentialKind = "publickey"
+)
+
+// ExpiryPosture says who enforces the end of an ephemeral account's life (D13).
+//
+// On a POSIX host this question does not arise: OpenSSH's expiry-time
+// restriction in authorized_keys makes the key die whether or not the proxy is
+// alive to remove it (PLAN §5.1). Most device platforms have no equivalent, so
+// the posture becomes something the PDP SELECTS per target, and the posture in
+// force is an audit fact.
+//
+// There is no absent-value default on purpose. A default would be either
+// dishonest (claiming enforcement the platform does not have) or silently the
+// weakest option, and "the risk was accepted" is a sentence somebody has to
+// write down rather than one a proxy infers.
+type ExpiryPosture string
+
+const (
+	// ExpiryPostureTargetEnforced requires the device itself to expire the
+	// account. PLAN §5.1's rule holds for this posture and only for it: a
+	// driver that cannot express expiry makes this a skipped ladder entry.
+	ExpiryPostureTargetEnforced ExpiryPosture = "target-enforced"
+	// ExpiryPostureProxyEnforced means the proxy removes the account when the
+	// lifetime elapses. It is real while the proxy lives and is exactly as
+	// strong as the reaper behind it.
+	ExpiryPostureProxyEnforced ExpiryPosture = "proxy-enforced"
+	// ExpiryPostureAcceptedRisk means nobody enforces expiry and the PDP has
+	// said so explicitly. It is named rather than reached by omission so that
+	// it is visible in the policy and in the audit record.
+	ExpiryPostureAcceptedRisk ExpiryPosture = "accepted-risk"
+)
+
+// TargetAuthLadder is the ordered list of credential methods the server named
+// for this route (D14, contract v3, walked by phase 0014).
+//
+// The proxy walks it TOP-DOWN and uses the first entry it can satisfy: an entry
+// naming a method this build does not implement, or has no local material for,
+// or whose driver cannot meet its declared terms, is SKIPPED. Exhausting the
+// ladder is a clean session denial (outage-class, PLAN §4.3).
+//
+// What has never been permitted, and still is not, is the proxy connecting with
+// a method the server did not name. D6a's rule survives D14 untouched — what
+// changed is who may author the fallback, not whether one exists. A PDP that
+// will not accept degradation on a target writes a ONE-ENTRY ladder, which
+// behaves exactly as D6a originally specified.
+//
+// The rung actually used is an AUDIT FACT AND NOT A USER-FACING ONE. It goes to
+// the record and the operator surface (attributes target_auth_method and
+// target_auth_rung, api/README.md); the user is told nothing. This is the one
+// place PLAN §4.3's disclosure rule does not apply, and the reason is that the
+// information is about the estate rather than about the user's own request:
+// "you got the weaker credential" tells an attacker which targets are softest
+// and tells an honest user nothing they can act on. Do not "fix" that.
+type TargetAuthLadder []TargetAuth
+
+// MarshalJSON emits an empty ladder as [] rather than null.
+//
+// It is not cosmetic. A present ladder means the server named its methods, and
+// an empty one is a DENIAL; null decodes back into an absent ladder, which
+// means "use the proxy's locally configured method" — the exact method the
+// server declined to name. Without this, a nil slice behind a non-nil pointer
+// would quietly convert a denial into a connection on every hop that re-encodes
+// a decision.
+func (l TargetAuthLadder) MarshalJSON() ([]byte, error) {
+	if l == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]TargetAuth(l))
+}
+
+// AlgorithmProfile names the SSH algorithm set the proxy may offer on the
+// proxy→target leg for this route (contract v3, applied by phase 0014).
+//
+// Much of the estate D13 exists to reach speaks key exchanges, host-key
+// algorithms, ciphers, and MACs that golang.org/x/crypto/ssh does not enable by
+// default, and without a way to say so those routes simply do not connect.
+//
+// Two properties make that safe, and it needs both:
+//
+//   - It is NAMED BY THE SERVER, PER ROUTE. It is deliberately not a
+//     proxy-wide config knob, because a fleet-wide knob weakens every leg in
+//     the fleet to serve the oldest device on it — and a fleet-wide sed is
+//     exactly how that happens.
+//   - It is a NAMED PRESET, not an algorithm list. A preset cannot be widened
+//     one algorithm at a time by someone who does not know what they are
+//     enabling, and the audit record names something a reviewer understands
+//     rather than a string of identifiers they must decode.
+//
+// Anything other than AlgorithmProfileDefault is a WEAKENING and emits its own
+// audit event (api/README.md), on D14's sibling rule for methods: an operator
+// finds out that a route runs on SHA-1 from the record, not by reading policy.
+type AlgorithmProfile string
+
+const (
+	// AlgorithmProfileDefault offers only what the SSH library enables by
+	// default. It is the absent-value default and the only profile that is not
+	// a weakening.
+	AlgorithmProfileDefault AlgorithmProfile = "default"
+	// AlgorithmProfileLegacyRSASHA1 additionally offers RSA with SHA-1
+	// signatures (ssh-rsa) for host keys and public-key authentication. It is
+	// the single most common reason a device of this era refuses a modern
+	// client, and it is separate from the profile below so that a route needing
+	// only this does not also get CBC and SHA-1 key exchange.
+	AlgorithmProfileLegacyRSASHA1 AlgorithmProfile = "legacy-rsa-sha1"
+	// AlgorithmProfileLegacyDevice is AlgorithmProfileLegacyRSASHA1 plus the
+	// SHA-1 key exchanges, CBC ciphers, and SHA-1 MACs that appliance firmware
+	// of that era offers. It is the widest profile this contract defines and it
+	// is meant for the routes that connect on nothing else.
+	AlgorithmProfileLegacyDevice AlgorithmProfile = "legacy-device"
 )
 
 // TargetAuth is the server's choice of target credential method for this route
@@ -271,6 +468,14 @@ const (
 // OUTAGE-CLASS DENIAL (PLAN §4.3): the session fails and says it is an outage.
 // It is never a fallback to another method, which would mean connecting with
 // credentials the server did not choose.
+//
+// Contract v3 (D14) supersedes this single object with TargetAuthLadder, an
+// ORDERED list of exactly these entries. The two are alternatives and never
+// layers: a response carrying both is refused (Validate), on the same reasoning
+// as restricted_exec beside a rule list in phase 0010 — two statements of which
+// credential to use, disagreeing, have no defensible resolution. A v2 server
+// keeps sending this object and it keeps meaning what it meant; Ladder reads
+// either shape.
 type TargetAuth struct {
 	// Method names the credential method.
 	Method TargetAuthMethod `json:"method"`

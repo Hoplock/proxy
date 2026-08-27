@@ -1181,3 +1181,203 @@ func TestAuthorizeRefusesAProxyThatCannotReadThePolicy(t *testing.T) {
 		t.Errorf("body = %s, want it to name the version mismatch", payload)
 	}
 }
+
+// TestAuthorizeServesTheV3Vocabulary drives the phase 0013 fixture keys through
+// the real client, for the reason the v2 test exists: the client decodes the
+// authorize response strictly and validates it, so a fixture key that
+// serialises wrongly fails here rather than in 0014.
+func TestAuthorizeServesTheV3Vocabulary(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	ctx := context.Background()
+	deploy := &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy", Source: "fixture"}
+
+	t.Run("a two-entry ladder, in the server's order", func(t *testing.T) {
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: deploy, Target: "core-fw-01.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		rungs, named := resp.Ladder()
+		if !named || len(rungs) != 2 {
+			t.Fatalf("ladder = %+v (named=%v), want the fixture's two rungs", rungs, named)
+		}
+		if rungs[0].Method != control.TargetAuthEphemeralAccount {
+			t.Errorf("first rung = %q, want %q", rungs[0].Method, control.TargetAuthEphemeralAccount)
+		}
+		if got := rungs[0].Params[control.ParamPlatform]; got != "fortios" {
+			t.Errorf("first rung platform = %q, want the driver the fixture names", got)
+		}
+		if got := control.ExpiryPosture(rungs[0].Params[control.ParamExpiryPosture]); got != control.ExpiryPostureTargetEnforced {
+			t.Errorf("first rung expiry posture = %q, want %q", got, control.ExpiryPostureTargetEnforced)
+		}
+		if rungs[1].Method != control.TargetAuthBrokeredKey {
+			t.Errorf("second rung = %q, want the weaker rung behind the device one", rungs[1].Method)
+		}
+		if resp.TargetAuth != nil {
+			t.Error("target_auth was invented beside the ladder")
+		}
+		if got := resp.Profile(); got != control.AlgorithmProfileLegacyDevice {
+			t.Errorf("algorithm_profile = %q, want %q", got, control.AlgorithmProfileLegacyDevice)
+		}
+	})
+
+	t.Run("a one-entry ladder refuses degradation", func(t *testing.T) {
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: deploy, Target: "crown-fw-01.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		rungs, named := resp.Ladder()
+		if !named || len(rungs) != 1 {
+			t.Fatalf("ladder = %+v (named=%v), want exactly one rung", rungs, named)
+		}
+		if got := control.ExpiryPosture(rungs[0].Params[control.ParamExpiryPosture]); got != control.ExpiryPostureAcceptedRisk {
+			t.Errorf("expiry posture = %q, want %q", got, control.ExpiryPostureAcceptedRisk)
+		}
+		if got := resp.Profile(); got != control.AlgorithmProfileLegacyRSASHA1 {
+			t.Errorf("algorithm_profile = %q, want %q", got, control.AlgorithmProfileLegacyRSASHA1)
+		}
+	})
+
+	t.Run("a v2 route still answers a v2 shape", func(t *testing.T) {
+		alice := &control.Identity{Subject: "alice@example.com", Login: "alice", Source: "fixture"}
+		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+			Identity: alice, Target: "host.company.com", Conn: testConn(),
+		})
+		if err != nil {
+			t.Fatalf("Authorize: %v", err)
+		}
+		if resp.TargetAuthLadder != nil {
+			t.Fatal("a ladder was invented for a fixture that sets target_auth")
+		}
+		rungs, named := resp.Ladder()
+		if !named || len(rungs) != 1 || rungs[0].Method != control.TargetAuthEphemeralUser {
+			t.Errorf("Ladder() = %+v (named=%v), want the v2 object as one rung", rungs, named)
+		}
+		if resp.AlgorithmProfile != "" {
+			t.Errorf("algorithm_profile = %q, want it absent on a route that never named one",
+				resp.AlgorithmProfile)
+		}
+	})
+}
+
+// TestEmptyLadderFixtureIsADenialNotLocalConfig keeps the fixture layer honest
+// about the distinction the contract is most likely to lose: a route whose
+// ladder is written `[]` must reach the proxy as an empty ladder, not as an
+// absent one, or the mock hands the session the very credential the fixture
+// declined to name.
+func TestEmptyLadderFixtureIsADenialNotLocalConfig(t *testing.T) {
+	fx := mustParseFixtures(t, `
+proxy_token: "`+proxyToken+`"
+users:
+  - login: alice
+    password: pw
+routes:
+  - login: alice
+    target: "*"
+    route_type: direct
+    permitted_channels: [session]
+    target_auth_ladder: []
+    filter_policy:
+      mode: blacklist
+`)
+	m := startMock(t, fx, serverOptions{})
+
+	resp, err := m.client.Authorize(context.Background(), &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice", Login: "alice"},
+		Target:   "host.company.com",
+		Conn:     testConn(),
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	rungs, named := resp.Ladder()
+	if !named {
+		t.Fatal("an empty ladder arrived as an absent one; the denial became local config")
+	}
+	if len(rungs) != 0 {
+		t.Errorf("ladder = %+v, want no rungs to walk", rungs)
+	}
+}
+
+// TestFixturesRefuseBothCredentialShapes proves the mock cannot start holding a
+// policy the client would refuse. The check lives in the fixture layer as well
+// as in the contract because a fixture file is where somebody writes the
+// mistake.
+func TestFixturesRefuseBothCredentialShapes(t *testing.T) {
+	_, err := parseFixtures(strings.NewReader(`
+users:
+  - login: alice
+    password: pw
+routes:
+  - login: alice
+    target: h
+    target_auth:
+      method: static-key
+      params:
+        username: dev
+    target_auth_ladder:
+      - method: static-key
+        params:
+          username: dev
+    filter_policy:
+      mode: blacklist
+`))
+	if err == nil {
+		t.Fatal("a fixture setting both credential shapes was accepted")
+	}
+	for _, want := range []string{"target_auth", "target_auth_ladder"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestV2ProxyIsStillServedV2Routes covers the half of the version gate that a
+// vocabulary bump breaks most easily: raising PolicyVersion to 3 must not make
+// every pre-0013 route unservable to a proxy that declared 2. The gate answers
+// per route, not per build.
+func TestV2ProxyIsStillServedV2Routes(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+
+	authorizeAs := func(t *testing.T, target string, version int) int {
+		t.Helper()
+		body, err := json.Marshal(control.AuthorizeRequest{
+			Identity:      &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy"},
+			Target:        target,
+			PolicyVersion: version,
+			Conn:          testConn(),
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, m.srv.URL+control.PathAuthorize, strings.NewReader(string(body)))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+proxyToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.ReadAll(resp.Body)
+		return resp.StatusCode
+	}
+
+	// A v2 route (brokered-key, restricted exec) to a proxy declaring 2.
+	if got := authorizeAs(t, "edge-fw-01.company.com", 2); got != http.StatusOK {
+		t.Errorf("a v2 route to a v2 proxy = %d, want %d", got, http.StatusOK)
+	}
+	// A v3 route (a ladder) to the same proxy: refused, and refused as an
+	// outage rather than served with policy it would fail closed on.
+	if got := authorizeAs(t, "core-fw-01.company.com", 2); got != http.StatusInternalServerError {
+		t.Errorf("a v3 route to a v2 proxy = %d, want %d", got, http.StatusInternalServerError)
+	}
+	if got := authorizeAs(t, "core-fw-01.company.com", 3); got != http.StatusOK {
+		t.Errorf("a v3 route to a v3 proxy = %d, want %d", got, http.StatusOK)
+	}
+}

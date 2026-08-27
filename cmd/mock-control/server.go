@@ -343,13 +343,17 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	// A proxy declaring an older vocabulary must not be answered with fields it
 	// cannot read: it fails such a response closed, by contract. A real server
-	// would tailor the policy; the mock's fixtures are v2, so it says plainly
-	// that it cannot serve this proxy rather than sending policy that will be
-	// refused as a protocol error three lines later.
-	if req.PolicyVersion > 0 && req.PolicyVersion < control.PolicyVersion && usesV2Vocabulary(resp) {
+	// would tailor the policy; the mock says plainly that it cannot serve this
+	// proxy rather than sending policy that will be refused as a protocol error
+	// three lines later.
+	//
+	// The version is the ROUTE's, not the build's: a fixture using only the v2
+	// vocabulary is still servable to a proxy that declared 2, which is what
+	// keeps every pre-0013 fixture working against a v2 proxy.
+	if needed := vocabularyVersion(resp); req.PolicyVersion > 0 && req.PolicyVersion < needed {
 		writeError(w, http.StatusInternalServerError, "policy_version",
 			fmt.Sprintf("this route needs policy vocabulary %d; the proxy declared %d",
-				control.PolicyVersion, req.PolicyVersion))
+				needed, req.PolicyVersion))
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

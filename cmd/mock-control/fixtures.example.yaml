@@ -111,6 +111,10 @@ routes:
     target_auth:
       method: ephemeral-user
       params:
+        # Required since contract v3 on every provisioning method. It used to
+        # default to the identity's login, and a login is a client-typed string
+        # that must never name an account on a target.
+        username: alice
         key_type: ed25519
         lifetime_seconds: "900"
     # The server authorises the proxy to reuse this decision for a minute, so
@@ -211,6 +215,77 @@ routes:
                 # searching for the word. It is the one shape here that is not
                 # a boundary.
                 optional: true
+
+  # A DEVICE, reached with the contract v3 credential ladder (D14). The server
+  # authors the degradation and the proxy never invents it: a short-lived
+  # administrator created through the `fortios` driver first, and the standing
+  # brokered credential only if that rung cannot be satisfied — a driver this
+  # build does not carry, a device that will not enforce expiry.
+  #
+  # `target_auth_ladder` and `target_auth` are ALTERNATIVES, not layers: a route
+  # setting both is a contract violation and the mock refuses to start.
+  #
+  # `algorithm_profile` is why this route connects at all. The firmware speaks
+  # nothing a modern default enables, and the profile is named here, per route,
+  # rather than by a proxy-wide knob that would weaken every leg in the fleet.
+  - login: svc-deploy
+    target: core-fw-01.company.com
+    route_type: direct
+    permissions: applianceAdmin
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    algorithm_profile: legacy-device
+    target_auth_ladder:
+      - method: ephemeral-account
+        params:
+          username: hoplock
+          # Which driver. Never inferred from a banner: guessing wrong means
+          # running configuration commands against the wrong parser.
+          platform: fortios
+          credential_kind: publickey
+          # The device expires the account itself, so it dies whether or not
+          # this proxy lives to remove it. A driver that cannot do that makes
+          # this rung unsatisfiable and the proxy walks to the next one.
+          expiry_posture: target-enforced
+          lifetime_seconds: "900"
+      - method: brokered-key
+        params:
+          username: netadmin
+          credential_ref: core-fleet-2026
+    filter_policy:
+      mode: whitelist
+      rules:
+        - match: "get system status"
+          action: allow_and_log
+
+  # The same vocabulary saying the OPPOSITE thing: a ONE-ENTRY ladder is how a
+  # policy refuses degradation. If the device cannot give this session its own
+  # administrator, there is no session — which is exactly what a single
+  # `target_auth` object meant before v3.
+  - login: svc-deploy
+    target: crown-fw-01.company.com
+    route_type: direct
+    permissions: applianceAdmin
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    algorithm_profile: legacy-rsa-sha1
+    target_auth_ladder:
+      - method: ephemeral-account
+        params:
+          username: hoplock
+          platform: fortios
+          credential_kind: password
+          # Nobody enforces expiry here and the policy says so out loud, rather
+          # than reaching it by leaving the field out. `lifetime_seconds` is
+          # required under every other posture.
+          expiry_posture: accepted-risk
+    filter_policy:
+      mode: whitelist
+      rules:
+        - match: "get system status"
+          action: allow_and_log
 
   # Whitelist: anything not matched by a rule is blocked by the mode. Port
   # forwarding is permitted for the deploy account — but only to one place.

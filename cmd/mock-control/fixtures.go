@@ -161,6 +161,15 @@ type fixtureRoute struct {
 	// TargetAuth is the credential method the server picks for this route
 	// (D6a). Absent leaves the proxy on its locally configured method.
 	TargetAuth *fixtureTargetAuth `yaml:"target_auth"`
+	// TargetAuthLadder is the v3 ORDERED ladder of credential methods (D14).
+	// Absent leaves the proxy on its locally configured method; present and
+	// EMPTY is a denial, which is why it is a pointer. Setting it beside
+	// target_auth is refused at startup, exactly as the client refuses it.
+	TargetAuthLadder *[]fixtureTargetAuth `yaml:"target_auth_ladder"`
+	// AlgorithmProfile is the per-route algorithm preset for the proxy→target
+	// leg: "default" (the absent-value default), "legacy-rsa-sha1", or
+	// "legacy-device".
+	AlgorithmProfile string `yaml:"algorithm_profile"`
 	// HopConnection is "dial" or "relay" for a nexthop route (D11). Empty
 	// means "dial".
 	HopConnection string `yaml:"hop_connection"`
@@ -217,7 +226,8 @@ type fixtureGlobalRequestPolicy struct {
 
 // fixtureTargetAuth mirrors control.TargetAuth in YAML form.
 type fixtureTargetAuth struct {
-	// Method is "ephemeral-user", "brokered-key", or "static-key".
+	// Method is "ephemeral-user", "brokered-key", "ephemeral-account", or
+	// "static-key".
 	Method string `yaml:"method"`
 	// Params are method-scoped parameters. Fixture values are never real
 	// secrets — credential_ref names local material, it does not carry it.
@@ -394,6 +404,16 @@ func (f *fixtures) validate() error {
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
+	// checkMethod names the offending entry itself, because a ladder makes
+	// "the route's method" ambiguous the moment there is more than one.
+	checkMethod := func(where, method string) {
+		switch control.TargetAuthMethod(method) {
+		case control.TargetAuthEphemeralUser, control.TargetAuthBrokeredKey,
+			control.TargetAuthEphemeralAccount, control.TargetAuthStaticKey:
+		default:
+			add("%s.method %q is not a known method", where, method)
+		}
+	}
 
 	seenLogins := make(map[string]bool, len(f.Users))
 	for i, u := range f.Users {
@@ -475,13 +495,25 @@ func (f *fixtures) validate() error {
 			add("routes[%d].hop_connection %q must be %q or %q", i, r.HopConnection,
 				control.HopConnectionDial, control.HopConnectionRelay)
 		}
+		if r.TargetAuth != nil && r.TargetAuthLadder != nil {
+			add("routes[%d] sets both target_auth and target_auth_ladder; "+
+				"the ladder supersedes the single object, they are not layers (D14)", i)
+		}
 		if r.TargetAuth != nil {
-			switch control.TargetAuthMethod(r.TargetAuth.Method) {
-			case control.TargetAuthEphemeralUser, control.TargetAuthBrokeredKey,
-				control.TargetAuthStaticKey:
-			default:
-				add("routes[%d].target_auth.method %q is not a known method", i, r.TargetAuth.Method)
+			checkMethod(fmt.Sprintf("routes[%d].target_auth", i), r.TargetAuth.Method)
+		}
+		if r.TargetAuthLadder != nil {
+			for j, entry := range *r.TargetAuthLadder {
+				checkMethod(fmt.Sprintf("routes[%d].target_auth_ladder[%d]", i, j), entry.Method)
 			}
+		}
+		switch control.AlgorithmProfile(r.AlgorithmProfile) {
+		case "", control.AlgorithmProfileDefault, control.AlgorithmProfileLegacyRSASHA1,
+			control.AlgorithmProfileLegacyDevice:
+		default:
+			add("routes[%d].algorithm_profile %q must be %q, %q or %q", i, r.AlgorithmProfile,
+				control.AlgorithmProfileDefault, control.AlgorithmProfileLegacyRSASHA1,
+				control.AlgorithmProfileLegacyDevice)
 		}
 		switch control.FilterMode(r.FilterPolicy.Mode) {
 		case control.FilterModeWhitelist, control.FilterModeBlacklist:
@@ -595,6 +627,8 @@ func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *cont
 		PermittedForwards:       r.PermittedForwards.wire(),
 		PermittedGlobalRequests: r.PermittedGlobalRequests.wire(),
 		TargetAuth:              r.TargetAuth.wire(),
+		TargetAuthLadder:        ladderWire(r.TargetAuthLadder),
+		AlgorithmProfile:        control.AlgorithmProfile(r.AlgorithmProfile),
 		FilterPolicy:            r.FilterPolicy.wire(),
 	}
 	if resp.PermittedChannels == nil {
@@ -659,6 +693,20 @@ func (a *fixtureTargetAuth) wire() *control.TargetAuth {
 		return nil
 	}
 	return &control.TargetAuth{Method: control.TargetAuthMethod(a.Method), Params: a.Params}
+}
+
+// ladderWire converts a fixture ladder, keeping ABSENT and EMPTY apart: absent
+// leaves the proxy on its locally configured method, empty denies the session,
+// and collapsing the two here would turn a fixture's denial into a connection.
+func ladderWire(entries *[]fixtureTargetAuth) *control.TargetAuthLadder {
+	if entries == nil {
+		return nil
+	}
+	ladder := make(control.TargetAuthLadder, 0, len(*entries))
+	for i := range *entries {
+		ladder = append(ladder, *(*entries)[i].wire())
+	}
+	return &ladder
 }
 
 func (p fixtureFilterPolicy) wire() control.FilterPolicy {
@@ -728,10 +776,23 @@ func (u *fixtureUser) chainIdentity(hop string) *control.Identity {
 	return id
 }
 
-// usesV2Vocabulary reports whether a response carries any field the phase 0006
-// vocabulary added. A proxy that declared version 1 refuses such a field rather
-// than dropping it, so the mock has to know when it is about to send one.
-func usesV2Vocabulary(r *control.AuthorizeResponse) bool {
+// vocabularyVersion reports the lowest policy vocabulary that can express this
+// response. A proxy that declared an older version refuses a field it does not
+// know rather than dropping it, so the mock has to know when it is about to
+// send one.
+//
+// It answers per RESPONSE rather than per build: a fixture written before phase
+// 0006 is still v1 and is still servable to a v1 proxy, and the same now holds
+// for a v2 fixture against a v2 proxy. Every field added to the contract needs
+// a case here, or the mock will hand it to a proxy that fails the session
+// closed on it.
+func vocabularyVersion(r *control.AuthorizeResponse) int {
+	switch {
+	case r.TargetAuthLadder != nil,
+		r.AlgorithmProfile != "",
+		r.TargetAuth != nil && r.TargetAuth.Method == control.TargetAuthEphemeralAccount:
+		return 3
+	}
 	switch {
 	case r.PermittedRequests != nil,
 		r.PermittedForwards != nil,
@@ -740,7 +801,7 @@ func usesV2Vocabulary(r *control.AuthorizeResponse) bool {
 		r.FilterPolicy.ExecMode != "",
 		r.FilterPolicy.RestrictedExec != nil,
 		r.Hop != nil && (r.Hop.Connection != "" || r.Hop.NextProxyID != ""):
-		return true
+		return 2
 	}
-	return false
+	return 1
 }
