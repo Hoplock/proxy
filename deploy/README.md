@@ -116,15 +116,22 @@ on its own (`target/compose.yaml`), published on a host port.
 docker compose -p hoplock-e2e -f deploy/compose.yaml logs proxy-direct
 docker compose -p hoplock-e2e -f deploy/compose.yaml exec target getent passwd
 curl -s http://127.0.0.1:18080/debug/logs | jq '.priority'
-curl -s http://127.0.0.1:18081/debug/accounts | jq
+docker compose -p hoplock-e2e -f deploy/compose.yaml exec device \
+	hoplock-fake-device -dump 127.0.0.1:8081 | jq
 ```
 
 `http://127.0.0.1:18080` is the mock's debug view, published on loopback for the
 scenario driver. Nothing in the topology reaches Hoplock Control that way.
 
-`http://127.0.0.1:18081/debug/accounts` is the appliance's administrator table,
-on the same terms. It exists because an appliance has no account database to
-read the way `getent passwd` reads the target's — and asserting the proxy's
-cleanup by driving the same CLI the proxy used to do it would be asserting on
-the thing under test. An `hl-` account still listed after a run is a device
-administrator that was not removed.
+The last one is the appliance's administrator table. It exists because an
+appliance has no account database to read the way `getent passwd` reads the
+target's — and asserting the proxy's cleanup by driving the same CLI the proxy
+used to do it would be asserting on the thing under test. An `hl-` account still
+listed after a run is a device administrator that was not removed.
+
+It is read from **inside** the container rather than over a published port, and
+that is not a stylistic choice: `core` is `internal`, so a published port is not
+reachable from the host — and the fix for that must not be to put the appliance
+on a routable network, which is exactly the isolation the device scenarios rely
+on. So the same binary has a client mode (`-dump`) and the suite runs it in
+place.

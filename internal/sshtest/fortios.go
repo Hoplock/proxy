@@ -309,10 +309,22 @@ func (d *FakeFortiOS) handleConn(conn net.Conn) {
 	}
 }
 
+// sendDeviceExit reports the session's exit status.
+//
+// A shell channel that closes without one makes an OpenSSH client exit 255,
+// which would make every device scenario look like a connection failure rather
+// than a session that ran.
+func sendDeviceExit(ch ssh.Channel, status uint32) {
+	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
+}
+
 // converse is the device's CLI. It is a small state machine over three modes,
 // because that is what the real one is.
 func (d *FakeFortiOS) converse(ch ssh.Channel) {
-	defer func() { _ = ch.Close() }()
+	defer func() {
+		sendDeviceExit(ch, 0)
+		_ = ch.Close()
+	}()
 
 	// The banner a FortiGate greets a login with. It is here so the driver's
 	// "read past the banner to the first prompt" is exercised: a driver that

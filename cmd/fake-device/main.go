@@ -18,15 +18,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,6 +43,34 @@ func main() {
 	}
 }
 
+// dumpAccounts prints the device's administrator table as the debug endpoint
+// serves it.
+func dumpAccounts(addr string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	url := addr
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		url = "http://" + url
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/debug/accounts", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET /debug/accounts: %s", resp.Status)
+	}
+	if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+		return err
+	}
+	return nil
+}
+
 func run() error {
 	var (
 		listen   = flag.String("listen", "0.0.0.0:22", "address to serve the device CLI on")
@@ -48,8 +79,20 @@ func run() error {
 		password = flag.String("password", "", "that administrator's password (or $HOPLOCK_DEVICE_ADMIN_PASSWORD)")
 		paging   = flag.Int("page-every", 0, "emit the pager's marker every n lines of show output; 0 disables paging")
 		debug    = flag.String("debug", "", "serve GET /debug/accounts on this address; empty disables it")
+		dump     = flag.String("dump", "", "client mode: fetch this device's administrator table from the given address and exit")
 	)
 	flag.Parse()
+
+	// Client mode. It exists because the appliance sits on the topology's
+	// INTERNAL network, where a published port is not reachable from the host
+	// the scenario suite runs on — and putting the device on an externally
+	// routable network to read a debug endpoint would weaken the very isolation
+	// the device scenarios rely on. So the suite runs this binary INSIDE the
+	// container instead (`docker compose exec device …`), which needs no extra
+	// network, no published port, and no curl in the image.
+	if *dump != "" {
+		return dumpAccounts(*dump)
+	}
 
 	secret := *password
 	if secret == "" {

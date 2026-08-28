@@ -4,6 +4,7 @@
 package fortios
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"regexp"
@@ -340,3 +341,81 @@ func TestShippedDeclarationMeetsTheHoplockRule(t *testing.T) {
 // FortiOSMaxNameLenDeclared pins the verified limit in the test as well as the
 // driver, so a change to one is a visible change to the other.
 const FortiOSMaxNameLenDeclared = 35
+
+// TestAUserShellSessionReachesTheCLI is the shape an operator's session takes,
+// and the shape the e2e topology drives: an SSH client asks for a SHELL and
+// types, because an appliance is a CLI and not a command pipe.
+//
+// It is here rather than only in the e2e suite because the e2e suite needs
+// Docker and this does not. The device scenario was written against `ssh host
+// cmd` first, which the fake device refuses exactly as many real appliances
+// refuse an exec request — a difference no unit test would have caught and CI
+// found the slow way.
+func TestAUserShellSessionReachesTheCLI(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{
+		Accounts: []sshtest.FortiOSAccount{{Name: "admin", Profile: "super_admin"}},
+	})
+
+	client, err := ssh.Dial("tcp", h.dev.Addr().String(), &ssh.ClientConfig{
+		User:            "hoplock-mgmt",
+		Auth:            []ssh.AuthMethod{ssh.Password("mgmt-secret")},
+		HostKeyCallback: ssh.FixedHostKey(h.dev.HostKey()),
+	})
+	if err != nil {
+		t.Fatalf("dial the device: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("open a session: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	// Separate buffers: x/crypto copies stdout and stderr on their own
+	// goroutines, so one buffer behind both is a data race.
+	var out, errOut bytes.Buffer
+	sess.Stdin = strings.NewReader("show system admin\nexit\n")
+	sess.Stdout = &out
+	sess.Stderr = &errOut
+	if err := sess.Shell(); err != nil {
+		t.Fatalf("request a shell: %v", err)
+	}
+	// Wait returns the session's exit status. Without one an OpenSSH client
+	// reports 255, which would make every device session look like a
+	// connection failure rather than a session that ran.
+	if err := sess.Wait(); err != nil {
+		t.Fatalf("shell session: %v (device said:\n%s)", err, out.String())
+	}
+	if !strings.Contains(out.String(), `edit "admin"`) {
+		t.Errorf("the shell session did not reach the CLI; it said:\n%s", out.String())
+	}
+}
+
+// TestAnExecRequestIsRefused pins the behaviour the driver is built around, so
+// that a change making the fake device accept exec is a visible one: the driver
+// asks for a shell because appliance SSH servers commonly answer an exec
+// request with nothing at all.
+func TestAnExecRequestIsRefused(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{})
+
+	client, err := ssh.Dial("tcp", h.dev.Addr().String(), &ssh.ClientConfig{
+		User:            "hoplock-mgmt",
+		Auth:            []ssh.AuthMethod{ssh.Password("mgmt-secret")},
+		HostKeyCallback: ssh.FixedHostKey(h.dev.HostKey()),
+	})
+	if err != nil {
+		t.Fatalf("dial the device: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("open a session: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Run("show system admin"); err == nil {
+		t.Error("the device accepted an exec request; the driver's shell-channel design assumes it does not")
+	}
+}

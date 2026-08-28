@@ -55,9 +55,11 @@ const (
 	// topology reaches Hoplock Control this way.
 	controlAddr = "127.0.0.1:18080"
 
-	// deviceAddr is where the fake appliance's debug endpoint is published,
-	// for the same reason and on the same terms: a fixture, on loopback.
-	deviceAddr = "127.0.0.1:18081"
+	// deviceDebugAddr is where the fake appliance serves its debug endpoint
+	// INSIDE its own container. It is not published: `core` is internal, so a
+	// published port would not be reachable from here, and the appliance must
+	// not be moved onto a routable network to make one work.
+	deviceDebugAddr = "127.0.0.1:8081"
 
 	// SSH listener port inside every proxy container.
 	proxyPort = "2222"
@@ -392,26 +394,20 @@ func deviceAccounts(t *testing.T) []string {
 }
 
 func tryDeviceAccounts() ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+deviceAddr+"/debug/accounts", nil)
+	// Read from inside the appliance's own container rather than over a
+	// published port: see deviceDebugAddr, and deploy/compose.yaml.
+	r, err := runE("", "docker", execArgs(nodeDevice, "hoplock-fake-device", "-dump", deviceDebugAddr)...)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /debug/accounts: %s", resp.Status)
+	if r.code != 0 {
+		return nil, fmt.Errorf("read the appliance's administrator table: %v", r)
 	}
 	var body struct {
 		Accounts []string `json:"accounts"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, err
+	if err := json.Unmarshal([]byte(r.stdout), &body); err != nil {
+		return nil, fmt.Errorf("decode the appliance's administrator table from %q: %w", r.stdout, err)
 	}
 	return body.Accounts, nil
 }

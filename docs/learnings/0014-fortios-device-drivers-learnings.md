@@ -306,7 +306,30 @@ Two fixture routes were added: `fortigate.company.com` (a one-entry
 or nothing") and `ladder.company.com`, whose first entry names a platform this
 proxy has no driver for, so the fall-through is proven end to end.
 
-**The suite was not run.** Docker is unavailable in this session's environment,
+**Two things the first CI run caught that no local check could**, both worth
+knowing before adding a node to this topology:
+
+- **A published port on an `internal` network is not reachable from the host.**
+  The appliance debug endpoint was originally published as `127.0.0.1:18081`,
+  the way `control` publishes its `/debug/logs` — but `control` is on `edge`
+  *and* `core`, and the appliance is on `core` alone, which is `internal`. The
+  fix is emphatically NOT to put the appliance on a routable network: that is
+  the isolation the device scenarios depend on. Instead `cmd/fake-device` has a
+  client mode (`-dump`) and the suite runs the same binary inside the container,
+  which needs no network of its own and no `curl` in the image.
+- **The device scenario used `ssh host cmd`, and the fake device refuses exec** —
+  deliberately, because that is what many appliance SSH servers do and it is the
+  reason the driver asks for a shell. The scenario now drives a shell with
+  stdin, which is what an operator's session actually looks like. The fake also
+  now sends an `exit-status`, without which an OpenSSH client reports 255 and
+  every device session looks like a connection failure.
+
+  Both are now pinned by unit tests in the `fortios` package
+  (`TestAUserShellSessionReachesTheCLI`, `TestAnExecRequestIsRefused`) rather
+  than only by the e2e suite, precisely because those run without Docker and
+  would have caught this in the session that wrote it.
+
+**The suite was not run locally.** Docker is unavailable in this session's environment,
 as it was for phase 0013. The obligation was met the same way 0013 met it and
 further: the whole `deploy/control/fixtures.template.yaml` was rendered and
 loaded by the real `cmd/mock-control` binary, which decodes fixtures strictly

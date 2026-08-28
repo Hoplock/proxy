@@ -409,24 +409,17 @@ func testDeviceCredentials(t *testing.T) {
 	t.Run("a device session logs in as an administrator the proxy created", func(t *testing.T) {
 		before := deviceAccounts(t)
 
+		// An appliance session is a CLI, not a command pipe: the client asks
+		// for a shell and types. That is also what the driver assumes, and the
+		// fake device refuses an exec request exactly as many real appliances
+		// do — so a scenario that used `ssh host cmd` here would be testing a
+		// shape this method never sees.
 		s := aliceOn(proxyDirect, "fortigate.company.com")
-		// The device answers `show system admin` with its administrator table,
-		// which is both a real command and the one that proves which account
-		// the proxy connected as: the table it prints contains that account.
-		s.command = "show system admin"
+		s.stdin = "show system admin\nexit\n"
 		r := ssh(t, s)
 		wantExit(t, r, "ephemeral-account", 0)
 
-		// FortiOS accepts 35-character names, which is above PLAN §5.3's
-		// threshold, so the readable scheme survives here and the account on
-		// the device names the person it belongs to.
-		var created string
-		for _, name := range strings.Split(r.stdout, "\n") {
-			name = strings.Trim(strings.TrimSpace(name), `"`)
-			if strings.HasPrefix(name, "hl-") && strings.Contains(name, "-alice-") {
-				created = name
-			}
-		}
+		created := deviceAccountIn(r.stdout)
 		if created == "" {
 			t.Fatalf("ephemeral-account: the device's administrator table shows no hl-<tag>-alice-<token> account\n%s", r)
 		}
@@ -439,7 +432,7 @@ func testDeviceCredentials(t *testing.T) {
 
 	t.Run("the administrator is removed when the session ends", func(t *testing.T) {
 		s := aliceOn(proxyDirect, "fortigate.company.com")
-		s.command = "show system admin"
+		s.stdin = "show system admin\nexit\n"
 		r := ssh(t, s)
 		wantExit(t, r, "ephemeral-account", 0)
 
@@ -459,7 +452,7 @@ func testDeviceCredentials(t *testing.T) {
 			}
 			return true
 		})
-		if !strings.Contains(r.stdout, "hl-") {
+		if deviceAccountIn(r.stdout) == "" {
 			t.Errorf("ephemeral-account: the session never saw its own account\n%s", r)
 		}
 	})
@@ -494,6 +487,25 @@ func testDeviceCredentials(t *testing.T) {
 			t.Errorf("the client was told which credential rung it got:\n%s", r.stderr)
 		}
 	})
+}
+
+// deviceAccountIn finds this proxy's administrator in `show system admin`
+// output, which renders one entry per `edit "<name>"` line.
+func deviceAccountIn(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 || fields[0] != "edit" {
+			continue
+		}
+		name := strings.Trim(fields[1], `"`)
+		// FortiOS accepts 35-character names, above PLAN §5.3's threshold, so
+		// the readable scheme survives here and the account on the device names
+		// the person it belongs to.
+		if strings.HasPrefix(name, "hl-") && strings.Contains(name, "-alice-") {
+			return name
+		}
+	}
+	return ""
 }
 
 // --- disclosure (PLAN §4.3) --------------------------------------------------

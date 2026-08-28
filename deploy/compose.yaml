@@ -75,16 +75,19 @@ services:
       - "-admin"
       - "hoplock-mgmt"
       - "-debug"
-      - "0.0.0.0:8081"
+      - "127.0.0.1:8081"
     environment:
       HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
     networks: [core]
-    ports:
-      # The scenario suite reads the administrator table from the host, the same
-      # way it reads control's /debug/logs. A real appliance would be asked over
-      # its CLI; asserting the proxy's cleanup through the CLI the proxy uses
-      # would be asserting on the thing under test.
-      - "127.0.0.1:18081:8081"
+    # No published port, and the debug listener is bound to loopback INSIDE the
+    # container. `core` is internal, so a published port would not be reachable
+    # from the host the scenario suite runs on anyway — and the fix for that
+    # must not be to put the appliance on an externally routable network, which
+    # is precisely the isolation the device scenarios depend on.
+    #
+    # The suite reads the administrator table by running the same binary in
+    # client mode inside this container (`hoplock-fake-device -dump`), which
+    # needs no network of its own and no curl in the image.
 
   proxy-direct:
     build:
