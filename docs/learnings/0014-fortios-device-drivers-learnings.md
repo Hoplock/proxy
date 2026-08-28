@@ -329,6 +329,17 @@ knowing before adding a node to this topology:
   than only by the e2e suite, precisely because those run without Docker and
   would have caught this in the session that wrote it.
 
+- **The fake device accepted only the management login**, so a driver could
+  create an administrator it could never log in as — and every unit test in this
+  phase asserted the account EXISTED without ever connecting as it, so nothing
+  caught it. The proxy provisioned fine and then failed at `stageDial`: "the
+  target could not be reached". The fake now also accepts any account in its own
+  table with the credential that table holds, for both credential kinds, and
+  `TestTheProvisionedAccountCanActuallyLogIn` dials the device with the
+  `ClientConfig` the provisioner returned. **"The account exists" is not "the
+  account works"** — worth remembering for 0024 and 0025, which will build the
+  same kind of fake.
+
 **The suite was not run locally.** Docker is unavailable in this session's environment,
 as it was for phase 0013. The obligation was met the same way 0013 met it and
 further: the whole `deploy/control/fixtures.template.yaml` was rendered and

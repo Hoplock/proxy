@@ -4,6 +4,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -662,5 +663,61 @@ func TestFailedAttemptDoesNotDropToAWeakerRung(t *testing.T) {
 	}
 	if errors.Is(err, ErrLadderExhausted) {
 		t.Errorf("a reachable-but-failing device was treated as an unsatisfiable rung: %v", err)
+	}
+}
+
+// TestTheProvisionedAccountCanActuallyLogIn is the "connects" half of the
+// acceptance criteria, and it is a separate test because it was the half that
+// went unproven: every other test here asserts the account EXISTS on the
+// device, and existing is not the same as being usable.
+//
+// The gap was real and CI found it — the fake device accepted only the
+// management login, so a driver could create an administrator it could never
+// log in as, and nothing in this package noticed.
+func TestTheProvisionedAccountCanActuallyLogIn(t *testing.T) {
+	for _, kind := range []control.CredentialKind{control.CredentialKindPassword, control.CredentialKindPublicKey} {
+		t.Run(string(kind), func(t *testing.T) {
+			h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})
+			ctx := context.Background()
+
+			tgt := h.tgt
+			tgt.Auth = deviceRouteAuth(map[string]string{control.ParamCredentialKind: string(kind)})
+			access, err := h.auth.Provision(ctx, deviceIdentity(), tgt)
+			if err != nil {
+				t.Fatalf("Provision: %v", err)
+			}
+			t.Cleanup(func() { _ = access.Close(ctx) })
+
+			// The proxy fills in host trust (D7); a session would carry its
+			// own callback here.
+			cfg := *access.ClientConfig
+			cfg.HostKeyCallback = ssh.FixedHostKey(h.dev.HostKey())
+
+			client, err := ssh.Dial("tcp", h.tgt.Addr(), &cfg)
+			if err != nil {
+				t.Fatalf("log into the device as the provisioned administrator %q: %v", cfg.User, err)
+			}
+			defer func() { _ = client.Close() }()
+
+			sess, err := client.NewSession()
+			if err != nil {
+				t.Fatalf("open a CLI session: %v", err)
+			}
+			defer func() { _ = sess.Close() }()
+
+			var out, errOut bytes.Buffer
+			sess.Stdin = strings.NewReader("show system admin\nexit\n")
+			sess.Stdout = &out
+			sess.Stderr = &errOut
+			if err := sess.Shell(); err != nil {
+				t.Fatalf("request a shell: %v", err)
+			}
+			if err := sess.Wait(); err != nil {
+				t.Fatalf("CLI session: %v", err)
+			}
+			if !strings.Contains(out.String(), cfg.User) {
+				t.Errorf("the session did not reach the CLI as %q; it said:\n%s", cfg.User, out.String())
+			}
+		})
 	}
 }

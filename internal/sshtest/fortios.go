@@ -5,6 +5,7 @@ package sshtest
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -98,6 +99,9 @@ type FakeFortiOS struct {
 	wg     sync.WaitGroup
 	closed chan struct{}
 
+	adminUser     string
+	adminPassword string
+
 	mu       sync.Mutex
 	accounts map[string]FortiOSAccount
 	commands []string
@@ -158,10 +162,34 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 		d.accounts[a.Name] = a
 	}
 
+	d.adminUser, d.adminPassword = user, password
+
+	// The device accepts TWO kinds of login, and the second one is the whole
+	// point: the privileged administrator the proxy manages it as, and any
+	// administrator that exists in its own table with the credential that table
+	// holds. A fake that only accepted the first would let a driver create an
+	// account it could never log in as — which is exactly the gap that shipped
+	// once, because every unit test asserted the account EXISTED and none
+	// connected as it.
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: func(conn ssh.ConnMetadata, given []byte) (*ssh.Permissions, error) {
 			d.record(func() { d.logins = append(d.logins, conn.User()) })
-			if conn.User() != user || string(given) != password {
+			if conn.User() == d.adminUser && string(given) == d.adminPassword {
+				return nil, nil
+			}
+			if acct, ok := d.account(conn.User()); ok && acct.Password != "" && acct.Password == string(given) {
+				return nil, nil
+			}
+			return nil, errors.New("sshtest: bad device login")
+		},
+		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			d.record(func() { d.logins = append(d.logins, conn.User()) })
+			acct, ok := d.account(conn.User())
+			if !ok || acct.PublicKey == "" {
+				return nil, errors.New("sshtest: bad device login")
+			}
+			want, _, _, _, err := ssh.ParseAuthorizedKey([]byte(acct.PublicKey))
+			if err != nil || !bytes.Equal(want.Marshal(), key.Marshal()) {
 				return nil, errors.New("sshtest: bad device login")
 			}
 			return nil, nil
