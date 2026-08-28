@@ -340,15 +340,32 @@ knowing before adding a node to this topology:
   account works"** — worth remembering for 0024 and 0025, which will build the
   same kind of fake.
 
-**The suite was not run locally.** Docker is unavailable in this session's environment,
-as it was for phase 0013. The obligation was met the same way 0013 met it and
-further: the whole `deploy/control/fixtures.template.yaml` was rendered and
-loaded by the real `cmd/mock-control` binary, which decodes fixtures strictly
-and reported `serving 2 users and 17 routes` (15 before this phase);
-`test/topology/config_test.go` loads the changed proxy config with the proxy's
-own loader and passes; and `go vet -tags e2e` covers the scenario code. What
-has **not** been executed is the containers themselves — running `make e2e` is
-the first thing the next session with Docker should do.
+**The suite was not run locally — CI ran it.** Docker is unavailable in this
+session's environment, as it was for phase 0013, so the local checks were the
+ones 0013 used and a little further: the whole
+`deploy/control/fixtures.template.yaml` rendered and loaded by the real
+`cmd/mock-control` binary (`serving 2 users and 17 routes`, 15 before this
+phase), `test/topology/config_test.go` passing with the proxy's own loader, and
+`go vet -tags e2e` over the scenario code.
+
+None of that caught the three bugs above. **CI did**, on three successive runs,
+and the whole suite is green on the merged head — including all four device
+scenarios and the ephemeral-leak check that now sweeps the appliance:
+
+```
+--- PASS: TestTopology/device_credentials
+    --- PASS: .../a_device_session_logs_in_as_an_administrator_the_proxy_created
+    --- PASS: .../the_administrator_is_removed_when_the_session_ends
+    --- PASS: .../the_device's_own_administrator_is_never_touched
+    --- PASS: .../an_unsatisfiable_ladder_entry_falls_through_to_the_next
+--- PASS: TestTopology/no_ephemeral_accounts_left_behind
+```
+
+The lesson for the next session without Docker is not "the local checks were
+insufficient" — it is that **they were checking the wrong layer**. Each of the
+three failures was reachable by a test that needs no containers, and each is now
+covered by one. Push early and let CI find the rest; do not treat a local pass
+as evidence the topology works.
 
 ### A pre-existing bug this phase had to fix to get CI green
 
