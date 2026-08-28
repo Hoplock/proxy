@@ -110,9 +110,42 @@ func run(configPath string, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The telemetry pipeline is built before the credential plane and the engine:
+	// every session records into it, and it is closed after the engine stops serving: the
+	// last session's records are shipped rather than abandoned, and whatever
+	// still cannot be delivered lands in the disk buffer for the next run
+	// (PLAN §7, D8). It ships to the REST client rather than the caching one —
+	// there is nothing to cache about a log record, and the cache's stale-mode
+	// rules are about decisions.
+	recorder, err := logging.New(logging.Options{
+		Client:          rest,
+		BatchSize:       cfg.Logging.BatchSize,
+		FlushInterval:   cfg.Logging.FlushInterval,
+		QueueSize:       cfg.Logging.QueueSize,
+		BufferDir:       cfg.Logging.BufferDir,
+		SendTimeout:     cfg.Logging.SendTimeout,
+		RetryMin:        cfg.Logging.RetryMin,
+		RetryMax:        cfg.Logging.RetryMax,
+		MaxPayloadBytes: cfg.Logging.MaxPayloadBytes,
+		Logf:            logger.Printf,
+	})
+	if err != nil {
+		return err
+	}
+	if cfg.Logging.BufferDir == "" {
+		logger.Printf("proxy: no logging.buffer_dir configured; records are lost if Hoplock Control is unreachable")
+	}
+
 	targetAuth, err := target.NewFromConfig(cfg.Auth.Target, target.Options{
 		ProxyID: cfg.Proxy.ID,
 		Logger:  logger,
+		// The device method's account-mapping event is load-bearing rather than
+		// informational (PLAN §5.3): on a platform whose administrator names are
+		// too short to carry a login, it is the ONLY place the account is tied
+		// to a person. So the credential plane is handed the telemetry pipeline
+		// and refuses such a route when there is nowhere at all to put the
+		// event — which is also why the pipeline is now built before it.
+		Events: recorder.DeviceSink(),
 	})
 	if err != nil {
 		return err
@@ -159,32 +192,6 @@ func run(configPath string, logger *log.Logger) error {
 			}
 		}()
 		logger.Printf("proxy: accepting relay registrations on %s", hubListener.Addr())
-	}
-
-	// The telemetry pipeline is built before the engine because every session
-	// records into it, and it is closed after the engine stops serving: the
-	// last session's records are shipped rather than abandoned, and whatever
-	// still cannot be delivered lands in the disk buffer for the next run
-	// (PLAN §7, D8). It ships to the REST client rather than the caching one —
-	// there is nothing to cache about a log record, and the cache's stale-mode
-	// rules are about decisions.
-	recorder, err := logging.New(logging.Options{
-		Client:          rest,
-		BatchSize:       cfg.Logging.BatchSize,
-		FlushInterval:   cfg.Logging.FlushInterval,
-		QueueSize:       cfg.Logging.QueueSize,
-		BufferDir:       cfg.Logging.BufferDir,
-		SendTimeout:     cfg.Logging.SendTimeout,
-		RetryMin:        cfg.Logging.RetryMin,
-		RetryMax:        cfg.Logging.RetryMax,
-		MaxPayloadBytes: cfg.Logging.MaxPayloadBytes,
-		Logf:            logger.Printf,
-	})
-	if err != nil {
-		return err
-	}
-	if cfg.Logging.BufferDir == "" {
-		logger.Printf("proxy: no logging.buffer_dir configured; records are lost if Hoplock Control is unreachable")
 	}
 
 	server, err := proxy.New(proxy.Options{

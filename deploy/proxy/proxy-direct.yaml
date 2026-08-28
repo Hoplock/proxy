@@ -66,3 +66,17 @@ auth:
       username: "netadmin"
       dir: "/material/brokered"
       file_suffix: ".key"
+    # The third estate this one proxy fronts: appliances that cannot create an
+    # OS user at all (D13). The `device` node stands in for one.
+    ephemeral_account:
+      admin_user: "hoplock-mgmt"
+      password_env: "HOPLOCK_DEVICE_ADMIN_PASSWORD"
+      platforms: ["fortigate"]
+      # Deliberately left at the driver's default so the topology exercises what
+      # a proxy actually ships with. Phase 0016 is what turns this into policy.
+      access_profile: ""
+      # Tight, because on FortiOS nothing but this sweep ever removes an
+      # account: the platform has no expiry field.
+      reaper:
+        interval: 1m
+        grace: 5m

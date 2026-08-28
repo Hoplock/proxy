@@ -268,10 +268,34 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   - **Invisibility.** Creating a POSIX user disturbs nothing anyone watches.
     Creating a device administrator is a **configuration change**: it lands in
     config-change logs, backup diffs, and drift detection, twice per session.
-    Hoplock's own drivers therefore never persist the account to saved
-    configuration — a reload is then a free reaper — and the noise is answered
-    by *publishing* the changes for correlation, never by suppressing the
-    device's own logging of them (§5.3).
+    The noise is answered by *publishing* the changes for correlation, never by
+    suppressing the device's own logging of them (§5.3).
+
+    This decision originally added "and Hoplock's own drivers therefore never
+    persist the account to saved configuration — a reload is then a free
+    reaper". **Phase 0014 amended that**, because it is unsatisfiable on the
+    platform this decision names as its own example. FortiOS has no runtime-only
+    configuration plane: under the default `config system global` /
+    `set cfg-save automatic`, the change is written to flash when the
+    configuration block ends, and the alternatives (`manual`, `revert`) are
+    device-wide settings governing every change on the unit rather than a
+    per-command choice a driver could make. A FortiGate driver could be honest
+    or it could ship.
+
+    So the rule is now: **a shipped driver may declare `PersistsAcrossReload`
+    when the platform leaves it no choice, and must say which platform mechanism
+    forces it** (`Capabilities.PersistenceReason`), which the proxy records on
+    every session that driver serves. What remains forbidden is persistence *by
+    choice*, silently — the case the original rule was really written against.
+    `device.CheckShipped` enforces the amended rule over the shipped registry.
+
+    The consequence is not cosmetic and is stated here rather than buried in a
+    driver: where a platform both persists the account and cannot expire it,
+    **the orphan reaper is the only removal path there is** (§5.3), and the
+    product's claim on such a fleet is "no standing accounts while the proxy or
+    its reaper is healthy" rather than the unconditional sentence. A customer
+    driver was always allowed to declare persistence; the change is that a
+    Hoplock driver may too, on the same terms and with the same record.
 
   **Customer-written drivers are a first-class case**, not an afterthought: the
   estates that need this most are the ones running a platform nobody else has.
@@ -797,6 +821,15 @@ session's*, so the device path verifies non-existence and, on collision,
 **retries with a fresh token** — it never adopts. A small retry budget, then
 refusal.
 
+**Expiry is rarely the platform's.** No device platform this repository ships a
+driver for can expire an administrator by itself — FortiOS has no per-account
+expiry field and no schedule on `config system admin` — so
+`target-enforced` is a posture most real routes cannot ask for, and asking is a
+**skipped ladder rung** rather than a downgrade. The practical consequence is
+the one above: the reaper is sized and reported as the primary removal path, not
+as a crash-recovery backstop, and a sweep that fails is an event on D8's
+priority path rather than a log line somebody might read.
+
 **Attribution lives in the log, so the log is mandatory.** On a constrained
 platform the account name carries no login, so the proxy emits a mapping event
 — account name, session id, subject, target, platform, the rung and posture in
@@ -818,6 +851,19 @@ NCM or SIEM to correlate and auto-close. That inverts the problem, because an
 `hl-*` object appearing on a device that Hoplock never reported is then a
 high-quality detection rather than noise. It is an outbound integration and so
 reuses D15's provider seam in Control rather than growing its own.
+
+**As built (phase 0014).** The first drivers are FortiOS
+(`internal/auth/target/device/fortios`), reached over a prompt/response state
+machine rather than a command pipe: the platform pages by default and cannot be
+told not to per session, has configuration modes with their own prompts, and
+reports failure as output text with no exit status behind it. The provisioner is
+`target.DeviceAccountAuthenticator`; the naming generalisation lives in
+`principal.go` and produces byte-identical names on the POSIX path; the sweep is
+`target.deviceReaper`; and the mapping event and sweep failures reach D8 through
+`target.DeviceEventSink`, implemented in `internal/logging`. The
+`ephemeral-account` and `brokered-key` ladder is walked in `target.Selector`: a
+rung this proxy cannot satisfy is skipped, a failed *attempt* fails the session,
+and an exhausted ladder is a clean denial.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -1295,7 +1341,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 | 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
-| 0014 | FortiOS device drivers                  | `internal/auth/target/device`: the FortiGate/FortiSwitch drivers, device provisioner, device reaper, fake-device tests |
+| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0024/0025 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question |
 | 0015 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
 | 0016 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
 | 0017 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
@@ -1304,6 +1350,9 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0020 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
 | 0021 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0016's confinement) |
 | 0022 | Session deadline & lifetime            | enforce 0015's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
+| 0023 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
+| 0024 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: a different target identity, and a contract question before it is a driver (deferred from 0014) |
+| 0025 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

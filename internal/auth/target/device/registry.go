@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -131,23 +132,33 @@ func Shipped() *Registry { return shipped }
 // CheckShipped reports whether every driver in a registry meets the rules a
 // HOPLOCK-SHIPPED driver must meet.
 //
-// Today there is one rule and it is D13's: a Hoplock driver may not declare
-// PersistsAcrossReload. It is expressed as a check over the registry rather
-// than as a comment on the field because a comment is not something a build can
-// fail, and this is exactly the kind of declaration that gets flipped to true
-// in the course of making one stubborn platform work.
+// Today there is one rule and it is D13's, as phase 0014 amended it: a Hoplock
+// driver may declare PersistsAcrossReload only when the platform leaves it no
+// choice, and must say which platform mechanism forces it. What is forbidden is
+// the SILENT declaration — persistence as a convenience, with nothing to review.
+//
+// It is expressed as a check over the registry rather than as a comment on the
+// field because a comment is not something a build can fail, and this is
+// exactly the kind of declaration that gets flipped to true in the course of
+// making one stubborn platform work. The amendment does not weaken that: it
+// moves the bar from "must be false" to "must be justified in writing", which
+// is a bar a passing-by change still cannot clear by accident.
 func CheckShipped(r *Registry) error {
 	for _, d := range r.Drivers() {
-		if d.Capabilities().PersistsAcrossReload {
+		caps := d.Capabilities()
+		if caps.PersistsAcrossReload && strings.TrimSpace(caps.PersistenceReason) == "" {
 			return fmt.Errorf(
-				"auth/target/device: shipped driver %q declares PersistsAcrossReload, "+
-					"which a Hoplock driver may not (D13): persisting the account to saved "+
-					"configuration means a crashed proxy leaves a standing administrator that "+
-					"no reload clears, which demotes the product's claim from \"no standing "+
-					"accounts\" to \"no standing accounts while the proxy is healthy\". A "+
-					"CUSTOMER driver may declare it — on a platform that gives it no choice — "+
-					"and every session it serves records that it did; a driver in this "+
-					"repository may not",
+				"auth/target/device: shipped driver %q declares PersistsAcrossReload with no "+
+					"PersistenceReason, which a Hoplock driver may not (D13): persisting the "+
+					"account to saved configuration means a crashed proxy leaves a standing "+
+					"administrator that no reload clears, which demotes the product's claim "+
+					"from \"no standing accounts\" to \"no standing accounts while the proxy "+
+					"is healthy\". Phase 0014 relaxed the original outright ban because "+
+					"FortiOS leaves a driver no choice, but only that far: a shipped driver "+
+					"that persists must name the PLATFORM mechanism that forces it, so the "+
+					"claim can be checked rather than taken on trust, and so the provisioner "+
+					"can record it on every session it serves. A driver that persists BY "+
+					"CHOICE still may not ship. A CUSTOMER driver is not bound by this at all",
 				d.Platform())
 		}
 	}

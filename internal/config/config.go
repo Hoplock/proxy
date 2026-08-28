@@ -39,6 +39,9 @@ const (
 	// TargetAuthMethodBrokeredKey uses a per-target credential held for the
 	// session and never written to disk (D6a).
 	TargetAuthMethodBrokeredKey = "brokered-key"
+	// TargetAuthMethodEphemeralAccount creates a short-lived administrator on a
+	// device through a platform driver and removes it afterwards (D13).
+	TargetAuthMethodEphemeralAccount = "ephemeral-account"
 )
 
 // Brokered credential sources (D6a). The source is where the proxy's LOCAL
@@ -287,6 +290,50 @@ type TargetAuth struct {
 	EphemeralUser EphemeralUserAuth `yaml:"ephemeral_user"`
 	// BrokeredKey configures session-scoped credentials (D6a).
 	BrokeredKey BrokeredKeyAuth `yaml:"brokered_key"`
+	// EphemeralAccount configures short-lived administrators on devices (D13).
+	EphemeralAccount EphemeralAccountAuth `yaml:"ephemeral_account"`
+}
+
+// EphemeralAccountAuth is the local material the device provisioner needs (D13,
+// PLAN §5.3): how to log into a device as an administrator that may create
+// administrators, and which platform drivers this proxy carries.
+//
+// As with every other method here, none of it decides WHICH sessions use the
+// method — that is the route's target_auth, and a proxy that chose for itself
+// would be originating policy (D2).
+type EphemeralAccountAuth struct {
+	// AdminUser is the privileged administrator on the device. Required for
+	// this method.
+	AdminUser string `yaml:"admin_user"`
+	// PasswordEnv names the environment variable holding that administrator's
+	// password. The password is NOT in this file: a device management
+	// credential in a configuration file is a device management credential in
+	// a backup, a bug report, and a container image layer.
+	PasswordEnv string `yaml:"password_env"`
+	// KeyPath is that administrator's private key, for devices that accept one.
+	// Either this or PasswordEnv is required.
+	KeyPath string `yaml:"key_path"`
+	// Platforms are the device drivers this proxy registers. Empty means every
+	// driver this build ships. A platform no driver serves is an outage-class
+	// denial and never the nearest driver (D13).
+	Platforms []string `yaml:"platforms"`
+	// AccessProfile is the platform authorization scope created administrators
+	// are given. Empty means the driver's own default.
+	//
+	// WHICH profile a route gets is phase 0015's vocabulary and phase 0016's to
+	// apply. This is the proxy-wide placeholder until then, and it is a
+	// placeholder rather than a policy: on FortiOS the most restrictive
+	// built-in profile is not reliably restrictive at all.
+	AccessProfile string `yaml:"access_profile"`
+	// SourceAddress is the address devices see this proxy connect from. Where a
+	// driver declares it can pin an account to a source address, this is what
+	// it is pinned to. Empty means no pin, which is a restriction not applied
+	// rather than one applied loosely.
+	SourceAddress string `yaml:"source_address"`
+	// Reaper paces the orphan sweep. Its defaults are TIGHTER than the POSIX
+	// method's, because on a platform that cannot expire an account the sweep
+	// is the primary removal path rather than a crash-recovery backstop (D13).
+	Reaper ReaperAuth `yaml:"reaper"`
 }
 
 // EphemeralUserAuth is the local material the just-in-time provisioner needs
@@ -725,7 +772,8 @@ func (c *Config) validateAuth(v *ValidationError) {
 func (c *Config) validateTargetAuth(v *ValidationError) {
 	t := c.Auth.Target
 	switch t.Method {
-	case TargetAuthMethodStaticKey, TargetAuthMethodEphemeralUser, TargetAuthMethodBrokeredKey:
+	case TargetAuthMethodStaticKey, TargetAuthMethodEphemeralUser, TargetAuthMethodBrokeredKey,
+		TargetAuthMethodEphemeralAccount:
 	default:
 		v.add("auth.target.method", ErrInvalid,
 			fmt.Sprintf("unknown method %q", t.Method))
@@ -758,6 +806,19 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 			v.add("auth.target.ephemeral_user.reaper.grace", ErrInvalid, "must not be negative")
 		}
 	}
+	if t.Method == TargetAuthMethodEphemeralAccount || deviceAccountConfigured(t.EphemeralAccount) {
+		if t.EphemeralAccount.AdminUser == "" {
+			v.add("auth.target.ephemeral_account.admin_user", ErrMissing,
+				"the privileged administrator the proxy logs into devices as")
+		}
+		if t.EphemeralAccount.PasswordEnv == "" && t.EphemeralAccount.KeyPath == "" {
+			v.add("auth.target.ephemeral_account.password_env", ErrMissing,
+				"the device management login needs a password (from the environment) or a key")
+		}
+		if t.EphemeralAccount.Reaper.Grace < 0 {
+			v.add("auth.target.ephemeral_account.reaper.grace", ErrInvalid, "must not be negative")
+		}
+	}
 	if t.Method == TargetAuthMethodBrokeredKey || brokeredConfigured(t.BrokeredKey) {
 		switch t.BrokeredKey.Source {
 		case "", BrokeredSourceDir:
@@ -779,6 +840,13 @@ func ephemeralConfigured(e EphemeralUserAuth) bool {
 	return e.ManagementKeyPath != "" || e.ManagementCertPath != "" || e.ProvisioningUser != "" ||
 		e.Shell != "" || e.HomeBase != "" || e.TargetShell != "" || e.KeyExpiry != nil ||
 		e.Timeout != 0 || e.Reaper != (ReaperAuth{})
+}
+
+// deviceAccountConfigured reports whether the operator wrote anything about the
+// device method.
+func deviceAccountConfigured(e EphemeralAccountAuth) bool {
+	return e.AdminUser != "" || e.PasswordEnv != "" || e.KeyPath != "" || len(e.Platforms) > 0 ||
+		e.AccessProfile != "" || e.SourceAddress != "" || e.Reaper != (ReaperAuth{})
 }
 
 // brokeredConfigured reports whether the operator wrote anything about the

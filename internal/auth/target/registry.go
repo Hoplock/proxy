@@ -10,6 +10,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/hoplock/proxy/internal/auth/target/device"
+	"github.com/hoplock/proxy/internal/auth/target/device/fortios"
 	"github.com/hoplock/proxy/internal/config"
 )
 
@@ -22,6 +24,12 @@ type Options struct {
 	// Logger receives provisioning and teardown events; nil discards them. It
 	// is never given a private key or a password.
 	Logger *log.Logger
+	// Events receives the device method's account-mapping events and its sweep
+	// failures (PLAN §5.3, D8). Nil means this proxy has no logging path, which
+	// REFUSES any route whose driver declares a constrained account-name limit:
+	// on such a platform the mapping event is the only place attribution
+	// exists.
+	Events DeviceEventSink
 }
 
 // NewFromConfig builds the proxy's target credential plane.
@@ -72,7 +80,104 @@ func NewFromConfig(cfg config.TargetAuth, opts Options) (TargetAuthenticator, er
 		methods[MethodBrokeredKey] = method
 	}
 
+	if deviceConfigured(cfg.EphemeralAccount) {
+		method, err := newDeviceAccountFromConfig(cfg.EphemeralAccount, opts)
+		if err != nil {
+			return nil, err
+		}
+		methods[MethodEphemeralAccount] = method
+	}
+
 	return NewSelector(methods, cfg.Method, opts.Logger)
+}
+
+// deviceConfigured reports whether this proxy has the material the device
+// method needs.
+func deviceConfigured(cfg config.EphemeralAccountAuth) bool {
+	return cfg.AdminUser != "" && (cfg.PasswordEnv != "" || cfg.KeyPath != "")
+}
+
+// newDeviceAccountFromConfig assembles the device provisioner: the privileged
+// login it makes to devices, and the platform drivers this build carries.
+//
+// The management password is read from the ENVIRONMENT rather than from the
+// configuration file, once, at startup. A device administrator password in a
+// config file is one in a backup, a bug report, and a container image layer;
+// the environment is not private either, but it is not a file that gets
+// committed by accident.
+func newDeviceAccountFromConfig(cfg config.EphemeralAccountAuth, opts Options) (*DeviceAccountAuthenticator, error) {
+	dialerOpts := device.SSHShellOptions{User: cfg.AdminUser}
+	if cfg.PasswordEnv != "" {
+		dialerOpts.Password = os.Getenv(cfg.PasswordEnv)
+		if dialerOpts.Password == "" {
+			return nil, fmt.Errorf("auth/target: ephemeral-account: %s is empty or unset", cfg.PasswordEnv)
+		}
+	}
+	if cfg.KeyPath != "" {
+		signer, err := loadSigner(cfg.KeyPath, "")
+		if err != nil {
+			return nil, err
+		}
+		dialerOpts.Signer = signer
+	}
+	dialer, err := device.NewSSHShellDialer(dialerOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	drivers, err := newDriverRegistry(cfg, dialer)
+	if err != nil {
+		return nil, err
+	}
+	return NewDeviceAccountAuthenticator(DeviceAccountOptions{
+		ProxyID:        opts.ProxyID,
+		Drivers:        drivers,
+		SourceAddress:  cfg.SourceAddress,
+		AccessProfile:  cfg.AccessProfile,
+		Events:         opts.Events,
+		ReaperInterval: cfg.Reaper.Interval,
+		ReaperGrace:    cfg.Reaper.Grace,
+		Logger:         opts.Logger,
+	})
+}
+
+// newDriverRegistry builds the platform registry this proxy serves routes from.
+//
+// It is separate from device.Shipped(), which holds DECLARATIONS so that
+// device.CheckShipped can hold Hoplock's own drivers to D13's rule. A driver
+// that serves a route needs a way to reach a device, and that is configuration.
+func newDriverRegistry(cfg config.EphemeralAccountAuth, dialer device.ShellDialer) (*device.Registry, error) {
+	registry := device.NewRegistry()
+	wanted := map[string]bool{}
+	for _, p := range cfg.Platforms {
+		wanted[p] = true
+	}
+	for _, platform := range device.Shipped().Platforms() {
+		if len(wanted) > 0 && !wanted[platform] {
+			continue
+		}
+		switch platform {
+		case fortios.PlatformFortiGate:
+			if err := fortios.Register(registry, fortios.Options{
+				Dialer:        dialer,
+				AccessProfile: cfg.AccessProfile,
+			}); err != nil {
+				return nil, err
+			}
+		default:
+			// Unreachable while every shipped platform has a case. It is an
+			// error rather than a silent skip because the alternative is a
+			// proxy that advertises a platform it cannot actually serve, and
+			// Hoplock Control routes on what the proxy advertises.
+			return nil, fmt.Errorf("auth/target: no way to build the shipped driver for platform %q", platform)
+		}
+	}
+	for platform := range wanted {
+		if _, err := registry.Lookup(platform); err != nil {
+			return nil, fmt.Errorf("auth/target: auth.target.ephemeral_account.platforms names %q, which this build has no driver for", platform)
+		}
+	}
+	return registry, nil
 }
 
 // newEphemeralFromConfig assembles the just-in-time provisioner from local

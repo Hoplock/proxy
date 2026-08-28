@@ -107,6 +107,72 @@ routes:
           action: warn_and_continue
           message: "Privileged command — this is recorded."
 
+  # ------------------------------------------------- ephemeral-account ---
+  # An appliance: a CLI over SSH with no useradd, no authorized_keys and no home
+  # directory (D13, PLAN §5.3). The proxy creates a short-lived ADMINISTRATOR on
+  # it through the FortiGate driver and removes it when the session ends.
+  #
+  # The ladder has one entry on purpose: this route is where a PDP has decided
+  # that a device account is the only acceptable credential, which since D14 is
+  # what a one-entry ladder means and is exactly D6a's original behaviour.
+  #
+  # Scenarios: device session, device account created and removed.
+  - login: alice
+    target: fortigate.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: device
+    target_port: 22
+    permissions: networkAdminGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    target_auth_ladder:
+      - method: ephemeral-account
+        params:
+          username: alice
+          # Never inferred from a banner: guessing wrong runs configuration
+          # commands against the wrong parser (D13).
+          platform: fortigate
+          credential_kind: password
+          # FortiOS has no per-administrator expiry field, so the proxy holds
+          # the deadline. A route asking for target-enforced here would be a
+          # skipped rung rather than a session served on a promise nobody keeps.
+          expiry_posture: proxy-enforced
+          lifetime_seconds: "900"
+
+  # The ladder's fall-through (D14). The first entry names a platform this proxy
+  # has no driver for, so it is UNSATISFIABLE and skipped; the second is served.
+  # A session that does not happen produces no recording and no audit trail, and
+  # for a product whose first claim is reaching the gear nothing else reaches,
+  # denial is frequently the worse security outcome.
+  #
+  # Scenario: ladder fall-through.
+  - login: alice
+    target: ladder.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    target_auth_ladder:
+      - method: ephemeral-account
+        params:
+          username: alice
+          platform: some-other-vendor
+          credential_kind: password
+          expiry_posture: proxy-enforced
+          lifetime_seconds: "900"
+      - method: brokered-key
+        params:
+          username: netadmin
+          credential_ref: appliance-fleet
+
   # Axis 2, the other way round: commands are allowed and a terminal is not.
   # Scenario: `ssh -tt host cmd` is refused, `ssh host cmd` succeeds.
   - login: alice

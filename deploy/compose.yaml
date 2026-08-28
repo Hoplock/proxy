@@ -14,6 +14,9 @@
 #                  outbound relay registration (D11)
 #   target         a real sshd, with the prerequisites both credential methods
 #                  need (D6, D6a)
+#   device         a fake FortiOS appliance (cmd/fake-device): a CLI over SSH
+#                  with no useradd and no authorized_keys, which is what the
+#                  ephemeral-account method exists for (D13)
 #
 # Networks, and what each one is load-bearing for:
 #   edge   user ↔ the two reachable proxies ↔ control
@@ -56,11 +59,45 @@ services:
       - ./keys:/material:ro
     networks: [core]
 
+  # The appliance. It is on `core` for the same reason the target is: reachable
+  # through a proxy and by nothing else. Its administrator password arrives in
+  # the environment rather than in a file, which is also how the proxy reads it
+  # — a device management credential in a config file is one in a backup.
+  device:
+    build:
+      context: .
+      dockerfile: device/Dockerfile
+    command:
+      - "-listen"
+      - "0.0.0.0:22"
+      - "-hostname"
+      - "FGT-E2E"
+      - "-admin"
+      - "hoplock-mgmt"
+      - "-debug"
+      - "127.0.0.1:8081"
+    environment:
+      HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
+    networks: [core]
+    # No published port, and the debug listener is bound to loopback INSIDE the
+    # container. `core` is internal, so a published port would not be reachable
+    # from the host the scenario suite runs on anyway — and the fix for that
+    # must not be to put the appliance on an externally routable network, which
+    # is precisely the isolation the device scenarios depend on.
+    #
+    # The suite reads the administrator table by running the same binary in
+    # client mode inside this container (`hoplock-fake-device -dump`), which
+    # needs no network of its own and no curl in the image.
+
   proxy-direct:
     build:
       context: .
       dockerfile: proxy/Dockerfile
     command: ["-config", "/etc/hoplock/config.yaml"]
+    environment:
+      # The device method reads the appliance administrator's password from the
+      # environment, never from its configuration file.
+      HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
     volumes:
       - ./proxy/proxy-direct.yaml:/etc/hoplock/config.yaml:ro
       - ./keys:/material:ro

@@ -69,7 +69,19 @@ type Route struct {
 	PermittedGlobalRequests *control.GlobalRequestPolicy
 	// TargetAuth is the credential method the server chose for this route (D6a,
 	// consumed by phase 0007). Nil means the proxy's locally configured method.
+	//
+	// Since contract v3 it is the FIRST entry of TargetAuthLadder, kept because
+	// the record and the fallback path both want a single answer; the ladder is
+	// what the credential plane actually walks.
 	TargetAuth *control.TargetAuth
+	// TargetAuthLadder is the ORDERED list of credential methods the server
+	// named for this route (D14, contract v3, consumed by phase 0014). The
+	// proxy walks it top-down and stops at the first entry it can satisfy.
+	//
+	// Nil means the server named none, and a non-nil EMPTY ladder is a denial —
+	// the distinction the pointer exists to carry, on this side of the wire as
+	// well as on control.AuthorizeResponse.
+	TargetAuthLadder *control.TargetAuthLadder
 	// Filter is the command filter policy enforced by phase 0010, including
 	// which exec tier applies (D12).
 	Filter control.FilterPolicy
@@ -257,9 +269,23 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		PermittedForwards:       resp.PermittedForwards.Clone(),
 		PermittedGlobalRequests: resp.PermittedGlobalRequests.Clone(),
 		TargetAuth:              resp.TargetAuth.Clone(),
+		TargetAuthLadder:        resp.TargetAuthLadder.Clone(),
 		Filter:                  resp.FilterPolicy.Clone(),
 		Hop:                     resp.Hop.Clone(),
 		DecisionID:              resp.DecisionID,
+	}
+	// A v2 single object is a one-entry ladder, which is exactly D6a's original
+	// behaviour (control.AuthorizeResponse.Ladder says the same thing on the
+	// wire side). Normalising here means the credential plane has one shape to
+	// walk rather than two, and the absent/empty distinction still survives:
+	// only a server that named NOTHING leaves the ladder nil.
+	if route.TargetAuthLadder == nil && route.TargetAuth != nil {
+		ladder := control.TargetAuthLadder{*route.TargetAuth}
+		route.TargetAuthLadder = &ladder
+	}
+	if route.TargetAuth == nil && route.TargetAuthLadder != nil && len(*route.TargetAuthLadder) > 0 {
+		first := (*route.TargetAuthLadder)[0]
+		route.TargetAuth = &first
 	}
 	if route.Port <= 0 {
 		route.Port = r.defaultPort

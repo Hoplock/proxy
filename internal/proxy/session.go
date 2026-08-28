@@ -263,6 +263,8 @@ func (s *session) setup() {
 		Host:            route.Host,
 		Port:            route.Port,
 		Auth:            route.TargetAuth,
+		Ladder:          route.TargetAuthLadder,
+		SessionID:       s.id,
 		HostKeyCallback: s.hostKeyCallback,
 	})
 	if err != nil {
@@ -457,6 +459,14 @@ func (s *session) legConn() ssh.Conn {
 	return s.leg
 }
 
+// closeLeg closes the target-leg connection if there is one. It is idempotent,
+// which is what lets close() call it on both sides of the setup wait.
+func (s *session) closeLeg() {
+	if leg := s.legConn(); leg != nil {
+		_ = leg.Close()
+	}
+}
+
 func (s *session) setLeg(conn ssh.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -542,13 +552,22 @@ func (s *session) disconnect(message string) {
 func (s *session) close() {
 	s.cancel()
 	_ = s.conn.Close()
-	if leg := s.legConn(); leg != nil {
-		_ = leg.Close()
-	}
+	// Closed here so an in-flight transfer stops at once rather than draining.
+	s.closeLeg()
 
-	// Setup may still be in flight (a client that hung up mid-dial); waiting
-	// for it is what stops teardown from racing the provisioning it undoes.
+	// Setup may still be in flight (a client that hung up mid-dial, or a kill
+	// that arrived between this session registering and its target leg coming
+	// up); waiting for it is what stops teardown from racing the provisioning
+	// it undoes.
 	<-s.ready
+
+	// And closed AGAIN, because setup may have established the leg during that
+	// wait. Closing only before the wait leaves that connection open forever:
+	// nothing after this point looks at it, the target keeps its end alive, and
+	// a revoked session goes on holding an SSH connection to the host it was
+	// revoked from. The credential is still removed below — but "the session
+	// was killed" has to mean the connection is gone, not just the account.
+	s.closeLeg()
 
 	if s.access != nil {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(s.ctx), teardownTimeout)

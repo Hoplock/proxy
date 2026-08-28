@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/hoplock/proxy/internal/control"
 )
 
@@ -93,6 +95,25 @@ type Endpoint struct {
 	// SessionID correlates every operation with the session that caused it,
 	// which is what makes the mapping event in PLAN §5.3 joinable.
 	SessionID string
+	// HostKeyCallback is the host-key policy for the driver's own privileged
+	// connection to the device (D7).
+	//
+	// It is here for the same reason target.Target carries one: host trust is a
+	// management-server decision and the proxy holds it, so a driver BORROWS it
+	// rather than inventing one. A driver that opens a connection with no
+	// policy at all is the most privileged connection this proxy makes,
+	// unauthenticated in one direction.
+	//
+	// A session hands down its own callback; teardown and every reaper sweep
+	// pin to the key that connection already saw, because removing an account
+	// must not depend on Hoplock Control being reachable (PLAN §5.1, and the
+	// same rule target.pin implements for the POSIX path).
+	//
+	// It is typed on SSH because every driver in this repository speaks SSH. A
+	// future driver on another transport ignores it, which is honest: it has
+	// its own trust decision to describe, and describing it as an SSH callback
+	// would be worse than leaving this field unread.
+	HostKeyCallback ssh.HostKeyCallback
 }
 
 // CreateRequest asks a driver to create one short-lived administrator.
@@ -198,12 +219,34 @@ type Capabilities struct {
 	// PersistsAcrossReload says account creation survives a device reload —
 	// that the driver writes the account to saved configuration.
 	//
-	// A HOPLOCK-SHIPPED DRIVER MUST DECLARE FALSE (D13): a reload is then a
-	// free reaper, and the product's claim of no standing accounts survives a
-	// crashed proxy. A customer driver may declare true on a platform that
-	// gives it no choice; it is recorded on every session it serves rather than
-	// forbidden. CheckShipped enforces the Hoplock half.
+	// D13 originally forbade a HOPLOCK-SHIPPED driver from declaring true: a
+	// reload would then be a free reaper, and the product's claim of no
+	// standing accounts would survive a crashed proxy. Phase 0014 found that
+	// rule unsatisfiable on the very platform D13 named as its example.
+	// FortiOS has no runtime-only configuration plane — `end` writes to flash
+	// under the default `cfg-save automatic`, and the alternatives are
+	// device-wide settings that change every other change on the unit — so a
+	// FortiGate driver can be honest or it can ship, and a driver that declares
+	// false while persisting is the worse of the two by a distance.
+	//
+	// So the rule became: a shipped driver may declare true when the PLATFORM
+	// leaves it no choice, and must say WHY in PersistenceReason. What is still
+	// forbidden is a driver that persists BY CHOICE, silently. CheckShipped
+	// enforces that, and the provisioner records the declaration on every
+	// session such a driver serves.
 	PersistsAcrossReload bool
+	// PersistenceReason says why the platform gives the driver no choice about
+	// PersistsAcrossReload. It is required on a shipped driver that declares
+	// persistence and ignored otherwise.
+	//
+	// It is a string rather than a second bool because the point is
+	// REVIEWABILITY: another flag would be one more thing to flip, whereas a
+	// sentence naming the platform mechanism ("FortiOS commits to flash on
+	// `end`; cfg-save is device-wide") is a claim somebody can check against
+	// the vendor's documentation. It reaches the operator surface through the
+	// provisioning record, so a standing-account risk is stated where the risk
+	// is taken.
+	PersistenceReason string
 	// CredentialKinds are the credentials the platform accepts. The route's
 	// control.ParamCredentialKind must be one of them; a route naming one that
 	// is not is a skipped rung, never a substitution of the other kind, because

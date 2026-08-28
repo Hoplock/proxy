@@ -55,6 +55,12 @@ const (
 	// topology reaches Hoplock Control this way.
 	controlAddr = "127.0.0.1:18080"
 
+	// deviceDebugAddr is where the fake appliance serves its debug endpoint
+	// INSIDE its own container. It is not published: `core` is internal, so a
+	// published port would not be reachable from here, and the appliance must
+	// not be moved onto a routable network to make one work.
+	deviceDebugAddr = "127.0.0.1:8081"
+
 	// SSH listener port inside every proxy container.
 	proxyPort = "2222"
 )
@@ -64,6 +70,7 @@ const (
 	nodeUser     = "user"
 	nodeTarget   = "target"
 	nodeControl  = "control"
+	nodeDevice   = "device"
 	proxyDirect  = "proxy-direct"
 	proxyNextHop = "proxy-nexthop"
 	proxyZone    = "proxy-zone"
@@ -371,6 +378,40 @@ func tryFetchLogs() (debugLogs, error) {
 	return logs, json.NewDecoder(resp.Body).Decode(&logs)
 }
 
+// deviceAccounts reads the fake appliance's administrator table.
+//
+// It is the device half of what testNoEphemeralLeak reads off the target with
+// `getent passwd`. An appliance has no account database to read, so the fixture
+// publishes one — driving the CLI instead would mean asserting on the proxy's
+// cleanup through the same commands the proxy used to do it.
+func deviceAccounts(t *testing.T) []string {
+	t.Helper()
+	accounts, err := tryDeviceAccounts()
+	if err != nil {
+		t.Fatalf("read the device's administrator table: %v", err)
+	}
+	return accounts
+}
+
+func tryDeviceAccounts() ([]string, error) {
+	// Read from inside the appliance's own container rather than over a
+	// published port: see deviceDebugAddr, and deploy/compose.yaml.
+	r, err := runE("", "docker", execArgs(nodeDevice, "hoplock-fake-device", "-dump", deviceDebugAddr)...)
+	if err != nil {
+		return nil, err
+	}
+	if r.code != 0 {
+		return nil, fmt.Errorf("read the appliance's administrator table: %v", r)
+	}
+	var body struct {
+		Accounts []string `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &body); err != nil {
+		return nil, fmt.Errorf("decode the appliance's administrator table from %q: %w", r.stdout, err)
+	}
+	return body.Accounts, nil
+}
+
 // --- waiting -----------------------------------------------------------------
 
 // waitFor polls until cond holds, and fails with what the caller was waiting
@@ -407,6 +448,10 @@ func requireTopology(t *testing.T) {
 		s := aliceOn(proxyDirect, "host.company.com")
 		s.command = "/bin/true"
 		return ssh(t, s).code == 0
+	})
+	waitFor(t, "the appliance's CLI to answer", func() bool {
+		_, err := tryDeviceAccounts()
+		return err == nil
 	})
 	// The relay registration is the one piece of the topology with no
 	// synchronous readiness signal: proxy-zone dials out and retries. Waiting
