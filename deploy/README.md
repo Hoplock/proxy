@@ -26,6 +26,15 @@ and nothing outside this repository.
 | `proxy-nexthop` | an edge proxy that reaches the target ONLY by chaining, and the relay hub | edge, relay |
 | `proxy-zone` | a proxy in a protected zone: no inbound listener at all, reached over the relay registration it opens (D11) | core, relay |
 | `target` | a real `sshd` with the prerequisites both credential methods need (D6, D6a) | core |
+| `device` | a fake FortiOS appliance (`cmd/fake-device`): a CLI over SSH with no `useradd` and no `authorized_keys`, which is what `ephemeral-account` exists for (D13) | core |
+
+The `device` node was added by phase 0014. There is no way to put real network
+gear in CI, and without a stand-in the device credential method would be the one
+part of the system no real SSH client ever exercises — on a product whose first
+claim is reaching the gear nothing else reaches. It speaks the CLI
+`internal/sshtest` models, paging and failure modes included, and it is on
+`core` for the same reason the target is: reachable through a proxy and by
+nothing else.
 
 `docs/PLAN.md` §9 names five node *roles*. There are two proxies playing the
 downstream role because the two hop directions make incompatible demands on one:
@@ -107,7 +116,15 @@ on its own (`target/compose.yaml`), published on a host port.
 docker compose -p hoplock-e2e -f deploy/compose.yaml logs proxy-direct
 docker compose -p hoplock-e2e -f deploy/compose.yaml exec target getent passwd
 curl -s http://127.0.0.1:18080/debug/logs | jq '.priority'
+curl -s http://127.0.0.1:18081/debug/accounts | jq
 ```
 
 `http://127.0.0.1:18080` is the mock's debug view, published on loopback for the
 scenario driver. Nothing in the topology reaches Hoplock Control that way.
+
+`http://127.0.0.1:18081/debug/accounts` is the appliance's administrator table,
+on the same terms. It exists because an appliance has no account database to
+read the way `getent passwd` reads the target's — and asserting the proxy's
+cleanup by driving the same CLI the proxy used to do it would be asserting on
+the thing under test. An `hl-` account still listed after a run is a device
+administrator that was not removed.

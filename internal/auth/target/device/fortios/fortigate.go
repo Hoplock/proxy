@@ -24,18 +24,27 @@ const PlatformFortiGate = "fortigate"
 // DefaultAccessProfile is the access profile a created administrator is given
 // when nothing else says otherwise.
 //
-// `prof_admin` is FortiOS's editable built-in, chosen because it is the most
-// restrictive profile that is present on every unit without the customer having
-// created anything. That is a low bar and it should be read as one: Fortinet's
-// own documentation notes that on many units prof_admin ships with the same
-// permissions as super_admin, and FortiOS has NO built-in read-only profile.
-// So this default bounds nothing by itself — it is a placeholder that keeps the
-// account creatable.
+// FortiOS ships four built-ins: `super_admin` and `prof_admin` (both
+// read-write) and `super_admin_readonly` and `prof_admin_readonly`. This is the
+// most restrictive one that can be relied on, and "relied on" is doing real
+// work in that sentence:
 //
-// WHICH profile a route gets is phase 0015's vocabulary and phase 0016's to
-// apply; this is the fixed default they replace, named here so 0016 knows
-// exactly what it is replacing.
-const DefaultAccessProfile = "prof_admin"
+//   - `prof_admin_readonly` is narrower — it excludes routing, system settings
+//     and endpoint control — but it is EDITABLE, so an operator who widened it
+//     once would silently widen what every Hoplock session on that unit can do,
+//     and nothing here would notice.
+//   - `super_admin_readonly` reads the whole configuration and can change none
+//     of it, and Fortinet documents it as undeletable and unmodifiable. A
+//     default that cannot drift is worth more than a default that is narrower
+//     on a good day.
+//
+// It is a DEFAULT, not a policy, and a read-only one will be wrong for many
+// real routes: an operator opening a session to change a firewall rule needs
+// write access. WHICH profile a route gets is phase 0015's vocabulary and phase
+// 0016's to apply, and until then an estate that needs more sets
+// `auth.target.ephemeral_account.access_profile`. The default is deliberately
+// the safe end of that choice rather than the convenient one.
+const DefaultAccessProfile = "super_admin_readonly"
 
 // placeholderSecretLen is the length of the throwaway password an account is
 // created with.

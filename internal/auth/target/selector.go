@@ -209,9 +209,16 @@ func (s *Selector) provisionOne(ctx context.Context, id *identity.Identity, tgt 
 	if err != nil {
 		return nil, err
 	}
-	if access != nil && access.Method == "" {
-		access.Method = method.Name()
-		access.Rung = index
+	if access != nil {
+		// A method that labelled its own result keeps its label; anything else
+		// is labelled here, so the audit record always names the entry that was
+		// used rather than only sometimes (D14).
+		if access.Method == "" {
+			access.Method = method.Name()
+		}
+		if access.Rung == 0 {
+			access.Rung = index
+		}
 	}
 	if index > 1 {
 		// The rung in force goes to the record and the operator surface, never

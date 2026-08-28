@@ -144,7 +144,9 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	}
 	profiles := opts.Profiles
 	if len(profiles) == 0 {
-		profiles = []string{"super_admin", "prof_admin"}
+		// The four FortiOS built-ins, so a driver's default profile resolves
+		// against the same set a real unit has.
+		profiles = []string{"super_admin", "prof_admin", "super_admin_readonly", "prof_admin_readonly"}
 	}
 	for _, p := range profiles {
 		d.profiles[p] = true

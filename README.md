@@ -36,10 +36,15 @@ before reading the code.
 > target-credential methods are in: **ephemeral-user**, which creates a
 > short-lived account and key on the target for the session and removes them
 > afterwards (with an orphan reaper for the sessions whose proxy died), and
-> **brokered-key**, a credential held in memory for one session for the
-> appliances and network gear the proxy cannot administer. Hoplock Control
-> chooses between them per route; `auth.target` in `config.example.yaml` holds
-> only the local material each needs. Chaining is in too: a session can traverse
+> **brokered-key**, a credential held in memory for one session. A third,
+> **ephemeral-account**, takes the ephemeral model onto gear that has no
+> `useradd` at all: it creates a short-lived *administrator* on a device through
+> a per-platform driver — FortiGate first — and removes it afterwards. Hoplock
+> Control chooses between them per route, and since contract v3 it sends an
+> ordered **ladder** rather than a single method: the proxy walks it top-down,
+> stops at the first entry it can satisfy, and records which one that was. It
+> never invents an entry. `auth.target` in `config.example.yaml` holds only the
+> local material each method needs. Chaining is in too: a session can traverse
 > several proxies, each authenticating, authorizing and routing for itself, and
 > a proxy in a protected zone is reached over a connection **it** opened to its
 > upstream — so an enclave needs no inbound firewall rule at all. Channels are

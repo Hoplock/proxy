@@ -257,13 +257,17 @@ auth:
       # denial, never the nearest driver.
       platforms: []
       # The platform authorization scope created administrators are given.
-      # Empty means the driver's own default, which on FortiOS is `prof_admin`.
+      # Empty means the driver's own default, which on FortiOS is
+      # `super_admin_readonly`: the most restrictive built-in that cannot be
+      # edited out from under us. `prof_admin_readonly` is narrower but is
+      # editable, so an operator who widened it once would silently widen every
+      # Hoplock session on that unit.
       #
-      # Read that default as a placeholder rather than a control: FortiOS has no
-      # built-in read-only profile, and Fortinet's own documentation notes that
-      # prof_admin often ships with the same permissions as super_admin. WHICH
-      # profile a route gets is a policy question that phase 0015 gives a
-      # vocabulary and phase 0016 applies.
+      # A read-only default WILL be wrong for routes whose purpose is to change
+      # a device — set this to `prof_admin` or a profile of your own for those.
+      # WHICH profile a route gets is a policy question that phase 0015 gives a
+      # vocabulary and phase 0016 applies; this proxy-wide setting is what that
+      # replaces.
       access_profile: ""
       # The address devices see this proxy connect from. Where a driver declares
       # it can pin an account to a source address, this is what it is pinned to.
