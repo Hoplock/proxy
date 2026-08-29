@@ -1353,6 +1353,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0023 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
 | 0024 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: a different target identity, and a contract question before it is a driver (deferred from 0014) |
 | 0025 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
+| 0026 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. **Feeds 0015/0016/0024/0025 — consider renumbering so it runs first** |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
