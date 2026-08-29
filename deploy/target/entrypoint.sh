@@ -52,11 +52,11 @@ ssh-keygen -A >/dev/null
 # which surfaces at the proxy as a bare "connection reset by peer" and looks
 # like a network fault. One misconfigured route becomes an outage for every user
 # of that target. Phase 0012 hit exactly this (a .ssh directory owned by root),
-# and prompt 0019 is the proxy-side answer.
+# and prompt 0020 is the proxy-side answer.
 #
 # Turning it off is right for a target reachable ONLY through a proxy: the
 # defence has no distinct sources left to distinguish. It also keeps the e2e
-# suite honest — phase 0019's containment scenarios have to be proven by the
+# suite honest — phase 0020's containment scenarios have to be proven by the
 # proxy's own behaviour, not by the target giving up on it. A real fleet needs
 # the same decision made deliberately.
 #

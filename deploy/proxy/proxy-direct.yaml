@@ -73,7 +73,7 @@ auth:
       password_env: "HOPLOCK_DEVICE_ADMIN_PASSWORD"
       platforms: ["fortigate"]
       # Deliberately left at the driver's default so the topology exercises what
-      # a proxy actually ships with. Phase 0016 is what turns this into policy.
+      # a proxy actually ships with. Phase 0017 is what turns this into policy.
       access_profile: ""
       # Tight, because on FortiOS nothing but this sweep ever removes an
       # account: the platform has no expiry field.

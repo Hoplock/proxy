@@ -1,17 +1,17 @@
-# 0016 — Target-side enforcement: confining the ephemeral account
+# 0017 — Target-side enforcement: confining the ephemeral account
 
 > Renumbered from 0014 by the privileged-access revision (PLAN §10) and widened
-> there to cover device accounts as well as POSIX ones. Queued after 0015 for
+> there to cover device accounts as well as POSIX ones. Queued after 0016 for
 > the reason 0009 came after 0006: the vocabulary lands first, then the thing
 > that enforces it.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
-- `docs/PLAN.md` — especially §2 (**D12**, as amended by 0015; **D13** for what
+- `docs/PLAN.md` — especially §2 (**D12**, as amended by 0016; **D13** for what
   a device driver controls), §5.1 (the ephemeral lifecycle and its teardown
   guarantees), §5.3 (the device lifecycle and its declarations), §6.3 (the
-  enforcement-point table 0015 recorded), §4.3 (what the user is told).
-- `docs/learnings/` — read summaries; open **`0015`** (the rung vocabulary,
+  enforcement-point table 0016 recorded), §4.3 (what the user is told).
+- `docs/learnings/` — read summaries; open **`0016`** (the rung vocabulary,
   capability advertisement, and refusal rule — this phase implements exactly
   what that summary names), `0007` (the provisioning and teardown scripts, the
   naming convention, the orphan reaper, and the target-side prerequisites),
@@ -38,7 +38,7 @@ The reach axis is not the same argument repeated; it is the one that matters for
 the automation accounts this feature was asked for. An account confined to
 `uptime` and `cat` that can still open a socket to the rest of the estate is a
 pivot point with an allow-list on it, and the proxy's forwarding policy does not
-see that traffic at all (0015 records why). Egress confinement is the half that
+see that traffic at all (0016 records why). Egress confinement is the half that
 turns "this account cannot run anything interesting" into "this account cannot
 do anything interesting".
 
@@ -50,7 +50,7 @@ already writes.
 ## In scope
 
 ### Rendering a rung onto the account (`internal/auth/target`)
-The provisioner gains, per rung named by 0015's contract **on each axis**, the
+The provisioner gains, per rung named by 0016's contract **on each axis**, the
 target-side mechanism that implements it. A route can sit on a different rung
 per axis, so these compose rather than nest. Expect at least:
 
@@ -65,12 +65,12 @@ per axis, so these compose rather than nest. Expect at least:
 - **Shell and `PATH` confinement** for the rung whose guarantee is a guardrail
   rather than a boundary: a restricted shell plus a curated directory of
   symlinks as the account's whole `PATH`. Document it as a guardrail in the code
-  and in the learnings, in the words 0015 chose. Do not let it drift into being
+  and in the learnings, in the words 0016 chose. Do not let it drift into being
   described as a boundary.
-- **Filesystem confinement** where 0015's table says a rung requires it: a
+- **Filesystem confinement** where 0016's table says a rung requires it: a
   per-session home mounted `noexec,nosuid,nodev`, or a mount namespace. Only
-  build this if 0015 named a rung that needs it.
-- **systemd confinement**, if 0015 ranked it where it looks like it ranks: a
+  build this if 0016 named a rung that needs it.
+- **systemd confinement**, if 0016 ranked it where it looks like it ranks: a
   drop-in on the session's `user-<uid>.slice` (or a `systemd-run` wrapper
   invoked from the `command=` dispatcher) carrying the sandbox directives for
   the execution rung and the `IPAddress*` / `PrivateNetwork=` directives for the
@@ -78,10 +78,10 @@ per axis, so these compose rather than nest. Expect at least:
   installed — a file and a `daemon-reload` — so it is likely the one most
   deployments actually get. Treat "systemd is present, cgroup v2 is mounted, and
   the directives this rung needs exist in *this* systemd version" as a
-  capability to probe and report (0015), not as an assumption: the directives
+  capability to probe and report (0016), not as an assumption: the directives
   landed across many releases and a silently-ignored one is a rung that claims a
   guarantee it is not delivering.
-- **Egress confinement** for the reach axis, by whichever mechanism 0015 chose:
+- **Egress confinement** for the reach axis, by whichever mechanism 0016 chose:
   the systemd directives above, or a per-uid netfilter rule
   (`iptables -m owner --uid-owner`, nftables `meta skuid`), or a network
   namespace. Two things this rung must get right, both of which are teardown
@@ -97,7 +97,7 @@ Two rules that are not optional:
 - **A rung the proxy cannot provide on this target is an outage-class denial**
   naming the session id (PLAN §4.3), and nothing is provisioned. Never a silent
   downgrade — the audit record would then claim a guarantee the session did not
-  have. The proxy advertises what it can provide (0015); this is what happens
+  have. The proxy advertises what it can provide (0016); this is what happens
   when the answer was wrong anyway, and it *will* sometimes be wrong, because
   the proxy learns what a target supports only by touching it.
 
@@ -109,7 +109,7 @@ netfilter — and where the platform's **own** authorizer is available instead,
 per session, because the proxy creates the account.
 
 - **Command authorization** is the platform's: an access profile, a privilege
-  level, a role, a login class. 0015's vocabulary names rungs by what they
+  level, a role, a login class. 0016's vocabulary names rungs by what they
   guarantee rather than by mechanism, so the driver maps a named rung onto its
   platform's construct, and refuses (outage-class, §4.3) when it has nothing
   that delivers that guarantee. Take the mapping from 0014's learnings; do not
@@ -120,11 +120,11 @@ per session, because the proxy creates the account.
   from anywhere else, including from a copy of it.
 - **The failure mode is coarseness, and it must be recorded.** Vendor RBAC
   groups commands the vendor's way, so a profile permitting diagnostics may
-  include a command with a shell escape or a configuration write. Where 0015's
+  include a command with a shell escape or a configuration write. Where 0016's
   survey found such a leak, the rung's audit record should carry what it is
   actually enforcing, not the name of the guarantee it was asked for.
 - **Pre-provisioned rungs stay pre-provisioned.** A profile that the customer
-  defined on the device is attested, not applied, and 0015's contract already
+  defined on the device is attested, not applied, and 0016's contract already
   distinguishes those — a device rung is *applied* only where this phase creates
   or configures it as part of the session.
 
@@ -153,7 +153,7 @@ same way**:
   session's normal close, and from a panic unwind.
 
 ### Audit
-The rung actually in force is on the session's audit record (0015 defined the
+The rung actually in force is on the session's audit record (0016 defined the
 field; 0011 ships it). A record that says "boundary" for a session that ran at a
 weaker rung is the only outcome here worse than not shipping the feature.
 
@@ -180,30 +180,30 @@ explained in `deploy/README.md`.
 
 ## Out of scope
 - **Applying any rung on a `brokered-key` route.** The target is unmodifiable by
-  definition (D6a); 0015's contract makes an *applied* rung on such a route an
+  definition (D6a); 0016's contract makes an *applied* rung on such a route an
   error, and this phase inherits that rather than working around it. An
   **attested** rung — the appliance enforcing its own roles or privilege levels,
-  which 0015 defines — is not this phase's to apply either: nothing is
+  which 0016 defines — is not this phase's to apply either: nothing is
   configured for it. What this phase owes it is narrower and must not be
   skipped: the session must run, the audit record must carry the attested rung
   rather than "none", and no target-side provisioning may be attempted. A test
   covers exactly that.
-- Shipping SELinux/AppArmor policy modules for customer fleets. If 0015 named a
+- Shipping SELinux/AppArmor policy modules for customer fleets. If 0016 named a
   MAC rung, implement the hook that *uses* an existing profile and document the
   prerequisite; authoring fleet policy is not this product.
 - Changing the filter engine (0010) or the credential methods (0007).
-- **UID allocation.** Phase 0021 owns it. The two phases are halves of one fix —
-  0021 stops a fresh account inheriting a torn-down one's uid, and the
+- **UID allocation.** Phase 0022 owns it. The two phases are halves of one fix —
+  0022 stops a fresh account inheriting a torn-down one's uid, and the
   filesystem rung here stops there being anything outside the home to inherit —
   so neither may assume the other has landed. Say in the learnings what a
-  confined account can still leave behind, because 0021's author needs it.
+  confined account can still leave behind, because 0022's author needs it.
 
 ## Acceptance criteria
 - A device rung is rendered onto an `ephemeral-account` session against the fake
   FortiOS device from 0014, refused cleanly where the platform cannot deliver
   the named guarantee, and recorded with what it actually enforces.
 Against a real `sshd` (extend `deploy/target/` and `make test-sshd`, 0007 — the
-image 0012 unified), for each rung 0015 named:
+image 0012 unified), for each rung 0016 named:
 
 - **The bypass test, per rung.** With an allow-list naming only `cat`, assert
   that `cat` works and that `sh -c 'cat /etc/shadow'`, an uploaded script, and —
@@ -240,7 +240,7 @@ image 0012 unified), for each rung 0015 named:
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0016-target-side-enforcement-learnings.md`. Summary block MUST
+`docs/learnings/0017-target-side-enforcement-learnings.md`. Summary block MUST
 document, per rung and per axis: the exact mechanism, what teardown must undo,
 what the reaper must recognise, the target-side prerequisites (so a deployment
 can meet them, including the systemd version and cgroup mode where a rung

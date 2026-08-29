@@ -1,4 +1,4 @@
-# 0026 — FortiOS driver: correct what 0014 could not verify
+# 0015 — FortiOS driver: correct what 0014 could not verify
 
 > Phase 0014 established its FortiOS behaviour from **web-search summaries**,
 > because `docs.fortinet.com` and `community.fortinet.com` were blocked by that
@@ -14,13 +14,14 @@
 > survived. What changes is a set of declared facts that turned out to be false,
 > two of which the contract reasons about.
 
-**Ordering.** This prompt is numbered after the existing queue, but its findings
-feed **0015** (whose access-profile survey the 0014 learnings say "depends on
-this and nothing else"), **0016** (which replaces the fixed access-profile
-default), and **0024**/**0025** (which inherit 0014's FortiOS facts wholesale
-and reuse its CLI state machine). Running it late means those phases build on
-the errors this one removes. Per `docs/PROTOCOL.md` §6, ask the user whether to
-renumber the queue so this runs first, and do not begin until that is settled.
+**Why this runs first.** Its findings feed **0016** (whose access-profile survey
+the 0014 learnings say "depends on this and nothing else"), **0017** (which
+replaces the fixed access-profile default), and **0025**/**0026** (which inherit
+0014's FortiOS facts wholesale and reuse its CLI state machine). Running it late
+would mean those phases build on the errors this one removes, so the queue was
+renumbered under `docs/PROTOCOL.md` §6 to put it at the head — see the
+renumbering note at the end of `docs/PLAN.md` §10 for the mapping, which you
+will need when reading anything written before it.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow, and §6 on prompt numbering.
@@ -164,7 +165,7 @@ reasoning written down, not because the field was believed not to exist.
 
 ### 2. Is a VDOM part of target identity?
 
-This is the same shape as **0024**'s question and should be answered
+This is the same shape as **0025**'s question and should be answered
 consistently with it. A VDOM name has to come from somewhere: a new
 `auth.target.ephemeral_account` parameter, the route's target, or the platform
 value. It decides what the audit record says the target was, and what a policy
@@ -185,7 +186,7 @@ unit it does not fit a VDOM-scoped account, and the obvious narrower substitute
 is the profile that appears not to exist. There may be **no built-in read-only
 profile usable for a per-VDOM account**, which would make a custom `accprofile`
 a prerequisite rather than an option — a real operator burden that belongs in
-the docs whichever way you go. Coordinate with 0016, which replaces this default
+the docs whichever way you go. Coordinate with 0017, which replaces this default
 with policy.
 
 ## In scope
@@ -212,8 +213,8 @@ with policy.
 
 ## Out of scope
 
-- The FortiSwitch drivers — **0024** and **0025**.
-- Which access profile a route *gets*: 0015's vocabulary, 0016's application.
+- The FortiSwitch drivers — **0025** and **0026**.
+- Which access profile a route *gets*: 0016's vocabulary, 0017's application.
   This phase fixes the default and the facts under it, not the policy.
 - The declarative driver document and the subprocess contract (D13).
 - Anything requiring real hardware. Record it (below); do not simulate it and
@@ -274,9 +275,9 @@ access to a real FortiGate knows exactly what to try.
 ## Definition of Done & hand-off
 
 Per `docs/PROTOCOL.md`. Move this prompt to `implemented/`; add
-`docs/learnings/0026-fortios-driver-corrections-learnings.md`. The summary block
+`docs/learnings/0015-fortios-driver-corrections-learnings.md`. The summary block
 MUST carry: the three decisions and their reasoning; the corrected
 `Capabilities` and what each value now rests on; whether you could reach
 Fortinet's documentation; the hardware list above; and a plain statement of what
-0015, 0016, 0024 and 0025 must now assume differently from what 0014's learnings
+0016, 0017, 0025 and 0026 must now assume differently from what 0014's learnings
 told them.

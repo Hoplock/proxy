@@ -265,8 +265,8 @@ auth:
       #
       # A read-only default WILL be wrong for routes whose purpose is to change
       # a device — set this to `prof_admin` or a profile of your own for those.
-      # WHICH profile a route gets is a policy question that phase 0015 gives a
-      # vocabulary and phase 0016 applies; this proxy-wide setting is what that
+      # WHICH profile a route gets is a policy question that phase 0016 gives a
+      # vocabulary and phase 0017 applies; this proxy-wide setting is what that
       # replaces.
       access_profile: ""
       # The address devices see this proxy connect from. Where a driver declares
