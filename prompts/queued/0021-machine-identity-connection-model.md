@@ -1,14 +1,14 @@
-# 0019 — Machine-identity connection model: bound the snapshot, not the connection
+# 0021 — Machine-identity connection model: bound the snapshot, not the connection
 
-> New phase (privileged-access revision, PLAN §10). **Conditional on 0018.** If
-> 0018's measurements and the customer's answer show that connection-per-check
+> New phase (privileged-access revision, PLAN §10). **Conditional on 0020.** If
+> 0020's measurements and the customer's answer show that connection-per-check
 > is comfortably within budget, this phase is not needed and the right outcome
-> is to say so and delete it. Read 0018's learnings summary before anything
+> is to say so and delete it. Read 0020's learnings summary before anything
 > else; its closing verdict may be the whole answer.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
-- `docs/learnings/0018-…` — **first, and possibly last**: the measured numbers
+- `docs/learnings/0020-…` — **first, and possibly last**: the measured numbers
   and the verdict on whether D17's premise survived.
 - `docs/PLAN.md` — **D17** (what this implements, and what it amends in D2), D2
   and §6.4 (the caching and revocation model this must not undermine), §7 (what
@@ -82,7 +82,7 @@ connection-level record a container rather than the unit.
   `ControlMaster` is the customer's; this phase makes the proxy safe under it.
 - Any change to the filter engine or the policy axes. The same policy applies;
   only its lifetime and its unit of record change.
-- The scale harness — 0018 owns it. Use it to prove the improvement; do not
+- The scale harness — 0020 owns it. Use it to prove the improvement; do not
   rebuild it.
 
 ## Acceptance criteria
@@ -94,7 +94,7 @@ connection-level record a container rather than the unit.
   denial on renewal closes the connection with a disclosed reason; a lost
   revocation subscription prevents renewal-by-extension.
 - Each channel produces its own audit record naming the decision in force.
-- 0018's harness shows the intended reduction in Control request rate for the
+- 0020's harness shows the intended reduction in Control request rate for the
   UC2 pattern, reported as a before/after with the same scenario file.
 - `docs/PLAN.md` D17 updated from "proposed" to what was built, including
   whatever the in-flight-channel rule turned out to be.
@@ -137,6 +137,6 @@ why.
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`, plus Cross-repo impact if `api/` moved. Move to
 `implemented/`; add
-`docs/learnings/0019-machine-identity-connection-model-learnings.md`. The summary
+`docs/learnings/0021-machine-identity-connection-model-learnings.md`. The summary
 block MUST carry the snapshot-age field and its default, the in-flight-channel
 rule, the audit-record shape, and the measured before/after.

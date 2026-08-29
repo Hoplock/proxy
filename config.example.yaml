@@ -273,8 +273,8 @@ auth:
       #   * a read-only profile is wrong for any route whose purpose is to
       #     CHANGE the device, which is most privileged-access work.
       #
-      # WHICH profile a route gets is a policy question that phase 0016 gives a
-      # vocabulary and phase 0017 applies; this proxy-wide setting is what that
+      # WHICH profile a route gets is a policy question that phase 0018 gives a
+      # vocabulary and phase 0019 applies; this proxy-wide setting is what that
       # replaces.
       access_profile: "super_admin_readonly"
       # The address devices see this proxy connect from. Where a driver declares

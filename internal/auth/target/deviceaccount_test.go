@@ -524,7 +524,7 @@ func TestUnsatisfiablePostureIsASkippedRungNotADowngrade(t *testing.T) {
 	}
 }
 
-// TestRouteNeverFallsBackToTheTypedLogin is the defect prompt 0024 owns, and
+// TestRouteNeverFallsBackToTheTypedLogin is the defect prompt 0026 owns, and
 // the one this method must not reopen.
 func TestRouteNeverFallsBackToTheTypedLogin(t *testing.T) {
 	h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})

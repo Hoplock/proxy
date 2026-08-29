@@ -52,8 +52,8 @@ const PlatformFortiGate = "fortigate"
 // is a guess with a comment. So the profile is REQUIRED: it comes from the
 // route (device.CreateRequest.Profile) or from proxy configuration
 // (`auth.target.ephemeral_account.access_profile`), and an account is never
-// created without one. WHICH profile a route gets is phase 0016's vocabulary
-// and phase 0017's to apply; requiring one now is what stops that phase from
+// created without one. WHICH profile a route gets is phase 0018's vocabulary
+// and phase 0019's to apply; requiring one now is what stops that phase from
 // inheriting a default nobody chose.
 
 // placeholderSecretLen is the length of the throwaway password an account is
@@ -107,7 +107,7 @@ func New(opts Options) (*Driver, error) {
 	}
 	// An empty profile is allowed HERE and refused at create time. A proxy may
 	// legitimately configure none because every route it serves names its own
-	// (which is where phase 0017 takes this), and refusing to build the driver
+	// (which is where phase 0019 takes this), and refusing to build the driver
 	// would turn that into a startup failure. What must not happen is an
 	// account created without one, and CreateAccount is where that is decided.
 	if d.profile != "" {

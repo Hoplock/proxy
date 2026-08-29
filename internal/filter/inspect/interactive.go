@@ -44,7 +44,7 @@ const maxInteractiveLine = 4096
 // tab completion, multi-byte encodings other than UTF-8, base64 and any other
 // transformation, an editor's shell escape, and a shell started inside the
 // shell. Enforcement on an interactive route is D12's answer, not this file's:
-// restricted exec, or the target-side enforcement points phase 0016 opens.
+// restricted exec, or the target-side enforcement points phase 0018 opens.
 type Interactive struct {
 	opts Options
 

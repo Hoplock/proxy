@@ -1,4 +1,4 @@
-# 0016 — Enforcement points: survey & contract v4
+# 0018 — Enforcement points: survey & contract v4
 
 > Renumbered from 0013 by the privileged-access revision (PLAN §10) and widened
 > there. It comes **after** the prototype gate because the question it answers is
@@ -7,7 +7,7 @@
 > (0009), and both exec tiers (0010) exist to compare against. It now waits for
 > the **device** method too (0013, 0014), because a device platform's own RBAC is
 > a candidate rung and a survey that omits it would be answering a smaller
-> question than the product asks. It comes **before** 0017 for the reason 0006
+> question than the product asks. It comes **before** 0019 for the reason 0006
 > came before 0009: the vocabulary is revised before anything is built against
 > it.
 >
@@ -15,6 +15,17 @@
 > grant context, required capture (D16). Those are not enforcement points, but
 > they are contract fields on the same object in the same revision, and splitting
 > them into a fourth contract bump would cost Control a third sync for no gain.
+>
+> **It now also waits for 0016 and 0017**, the two FortiOS phases renumbered
+> ahead of it for exactly the reason this paragraph gives about 0006 and 0009.
+> **0016** answers what a *target* is when one device holds many virtual domains
+> — a shape this contract has to be able to describe, and may already carry a
+> parameter for. **0017** decides whether a FortiGate can enforce expiry on the
+> device, which is a capability advertisement this survey would otherwise record
+> wrongly: phase 0015 established that FortiOS *has* the mechanism and this
+> repository declines it, and a survey that wrote "the platform cannot" would be
+> repeating the exact mistake 0015 was queued to fix. Read both phases'
+> learnings before writing a row about a device.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -28,9 +39,12 @@
 - `docs/learnings/` — read summaries; open `0006` (how a contract revision is
   shaped and versioned), `0007` (what the ephemeral provisioner controls on the
   target: the account, its `authorized_keys`, its shell, its home), `0010`
-  (the restricted-exec policy object and what it can and cannot promise), and
+  (the restricted-exec policy object and what it can and cannot promise),
   `0013`/`0014` (what a device driver declares, and what a FortiOS access
-  profile can actually constrain).
+  profile can actually constrain), `0015` (which corrected several of 0014's
+  FortiOS facts and removed the fixed access-profile default), and `0016`/`0017`
+  (the target-identity answer and the expiry capability this survey must record
+  correctly).
 
 ## Objective
 Answer, and write down, **where** each policy claim is actually enforced — then
@@ -38,7 +52,7 @@ give Hoplock Control the vocabulary to choose an enforcement point per route,
 and the proxy the vocabulary to say which points it can provide.
 
 Enforce nothing. This phase revises `docs/PLAN.md`, `api/control.yaml`, and
-`internal/control`; 0017 implements what it names.
+`internal/control`; 0019 implements what it names.
 
 ## Why this phase exists
 
@@ -224,7 +238,7 @@ connection. Decide and document:
   positioned to find that out, because it is the only one that logs in.
 
   This has an ordering problem worth solving in this phase rather than
-  discovering in 0017: authorize happens **before** the proxy has ever touched
+  discovering in 0019: authorize happens **before** the proxy has ever touched
   the target, so per-target capabilities cannot simply ride on
   `AuthorizeRequest` for a first-ever connection. The precedent that fits is
   `/v1/hostkeys/report` (D7): the proxy learns something about a target by
@@ -291,12 +305,12 @@ Absent-value defaults for all four are "today's behaviour", per the rule below.
 Types, `Clone`, validation, and the mock server, following 0006's shape exactly:
 every new field gets its JSON tag, its absent-value default, and its consuming
 phase documented on the field. `cmd/mock-control` fixtures gain the new key so
-0017 and 0012's topology can select rungs; `fixtures.example.yaml` and
+0019 and 0012's topology can select rungs; `fixtures.example.yaml` and
 `api/README.md`'s fixture table move with them.
 
 ## Out of scope
 - **Enforcing anything.** No provisioning changes, no scripts, no shell
-  configuration, no mount work — all 0017.
+  configuration, no mount work — all 0019.
 - Authoring SELinux or AppArmor policy for customer fleets. The survey records
   what the rung requires; shipping fleet policy modules is not this product.
 - Changing `target_auth`'s methods or ladder semantics (0007, 0013) or the
@@ -309,11 +323,11 @@ phase documented on the field. `cmd/mock-control` fixtures gain the new key so
   wrong repository.
 - **Enforcing the session deadline.** The field and its validation land here;
   the timer that closes a live session belongs to the proxy engine and is
-  **phase 0023**, which also answers the two questions this phase leaves open —
-  what the user is told at expiry, and whether a warning precedes it. 0023
+  **phase 0025**, which also answers the two questions this phase leaves open —
+  what the user is told at expiry, and whether a warning precedes it. 0025
   cannot start until this phase merges, so leaving the field unusable blocks it:
   if you change the field's shape from what is specified above, say so plainly
-  in the learnings, because 0023 is written against it.
+  in the learnings, because 0025 is written against it.
 
 ## Acceptance criteria
 - `docs/PLAN.md` carries the survey tables — **both axes** — with all four
@@ -378,11 +392,11 @@ warns about.
 Per `docs/PROTOCOL.md`, plus the Cross-repo impact section above filled in with
 what you actually found (§4: "None" is a finding and must be written down).
 Move to `implemented/`; add
-`docs/learnings/0016-enforcement-points-contract-v4-learnings.md`. Summary block
+`docs/learnings/0018-enforcement-points-contract-v4-learnings.md`. Summary block
 MUST document the rung vocabulary for **both axes** and each rung's guarantee in
 one line, which rungs are applied and which attested, the absent-value default,
 the capability-advertisement mechanism (proxy-level and per-target), the refusal
-rule, and the audit field — 0017 builds from that summary alone.
+rule, and the audit field — 0019 builds from that summary alone.
 
 ---
 

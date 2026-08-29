@@ -100,10 +100,10 @@ rule rather than to a search.
 
   Turning it off is right for a target reachable only through a proxy: the
   defence has no distinct sources left to distinguish. It also keeps this suite
-  honest — prompt 0020's containment scenarios have to be proven by the proxy's
+  honest — prompt 0022's containment scenarios have to be proven by the proxy's
   own behaviour, not by the target giving up on it. The entrypoint applies each
   directive only if this `sshd` understands it. **A real fleet has to make the
-  same decision deliberately**; `prompts/queued/0020-*` is the proxy-side half.
+  same decision deliberately**; `prompts/queued/0022-*` is the proxy-side half.
 
 `make test-sshd` runs the phase-0007 credential tests against this same image
 on its own (`target/compose.yaml`), published on a host port.

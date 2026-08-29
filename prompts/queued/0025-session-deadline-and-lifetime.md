@@ -1,10 +1,10 @@
-# 0023 — The session deadline: enforce it, and tell the user before it bites
+# 0025 — The session deadline: enforce it, and tell the user before it bites
 
-> New prompt. Phase **0016** adds the deadline *field* and explicitly defers the
+> New prompt. Phase **0018** adds the deadline *field* and explicitly defers the
 > rest: *"the timer that closes a live session belongs to the proxy engine.
 > Queue it if no phase covers it."* No phase covered it. This is that prompt.
 >
-> **It cannot start before 0016 has merged** — the contract field it enforces
+> **It cannot start before 0018 has merged** — the contract field it enforces
 > does not exist until then. Everything else here is proxy-local.
 
 ## Read first
@@ -12,7 +12,7 @@
 - `docs/PLAN.md` — **§4.3 (the disclosure rule)**, §5.1 (teardown kills the
   account's processes), §6.4 (revocation, and why a local bound is not "just use
   revocation"), §13 UC2/UC3.
-- `prompts/implemented/0016-*` — the deadline field it defined, its shape
+- `prompts/implemented/0018-*` — the deadline field it defined, its shape
   (absolute instant vs duration), and the two questions it left open.
 - `docs/learnings/` summaries: **0005** (the session lifecycle and failure
   reporting), **0011** (capture points), **0012** (the topology you owe
@@ -27,7 +27,7 @@
 
 So today an established session has no upper bound at all except revocation
 (§6.4), which needs the stream to be up — and an immortal privileged session is
-least acceptable exactly when the stream is down. That is the hole 0016's field
+least acceptable exactly when the stream is down. That is the hole 0018's field
 describes and this phase closes.
 
 Write those two sentences into the code where the timer lives. Someone will
@@ -55,7 +55,7 @@ arrives, and make sure nobody's work dies without warning.
   not add a second teardown route.
 - No deadline in the route means no timer. Absent is not zero.
 
-### 2. What the user is told — 0016 left this open, and it is the point
+### 2. What the user is told — 0018 left this open, and it is the point
 
 An expiry is **neither a denial nor an outage**. §4.3's two branches do not cover
 it and must not be stretched: this is a session ending exactly as authorized. It
@@ -82,7 +82,7 @@ Today a user discovers the lifecycle rules when their job dies. Add to
   `tmux`, a backgrounded job — dies with the session**. That is deliberate: no
   residue is the design;
 - so work that must outlive a human's session is **not a human's session**. It
-  is a machine identity (UC2, D17, 0019) or a job handed to something on the
+  is a machine identity (UC2, D17, 0021) or a job handed to something on the
   target that owns its own lifecycle — a systemd unit, a batch scheduler —
   started by an approved argv under restricted exec;
 - and this is the same trade-off as reattachability, from the other side: the
@@ -120,7 +120,7 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 
 ## Out of scope
 
-- `api/control.yaml` — 0016 owns the field. Do not amend the contract; if it
+- `api/control.yaml` — 0018 owns the field. Do not amend the contract; if it
   turns out to be unusable as specified, stop and ask (`docs/PROTOCOL.md` §9)
   rather than changing it here.
 - Revocation (§6.4). A deadline is a bound known at authorize time; a kill is an
@@ -128,7 +128,7 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 - Session *extension*, renewal, or "just five more minutes". If it is worth
   having it is a contract change and a Control feature, and it belongs in a
   prompt of its own — note it in the learnings rather than building a hook.
-- Machine-identity connection lifetimes — 0019.
+- Machine-identity connection lifetimes — 0021.
 
 ## Acceptance criteria
 
@@ -145,7 +145,7 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0023-session-deadline-and-lifetime-learnings.md`. The summary
+`docs/learnings/0025-session-deadline-and-lifetime-learnings.md`. The summary
 block MUST record: the warning lead time and why; the exact wording of both
 messages and where each is written; the tolerance the timer guarantees and what
 it depends on; the chain-shortening rule and its test; and the telemetry

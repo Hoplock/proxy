@@ -1,4 +1,4 @@
-# 0028 — FortiOS: make `target-enforced` expiry real
+# 0017 — FortiOS: make `target-enforced` expiry real
 
 > Phase **0014** declared `Capabilities.EnforcesExpiry: false` for FortiOS on the
 > grounds that "there is no `set expiry`, and `config system admin` has no
@@ -93,9 +93,11 @@ Settle these **with the user before writing code**, and record them in
 
 ## Out of scope
 
-- Multi-VDOM — **0027**. If it has merged, the schedule object lives in a scope
-  and you must say which; if it has not, single-VDOM units are the whole surface.
-- Ending the **session** at its deadline, which is phase 0023's. This phase ends
+- Multi-VDOM itself — **0016**, which runs immediately before you and is the
+  reason you sit here rather than at the end of the queue: a schedule object on a
+  unit with virtual domains lives in a scope, and you must say which. Take that
+  shape from 0016's learnings; do not re-open it.
+- Ending the **session** at its deadline, which is phase 0025's. This phase ends
   the account's usefulness on the device; the two were deliberately not
   conflated in 0014 and should not be here either.
 - `password-expire`.
@@ -124,7 +126,7 @@ Settle these **with the user before writing code**, and record them in
 ## Definition of Done & hand-off
 
 Per `docs/PROTOCOL.md`. Move this prompt to `implemented/`; add
-`docs/learnings/0028-fortios-target-enforced-expiry-learnings.md`. The summary
+`docs/learnings/0017-fortios-target-enforced-expiry-learnings.md`. The summary
 block MUST carry: the decisions and their reasoning; the corrected
 `Capabilities` and what each value now rests on; what teardown and the reaper now
 remove; and the hardware list.

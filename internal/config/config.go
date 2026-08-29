@@ -329,7 +329,7 @@ type EphemeralAccountAuth struct {
 	// a per-VDOM account. A privileged account's scope on a customer's firewall
 	// is a decision an operator makes.
 	//
-	// WHICH profile a route gets is phase 0016's vocabulary and phase 0017's to
+	// WHICH profile a route gets is phase 0018's vocabulary and phase 0019's to
 	// apply. This is the proxy-wide setting until then.
 	AccessProfile string `yaml:"access_profile"`
 	// SourceAddress is the address devices see this proxy connect from. Where a

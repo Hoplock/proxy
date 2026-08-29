@@ -1,4 +1,4 @@
-# 0025 — FortiLink FortiSwitch: a target administered through another device
+# 0027 — FortiLink FortiSwitch: a target administered through another device
 
 > Deferred from phase 0014. That prompt asked its session to settle the
 > FortiSwitch management-mode fork before designing a switch driver, and the
@@ -9,12 +9,14 @@
 > contract question before it is a Go question. It is why this is its own phase
 > rather than a second `Register` call in 0014.
 
-**One question is shared, and whoever answers it first binds the other.** Phase
-**0027** (FortiOS multi-VDOM) asks the same thing in another shape: what a target
-is when one FortiGate holds many virtual domains. If 0027 has already merged, its
-answer is binding on you and its learnings say what it is. If it has not, yours
-is binding on it, and your learnings must say so in the summary block. Two
-parallel answers to one question is the outcome neither phase may produce.
+**One question is shared, and it was already answered.** Phase **0016** (FortiOS
+multi-VDOM) asks the same thing in the simpler shape — what a target is when one
+FortiGate holds many virtual domains — and it runs first precisely so that this
+phase inherits an answer rather than inventing a parallel one. Read its learnings
+and `docs/PLAN.md` before deciding anything about target identity here: **its
+answer is binding on you.** Extending it to a device behind a device is your
+work; contradicting it is not. If you find it cannot stretch to this shape, that
+is a finding to put to the user, not a second answer to adopt quietly.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -91,10 +93,10 @@ the phase becomes the contract work plus a route that falls through to
 - A scenario in `test/e2e`, per the topology obligation below.
 
 ## Out of scope
-- The standalone (directly-managed) FortiSwitch driver: that is **0026**, and it
+- The standalone (directly-managed) FortiSwitch driver: that is **0028**, and it
   is nearly the FortiGate driver under another platform name.
-- Any enforcement rung. Which access profile a route gets is 0016's vocabulary
-  and 0017's application.
+- Any enforcement rung. Which access profile a route gets is 0018's vocabulary
+  and 0019's application.
 - The declarative driver document and the subprocess contract (D13).
 
 ## Acceptance criteria
@@ -121,7 +123,7 @@ per-scenario options instead.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0025-fortilink-fortiswitch-driver-learnings.md`. The summary
+`docs/learnings/0027-fortilink-fortiswitch-driver-learnings.md`. The summary
 block MUST carry: the target-identity decision and why, the verified FortiLink
 facts and their sources, the declared `Capabilities` for the switch platform,
-and whether 0026 can reuse any of this.
+and whether 0028 can reuse any of this.
