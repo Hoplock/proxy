@@ -18,9 +18,18 @@
 >
 > **It now also waits for 0016 and 0017**, the two FortiOS phases renumbered
 > ahead of it for exactly the reason this paragraph gives about 0006 and 0009.
-> **0016** answers what a *target* is when one device holds many virtual domains
-> — a shape this contract has to be able to describe, and may already carry a
-> parameter for. **0017** decides whether a FortiGate can enforce expiry on the
+> **0016 has landed, and it answered** what a *target* is when one device holds
+> many virtual domains — a shape this contract has to be able to describe. The
+> answer is already IN the contract as **v3.1**: an open `device_field.<name>`
+> namespace on `ephemeral-account` params, opaque to the contract, declared per
+> driver (`device.Capabilities.Fields`), where a field the driver does not
+> declare is a **skipped rung** rather than a dropped field. Read `docs/PLAN.md`
+> §5.3 ("As extended (phase 0016)") and `api/README.md` ("Additional device
+> fields") before writing anything about target identity: v4 **describes and
+> builds on that namespace**, and does not author a second way to name a
+> partition of a device. If v4 needs to constrain it — an enforcement-point row
+> that only applies to a VDOM-scoped account, say — that is an extension of the
+> same namespace. **0017** decides whether a FortiGate can enforce expiry on the
 > device, which is a capability advertisement this survey would otherwise record
 > wrongly: phase 0015 established that FortiOS *has* the mechanism and this
 > repository declines it, and a survey that wrote "the platform cannot" would be

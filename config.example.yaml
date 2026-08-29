@@ -277,6 +277,16 @@ auth:
       # vocabulary and phase 0019 applies; this proxy-wide setting is what that
       # replaces.
       access_profile: "super_admin_readonly"
+      #
+      # One consequence to know before choosing it (phase 0016): on a FortiGate
+      # running virtual domains, a VDOM-SCOPED administrator may hold only
+      # `prof_admin` or a custom profile — `super_admin_readonly` is the GLOBAL
+      # read-only profile and FortiOS will not accept it there. There is no
+      # built-in read-only profile a per-VDOM account can hold, so a proxy
+      # serving routes that name `device_field.vdom` needs either `prof_admin`
+      # or, better, a custom profile the customer built. The driver refuses the
+      # global built-ins for such a route rather than letting the device fail
+      # the sequence half way through.
       # The address devices see this proxy connect from. Where a driver declares
       # it can pin an account to a source address, this is what it is pinned to.
       # Empty means no pin — a restriction not applied, rather than one applied

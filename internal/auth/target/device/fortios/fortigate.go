@@ -454,17 +454,25 @@ func (d *Driver) ListAccounts(ctx context.Context, req device.ListRequest) ([]de
 	return d.listAccounts(ctx, s, req.Prefix)
 }
 
-// ErrMultiVDOM means the unit is running virtual domains and this driver does
-// not administer one.
+// ErrMultiVDOM means the unit would not say which shape it is.
+//
+// The NAME is kept from phase 0015, when it meant "this unit is running virtual
+// domains and this driver does not administer one" — a sentence that is no
+// longer true, because phase 0016 administers those units. What survives is the
+// narrower refusal 0015's fail-closed reasoning still earns: a `get system
+// status` whose virtual-domain line cannot be parsed, or a configuration that
+// is none of the three documented values. A version or model nobody has asked
+// about is not a unit to guess at, and the direction that does not create
+// privileged accounts on a hunch is refusal.
 //
 // It is NOT device.ErrUnsupported, and the distinction is the security half of
 // this refusal. ErrUnsupported means the PLATFORM cannot, which makes the
 // ladder rung unsatisfiable and walks the proxy down to a credential the server
 // ranked lower — a silent downgrade triggered by the shape of one unit. This is
 // an ATTEMPT that fails: the route is right, the platform is right, and this
-// build cannot serve this device. D13's rule is that an unsupported
+// build cannot vouch for this device. D13's rule is that an unsupported
 // configuration is an outage-class denial, never a best-effort attempt.
-var ErrMultiVDOM = errors.New("auth/target/device/fortios: the unit is running virtual domains, which this driver does not administer")
+var ErrMultiVDOM = errors.New("auth/target/device/fortios: the unit did not report a virtual domain configuration this driver recognises")
 
 // vdomStatusCommand asks the unit whether virtual domains are enabled.
 //

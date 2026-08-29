@@ -142,6 +142,40 @@ routes:
           expiry_posture: proxy-enforced
           lifetime_seconds: "900"
 
+  # ------------------------------------- ephemeral-account, partitioned ---
+  # The SAME appliance, running virtual domains (phase 0016). It is a second
+  # listener on the device node rather than a second node, because a multi-VDOM
+  # FortiGate is one box partitioned — which is the whole reason the VDOM is a
+  # route FIELD and not part of the target: `device:2222` is what DNS resolves
+  # and what the host key is pinned to, and one unit holding many virtual
+  # domains is still one unit to both.
+  #
+  # Scenario: a session to a partitioned unit, scoped to one virtual domain.
+  - login: alice
+    target: fortigate-vdom.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: device
+    target_port: 2222
+    permissions: networkAdminGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    target_auth_ladder:
+      - method: ephemeral-account
+        params:
+          username: alice
+          platform: fortigate
+          credential_kind: password
+          expiry_posture: proxy-enforced
+          lifetime_seconds: "900"
+          # Contract v3.1: the administrator is created INSIDE this virtual
+          # domain rather than at the unit's global scope. Absent, the same
+          # route would get a global administrator — the wider of the two — so
+          # this line is a narrowing somebody wrote down.
+          device_field.vdom: customer-a
+
   # The ladder's fall-through (D14). The first entry names a platform this proxy
   # has no driver for, so it is UNSATISFIABLE and skipped; the second is served.
   # A session that does not happen produces no recording and no audit trail, and

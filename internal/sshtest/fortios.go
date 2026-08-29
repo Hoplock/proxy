@@ -35,8 +35,9 @@ import (
 //     defaults to paging and that setting is permanent and device-wide;
 //   - it reports failure as OUTPUT TEXT with no exit status, because that is
 //     the only failure channel FortiOS has;
-//   - it has a VDOM MODE, and in multi-VDOM mode it refuses `config system
-//     admin` outside `config global`.
+//   - it has a VDOM MODE, and in one it refuses `config system admin`,
+//     `show system admin` and `show system vdom` outside `config global`, and
+//     refuses `set vdom` naming a virtual domain it does not have.
 //
 // That last one is phase 0015's lesson and it is worth stating plainly:
 // docs/FORTIOS-DOC-VERIFICATION.md found that the driver's command sequence is
@@ -59,9 +60,10 @@ type FortiOSAccount struct {
 	// device's own default and means "reachable from any IPv6 address" — so a
 	// test can assert the pin is real rather than half-applied.
 	IP6TrustHost string
-	// VDOM is the virtual domain a per-VDOM administrator is scoped to. Nothing
-	// sets it yet; it is here so that a driver which starts sending `set vdom`
-	// is asserted against rather than silently accepted.
+	// VDOM is the virtual domain a per-VDOM administrator is scoped to, set by
+	// `set vdom` (phase 0016). Empty means the administrator is global, which
+	// on a partitioned unit is the wider of the two scopes — so a test asserts
+	// on this field rather than on the account merely existing.
 	VDOM string
 	// Password and PublicKey are what the driver installed. They are here so a
 	// test can assert the credential ARRIVED; nothing in the device ever prints
@@ -142,9 +144,10 @@ const FortiOSMaxNameLen = 64
 // The virtual domain configurations `get system status` reports.
 //
 // Fortinet documents `disable` and `multiple` as the values of the "Virtual
-// domain configuration" line, and the Administration Guide adds split-task
-// mode as a third shape of the same feature. A driver that has not been written
-// for virtual domains should decline every value but `disable`.
+// domain configuration" line, and the Administration Guide adds split-task mode
+// as a third shape of the same feature — one this fake serves like `multiple`,
+// because its own "Create per-VDOM administrators" procedure is the same recipe.
+// A value that is none of the three is what a driver has to decline.
 const (
 	FortiOSVDOMDisabled  = "disable"
 	FortiOSVDOMMultiple  = "multiple"

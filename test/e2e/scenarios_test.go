@@ -457,6 +457,56 @@ func testDeviceCredentials(t *testing.T) {
 		}
 	})
 
+	// Phase 0016: the same appliance running virtual domains, served by a
+	// second listener on the device node. What this watches is that the unit
+	// shape the driver used to REFUSE now gets a session, and that the
+	// administrator it gets is scoped to the virtual domain the route named
+	// rather than to the whole unit.
+	t.Run("a session to a unit running virtual domains is scoped to one of them", func(t *testing.T) {
+		s := aliceOn(proxyDirect, "fortigate-vdom.company.com")
+		// `get system status` rather than `show system admin`: on a partitioned
+		// unit the administrator table is a global one, and reading it is not
+		// what a per-VDOM administrator is there to do. The account is observed
+		// through the audit record and the appliance's own table instead.
+		s.stdin = "get system status\nexit\n"
+		r := ssh(t, s)
+		wantExit(t, r, "ephemeral-account on a partitioned unit", 0)
+		wantContains(t, r, "ephemeral-account on a partitioned unit", "Virtual domain configuration: multiple")
+
+		// The mapping event is where the scope has to appear. `device:2222` is
+		// the same string whether the administrator was global or scoped to one
+		// customer's virtual domain, so an audit record without the field
+		// cannot say what the privileged account could reach (PLAN §5.3).
+		var scoped logRecord
+		waitFor(t, "the account-mapping record for the partitioned unit", func() bool {
+			for _, rec := range fetchLogs(t).Priority {
+				if rec.Attributes["event"] == "device.account.mapping" && rec.Attributes["device_field.vdom"] == "customer-a" {
+					scoped = rec
+					return true
+				}
+			}
+			return false
+		})
+		if got := scoped.Attributes["target_account"]; !strings.HasPrefix(got, "hl-") {
+			t.Errorf("the mapping record names account %q, which is not one this proxy created", got)
+		}
+
+		// And it is gone afterwards, on this unit as on the other one: a
+		// partitioned unit is not a shape where teardown is best-effort.
+		waitFor(t, "the administrator on the partitioned unit to be removed", func() bool {
+			admins, err := tryDeviceAdministrators(deviceVDOMDebugAddr)
+			if err != nil {
+				return false
+			}
+			for _, a := range admins {
+				if strings.HasPrefix(a.Name, "hl-") {
+					return false
+				}
+			}
+			return true
+		})
+	})
+
 	t.Run("the device's own administrator is never touched", func(t *testing.T) {
 		accounts := deviceAccounts(t)
 		found := false

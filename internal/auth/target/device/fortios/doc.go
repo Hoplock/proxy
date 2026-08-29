@@ -72,16 +72,32 @@
 //
 // # The unit shapes this driver serves
 //
-// One: a single-VDOM FortiGate. A unit running virtual domains keeps the
-// administrator table inside `config global`, requires `set vdom` for a
-// VDOM-scoped account, and does not accept `super_admin_readonly` for one — a
-// different command sequence at a different nesting depth, which phase 0014
-// neither sent nor detected. This driver reads `get system status` when it
-// opens a session and refuses anything but `disable` (ErrMultiVDOM), because
-// D13's rule is that an unsupported configuration is an outage-class denial and
-// never a best-effort attempt. Supporting virtual domains is a queued phase,
-// and it starts with a contract question — what a "target" is when one unit
-// holds many — rather than with a command sequence.
+// Three: a single-VDOM FortiGate, and a unit running virtual domains in either
+// `multiple` or `split-task` mode (phase 0016). The driver reads
+// `get system status` when it opens a session, because the two are administered
+// differently and not slightly: on a partitioned unit the administrator table
+// lives inside `config global`, a VDOM-scoped account needs `set vdom` and a
+// profile that is not one of the global built-ins, and the teardown has one
+// more level to unwind. Phase 0014 sent the single-VDOM sequence at every unit;
+// phase 0015 detected the difference and refused; this driver sends Fortinet's
+// documented sequence for each shape.
+//
+// A route names a virtual domain through the contract's device-field namespace
+// (FieldVDOM, control.ParamDeviceFieldPrefix). Absent, the account is created
+// at GLOBAL scope — which is the wider of the two, and is what a proxy
+// administering the whole unit was already getting before the unit was
+// partitioned. That is the answer to what a target is when one device is many,
+// and docs/PLAN.md §5.3 carries its reasoning: the endpoint stays the device,
+// the route names the partition.
+//
+// What is still refused is narrower than a unit shape. ErrMultiVDOM now means
+// the unit's virtual-domain configuration could not be READ — an unparseable
+// status line, or a value that is none of the three above — and ErrUnknownVDOM
+// means the route named a virtual domain this unit does not have. Both are
+// outage-class denials rather than device.ErrUnsupported, because D13's rule is
+// that an unsupported configuration is a denial and never a best-effort
+// attempt, and a skipped rung would answer the shape of one unit with a
+// credential the server ranked lower.
 //
 // # Why the command sequences are data
 //

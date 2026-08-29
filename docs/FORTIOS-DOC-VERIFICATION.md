@@ -466,6 +466,48 @@ Three things follow, in descending order of confidence:
    built-in read-only profile usable for a per-VDOM account**, so a custom
    accprofile becomes necessary rather than optional.
 
+### What phase 0016 did with this, and what it read for itself
+
+Phase 0016 implements the sequence above: the `config global` wrapper on every
+global table, `set vdom` for a VDOM-scoped account, and an unwinding that
+follows the nesting. Three things it looked up are recorded here with the same
+distinction this document is built on — **what was read, and how**.
+
+The pages below were reached through **search-result summaries** rather than
+rendered in full, because the documentation site did not serve its body text to
+this session's fetcher; the one exception is the community article, which did
+render and repeats the per-VDOM recipe verbatim. That is weaker evidence than
+the direct reads above, and it is labelled rather than blended in.
+
+1. **Split-task VDOM mode has per-VDOM administrators too**, with the same
+   recipe: "the FortiGate has two VDOMs: the management VDOM (root) and the
+   traffic VDOM (FG-traffic)… Per-VDOM administrators can be created that can
+   access only the management or traffic VDOM. These administrators must use
+   either the `prof_admin` administrator profile, or a custom profile."
+   ([Split-task VDOM mode](https://docs.fortinet.com/document/fortigate/7.0.0/administration-guide/758820/split-task-vdom-mode);
+   its own "Create per-VDOM administrators" subsection.) So the driver serves
+   `multiple` and `split-task` through one path rather than declining the
+   second.
+2. **`config system vdom` is an ordinary configuration table** with one
+   `edit <name>` per virtual domain, present in every CLI reference from 6.2 to
+   8.0 ([config system vdom, 7.6.3](https://docs.fortinet.com/document/fortigate/7.6.3/cli-reference/293564491/config-system-vdom)).
+   The driver enumerates virtual domains with `show system vdom` in global
+   scope, which renders in the same shape as `show system admin` and is read by
+   the same line matcher. **Unverified:** that exact rendering, on hardware.
+3. **The KB's answer for listing VDOMs is `diagnose sys vd list`**, in the global
+   context ([Technical Tip: How to find the VDOM index](https://community.fortinet.com/t5/FortiGate/Technical-Tip-How-to-find-the-VDOM-index/ta-p/192193)).
+   It was **not** taken: it is a `diagnose` command, and claim 8's own finding is
+   that from FortiOS 7.4.x `super_admin_readonly` cannot run those — so a
+   management account scoped tightly enough to be safe might be unable to check
+   a VDOM at all.
+
+And the finding in consequence 3 above is now an operator prerequisite rather
+than an observation: because a per-VDOM administrator may hold only `prof_admin`
+or a custom profile, and `super_admin_readonly` is the *global* read-only one,
+**a customer wanting a read-only per-VDOM account has to build a custom
+profile**. The driver refuses the two global built-ins for a VDOM-scoped account
+rather than letting the device fail the sequence half way through.
+
 What is **not** established here is the exact failure mode of sending
 `config system admin` at the top level of a multi-VDOM unit — whether it is a
 parse error, or silently resolves somewhere unintended. Fortinet documents the

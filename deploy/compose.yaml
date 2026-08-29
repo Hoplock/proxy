@@ -76,6 +76,19 @@ services:
       - "hoplock-mgmt"
       - "-debug"
       - "127.0.0.1:8081"
+      # The same appliance in a different configuration: a unit running virtual
+      # domains, served by a second listener in the SAME container rather than
+      # by a node of its own (phase 0016). A multi-VDOM FortiGate is not a
+      # second kind of box, and a topology that modelled it as one would be
+      # describing an estate nobody has.
+      - "-vdom-listen"
+      - "0.0.0.0:2222"
+      - "-vdom-mode"
+      - "multiple"
+      - "-vdoms"
+      - "root,customer-a"
+      - "-vdom-debug"
+      - "127.0.0.1:8082"
     environment:
       HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
     networks: [core]
