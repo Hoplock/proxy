@@ -219,14 +219,14 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   docs, and the audit record use the same two words for the same two things.
 
   **Where** either mode is enforced is a separate question, opened by phase
-  0016. Both tiers above are enforced *in the proxy, at the `exec` request*, so
+  0018. Both tiers above are enforced *in the proxy, at the `exec` request*, so
   both stop meaning anything the moment a route permits an interactive shell —
   which this decision says in as many words. The ephemeral method (D6, §5.1)
   creates the account, writes its `authorized_keys`, and chooses its shell, so
   on those routes the same policy can be enforced by sshd and the kernel
   instead, where it also survives a connection that never went through a proxy.
-  0016 surveys those enforcement points and gives Hoplock Control the vocabulary
-  to choose one per route; 0017 implements them. This decision is amended there
+  0018 surveys those enforcement points and gives Hoplock Control the vocabulary
+  to choose one per route; 0019 implements them. This decision is amended there
   rather than replaced.
 - **D13 — Ephemeral accounts on devices the proxy cannot administer as a host
   (new, phase 0013).** D6a split target credentials into `ephemeral-user` for
@@ -350,7 +350,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   rather than about the user's own request.
 
 - **D15 — External authorization context belongs to Hoplock Control (new, phase
-  0016).** Some access is legitimate only while something outside this system
+  0018).** Some access is legitimate only while something outside this system
   says so: a vulnerability scan is running, a change ticket is approved and
   inside its window, an incident is open. Hoplock must learn that in two
   directions — an inbound **push** ("a scan is starting against targetX") and an
@@ -384,7 +384,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   customer-written provider becomes the weakest one.
 
 - **D16 — Unbounded privilege is bounded by time and by the record, not by
-  command policy (new, phase 0016).** A vulnerability scanner needs root and
+  command policy (new, phase 0018).** A vulnerability scanner needs root and
   changes its command set with every content update. Every tier of D12's ladder
   is worthless against it by construction — there is no argv shape to name, and
   no rule list survives an interpreter. The product must say that plainly rather
@@ -407,7 +407,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   and never the basis of a decision the proxy makes itself.
 
 - **D17 — Machine identities need a different connection model (amends D2, new,
-  phase 0019).** D2's "one decision per connection" is safe because connections
+  phase 0021).** D2's "one decision per connection" is safe because connections
   are short: a snapshot enforced for the life of a ten-minute session is not
   standing authorization. Machine-to-machine health checking breaks that
   assumption from both ends. An estate of 350,000 targets polled every minute is
@@ -429,7 +429,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   worth testing before it is designed for: most large estates health-check
   network devices over SNMP or streaming telemetry rather than SSH, and those
   that use SSH typically do so every five to fifteen minutes, not every sixty
-  seconds. Phase 0018 exists to replace the arithmetic with measurement, and it
+  seconds. Phase 0020 exists to replace the arithmetic with measurement, and it
   runs first for that reason.
 
 ---
@@ -724,7 +724,7 @@ of a shared account is a refcount problem, and a refcount is solvable. The
 reasons that actually carry the decision are these, in order:
 
 - **The account is where per-session enforcement is rendered.** §6 and D15 make
-  the enforcement rung a *per-session* choice, and phase 0017 renders it onto
+  the enforcement rung a *per-session* choice, and phase 0019 renders it onto
   the account itself — `authorized_keys` options, shell and `PATH`, filesystem
   confinement, a session deadline. One account cannot carry two rungs. Two
   sessions with identical permissions today are not two sessions with identical
@@ -748,14 +748,14 @@ reasons that actually carry the decision are these, in order:
 **What it costs, recorded rather than glossed.** `useradd` and `userdel` run per
 session and serialise on the target's account-database lock, so a busy proxy has
 a **per-target provisioning ceiling that no amount of proxy capacity moves**. It
-has not been measured; phase 0018 owns measuring it. Account churn also means
+has not been measured; phase 0020 owns measuring it. Account churn also means
 UID churn, and a reused UID inherits ownership of anything a deleted account
 left behind — which today it does *immediately*, because provisioning takes
 whatever uid the target's allocator offers and that is the lowest free one.
-Phase **0022** makes allocation non-reusing and fails closed where it cannot;
-phase **0017**'s filesystem confinement is the other half, leaving nothing
+Phase **0024** makes allocation non-reusing and fails closed where it cannot;
+phase **0019**'s filesystem confinement is the other half, leaving nothing
 outside the home to inherit. Teardown deliberately does not sweep the
-filesystem for a departing uid: see 0022 for why that is the wrong fix.
+filesystem for a departing uid: see 0024 for why that is the wrong fix.
 
 The trade-off a user actually feels is different, and is accepted deliberately:
 **one person in two windows cannot see their own work, and cannot reattach to
@@ -918,10 +918,12 @@ not only what the driver types.
    equally when it cannot read the answer at all. D13's rule decides this: an
    unsupported configuration is an **outage-class denial**, never a best-effort
    attempt — and never a skipped rung either, because skipping would answer the
-   shape of one unit with a credential the server ranked lower. Support is a
-   queued phase, and it owns the same question phase 0025 owns for a
-   FortiLink-managed switch: **what a target is when one device holds many.**
-   Whichever of the two runs first answers it and the other follows.
+   shape of one unit with a credential the server ranked lower. Support is
+   phase **0016**, and it owns the question phase 0027 asks again for a
+   FortiLink-managed switch and phase 0018's contract has to be able to express:
+   **what a target is when one device holds many.** 0016 answers it first, once,
+   and the others build on that answer — which is why it was renumbered to the
+   head of the queue rather than left where 0015 first parked it (§10).
 3. **There is no default access profile; a route or the proxy names one.** The
    shipped default was chosen by ranking `super_admin_readonly` against
    `prof_admin_readonly`, and no Fortinet source documents the second profile at
@@ -932,7 +934,7 @@ not only what the driver types.
    administrator profile, or a custom profile". A privileged account's scope on a
    customer's firewall is now a decision an operator makes:
    `auth.target.ephemeral_account.access_profile` is **required**, checked at
-   startup, and phase 0017 is what turns it into policy.
+   startup, and phase 0019 is what turns it into policy.
 
 Two smaller corrections landed with them. The administrator-name field is **64**
 characters, not 35 — both clear the threshold above, so the naming scheme is
@@ -1191,7 +1193,7 @@ attaches it to the pipeline as two inspectors on the `session` channel:
   writes a byte to the stream — a warning injected into a raw-mode terminal is
   itself corruption, and a command already typed cannot be un-typed. Enforcement
   on an interactive route is restricted exec, or the target-side enforcement
-  points phase 0016 opens; it is never this.
+  points phase 0018 opens; it is never this.
 
 **The audit event (D8, consumed by 0011).** Every decision worth recording —
 a rule matched, or the command was blocked, warned about, or killed the session
@@ -1394,7 +1396,7 @@ telemetry pipeline including outage buffering and drain (D8).
 
 Real geo/anycast/scale testing needs real infrastructure and is **out of scope**
 for the prototype; the compose topology validates behavior, not distribution.
-Phase 0018 takes up sizing with a synthetic harness.
+Phase 0020 takes up sizing with a synthetic harness.
 
 ---
 
@@ -1417,25 +1419,70 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 | 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
-| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0025/0026 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question |
-| 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because 0016, 0017, 0025 and 0026 all build on facts it corrects. Deferred the two capabilities it declined to 0027 and 0028 |
-| 0016 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
-| 0017 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
-| 0018 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
-| 0019 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
-| 0020 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
-| 0021 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
-| 0022 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0017's confinement) |
-| 0023 | Session deadline & lifetime            | enforce 0016's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
-| 0024 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
-| 0025 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: a different target identity, and a contract question before it is a driver (deferred from 0014) |
-| 0026 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
-| 0027 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the deeper unwinding, and the target-identity question 0025 shares (deferred from 0015) |
-| 0028 | FortiOS target-enforced expiry          | render `expiry_posture: target-enforced` onto a FortiGate through `config firewall schedule onetime` + `set schedule`, with the schedule object named, torn down and swept (deferred from 0015) |
+| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0027/0028 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016 |
+| 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
+| 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the deeper unwinding — and **the answer to what a target is when one device is many**, which 0018's contract and 0027's switch driver both build on (deferred from 0015) |
+| 0017 | FortiOS target-enforced expiry          | render `expiry_posture: target-enforced` onto a FortiGate through `config firewall schedule onetime` + `set schedule`, with the schedule object named, torn down and swept; settles the capability 0018's survey must advertise (deferred from 0015) |
+| 0018 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
+| 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
+| 0020 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
+| 0021 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
+| 0022 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
+| 0023 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
+| 0024 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
+| 0025 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
+| 0026 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
+| 0027 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
+| 0028 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
+> **Renumbering note (device-completion revision).** Phase 0015 deferred two
+> capabilities it deliberately declined — multi-VDOM support and target-enforced
+> expiry — and queued them at the **end**, after the FortiSwitch drivers. That was
+> the convenient placement, not the correct one, and it has been fixed: they are
+> now **0016** and **0017**, ahead of everything that builds on what a device
+> driver can do. Three dependencies decide it:
+>
+> - **What a target is when one device is many** is one question asked in three
+>   places. 0016 asks it in the simplest shape (a FortiGate partitioned into
+>   virtual domains), 0027 asks it in the hardest (a switch behind a FortiGate),
+>   and **0018 is the contract revision that has to describe the answer**. Asking
+>   it after the contract was revised would mean a fifth revision for one field,
+>   or two parallel answers — so it is asked first, once.
+> - **0018's survey advertises what each enforcement point can do**, and whether a
+>   FortiGate can expire an account on the device is exactly such a capability.
+>   0015 established that FortiOS *has* the mechanism and this repository declines
+>   it; a survey written before 0017 settles that would record "the platform
+>   cannot", which is the precise error 0015 was queued to correct.
+> - **0019 renders a rung onto "a device account"**, which on a multi-VDOM unit is
+>   an account in a scope. Running 0016 first means 0019 writes that rendering
+>   once.
+>
+> 0017 follows 0016 because a schedule object on a unit with virtual domains
+> lives in a scope 0016 defines. Under `docs/PROTOCOL.md` §6 the queued prompts
+> were renumbered to keep implementation order — **0016→0018, 0017→0019,
+> 0018→0020, 0019→0021, 0020→0022, 0021→0023, 0022→0024, 0023→0025, 0024→0026,
+> 0025→0027, 0026→0028**, with the two deferred phases taking **0016** and
+> **0017** — while implemented prompts 0001–0015 keep their frozen names. Live
+> references were updated in place (this file, the queued prompts, and the Go and
+> config comments that hand work forward).
+> **`docs/learnings/` and `prompts/implemented/` were not rewritten:** most
+> importantly **0015's learnings**, which queue multi-VDOM as "0027" (now
+> **0016**) and target-enforced expiry as "0028" (now **0017**), and which hand
+> the access-profile survey to "0016" (now **0018**) and the enforcement default
+> to "0017" (now **0019**).
+>
+> Resolve them through this mapping, and **compose it with the notes below**,
+> which are frozen records of *earlier* revisions of the same numbers. Applying
+> it to the nearest one: where the FortiOS-corrections note says the
+> access-profile survey is "now 0016" it is now **0018**, where it says the
+> enforcement default is "now 0017" it is now **0019**, and where it says the
+> FortiSwitch work is "now 0025/0026" it is now **0027**/**0028**. The chain is
+> three revisions deep at this point; when in doubt, the phase **table above** is
+> the only current statement of what a number means.
+>
 > **Renumbering note (FortiOS-corrections revision).** Phase **0015** is new: it
 > acts on `docs/FORTIOS-DOC-VERIFICATION.md`, which re-checked phase 0014's
 > FortiOS claims against Fortinet's own documentation once those sites were

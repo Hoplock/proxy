@@ -1,7 +1,7 @@
-# 0020 — Target credential rejection: classify, contain, disclose
+# 0022 — Target credential rejection: classify, contain, disclose
 
 > New prompt, added by phase 0012. It is appended rather than inserted: nothing
-> in 0013–0019 depends on it, and it depends on nothing they change. Pull it
+> in 0013–0021 depends on it, and it depends on nothing they change. Pull it
 > forward if a fleet hits this before then — it is a live defect, not a
 > refinement.
 
@@ -198,7 +198,7 @@ shared `sshBaseArgs`.
 ## Definition of Done & hand-off
 
 Per `docs/PROTOCOL.md`. Move this file to `implemented/`; add
-`docs/learnings/0020-target-auth-failure-containment-learnings.md`. The summary
+`docs/learnings/0022-target-auth-failure-containment-learnings.md`. The summary
 block MUST record: the exact `x/crypto` error text the classifier matches and
 where the tripwire test lives; the breaker's key, defaults, and config keys; the
 new stage and its user-facing wording; the new record's attributes; and whether

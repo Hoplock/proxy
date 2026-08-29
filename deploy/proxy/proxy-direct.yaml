@@ -74,12 +74,12 @@ auth:
       platforms: ["fortigate"]
       # Named rather than left empty, because since phase 0015 there is no
       # driver default to leave it at: no FortiOS built-in is a safe default, so
-      # the operator picks. Phase 0017 is what turns this into policy.
+      # the operator picks. Phase 0019 is what turns this into policy.
       access_profile: "super_admin_readonly"
       # Tight, because on FortiOS nothing but this sweep ever removes an
       # account: the platform can deny an administrator's login on a schedule
       # but never deletes one, and this driver does not render even that
-      # (phase 0015; the schedule mechanism is phase 0028).
+      # (phase 0015; the schedule mechanism is phase 0017).
       reaper:
         interval: 1m
         grace: 5m

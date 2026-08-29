@@ -1,4 +1,4 @@
-# 0027 — FortiOS: administer a unit running virtual domains
+# 0016 — FortiOS: administer a unit running virtual domains
 
 > Phase **0015** found that the FortiGate driver's command sequences are written
 > for a single-VDOM unit and are wrong on any other, and it closed the hole the
@@ -11,7 +11,7 @@
 > hole in the product's reach.
 >
 > This phase serves those units. It is a contract question before it is a driver
-> change, and that question is shared with **0025**, so read the ordering note
+> change, and that question is shared with **0027**, so read the ordering note
 > below before writing anything.
 
 ## Read first
@@ -29,17 +29,25 @@
 - `docs/CROSS-REPO-PROTOCOL.md` — **required**: if a VDOM name becomes a
   contract parameter, `api/` changes and §3.2 and §4 both apply.
 
-## The ordering question, settled first
+## You own the target-identity answer for everything after you
 
-**0025** (the FortiLink FortiSwitch driver) owns the same question in another
-shape: what a *target* is when a switch is administered through its managing
-FortiGate. Here it is: what a target is when one FortiGate holds many virtual
-domains. Whichever of the two phases runs first **answers it for both**, and the
-second follows that answer rather than inventing a parallel one.
+**This phase runs first of the three that ask one question**, and that is why it
+was renumbered here rather than left at the end of the queue. The question is:
+**what is a target when one device is many?**
 
-If 0025 has already merged, read its learnings before deciding anything below;
-its answer is binding on you. If it has not, yours is binding on it, and your
-learnings must say so in the summary block.
+- Here it is a FortiGate holding many virtual domains — one device the proxy
+  already reaches directly, partitioned.
+- **0027** (FortiLink FortiSwitch) asks it in the harder shape: a switch
+  administered *through* its managing FortiGate, which is a second device behind
+  the first.
+- **0018** (enforcement points, contract v4) is the next revision of the wire
+  contract, and it cannot describe a target it does not know the shape of.
+
+So your answer is **binding on all three**, and 0027's prompt says so. Two
+parallel answers to one question is the outcome none of these phases may
+produce. Put the answer in `docs/PLAN.md` where 0018 will read it, not only in
+your learnings — and if it needs a contract parameter, say plainly in your
+learnings whether it should ride your own revision or be folded into 0018's.
 
 ## Objective
 
@@ -123,8 +131,8 @@ Settle these **with the user before writing code**, and write the reasoning into
 
 ## Out of scope
 
-- The schedule/expiry mechanism — **0028**.
-- Which access profile a route *gets* — 0016's vocabulary, 0017's application.
+- The schedule/expiry mechanism — **0017**.
+- Which access profile a route *gets* — 0018's vocabulary, 0019's application.
   This phase may need to say that a custom profile is a prerequisite; it does not
   choose one.
 - The FortiSwitch drivers, except for the shared identity answer above.
@@ -159,7 +167,7 @@ inherited from 0015's list.
 ## Definition of Done & hand-off
 
 Per `docs/PROTOCOL.md`. Move this prompt to `implemented/`; add
-`docs/learnings/0027-fortios-multi-vdom-learnings.md`. The summary block MUST
+`docs/learnings/0016-fortios-multi-vdom-learnings.md`. The summary block MUST
 carry: the three decisions and their reasoning; the target-identity answer and
-whether you set it or inherited it from 0025; which unit shapes the driver now
+whether you set it or inherited it from 0027; which unit shapes the driver now
 serves and which it still refuses; and the remaining hardware list.

@@ -1,6 +1,6 @@
-# 0026 — Standalone FortiSwitchOS driver
+# 0028 — Standalone FortiSwitchOS driver
 
-> Deferred from phase 0014, and deliberately ordered **after** 0025. The estate
+> Deferred from phase 0014, and deliberately ordered **after** 0027. The estate
 > has both management modes and the user ranked FortiLink first; this is the
 > easier half and it should not jump the queue ahead of the one with a design
 > question in it.
@@ -12,7 +12,7 @@
   value validation, the verified FortiOS facts, and the `Options.Platform`
   field that exists precisely so this driver can be the same type under another
   name.
-- `docs/learnings/0025-…` — whether the FortiLink phase left anything reusable
+- `docs/learnings/0027-…` — whether the FortiLink phase left anything reusable
   here, and what it learned about FortiSwitchOS.
 
 ## Objective
@@ -30,7 +30,7 @@ administrator can carry an SSH public key; whether the platform can expire an
 account (FortiOS **can** — `set schedule` against a `config firewall schedule
 onetime` entry — and the FortiGate driver still declares `EnforcesExpiry: false`
 by decision rather than by absence, which phase 0015 recorded in `docs/PLAN.md`
-§5.3 and deferred to **0028**; inherit neither the fact nor the declaration,
+§5.3 and deferred to **0017**; inherit neither the fact nor the declaration,
 establish both); and whether configuration is written to
 non-volatile storage the same way, which decides `PersistsAcrossReload` and its
 required `PersistenceReason`. Record each with its doc reference in your
@@ -53,8 +53,8 @@ learnings.
 - Fake-device coverage for whatever differs, and a scenario in `test/e2e`.
 
 ## Out of scope
-- The FortiLink case (0025).
-- Any enforcement rung (0016/0017), and the declarative driver document (D13).
+- The FortiLink case (0027).
+- Any enforcement rung (0018/0019), and the declarative driver document (D13).
 
 ## Acceptance criteria
 - The declared `Capabilities` match what verification found, with the doc
@@ -68,11 +68,11 @@ learnings.
 - `go build ./... && go vet ./... && go test ./...` and `golangci-lint run` pass.
 
 ## The e2e topology obligation
-As 0025: extend the `device` node, add the route to
+As 0027: extend the `device` node, add the route to
 `deploy/control/fixtures.template.yaml`, add a subtest to `TestTopology` before
 the outage scenario, and do not change `sshBaseArgs`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0026-standalone-fortiswitch-driver-learnings.md`, whose summary
+`docs/learnings/0028-standalone-fortiswitch-driver-learnings.md`, whose summary
 block carries the verified FortiSwitchOS facts and the declared `Capabilities`.

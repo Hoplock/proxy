@@ -22,7 +22,7 @@ below was read directly. **Findings only — no code was changed.**
 > Two corrections to this file's own text, neither affecting a verdict: the
 > estate it attributes to "PLAN §14" is **PLAN §13, UC1** — there is no §14 —
 > and the naming-rules KB gives **32** characters for "schedule names" where the
-> CLI reference gives 35 for `system admin`'s `schedule` field, which phase 0028
+> CLI reference gives 35 for `system admin`'s `schedule` field, which phase 0017
 > will have to reconcile.
 
 Unless a row says otherwise, each finding was checked in the FortiGate CLI

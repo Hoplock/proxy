@@ -1,7 +1,7 @@
-# 0018 — Scale harness: replace the arithmetic with measurement
+# 0020 — Scale harness: replace the arithmetic with measurement
 
-> New phase (privileged-access revision, PLAN §10). It runs **before** 0019
-> deliberately: 0019 changes the connection model to solve a load problem, and
+> New phase (privileged-access revision, PLAN §10). It runs **before** 0021
+> deliberately: 0021 changes the connection model to solve a load problem, and
 > whether that problem exists at the claimed magnitude is a measurement nobody
 > has taken. A phase that reshapes D2 on the strength of a spreadsheet is the
 > wrong order.
@@ -19,7 +19,7 @@
 ## Objective
 Produce **measured** numbers for what a proxy and a Hoplock Control cost per
 connection, so that sizing guidance in `docs/PLAN.md` stops being arithmetic,
-and so 0019 is justified by evidence or dropped.
+and so 0021 is justified by evidence or dropped.
 
 Change no behaviour. If the harness reveals a defect, that is a finding and, if
 it is not a one-line fix, a queued prompt — not scope.
@@ -38,7 +38,7 @@ collapse the whole problem:
 - **Is the health checking even SSH?** Large network estates are commonly polled
   by SNMP or streaming telemetry, and the subset checked over SSH is usually
   checked every five to fifteen minutes rather than every minute. If that holds,
-  the real figure is two or three orders of magnitude lower and 0019 is
+  the real figure is two or three orders of magnitude lower and 0021 is
   unnecessary. This is a question for the customer, not for a benchmark — ask it,
   and record the answer in the learnings whatever it is.
 - **What does a connection actually cost?** Three sequential round trips is what
@@ -106,8 +106,8 @@ number of proxies a 350,000-target estate implies at each interval. Every figure
 labelled measured or derived — never presented as the other.
 
 ## Out of scope
-- Any change to the connection model — that is 0019, and it is *this* phase's
-  output that decides whether 0019 happens.
+- Any change to the connection model — that is 0021, and it is *this* phase's
+  output that decides whether 0021 happens.
 - Tuning. If a measurement is bad, the fix is a finding and probably a prompt.
   A benchmark that is quietly optimised until it looks good measures the
   optimisation, not the system.
@@ -136,8 +136,8 @@ labelled measured or derived — never presented as the other.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0018-scale-harness-and-sizing-learnings.md`. The summary block
+`docs/learnings/0020-scale-harness-and-sizing-learnings.md`. The summary block
 MUST carry the headline numbers, the hardware they were taken on, the cache-key
 finding, the per-target provisioning ceiling and what saturated, and a one-line
-verdict on whether D17's premise survived contact with measurement — 0019's
+verdict on whether D17's premise survived contact with measurement — 0021's
 author reads that line first and may reasonably stop there.
