@@ -67,6 +67,20 @@ introduced after that version.** A server that respects it can add vocabulary
 freely; a server that ignores it is caught at the first response instead of
 having its policy quietly thinned.
 
+### The v3→v3.1 revision
+
+Phase 0016 adds one thing and breaks nothing: the `device_field.<name>`
+namespace on `ephemeral-account` params, for devices that are **one unit
+partitioned into many** — see "Additional device fields" below. It is additive
+in the strong sense, because the params object was already open and the proxy's
+rule for a parameter it does not implement is to **skip the rung**, not to drop
+the field: a proxy built before v3.1 refuses to connect on a route naming a
+field it cannot honour, which is the outcome a constraint deserves.
+
+`policy_version` stays `3`. It numbers the vocabulary a proxy can *read*, and
+nothing here changes how a response is read — an older proxy parses a v3.1 route
+exactly as it always did and declines the rung.
+
 ### The v2→v3 revision
 
 Phase 0013 revises the vocabulary again, for the estate the proxy cannot
@@ -357,6 +371,7 @@ running configuration commands against the wrong parser.
 | `credential_kind` | `password` or `publickey` | **Refused** |
 | `expiry_posture` | `target-enforced`, `proxy-enforced`, `accepted-risk` | **Refused** |
 | `lifetime_seconds` | Whole seconds | **Refused** unless the posture is `accepted-risk` |
+| `device_field.<name>` | A platform-specific field handed to the driver as data (contract v3.1) | The driver's own default — for `vdom` on a FortiGate, a **global** administrator |
 
 None of them has an absent-value default, and that is the point. `platform` is
 never guessed. A `credential_kind` default would hand out the weaker of two
@@ -385,6 +400,46 @@ no driver for is an outage-class denial at provisioning time, and never the
 nearest driver. A proxy advertises the platforms it carries
 (`device.Registry.Platforms`), and a server should not name one it has not been
 told about.
+
+#### Additional device fields (`device_field.<name>`, contract v3.1, phase 0016)
+
+Some devices are not one target. A FortiGate running virtual domains is **one
+unit partitioned into many**, and an administrator on it is either global or
+scoped to a single VDOM; a FortiLink-managed FortiSwitch is administered
+*through* the FortiGate in front of it. A route has to be able to say which of
+them a session is for.
+
+The endpoint cannot say it. `host`/`port` is what DNS resolves, what the host
+key is pinned to, and what the audit record names — overloading it (a
+`host/vdom` form, say) would make one device look like several hosts that do not
+exist, on the one field every other part of the system already reads.
+
+So `ephemeral-account` carries an **open namespace of additional fields** beside
+its five parameters: any parameter named `device_field.<name>` is a
+platform-specific field handed to the named driver as data.
+
+- The contract **does not enumerate them**. Customer-written drivers are a
+  first-class case (D13), so the set of fields is as open as the set of
+  platforms — for exactly the reason the contract does not enumerate `platform`
+  values either.
+- What the contract checks is the **shape**: `<name>` is lowercase letters,
+  digits, hyphens and underscores, 64 characters or fewer; the value is
+  non-empty and 256 characters or fewer; at most 16 fields ride on one entry.
+- A **driver declares** the names it accepts (`device.Capabilities.Fields`). A
+  route naming a field the driver does not declare is a **skipped ladder entry**
+  (D14): an unknown parameter may be a constraint, and a proxy that cannot
+  honour one must not connect. That is also what makes this revision additive —
+  a proxy built before v3.1 refuses the rung rather than dropping the field.
+- Fields are **policy metadata, never credential material**, and they are
+  **audit facts**: the account-mapping record carries them, because on a
+  partitioned device the target string alone does not say which partition the
+  administrator was created in.
+
+Documented today:
+
+| Field | Platform | Meaning |
+| --- | --- | --- |
+| `device_field.vdom` | `fortigate` | The virtual domain a VDOM-scoped administrator is created in. Absent, a unit running virtual domains gets a **global** administrator; a unit not running them is unaffected, and naming a VDOM on one is an outage-class denial (PLAN §5.3, phase 0016). |
 
 ### Algorithm profile (`algorithm_profile`, phase 0014)
 
@@ -683,6 +738,7 @@ startup, and every problem in a file is reported at once.
 | `routes[].permitted_forwards` | `direct_tcpip` and `forwarded_tcpip`, each a list of `host` + optional `port` or `port_range` (`from`/`to`). Omit the key to leave destinations unpoliced; an empty direction denies it. |
 | `routes[].permitted_global_requests` | `types`, e.g. `[tcpip-forward]`. Omit the key to relay everything; `types: []` denies all of them. |
 | `routes[].target_auth` | `method` (`ephemeral-user`, `brokered-key`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
+| `routes[].target_auth.params` | Method-scoped; `ephemeral-account` also takes the open `device_field.<name>` namespace (contract v3.1), e.g. `device_field.vdom: customer-a`. |
 | `routes[].target_auth_ladder` | The v3 ordered ladder: a list of the same `method` + `params` entries. Omit to leave the proxy on its configured method; write `[]` to deny the session. Setting it **beside** `target_auth` fails at startup, exactly as the client would refuse it. |
 | `routes[].algorithm_profile` | `default` (the default), `legacy-rsa-sha1`, or `legacy-device`. |
 | `routes[].hop_connection` | `dial` (default) or `relay` for a nexthop route. `relay` requires `next_proxy_id`. |

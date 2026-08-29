@@ -12,6 +12,7 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,10 @@ const (
 	ParamPlatform       = control.ParamPlatform
 	ParamCredentialKind = control.ParamCredentialKind
 	ParamExpiryPosture  = control.ParamExpiryPosture
+	// ParamDeviceFieldPrefix opens the route's platform-specific fields
+	// (contract v3.1, phase 0016). Everything under it is handed to the driver
+	// as data, and only after the driver has declared it accepts the name.
+	ParamDeviceFieldPrefix = control.ParamDeviceFieldPrefix
 )
 
 // collisionBudget is how many fresh tokens a provisioning tries before giving
@@ -111,6 +116,16 @@ type AccountMapping struct {
 	// replaces the fixed default with a policy choice that this field is how
 	// anybody will be able to audit.
 	Profile string
+	// Fields are the route's platform-specific fields (contract v3.1, phase
+	// 0016), keyed without the namespace prefix.
+	//
+	// They are on this record because on a PARTITIONED device the target string
+	// does not say which partition: `fgt-edge-1:22` names the same unit whether
+	// the administrator was created globally or inside one virtual domain, and
+	// the difference is the whole scope of a privileged account. Attribution
+	// that cannot say which scope is attribution somebody still has to go and
+	// look up.
+	Fields map[string]string
 	// Method and Rung are the credential method in force and its position in
 	// the server's ladder (D14). They are an audit fact and never a
 	// user-facing one.
@@ -277,6 +292,7 @@ type deviceRoute struct {
 	kind     control.CredentialKind
 	posture  control.ExpiryPosture
 	lifetime time.Duration
+	fields   map[string]string
 	driver   device.Driver
 	caps     device.Capabilities
 	naming   naming
@@ -305,6 +321,7 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth) (*deviceR
 		platform: p.str(ParamPlatform, ""),
 		kind:     control.CredentialKind(p.str(ParamCredentialKind, "")),
 		posture:  control.ExpiryPosture(p.str(ParamExpiryPosture, "")),
+		fields:   p.prefixed(ParamDeviceFieldPrefix),
 	}
 	lifetime, hasLifetime, err := p.duration(ParamLifetimeSeconds)
 	if err != nil {
@@ -362,6 +379,17 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth) (*deviceR
 			ErrRungUnsatisfiable, r.platform, r.posture)
 	}
 
+	if name, ok := r.unacceptedField(); ok {
+		// A route field the driver does not declare is a SKIPPED RUNG, on the
+		// same rule as an unknown parameter: a field may be a constraint — a
+		// VDOM is one — and honouring "as much of it as we understood" is how a
+		// session lands in a scope the server did not name. It is not a
+		// contract violation, because the server may legitimately name a field
+		// for a proxy build carrying a driver this one does not have (D13).
+		return nil, fmt.Errorf("%w: %s does not accept the route field %q (it accepts %v)",
+			ErrRungUnsatisfiable, r.platform, name, r.acceptedFields())
+	}
+
 	r.naming, err = newNaming(a.proxyID, r.caps.MaxAccountNameLen)
 	if err != nil {
 		// A limit too short to carry a reaper prefix and a token is an
@@ -376,6 +404,32 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth) (*deviceR
 			ErrNoLoggingPath, r.platform, r.caps.MaxAccountNameLen)
 	}
 	return r, nil
+}
+
+// unacceptedField returns the first route field this driver has not declared,
+// in a stable order so that two bad fields fail the same way every time.
+func (r *deviceRoute) unacceptedField() (string, bool) {
+	names := make([]string, 0, len(r.fields))
+	for name := range r.fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !r.caps.AcceptsField(name) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// acceptedFields names what the driver does declare, for the error above: an
+// operator reading a skipped rung wants the list, not just the rejection.
+func (r *deviceRoute) acceptedFields() []string {
+	names := make([]string, 0, len(r.caps.Fields))
+	for _, f := range r.caps.Fields {
+		names = append(names, f.Name)
+	}
+	return names
 }
 
 // loggingAvailable reports whether the mapping event has anywhere to go.
@@ -443,6 +497,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		ExpiryPosture:        string(r.posture),
 		Lifetime:             r.lifetime,
 		Profile:              account.Profile,
+		Fields:               r.fields,
 		Constrained:          !r.naming.readable,
 		PersistsAcrossReload: r.caps.PersistsAcrossReload,
 		PersistenceReason:    r.caps.PersistenceReason,
@@ -498,6 +553,7 @@ func (a *DeviceAccountAuthenticator) create(ctx context.Context, r *deviceRoute,
 			Profile:       profile,
 			SourceAddress: source,
 			Lifetime:      r.lifetime,
+			Fields:        r.fields,
 		})
 		switch {
 		case err == nil:

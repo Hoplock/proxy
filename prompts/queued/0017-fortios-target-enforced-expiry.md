@@ -95,7 +95,13 @@ Settle these **with the user before writing code**, and record them in
 
 - Multi-VDOM itself — **0016**, which runs immediately before you and is the
   reason you sit here rather than at the end of the queue: a schedule object on a
-  unit with virtual domains lives in a scope, and you must say which. Take that
+  unit with virtual domains lives in a scope, and you must say which — phase
+  0016 has landed, so the shape of that answer is already settled: the endpoint
+  is the unit, the route names the partition through the `device_field.<name>`
+  namespace, and the driver reads the unit's mode when the session opens
+  (`docs/PLAN.md` §5.3, "As extended (phase 0016)"). A schedule object on a
+  partitioned unit is a global-scope object like the administrator table, so it
+  is reached the same way. Take that
   shape from 0016's learnings; do not re-open it.
 - Ending the **session** at its deadline, which is phase 0025's. This phase ends
   the account's usefulness on the device; the two were deliberately not

@@ -587,6 +587,16 @@ behaviour, because the account it uses is a standing one an operator chose; that
 its username still falls back to the login is a known gap, recorded in 0013's
 learnings rather than closed there.
 
+**As extended (contract v3.1, phase 0016).** `ephemeral-account` params carry an
+open namespace of platform-specific fields, `device_field.<name>`, for devices
+that are one unit partitioned into many — a FortiGate running virtual domains
+today, a FortiLink-managed switch behind its FortiGate in 0027. The contract
+checks their shape and nothing else; which fields exist is the driver's to
+declare, exactly as the set of platforms is. A field the driver does not declare
+is a skipped rung (D14) and never a field dropped, which is both the safety
+property and the reason the revision needs no new `policy_version`. §5.3 carries
+the reasoning and what it binds.
+
 One field beside the credential travels with the route, because the estate D13
 reaches needs it: **`algorithm_profile`**, a server-named preset selecting which
 SSH key exchanges, host-key algorithms, ciphers, and MACs the proxy may offer on
@@ -909,7 +919,9 @@ not only what the driver types.
    `PersistsAcrossReload`; and whether it cuts an already-established session is
    undocumented. That is a phase, not a fact correction, and it is queued as one.
    Until it lands the declaration means "this driver does not enforce expiry".
-2. **A multi-VDOM unit is detected and refused, not attempted.** On a unit
+2. **A multi-VDOM unit is detected and refused, not attempted** — *superseded
+   by phase 0016 below, which administers those units; what remains of the
+   refusal is a unit whose shape cannot be read at all.* On a unit
    running virtual domains the administrator table lives inside `config global`,
    a VDOM-scoped account needs `set vdom`, and the driver's `end`-unwinding is
    one level short — so 0014's sequence is aimed at a scope it cannot vouch for.
@@ -942,6 +954,79 @@ unaffected and only the stated fact was wrong. And an account "pinned to the
 proxy's address" was pinned on IPv4 only: `ip6-trusthost1`..`10` are parallel
 fields defaulting to `::/0`, so the driver now writes both, and refuses an IPv6
 source address rather than rendering one into an `ipv4-classnet` field.
+
+**As extended (phase 0016): a unit running virtual domains is administered, and
+a target can name a partition of one device.** 0015's refusal is narrowed to
+what it can still honestly refuse. Three decisions came out of it, settled with
+the user, and the first is binding beyond this driver.
+
+1. **What a target is when one device is many: the endpoint stays the device,
+   and the ROUTE names the partition.** A VDOM name arrives as an
+   `ephemeral-account` parameter in an open namespace —
+   **`device_field.<name>`**, contract v3.1 — handed to the driver as data and
+   declared per driver (`device.Capabilities.Fields`), never inferred and never
+   defaulted by the proxy. The alternatives were weighed and rejected: encoding
+   it in the target (`host/vdom`) overloads the one string DNS resolves, the
+   host key is pinned to, the reaper sweeps and the audit record names, so one
+   unit would look like several hosts that do not exist; proxy-local
+   configuration contradicts §4.2's rule that the method and its parameters are
+   Control's per-route decision; and a FortiOS-specific `vdom` parameter would
+   have made 0027 author a second answer to the same question, which is the
+   outcome the three phases were sequenced to avoid.
+
+   **This answer is binding on 0018 and 0027.** 0027's FortiLink-managed switch
+   is the same shape one level further out — the endpoint is the managing
+   FortiGate, and a field names the switch behind it — and 0018's contract
+   describes the namespace rather than inventing a second way to say the same
+   thing. Two properties are load-bearing and neither is optional: a field the
+   driver does not declare is a **skipped rung** (D14) rather than a field
+   quietly dropped, which is what makes the namespace additive to a proxy that
+   predates it; and the fields are **audit facts** on the account-mapping event,
+   because `host:port` names the unit and not the partition, so a record without
+   them cannot say what the privileged account could reach.
+
+   What did NOT move is the reaper: it sweeps a device it reaches from an
+   endpoint, and on a FortiGate every administrator lives in one global table
+   whatever VDOM it is scoped to. The fields ride on creation only. A platform
+   where a field selects a genuinely different managed device — 0027's switch —
+   is the phase that carries them onto the other operations, on the reaper's
+   terms.
+
+2. **Both administrator scopes are served, and the field selects.** With no
+   `device_field.vdom` the account is created at **global** scope through the
+   `config global` wrapper — the shape phase 0014 was written for, and what a
+   proxy administering a whole unit keeps getting after that unit is
+   partitioned. With one, the account is **VDOM-scoped** (`set vdom`), which is
+   the point of the feature. Serving only the global half would have been the
+   smaller change and would have handed out the *more* privileged of the two.
+
+   One consequence is an operator prerequisite and is stated here because it
+   cannot be worked around: a per-VDOM administrator "must use either the
+   `prof_admin` administrator profile, or a custom profile", and
+   `super_admin_readonly` is the *global* read-only profile — so **there is no
+   built-in read-only profile a VDOM-scoped account can hold**, and a customer
+   who wants one builds it. The driver refuses the two documented global
+   built-ins for a VDOM-scoped account rather than letting the device fail the
+   sequence half way through.
+
+3. **A VDOM the unit does not have is checked before anything is created.** The
+   driver reads the unit's virtual domains (`show system vdom` in global scope)
+   and refuses an unknown one as an outage-class denial (`ErrUnknownVDOM`, not
+   `ErrUnsupported`, on decision 2's reasoning from 0015). The check is not a
+   guarantee — a VDOM can be deleted between the read and the write — so a
+   refused `set vdom` still fails the attempt; what the check buys is that a
+   stale VDOM name in policy does not leave a half-created privileged
+   administrator to roll back on a customer's firewall.
+
+**Which unit shapes the driver serves, and what is still refused.** Served:
+`disable`, `multiple`, and `split-task` — the last because the Administration
+Guide documents per-VDOM administrators for it with the same recipe. Refused,
+and this is all that is left of `ErrMultiVDOM`: a `get system status` whose
+virtual-domain line cannot be read at all, and any value that is none of those
+three. The teardown unwinds the nesting the session opened rather than a fixed
+depth, because on a partitioned unit the administrator table is one level
+deeper and a session left inside a configuration block holds an object lock
+under workspace mode.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -1421,7 +1506,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
 | 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0027/0028 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016 |
 | 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
-| 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the deeper unwinding — and **the answer to what a target is when one device is many**, which 0018's contract and 0027's switch driver both build on (deferred from 0015) |
+| 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0027's switch driver both build on rather than re-answer (deferred from 0015) |
 | 0017 | FortiOS target-enforced expiry          | render `expiry_posture: target-enforced` onto a FortiGate through `config firewall schedule onetime` + `set schedule`, with the schedule object named, torn down and swept; settles the capability 0018's survey must advertise (deferred from 0015) |
 | 0018 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |

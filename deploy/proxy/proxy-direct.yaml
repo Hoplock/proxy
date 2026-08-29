@@ -75,7 +75,15 @@ auth:
       # Named rather than left empty, because since phase 0015 there is no
       # driver default to leave it at: no FortiOS built-in is a safe default, so
       # the operator picks. Phase 0019 is what turns this into policy.
-      access_profile: "super_admin_readonly"
+      #
+      # `prof_admin` rather than `super_admin_readonly`, and the reason is the
+      # finding phase 0016 wrote down: a per-VDOM administrator "must use either
+      # the `prof_admin` administrator profile, or a custom profile", and
+      # `super_admin_readonly` is the GLOBAL read-only one. There is no built-in
+      # read-only profile a VDOM-scoped account can hold, so a proxy serving
+      # both unit shapes with ONE profile has exactly this choice — and a real
+      # deployment builds a custom profile instead of taking the wider built-in.
+      access_profile: "prof_admin"
       # Tight, because on FortiOS nothing but this sweep ever removes an
       # account: the platform can deny an administrator's login on a schedule
       # but never deletes one, and this driver does not render even that

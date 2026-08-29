@@ -58,7 +58,16 @@ const (
 	// risk is recorded where the risk is taken (D13).
 	AttrPersistsAcrossReload = "persists_across_reload"
 	AttrPersistenceReason    = "persistence_reason"
-	AttrPermittedChannels    = "permitted_channels" //
+	// AttrDeviceFieldPrefix namespaces a route's platform-specific fields on
+	// the record (contract v3.1, phase 0016): `device_field.vdom` and the like,
+	// spelled exactly as the route spelled them.
+	//
+	// One attribute per field rather than one joined string, because the point
+	// is that somebody can FILTER on it — "every session that administered
+	// customer-a's virtual domain" is the question this answers, and a joined
+	// string turns that into a substring search.
+	AttrDeviceFieldPrefix = "device_field."
+	AttrPermittedChannels = "permitted_channels" //
 
 	// Channels, requests, and forwarding.
 	AttrChannelID   = "channel_id"   // names the channel within the session

@@ -92,6 +92,41 @@ func validateProfile(profile string) error {
 	return nil
 }
 
+// vdomPattern is what this driver will put after `set vdom`.
+//
+// A VDOM name is the CUSTOMER'S — it names a partition they created, in their
+// own scheme — so this is the FortiOS object-name character set rather than the
+// narrow one this driver's own account names use. It is still an allow-list,
+// and for the sharper of the two reasons: the value arrives from a policy
+// server over the wire, and it is interpolated into a configuration command on
+// a firewall.
+var vdomPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// maxVDOMNameLen is the length `config system admin`'s `vdom` field accepts:
+// "Virtual domain(s) that the administrator can access", string, maximum
+// length 79 (docs/FORTIOS-DOC-VERIFICATION.md, "Beyond the ten claims").
+//
+// It is the length of the FIELD THIS DRIVER WRITES, which is the one it can
+// check. What a `config system vdom` entry itself may be named is a different
+// and shorter limit that no page read for this phase stated; a name too long
+// for the unit fails the existence check before anything is created, so nothing
+// here depends on knowing it.
+const maxVDOMNameLen = 79
+
+// validateVDOM gates `set vdom`.
+func validateVDOM(vdom string) error {
+	switch {
+	case vdom == "":
+		return fmt.Errorf("%w: an empty virtual domain", errInvalidValue)
+	case len(vdom) > maxVDOMNameLen:
+		return fmt.Errorf("%w: %q is longer than the %d characters the `vdom` field accepts",
+			errInvalidValue, vdom, maxVDOMNameLen)
+	case !vdomPattern.MatchString(vdom):
+		return fmt.Errorf("%w: %q is not a usable virtual domain name", errInvalidValue, vdom)
+	}
+	return nil
+}
+
 // closedIPv6TrustHost is what `set ip6-trusthost1` is given when the account is
 // pinned to an IPv4 address.
 //

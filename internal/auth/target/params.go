@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoplock/proxy/internal/control"
@@ -84,6 +85,32 @@ func (p *params) duration(name string) (time.Duration, bool, error) {
 		return 0, false, fmt.Errorf("%w: %s=%q must be a positive whole number of seconds", ErrInvalidParam, name, v)
 	}
 	return time.Duration(secs) * time.Second, true, nil
+}
+
+// prefixed consumes an open NAMESPACE of parameters, returning them keyed
+// without the prefix (control.ParamDeviceFieldPrefix, contract v3.1).
+//
+// It marks every key under the prefix as used, which is the whole reason it
+// exists here rather than in the caller: rest() refuses what nothing consumed,
+// and a namespace whose members are not enumerable in advance cannot be
+// consumed one name at a time. What stops that from becoming a hole is that the
+// namespace is not the end of the check — the device method answers each field
+// against the driver's own declarations, and an undeclared one is a skipped
+// rung rather than a field quietly dropped.
+func (p *params) prefixed(prefix string) map[string]string {
+	var out map[string]string
+	for name, value := range p.values {
+		suffix, ok := strings.CutPrefix(name, prefix)
+		if !ok {
+			continue
+		}
+		p.used[name] = true
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[suffix] = value
+	}
+	return out
 }
 
 // rest reports any parameter the method did not consume.

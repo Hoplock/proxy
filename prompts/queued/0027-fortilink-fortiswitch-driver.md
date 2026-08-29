@@ -9,14 +9,39 @@
 > contract question before it is a Go question. It is why this is its own phase
 > rather than a second `Register` call in 0014.
 
-**One question is shared, and it was already answered.** Phase **0016** (FortiOS
-multi-VDOM) asks the same thing in the simpler shape — what a target is when one
-FortiGate holds many virtual domains — and it runs first precisely so that this
-phase inherits an answer rather than inventing a parallel one. Read its learnings
-and `docs/PLAN.md` before deciding anything about target identity here: **its
+**One question is shared, and it has now been answered.** Phase **0016**
+(FortiOS multi-VDOM) asked the same thing in the simpler shape — what a target
+is when one FortiGate holds many virtual domains — and it ran first precisely so
+that this phase inherits an answer rather than inventing a parallel one. **Its
 answer is binding on you.** Extending it to a device behind a device is your
 work; contradicting it is not. If you find it cannot stretch to this shape, that
 is a finding to put to the user, not a second answer to adopt quietly.
+
+The answer, in one paragraph, with the reasoning in `docs/PLAN.md` §5.3 ("As
+extended (phase 0016)") and the detail in
+`docs/learnings/0016-fortios-multi-vdom-learnings.md`:
+
+> **The endpoint stays the device; the route names the partition.** A route
+> carries platform-specific fields in an open contract namespace,
+> **`device_field.<name>`** (contract v3.1) — `control.ParamDeviceFieldPrefix`,
+> read with `TargetAuth.DeviceFields()`, handed to the driver as
+> `device.CreateRequest.Fields`, and **declared per driver** in
+> `device.Capabilities.Fields`. A field the driver does not declare is a
+> **skipped rung** (D14), never a field quietly dropped. The fields are audit
+> facts: `target.AccountMapping.Fields` carries them onto the mapping event,
+> because `host:port` names the unit and not the partition.
+
+So for this phase the managing FortiGate is the endpoint and the switch is a
+field — `device_field.switch`, or whatever name the FortiLink vocabulary makes
+truthful — rather than a second host, a `host/switch` target, or a new method.
+Two things 0016 deliberately did NOT do are yours if you need them: fields ride
+on `CreateRequest` only, because on a FortiGate every administrator lives in one
+global table whatever VDOM it is scoped to, and the reaper sweeps from an
+endpoint rather than from a route. A switch behind a FortiGate is the case where
+removal and enumeration have to address the subordinate device too — so carrying
+the fields onto `RemoveRequest`, `ListRequest` and `CredentialRequest`, and
+teaching `target.deviceReaper` what it now has to remember per endpoint, is
+expected work here and not a contradiction of 0016.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.

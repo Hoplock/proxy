@@ -61,6 +61,12 @@ const (
 	// not be moved onto a routable network to make one work.
 	deviceDebugAddr = "127.0.0.1:8081"
 
+	// deviceVDOMDebugAddr is the same, for the unit running virtual domains
+	// that the appliance node also serves (phase 0016). It is a second listener
+	// in the same container, not a second node: a multi-VDOM FortiGate is one
+	// box partitioned.
+	deviceVDOMDebugAddr = "127.0.0.1:8082"
+
 	// SSH listener port inside every proxy container.
 	proxyPort = "2222"
 )
@@ -410,6 +416,34 @@ func tryDeviceAccounts() ([]string, error) {
 		return nil, fmt.Errorf("decode the appliance's administrator table from %q: %w", r.stdout, err)
 	}
 	return body.Accounts, nil
+}
+
+// deviceAdministrator is one administrator as the appliance publishes it.
+//
+// The name is what tryDeviceAccounts reads; the profile and the virtual domain
+// are what a name cannot carry, and on a partitioned unit the virtual domain is
+// the whole scope of the account.
+type deviceAdministrator struct {
+	Name    string `json:"name"`
+	Profile string `json:"profile"`
+	VDOM    string `json:"vdom"`
+}
+
+func tryDeviceAdministrators(debugAddr string) ([]deviceAdministrator, error) {
+	r, err := runE("", "docker", execArgs(nodeDevice, "hoplock-fake-device", "-dump", debugAddr)...)
+	if err != nil {
+		return nil, err
+	}
+	if r.code != 0 {
+		return nil, fmt.Errorf("read the appliance's administrator table: %v", r)
+	}
+	var body struct {
+		Administrators []deviceAdministrator `json:"administrators"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &body); err != nil {
+		return nil, fmt.Errorf("decode the appliance's administrator table from %q: %w", r.stdout, err)
+	}
+	return body.Administrators, nil
 }
 
 // --- waiting -----------------------------------------------------------------
