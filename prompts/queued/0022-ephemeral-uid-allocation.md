@@ -1,10 +1,10 @@
-# 0021 — UID allocation: stop a fresh account inheriting a dead one's files
+# 0022 — UID allocation: stop a fresh account inheriting a dead one's files
 
 > New prompt. It closes a **cross-user information flow** that exists today, is
 > not theoretical, and is not covered by anything else in the queue.
 >
-> Pairs with **0016**, which owns the other half (confinement). Neither alone is
-> the fix, and this one does not depend on 0016 landing first.
+> Pairs with **0017**, which owns the other half (confinement). Neither alone is
+> the fix, and this one does not depend on 0017 landing first.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -13,7 +13,7 @@
   §4.3 (what the user is told), D6.
 - `docs/learnings/` summaries: **0007** (the provisioning scripts, the reaper,
   and the account-name-as-registry design), **0012** (the e2e topology you owe
-  a scenario), **0016**'s prompt (the confinement rungs — read its scope so the
+  a scenario), **0017**'s prompt (the confinement rungs — read its scope so the
   two phases meet rather than overlap).
 
 ## The defect
@@ -95,7 +95,7 @@ one, and when it cannot be guaranteed, the session is refused rather than served
 A route asking for `ephemeral-user` on a target where a non-reusing UID cannot be
 allocated is **refused as an outage** (§4.3), never served with a recycled uid.
 It is not a denial: the user cannot fix it with different credentials. Reuse
-0019's stage/classification seam if it has landed; if it has not, add the stage
+0020's stage/classification seam if it has landed; if it has not, add the stage
 the same way and say so.
 
 ### 3. Record it
@@ -122,11 +122,11 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 
 ## Out of scope
 
-- **Confining where the account can write.** That is 0016's filesystem rung, and
+- **Confining where the account can write.** That is 0017's filesystem rung, and
   it is the other half of this fix: with a private tmp and a confined home there
   is nothing outside `$h` to inherit, and `rm -rf "$h"` becomes complete. Do not
   implement it here; do make sure the two meet, and say in the learnings what
-  remains exposed until 0016 lands.
+  remains exposed until 0017 lands.
 - Sweeping, deleting, or chowning files anywhere. See above.
 - `brokered-key` and device accounts — the proxy creates no account there.
 - `api/control.yaml`. This is proxy-local. If you think the server must choose
@@ -146,8 +146,8 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0021-ephemeral-uid-allocation-learnings.md`. The summary block
+`docs/learnings/0022-ephemeral-uid-allocation-learnings.md`. The summary block
 MUST record: the range defaults and why those numbers; the allocation rule; the
 wrap-around decision and its justification; which `useradd` flags the targets you
 tested actually accept; and — explicitly — what is still inheritable until
-0016's confinement lands, because that sentence is the honest scope of this fix.
+0017's confinement lands, because that sentence is the honest scope of this fix.

@@ -320,7 +320,7 @@ type EphemeralAccountAuth struct {
 	// AccessProfile is the platform authorization scope created administrators
 	// are given. Empty means the driver's own default.
 	//
-	// WHICH profile a route gets is phase 0015's vocabulary and phase 0016's to
+	// WHICH profile a route gets is phase 0016's vocabulary and phase 0017's to
 	// apply. This is the proxy-wide placeholder until then, and it is a
 	// placeholder rather than a policy: on FortiOS the most restrictive
 	// built-in profile is not reliably restrictive at all.

@@ -40,8 +40,8 @@ const PlatformFortiGate = "fortigate"
 //
 // It is a DEFAULT, not a policy, and a read-only one will be wrong for many
 // real routes: an operator opening a session to change a firewall rule needs
-// write access. WHICH profile a route gets is phase 0015's vocabulary and phase
-// 0016's to apply, and until then an estate that needs more sets
+// write access. WHICH profile a route gets is phase 0016's vocabulary and phase
+// 0017's to apply, and until then an estate that needs more sets
 // `auth.target.ephemeral_account.access_profile`. The default is deliberately
 // the safe end of that choice rather than the convenient one.
 const DefaultAccessProfile = "super_admin_readonly"

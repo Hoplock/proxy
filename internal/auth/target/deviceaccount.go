@@ -107,7 +107,7 @@ type AccountMapping struct {
 	Platform string
 	// Profile is the platform's own authorization scope for the account — an
 	// access profile, a role, a privilege level. It is here because on a device
-	// it is the only thing bounding what the account may do, and phase 0016
+	// it is the only thing bounding what the account may do, and phase 0017
 	// replaces the fixed default with a policy choice that this field is how
 	// anybody will be able to audit.
 	Profile string
@@ -177,7 +177,7 @@ type DeviceAccountOptions struct {
 	// (Capabilities.PinsSourceAddress); empty means no pin.
 	SourceAddress string
 	// AccessProfile overrides the driver's own default access profile. WHICH
-	// profile a route gets is phase 0015's vocabulary and 0016's to apply; this
+	// profile a route gets is phase 0016's vocabulary and 0017's to apply; this
 	// is the proxy-wide placeholder until then.
 	AccessProfile string
 	// Events receives the mapping event and sweep failures. Nil means the
@@ -321,7 +321,7 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth) (*deviceR
 		// There is deliberately NO fallback to identity.Login here. Login is
 		// what the user typed at their SSH client, and internal/identity says
 		// it must never be the basis of an authorization decision — choosing
-		// an account name is one. Prompt 0023 closes that fallback everywhere
+		// an account name is one. Prompt 0024 closes that fallback everywhere
 		// it still exists; this method never opened one.
 		return nil, fmt.Errorf("%w: %s is required", ErrInvalidParam, ParamUsername)
 	case r.platform == "":
@@ -605,7 +605,7 @@ func (a *DeviceAccountAuthenticator) removeQuietly(ctx context.Context, r *devic
 // that says this proxy holds the deadline (D13).
 //
 // It removes the ACCOUNT, which is this phase's whole subject. Ending the
-// SESSION at the same moment is prompt 0022's, and the two are deliberately not
+// SESSION at the same moment is prompt 0023's, and the two are deliberately not
 // conflated here: the credential is what this method provisioned and the
 // credential is what it takes back.
 func (a *DeviceAccountAuthenticator) enforceExpiry(r *deviceRoute, ep device.Endpoint, name string, lifetime time.Duration) {

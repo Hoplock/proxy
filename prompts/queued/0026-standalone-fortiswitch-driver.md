@@ -1,6 +1,6 @@
-# 0025 — Standalone FortiSwitchOS driver
+# 0026 — Standalone FortiSwitchOS driver
 
-> Deferred from phase 0014, and deliberately ordered **after** 0024. The estate
+> Deferred from phase 0014, and deliberately ordered **after** 0025. The estate
 > has both management modes and the user ranked FortiLink first; this is the
 > easier half and it should not jump the queue ahead of the one with a design
 > question in it.
@@ -12,7 +12,7 @@
   value validation, the verified FortiOS facts, and the `Options.Platform`
   field that exists precisely so this driver can be the same type under another
   name.
-- `docs/learnings/0024-…` — whether the FortiLink phase left anything reusable
+- `docs/learnings/0025-…` — whether the FortiLink phase left anything reusable
   here, and what it learned about FortiSwitchOS.
 
 ## Objective
@@ -44,8 +44,8 @@ learnings.
 - Fake-device coverage for whatever differs, and a scenario in `test/e2e`.
 
 ## Out of scope
-- The FortiLink case (0024).
-- Any enforcement rung (0015/0016), and the declarative driver document (D13).
+- The FortiLink case (0025).
+- Any enforcement rung (0016/0017), and the declarative driver document (D13).
 
 ## Acceptance criteria
 - The declared `Capabilities` match what verification found, with the doc
@@ -59,11 +59,11 @@ learnings.
 - `go build ./... && go vet ./... && go test ./...` and `golangci-lint run` pass.
 
 ## The e2e topology obligation
-As 0024: extend the `device` node, add the route to
+As 0025: extend the `device` node, add the route to
 `deploy/control/fixtures.template.yaml`, add a subtest to `TestTopology` before
 the outage scenario, and do not change `sshBaseArgs`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0025-standalone-fortiswitch-driver-learnings.md`, whose summary
+`docs/learnings/0026-standalone-fortiswitch-driver-learnings.md`, whose summary
 block carries the verified FortiSwitchOS facts and the declared `Capabilities`.
