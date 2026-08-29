@@ -9,6 +9,13 @@
 > contract question before it is a Go question. It is why this is its own phase
 > rather than a second `Register` call in 0014.
 
+**One question is shared, and whoever answers it first binds the other.** Phase
+**0027** (FortiOS multi-VDOM) asks the same thing in another shape: what a target
+is when one FortiGate holds many virtual domains. If 0027 has already merged, its
+answer is binding on you and its learnings say what it is. If it has not, yours
+is binding on it, and your learnings must say so in the summary block. Two
+parallel answers to one question is the outcome neither phase may produce.
+
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
 - `docs/PLAN.md` — **D1** (target identity is encoded in the SSH username, and

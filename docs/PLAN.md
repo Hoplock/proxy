@@ -297,6 +297,25 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
     driver was always allowed to declare persistence; the change is that a
     Hoplock driver may too, on the same terms and with the same record.
 
+    **Phase 0015 amended this decision again, in one place.** 0014 established
+    its FortiOS facts from web-search summaries because Fortinet's sites were
+    unreachable from that session, said so, and asked for a re-check.
+    `docs/FORTIOS-DOC-VERIFICATION.md` is that re-check and it found the expiry
+    claim wrong: `config system admin` has `set schedule`, pointing at a `config
+    firewall schedule onetime` entry with an absolute end, and FortiOS denies the
+    login when the window has closed. So the sentence "most device platforms have
+    no equivalent" above is still true of platforms in general and **was never
+    true of the platform this decision names as its example**.
+
+    The rule that follows is about DECLARATIONS rather than about FortiOS. A
+    driver declaring `EnforcesExpiry: false` is saying *this driver does not
+    enforce expiry*, and it must be false because somebody decided the driver
+    will not do it — with the reasoning written down — and never because nobody
+    checked whether the platform could. The two are indistinguishable in the
+    field and opposite in what they cost: the first is a scope decision, the
+    second is a capability the estate paid for and did not get. The same holds
+    for every other field in `Capabilities`.
+
   **Customer-written drivers are a first-class case**, not an afterthought: the
   estates that need this most are the ones running a platform nobody else has.
   The seam is declarative first — a driver is a document naming the connect
@@ -791,7 +810,7 @@ those declarations rather than assuming Linux:
 | --- | --- |
 | Maximum account-name length | Selects the naming scheme below |
 | Whether expiry can be enforced on the device | Selects the expiry posture (D13) |
-| Whether account creation persists across reload | Hoplock drivers must answer "no"; a customer driver may answer "yes" and have it recorded |
+| Whether account creation persists across reload | Declared truthfully by every driver; a Hoplock driver may answer "yes" only where the platform leaves no choice, and must say which mechanism forces it (D13, as amended by phase 0014) |
 | Which credential kinds it accepts (password, public key) | The route's `credential_kind` must be one of them |
 | Whether the account can be pinned to a source address | A free extra restriction where it exists |
 
@@ -821,14 +840,21 @@ session's*, so the device path verifies non-existence and, on collision,
 **retries with a fresh token** — it never adopts. A small retry budget, then
 refusal.
 
-**Expiry is rarely the platform's.** No device platform this repository ships a
-driver for can expire an administrator by itself — FortiOS has no per-account
-expiry field and no schedule on `config system admin` — so
+**Expiry is rarely the platform's, and on FortiOS it is a decision rather than
+an absence.** No driver this repository ships renders expiry onto the device, so
 `target-enforced` is a posture most real routes cannot ask for, and asking is a
 **skipped ladder rung** rather than a downgrade. The practical consequence is
 the one above: the reaper is sized and reported as the primary removal path, not
 as a crash-recovery backstop, and a sweep that fails is an event on D8's
 priority path rather than a log line somebody might read.
+
+What changed in phase 0015 is the reason, not the outcome. Until then this
+paragraph said FortiOS "has no per-account expiry field and no schedule on
+`config system admin`". It has both: `set schedule` names a `config firewall
+schedule onetime` entry carrying an absolute `set end`, and FortiOS refuses the
+login out of window — Fortinet's KB shows the denial as
+`reason="out_of_schedule"`. The mechanism is not taken, and the reasoning is
+recorded under "As corrected" below rather than left as a fact nobody checked.
 
 **Attribution lives in the log, so the log is mandatory.** On a constrained
 platform the account name carries no login, so the proxy emits a mapping event
@@ -864,6 +890,56 @@ reports failure as output text with no exit status behind it. The provisioner is
 `ephemeral-account` and `brokered-key` ladder is walked in `target.Selector`: a
 rung this proxy cannot satisfy is skipped, a failed *attempt* fails the session,
 and an exhausted ladder is a clean denial.
+
+**As corrected (phase 0015).** `docs/FORTIOS-DOC-VERIFICATION.md` re-checked
+0014's ten FortiOS claims against Fortinet's own pages, from a session that could
+reach them. Six held; three were wrong; one is a sound inference Fortinet does
+not state; and the same reading found **multi-VDOM**, which none of the claims
+covered and the driver did not handle. Three decisions came out of that, settled
+with the user and recorded here because each changes what the contract means and
+not only what the driver types.
+
+1. **`EnforcesExpiry` stays false, by decision.** FortiOS *can* time-bound an
+   administrator — `set schedule` against a `config firewall schedule onetime`
+   entry, denied at authentication. Taking it means creating and tearing down a
+   **second object per session**, naming it under the scheme above (the field
+   caps schedule names at 35), and teaching the reaper to sweep an orphaned one:
+   a new leak class, on a customer's firewall. It also denies *login* rather than
+   removing the account, so it retires neither the reaper nor
+   `PersistsAcrossReload`; and whether it cuts an already-established session is
+   undocumented. That is a phase, not a fact correction, and it is queued as one.
+   Until it lands the declaration means "this driver does not enforce expiry".
+2. **A multi-VDOM unit is detected and refused, not attempted.** On a unit
+   running virtual domains the administrator table lives inside `config global`,
+   a VDOM-scoped account needs `set vdom`, and the driver's `end`-unwinding is
+   one level short — so 0014's sequence is aimed at a scope it cannot vouch for.
+   The driver reads `get system status` when it opens a session and serves only
+   `Virtual domain configuration: disable`, refusing anything else, and refusing
+   equally when it cannot read the answer at all. D13's rule decides this: an
+   unsupported configuration is an **outage-class denial**, never a best-effort
+   attempt — and never a skipped rung either, because skipping would answer the
+   shape of one unit with a credential the server ranked lower. Support is a
+   queued phase, and it owns the same question phase 0025 owns for a
+   FortiLink-managed switch: **what a target is when one device holds many.**
+   Whichever of the two runs first answers it and the other follows.
+3. **There is no default access profile; a route or the proxy names one.** The
+   shipped default was chosen by ranking `super_admin_readonly` against
+   `prof_admin_readonly`, and no Fortinet source documents the second profile at
+   all — FortiOS has three built-ins, not four. What survives of the first is not
+   enough for a default: it is read-only (wrong for most of §13's UC1), it cannot
+   run `diagnose` from FortiOS 7.4.x, and it is the *global* read-only profile,
+   so a per-VDOM account cannot use it — those "must use either the `prof_admin`
+   administrator profile, or a custom profile". A privileged account's scope on a
+   customer's firewall is now a decision an operator makes:
+   `auth.target.ephemeral_account.access_profile` is **required**, checked at
+   startup, and phase 0017 is what turns it into policy.
+
+Two smaller corrections landed with them. The administrator-name field is **64**
+characters, not 35 — both clear the threshold above, so the naming scheme is
+unaffected and only the stated fact was wrong. And an account "pinned to the
+proxy's address" was pinned on IPv4 only: `ip6-trusthost1`..`10` are parallel
+fields defaulting to `::/0`, so the driver now writes both, and refuses an IPv6
+source address rather than rendering one into an `ipv4-classnet` field.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -1342,7 +1418,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 | 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
 | 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0025/0026 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question |
-| 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Runs first because 0016, 0017, 0025 and 0026 all build on facts it corrects |
+| 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because 0016, 0017, 0025 and 0026 all build on facts it corrects. Deferred the two capabilities it declined to 0027 and 0028 |
 | 0016 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
 | 0017 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
 | 0018 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
@@ -1354,6 +1430,8 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0024 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
 | 0025 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: a different target identity, and a contract question before it is a driver (deferred from 0014) |
 | 0026 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
+| 0027 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the deeper unwinding, and the target-identity question 0025 shares (deferred from 0015) |
+| 0028 | FortiOS target-enforced expiry          | render `expiry_posture: target-enforced` onto a FortiGate through `config firewall schedule onetime` + `set schedule`, with the schedule object named, torn down and swept (deferred from 0015) |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

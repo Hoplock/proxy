@@ -112,7 +112,11 @@ per session, because the proxy creates the account.
   level, a role, a login class. 0016's vocabulary names rungs by what they
   guarantee rather than by mechanism, so the driver maps a named rung onto its
   platform's construct, and refuses (outage-class, §4.3) when it has nothing
-  that delivers that guarantee. Take the mapping from 0014's learnings; do not
+  that delivers that guarantee. Take the mapping from 0014's learnings **as corrected by 0015's** — the
+  fixed default this phase was told to replace no longer exists, because there
+  is no default: `auth.target.ephemeral_account.access_profile` is required and
+  checked at startup, and what you are replacing is a proxy-wide setting rather
+  than a driver constant. Do not
   characterise a vendor's RBAC from memory.
 - **Reach** is the same story: where the driver declares source-address pinning,
   a rung on the reach axis can restrict the ephemeral account to the proxy's

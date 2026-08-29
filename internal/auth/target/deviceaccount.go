@@ -176,9 +176,13 @@ type DeviceAccountOptions struct {
 	// used to pin an account where the driver declares it can
 	// (Capabilities.PinsSourceAddress); empty means no pin.
 	SourceAddress string
-	// AccessProfile overrides the driver's own default access profile. WHICH
+	// AccessProfile is the platform authorization scope created administrators
+	// are given. No driver in this build has a default — phase 0015 removed the
+	// one that did, because no FortiOS built-in is a safe one — so a driver
+	// given neither this nor a per-route profile refuses to create an account
+	// rather than choosing a privileged scope on a customer's device. WHICH
 	// profile a route gets is phase 0016's vocabulary and 0017's to apply; this
-	// is the proxy-wide placeholder until then.
+	// is the proxy-wide setting until then.
 	AccessProfile string
 	// Events receives the mapping event and sweep failures. Nil means the
 	// proxy has no logging path, which refuses any route whose driver declares

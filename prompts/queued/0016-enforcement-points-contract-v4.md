@@ -152,7 +152,12 @@ changes what the tiers can be:
   that permits diagnostics" is only as good as the vendor's grouping, and the
   survey should say where that grouping leaks (a diagnostic command with a shell
   escape, a profile that includes configuration write). Read 0014's learnings
-  before writing this row; do not characterise FortiOS access profiles from
+  **and phase 0015's**, in that order, before writing this row: 0014's
+  access-profile section is where its profile FACTS live and it is the section
+  0015 corrected — FortiOS documents three built-in profiles, not four, and
+  `prof_admin_readonly` appears in no Fortinet source. There is no longer a
+  default profile at all; the route or the proxy names one. Do not characterise
+  FortiOS access profiles from
   memory.
 - **Egress is a second axis, and the forwarding policy does not cover it.**
   `permitted_forwards` governs what may be tunnelled *through SSH channels*; a

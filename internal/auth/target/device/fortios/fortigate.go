@@ -21,30 +21,40 @@ import (
 // stable across releases.
 const PlatformFortiGate = "fortigate"
 
-// DefaultAccessProfile is the access profile a created administrator is given
-// when nothing else says otherwise.
+// There is deliberately NO default access profile, and this comment is where
+// the reasoning lives because the absence is the decision (phase 0015).
 //
-// FortiOS ships four built-ins: `super_admin` and `prof_admin` (both
-// read-write) and `super_admin_readonly` and `prof_admin_readonly`. This is the
-// most restrictive one that can be relied on, and "relied on" is doing real
-// work in that sentence:
+// Phase 0014 shipped `DefaultAccessProfile = "super_admin_readonly"` and
+// defended it as "the most restrictive built-in that cannot be edited out from
+// under us", ranked against `prof_admin_readonly` as the narrower-but-editable
+// alternative. Verification removed the comparison: Fortinet documents THREE
+// built-in profiles — `super_admin` (immutable), `prof_admin` (editable) and
+// `super_admin_readonly` (immutable, assignable, and absent from the GUI's
+// profile list, which is why it is easy to miss) — and no Fortinet source
+// contains the string `prof_admin_readonly` at all. The default was chosen by
+// comparing a real profile with one that appears not to exist.
 //
-//   - `prof_admin_readonly` is narrower — it excludes routing, system settings
-//     and endpoint control — but it is EDITABLE, so an operator who widened it
-//     once would silently widen what every Hoplock session on that unit can do,
-//     and nothing here would notice.
-//   - `super_admin_readonly` reads the whole configuration and can change none
-//     of it, and Fortinet documents it as undeletable and unmodifiable. A
-//     default that cannot drift is worth more than a default that is narrower
-//     on a good day.
+// What is left of the old rationale is true and not enough. `super_admin_readonly`
+// is immutable and reads everything, but:
 //
-// It is a DEFAULT, not a policy, and a read-only one will be wrong for many
-// real routes: an operator opening a session to change a firewall rule needs
-// write access. WHICH profile a route gets is phase 0016's vocabulary and phase
-// 0017's to apply, and until then an estate that needs more sets
-// `auth.target.ephemeral_account.access_profile`. The default is deliberately
-// the safe end of that choice rather than the convenient one.
-const DefaultAccessProfile = "super_admin_readonly"
+//   - it is READ-ONLY, and a read-only account is wrong for most of PLAN §13's
+//     UC1, whose whole point is changing the device;
+//   - from FortiOS 7.4.x an administrator holding it CANNOT RUN `diagnose`
+//     COMMANDS — disabled under CLI permits — so even the read-only
+//     troubleshooting session it was meant to serve is narrower than it looks,
+//     and Fortinet's own answer is a custom profile;
+//   - it is the GLOBAL read-only profile. A per-VDOM administrator "must use
+//     either the `prof_admin` administrator profile, or a custom profile", so
+//     on a multi-VDOM unit it does not fit at all (see errMultiVDOM).
+//
+// A default that is wrong for the common case, quietly weaker than advertised
+// on 7.4+, and inapplicable on a whole class of unit is not a safe default; it
+// is a guess with a comment. So the profile is REQUIRED: it comes from the
+// route (device.CreateRequest.Profile) or from proxy configuration
+// (`auth.target.ephemeral_account.access_profile`), and an account is never
+// created without one. WHICH profile a route gets is phase 0016's vocabulary
+// and phase 0017's to apply; requiring one now is what stops that phase from
+// inheriting a default nobody chose.
 
 // placeholderSecretLen is the length of the throwaway password an account is
 // created with.
@@ -66,8 +76,10 @@ type Options struct {
 	Platform string
 	// Dialer opens the privileged CLI session. Required.
 	Dialer device.ShellDialer
-	// AccessProfile is the profile created administrators are given. Empty
-	// means DefaultAccessProfile.
+	// AccessProfile is the profile created administrators are given when the
+	// route does not name one. There is no default (see above): a driver built
+	// without it serves only routes that carry their own profile, and refuses
+	// the rest rather than inventing a scope for a privileged account.
 	AccessProfile string
 }
 
@@ -93,11 +105,15 @@ func New(opts Options) (*Driver, error) {
 	if d.platform == "" {
 		d.platform = PlatformFortiGate
 	}
-	if d.profile == "" {
-		d.profile = DefaultAccessProfile
-	}
-	if err := validateProfile(d.profile); err != nil {
-		return nil, err
+	// An empty profile is allowed HERE and refused at create time. A proxy may
+	// legitimately configure none because every route it serves names its own
+	// (which is where phase 0017 takes this), and refusing to build the driver
+	// would turn that into a startup failure. What must not happen is an
+	// account created without one, and CreateAccount is where that is decided.
+	if d.profile != "" {
+		if err := validateProfile(d.profile); err != nil {
+			return nil, err
+		}
 	}
 	return d, nil
 }
@@ -107,16 +123,41 @@ func (d *Driver) Platform() string { return d.platform }
 
 // Capabilities implements device.Driver.
 //
-// Every value here was verified against Fortinet's current documentation rather
-// than assumed; the package comment records what was checked and where the
-// answers came from. Two of them are worth reading twice.
+// Every value here was checked against Fortinet's own documentation — read
+// directly, not summarised — and docs/FORTIOS-DOC-VERIFICATION.md carries the
+// page, the versions and the wording behind each one. Two are worth reading
+// twice.
 //
-// EnforcesExpiry is FALSE. A FortiOS administrator has no expiry field: there is
-// no `set expiry`, and `config system admin` has no schedule. So the device will
-// never remove this account on its own, whatever happens to the proxy — which
-// means the reaper is the PRIMARY removal path here rather than a crash-recovery
-// backstop, and a route demanding control.ExpiryPostureTargetEnforced is a
-// skipped ladder rung rather than a session served on a promise nobody keeps.
+// EnforcesExpiry is FALSE, and it is false BY DECISION rather than by absence.
+// Phase 0014 declared it false because "there is no `set expiry`, and `config
+// system admin` has no schedule". The second half is flatly wrong: `config
+// system admin` has `set schedule {string}`, it points at a `config firewall
+// schedule onetime` entry carrying an absolute `set end {hh:mm yyyy/mm/dd}`,
+// and FortiOS enforces it at authentication — Fortinet's own KB shows the
+// denial logged as `reason="out_of_schedule"`. A FortiGate CAN time-bound an
+// administrator by itself.
+//
+// It stays false anyway, and phase 0015 settled that with the user:
+//
+//   - The mechanism is a SECOND OBJECT per session. Taking it means creating a
+//     schedule entry, naming it under PLAN §5.3's scheme (the field caps
+//     schedule names at 35), referencing it, tearing it down, and teaching the
+//     reaper to sweep an orphaned one. An orphaned schedule on a customer's
+//     firewall is a smaller problem than an orphaned administrator and it is
+//     not nothing — it is a new leak class, and a new leak class is a phase,
+//     not a correction.
+//   - It DENIES LOGIN; it does not remove the account. So it would not retire
+//     the reaper or touch PersistsAcrossReload either way.
+//   - Whether an ALREADY-ESTABLISHED session survives the window closing is
+//     undocumented, and a target-enforced posture that cannot cut a live
+//     session is not obviously the thing a PDP asking for one wants.
+//
+// The consequence is unchanged and the reasoning under it is not: a route
+// demanding control.ExpiryPostureTargetEnforced is still a skipped ladder rung,
+// and the reaper is still the removal path. What is no longer true is that
+// FortiOS has nothing to offer here. Making the schedule mechanism real is a
+// queued phase of its own, and until it lands this declaration says "this
+// driver does not enforce expiry", not "this platform cannot".
 //
 // PersistsAcrossReload is TRUE, and D13 had to be amended for it. FortiOS has no
 // runtime-only configuration plane: under the default `config system global` /
@@ -183,6 +224,19 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	if req.Profile != "" {
 		profile = req.Profile
 	}
+	if profile == "" {
+		// No default, and this is where that decision bites (see the comment
+		// above DefaultAccessProfile's replacement). It is a plain error rather
+		// than device.ErrUnsupported: the platform is perfectly capable of
+		// scoping an administrator, this proxy was simply never told which
+		// scope to use, and a rung skipped over a configuration gap would serve
+		// the session on a credential the server ranked lower.
+		return nil, errors.New("auth/target/device/fortios: no access profile: " +
+			"an administrator's scope must be named by the route or by " +
+			"`auth.target.ephemeral_account.access_profile`, because no FortiOS built-in " +
+			"is a safe default (`super_admin_readonly` cannot run `diagnose` from 7.4.x " +
+			"and does not fit a per-VDOM account)")
+	}
 	if err := validateProfile(profile); err != nil {
 		return nil, err
 	}
@@ -193,11 +247,13 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			return nil, err
 		}
 	}
-	// Lifetime is accepted and not rendered: FortiOS has no expiry field, and
-	// Capabilities.EnforcesExpiry says so, which is what lets the provisioner
-	// decide whether that is acceptable for this route before anything is
-	// created. Silently ignoring it here without that declaration would be the
-	// bug this is not.
+	// Lifetime is accepted and not rendered. FortiOS could carry it — `set
+	// schedule` against a `config firewall schedule onetime` entry is a real
+	// mechanism (see Capabilities) — and this driver does not, which is exactly
+	// what Capabilities.EnforcesExpiry: false declares. The declaration is what
+	// lets the provisioner decide whether that is acceptable for this route
+	// BEFORE anything is created; silently ignoring a lifetime without it would
+	// be the bug this is not.
 	_ = req.Lifetime
 
 	placeholder, err := randomSecret(placeholderSecretLen)
@@ -226,7 +282,16 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		{command: "set accprofile " + quote(profile), label: "set the access profile"},
 	}
 	if trust != "" {
-		steps = append(steps, step{command: "set trusthost1 " + trust, label: "pin the administrator to the proxy's address"})
+		steps = append(steps,
+			step{command: "set trusthost1 " + trust, label: "pin the administrator to the proxy's address"},
+			// Both families, always. `trusthost1` and `ip6-trusthost1` are
+			// parallel restrictions with independent defaults, and the IPv6 one
+			// defaults to `::/0`. Setting only the IPv4 field leaves the
+			// account reachable from any IPv6 address on a unit with IPv6
+			// management access — a pin the provisioner believes it applied and
+			// the device does not have.
+			step{command: "set ip6-trusthost1 " + closedIPv6TrustHost, label: "close the administrator to IPv6"},
+		)
 	}
 	steps = append(steps,
 		step{command: "set password " + quote(placeholder), label: "set a placeholder password", secret: true},
@@ -340,7 +405,82 @@ func (d *Driver) ListAccounts(ctx context.Context, req device.ListRequest) ([]de
 	return d.listAccounts(ctx, s, req.Prefix)
 }
 
-// open dials the device and reads past its login banner.
+// ErrMultiVDOM means the unit is running virtual domains and this driver does
+// not administer one.
+//
+// It is NOT device.ErrUnsupported, and the distinction is the security half of
+// this refusal. ErrUnsupported means the PLATFORM cannot, which makes the
+// ladder rung unsatisfiable and walks the proxy down to a credential the server
+// ranked lower — a silent downgrade triggered by the shape of one unit. This is
+// an ATTEMPT that fails: the route is right, the platform is right, and this
+// build cannot serve this device. D13's rule is that an unsupported
+// configuration is an outage-class denial, never a best-effort attempt.
+var ErrMultiVDOM = errors.New("auth/target/device/fortios: the unit is running virtual domains, which this driver does not administer")
+
+// vdomStatusCommand asks the unit whether virtual domains are enabled.
+//
+// `get system status` is a READ. It is sent once per CLI session, before
+// anything is configured, because every operation this driver performs is wrong
+// on a multi-VDOM unit and not only creation: `config system admin` at the top
+// level of such a unit is not the table Fortinet's own recipe edits, so `edit`,
+// `delete` and `show` are all pointed at something this driver cannot vouch
+// for.
+const vdomStatusCommand = "get system status"
+
+// vdomConfigurationPattern reads the answer.
+//
+// Fortinet documents exactly this line and exactly this way of reading it:
+// "Enter the command 'get system status' or 'get sys status | grep -n Virtual'.
+// The output will display the 'Virtual domain configuration' status", with
+// `disable` meaning no VDOMs and `multiple` meaning multi-VDOM mode
+// (community.fortinet.com, "How to check for VDOM Enablement on a FortiGate").
+// Split-task mode reports its own value, which this driver also declines rather
+// than assumes it can serve.
+var vdomConfigurationPattern = regexp.MustCompile(`(?im)^\s*Virtual domain configuration\s*:\s*(\S+)\s*$`)
+
+// vdomDisabled is the one answer this driver serves.
+const vdomDisabled = "disable"
+
+// checkSingleVDOM refuses anything but a single-VDOM unit.
+//
+// Phase 0014's command sequences were written from the single-VDOM recipe and
+// are wrong on a unit with virtual domains in three ways at once, all
+// documented: the administrator table lives inside `config global` there,
+// `set vdom` is required for a VDOM-scoped account, and cliSession.Close's
+// `end\nend\nexit` unwinds one level shallower than that nesting needs.
+// Running them anyway is a silent mismatch on a customer's firewall, and it is
+// what shipped — the fake device accepted every one of those sequences, so the
+// tests passed the whole time.
+//
+// An UNREADABLE answer is refused too, not assumed benign. The whole reason
+// this check exists is that the driver was previously certain about a device
+// shape it had never asked about; a version or model whose status output this
+// pattern does not match is another shape nobody has asked about, and the fail
+// -closed direction is the one that does not create privileged accounts on a
+// hunch. Full multi-VDOM support is a queued phase, and it owns the question of
+// what a "target" is when one unit holds many (the same question the FortiLink
+// switch driver owns).
+func (d *Driver) checkSingleVDOM(ctx context.Context, s *cliSession) error {
+	out, err := s.send(ctx, vdomStatusCommand)
+	if err != nil {
+		return fmt.Errorf("auth/target/device/fortios: read the unit's VDOM mode: %w", err)
+	}
+	if err := checkOutput("read the unit's VDOM mode", out); err != nil {
+		return err
+	}
+	m := vdomConfigurationPattern.FindStringSubmatch(out)
+	if m == nil {
+		return fmt.Errorf("%w: `%s` did not report a virtual domain configuration, so this driver cannot tell which administrator table it would be editing",
+			ErrMultiVDOM, vdomStatusCommand)
+	}
+	if mode := strings.ToLower(m[1]); mode != vdomDisabled {
+		return fmt.Errorf("%w: the unit reports virtual domain configuration %q", ErrMultiVDOM, mode)
+	}
+	return nil
+}
+
+// open dials the device, reads past its login banner, and refuses a unit this
+// driver cannot administer.
 func (d *Driver) open(ctx context.Context, ep device.Endpoint) (*cliSession, error) {
 	if d.dialer == nil {
 		// The declaration registered in device.Shipped() (see init below) has
@@ -355,6 +495,10 @@ func (d *Driver) open(ctx context.Context, ep device.Endpoint) (*cliSession, err
 	s, err := openCLI(ctx, shell)
 	if err != nil {
 		_ = shell.Close()
+		return nil, err
+	}
+	if err := d.checkSingleVDOM(ctx, s); err != nil {
+		_ = s.Close()
 		return nil, err
 	}
 	return s, nil
@@ -513,7 +657,7 @@ func Register(r *device.Registry, opts Options) error {
 // be checked, and open() refuses rather than panicking if anybody tries to use
 // it for work.
 func init() {
-	if err := device.Shipped().Register(&Driver{platform: PlatformFortiGate, profile: DefaultAccessProfile}); err != nil {
+	if err := device.Shipped().Register(&Driver{platform: PlatformFortiGate}); err != nil {
 		panic(err)
 	}
 }

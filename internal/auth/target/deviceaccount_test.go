@@ -68,6 +68,11 @@ func (s *recordingSink) failures() []SweepFailure {
 	return append([]SweepFailure(nil), s.sweepFailure...)
 }
 
+// testDeviceAccessProfile is the scope these tests give a created
+// administrator. It is a real FortiOS built-in, chosen by the test rather than
+// by the driver.
+const testDeviceAccessProfile = "super_admin_readonly"
+
 type deviceHarnessOptions struct {
 	fortios     sshtest.FortiOSOptions
 	deliverable bool
@@ -100,6 +105,9 @@ func newDeviceHarness(t *testing.T, opts deviceHarnessOptions) *deviceHarness {
 	if err != nil {
 		t.Fatalf("driver: %v", err)
 	}
+	// The proxy names the access profile, because since phase 0015 no driver
+	// carries a default one: an administrator's scope on a customer's firewall
+	// is a decision somebody makes.
 	var toRegister device.Driver = driver
 	if opts.nameLimit > 0 {
 		toRegister = &limitedDriver{Driver: driver, limit: opts.nameLimit}
@@ -121,6 +129,7 @@ func newDeviceHarness(t *testing.T, opts deviceHarnessOptions) *deviceHarness {
 		ProxyID:        proxyID,
 		Drivers:        registry,
 		SourceAddress:  "198.51.100.7",
+		AccessProfile:  testDeviceAccessProfile,
 		Events:         events,
 		ReaperInterval: -1, // no background sweeping; tests call Sweep directly
 		ReaperGrace:    opts.reaperGrace,
@@ -201,7 +210,7 @@ func TestDeviceSessionProvisionsConnectsAndTearsDown(t *testing.T) {
 		t.Errorf("account %q does not carry the reaper's prefix", name)
 	}
 	if !strings.Contains(name, "alice") {
-		t.Errorf("account %q drops the login segment, but FortiOS accepts 35 characters and should keep it", name)
+		t.Errorf("account %q drops the login segment, but FortiOS accepts 64 characters and should keep it", name)
 	}
 	on, ok := h.dev.Accounts()[name]
 	if !ok {

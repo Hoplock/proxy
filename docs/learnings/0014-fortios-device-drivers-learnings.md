@@ -1,6 +1,44 @@
 # 0014 — FortiOS device drivers — Learnings
 
+> **Superseded in part by phase 0015 — read this before the facts below.**
+> This file is a record of what phase 0014 shipped and it is left standing as
+> one. What it could not do was read Fortinet's documentation: the sites were
+> blocked by that session's egress policy, the facts here came from web-search
+> summaries of them, and the section "How these were verified, and the caveat
+> that goes with it" says so and asks the next author on a reachable network to
+> check the list.
+>
+> **That check is done.** `docs/FORTIOS-DOC-VERIFICATION.md` carries it — every
+> page read directly, with versions — and
+> `docs/learnings/0015-fortios-driver-corrections-learnings.md` carries what was
+> changed as a result. Six of the ten claims below hold. These do not:
+>
+> - **Per-account expiry.** "None exists" is wrong. `config system admin` has
+>   `set schedule`, pointing at a `config firewall schedule onetime` entry with
+>   an absolute end, enforced at login. `EnforcesExpiry` is still false — by
+>   decision, recorded in `docs/PLAN.md` §5.3, deferred to phase **0028**.
+> - **The four built-in access profiles.** There are three. No Fortinet source
+>   contains `prof_admin_readonly`, so the default below was chosen by ranking a
+>   real profile against one that appears not to exist. There is no default now:
+>   `auth.target.ephemeral_account.access_profile` is required. Also unrecorded
+>   below: from FortiOS 7.4.x `super_admin_readonly` cannot run `diagnose`.
+> - **The administrator-name limit.** 64, not 35 — 35 is the naming KB's figure
+>   for "most name fields" and is the right one for `accprofile` and `schedule`.
+>   No behaviour depended on it; both clear PLAN §5.3's threshold of 32.
+> - **"Return code -3"** is not a documented return code, and the canonical parse
+>   error is `Command parse error before '…'`.
+> - **Multi-VDOM**, which no claim below covers: the driver's command sequence is
+>   wrong on a unit running virtual domains. It now detects and refuses one;
+>   support is phase **0027**.
+>
+> The caveat this file asked to be closed is closed. The phase numbers here are
+> pre-renumbering — resolve them through the mapping in `docs/PLAN.md` §10.
+
 ## Summary
+- **Partly superseded — see the note above this block before using any FortiOS
+  fact here.** Phase 0015 corrected four of them and added multi-VDOM;
+  `docs/FORTIOS-DOC-VERIFICATION.md` and
+  `docs/learnings/0015-fortios-driver-corrections-learnings.md` are current.
 - What shipped: the **FortiGate driver** (`internal/auth/target/device/fortios`),
   the **`ephemeral-account` provisioner** and its device reaper
   (`internal/auth/target`), **D14's ladder walk** in `Selector`, the naming

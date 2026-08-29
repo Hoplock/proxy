@@ -318,12 +318,19 @@ type EphemeralAccountAuth struct {
 	// denial and never the nearest driver (D13).
 	Platforms []string `yaml:"platforms"`
 	// AccessProfile is the platform authorization scope created administrators
-	// are given. Empty means the driver's own default.
+	// are given. REQUIRED: no driver in this build has a default.
+	//
+	// It had one until phase 0015, and the correction is worth carrying here
+	// because it is the reason this field is now mandatory. The FortiOS default
+	// was chosen by ranking `super_admin_readonly` against `prof_admin_readonly`
+	// — and no Fortinet source documents the second profile at all. The first
+	// is real and immutable, but it is read-only, it cannot run `diagnose` from
+	// FortiOS 7.4.x, and it is the GLOBAL read-only profile, so it does not fit
+	// a per-VDOM account. A privileged account's scope on a customer's firewall
+	// is a decision an operator makes.
 	//
 	// WHICH profile a route gets is phase 0016's vocabulary and phase 0017's to
-	// apply. This is the proxy-wide placeholder until then, and it is a
-	// placeholder rather than a policy: on FortiOS the most restrictive
-	// built-in profile is not reliably restrictive at all.
+	// apply. This is the proxy-wide setting until then.
 	AccessProfile string `yaml:"access_profile"`
 	// SourceAddress is the address devices see this proxy connect from. Where a
 	// driver declares it can pin an account to a source address, this is what
@@ -814,6 +821,17 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 		if t.EphemeralAccount.PasswordEnv == "" && t.EphemeralAccount.KeyPath == "" {
 			v.add("auth.target.ephemeral_account.password_env", ErrMissing,
 				"the device management login needs a password (from the environment) or a key")
+		}
+		if t.EphemeralAccount.AccessProfile == "" {
+			// No device driver in this build carries a default, and phase 0015
+			// removed the one that did: on FortiOS the built-in it named as the
+			// narrower alternative turns out not to exist, the one it chose
+			// cannot run `diagnose` from 7.4.x, and neither fits a per-VDOM
+			// account. Refusing at STARTUP rather than at session time is the
+			// difference between an operator reading one error and every
+			// session failing with the same one.
+			v.add("auth.target.ephemeral_account.access_profile", ErrMissing,
+				"the platform scope created administrators are given; no device driver has a safe default")
 		}
 		if t.EphemeralAccount.Reaper.Grace < 0 {
 			v.add("auth.target.ephemeral_account.reaper.grace", ErrInvalid, "must not be negative")

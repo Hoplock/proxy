@@ -40,7 +40,7 @@ func newHarness(t *testing.T, opts sshtest.FortiOSOptions) *harness {
 	if err != nil {
 		t.Fatalf("dialer: %v", err)
 	}
-	driver, err := New(Options{Dialer: dialer})
+	driver, err := New(Options{Dialer: dialer, AccessProfile: testAccessProfile})
 	if err != nil {
 		t.Fatalf("driver: %v", err)
 	}
@@ -55,6 +55,14 @@ func newHarness(t *testing.T, opts sshtest.FortiOSOptions) *harness {
 		},
 	}
 }
+
+// testAccessProfile is what these tests configure the driver with.
+//
+// There is no default any more (phase 0015), so a harness has to name one — and
+// that is the point: an account's scope is a decision somebody makes, not one
+// the driver carries. It is `super_admin_readonly` because that is a real,
+// immutable FortiOS built-in, not because the driver prefers it.
+const testAccessProfile = "super_admin_readonly"
 
 func firstNonEmpty(a, b string) string {
 	if a != "" {
@@ -83,19 +91,26 @@ func TestLifecycleAgainstTheDevice(t *testing.T) {
 	if acct.Name != name {
 		t.Errorf("created %q, want %q", acct.Name, name)
 	}
-	if acct.Profile != DefaultAccessProfile {
-		t.Errorf("created with profile %q, want %q", acct.Profile, DefaultAccessProfile)
+	if acct.Profile != testAccessProfile {
+		t.Errorf("created with profile %q, want %q", acct.Profile, testAccessProfile)
 	}
 	if !acct.CreatedAt.IsZero() {
 		t.Error("FortiOS does not record a creation time; a driver reporting one would have the reaper age accounts against a fiction")
 	}
 
 	on := h.dev.Accounts()[name]
-	if on.Profile != DefaultAccessProfile {
-		t.Errorf("device has profile %q, want %q", on.Profile, DefaultAccessProfile)
+	if on.Profile != testAccessProfile {
+		t.Errorf("device has profile %q, want %q", on.Profile, testAccessProfile)
 	}
 	if on.TrustHost != "198.51.100.7 255.255.255.255" {
 		t.Errorf("device has trusthost %q, want the proxy pinned as a /32", on.TrustHost)
+	}
+	// Both halves of the pin, because `ip6-trusthost1` defaults to `::/0`: an
+	// account restricted only through `trusthost1` is reachable from any IPv6
+	// address on a unit with IPv6 management access, which is a restriction the
+	// provisioner believes it applied and the device does not have.
+	if on.IP6TrustHost == sshtest.FortiOSOpenIPv6TrustHost {
+		t.Error("the account is pinned on IPv4 and wide open on IPv6; ip6-trusthost1 was left at its `::/0` default")
 	}
 	// The window between create and credential must not be a usable one.
 	if on.Password == "" {
@@ -331,7 +346,13 @@ func TestShippedDeclarationMeetsTheHoplockRule(t *testing.T) {
 		t.Error("a shipped driver that persists must say which platform mechanism forces it")
 	}
 	if caps.EnforcesExpiry {
-		t.Error("FortiOS has no per-administrator expiry field; declaring one would make the target-enforced posture satisfiable by nothing")
+		// FortiOS DOES have `set schedule`, and this driver still declares
+		// false — by decision, not by absence (see Capabilities). Flipping this
+		// to true is only honest once the driver actually creates, references
+		// and tears down a `config firewall schedule onetime` object, and the
+		// reaper sweeps an orphaned one; until then it would make the
+		// target-enforced posture satisfiable by nothing.
+		t.Error("EnforcesExpiry is true, but nothing in this driver renders a schedule onto the device")
 	}
 	if caps.MaxAccountNameLen != FortiOSMaxNameLenDeclared {
 		t.Errorf("declared name limit %d, want %d", caps.MaxAccountNameLen, FortiOSMaxNameLenDeclared)
@@ -340,7 +361,11 @@ func TestShippedDeclarationMeetsTheHoplockRule(t *testing.T) {
 
 // FortiOSMaxNameLenDeclared pins the verified limit in the test as well as the
 // driver, so a change to one is a visible change to the other.
-const FortiOSMaxNameLenDeclared = 35
+//
+// 64 — `config system admin` / `name`, "Maximum length: 64", read directly from
+// the CLI reference in phase 0015. It was 35 here, from a KB line about "most
+// name fields".
+const FortiOSMaxNameLenDeclared = 64
 
 // TestAUserShellSessionReachesTheCLI is the shape an operator's session takes,
 // and the shape the e2e topology drives: an SSH client asks for a SHELL and
@@ -417,5 +442,233 @@ func TestAnExecRequestIsRefused(t *testing.T) {
 
 	if err := sess.Run("show system admin"); err == nil {
 		t.Error("the device accepted an exec request; the driver's shell-channel design assumes it does not")
+	}
+}
+
+// TestAMultiVDOMUnitIsRefusedRatherThanMisconfigured is the gap
+// docs/FORTIOS-DOC-VERIFICATION.md found and phase 0014 never saw: on a unit
+// running virtual domains the administrator table lives inside `config global`,
+// and the sequence this driver sends is written for a unit where it does not.
+//
+// The refusal is checked at three levels, because each one is a separate way
+// for this to go wrong: the caller must get ErrMultiVDOM, the device must be
+// untouched, and `config system admin` must never have been SENT — a driver
+// that ran its sequence and happened to fail is not the same as one that
+// declined.
+func TestAMultiVDOMUnitIsRefusedRatherThanMisconfigured(t *testing.T) {
+	for _, mode := range []string{sshtest.FortiOSVDOMMultiple, sshtest.FortiOSVDOMSplitTask} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t, sshtest.FortiOSOptions{VDOMMode: mode})
+			const name = "hl-a1b2-alice-0f0f0f0f"
+
+			_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+			if !errors.Is(err, ErrMultiVDOM) {
+				t.Fatalf("CreateAccount against a %s unit returned %v, want ErrMultiVDOM", mode, err)
+			}
+			// Not ErrUnsupported, and this is the security half: an
+			// unsatisfiable rung is SKIPPED, and skipping this one would serve
+			// the session on a credential the server ranked lower because of
+			// the shape of one unit (D13, D14).
+			if errors.Is(err, device.ErrUnsupported) {
+				t.Error("a unit this driver cannot administer was reported as a platform limitation, which skips the ladder rung instead of failing the attempt")
+			}
+			if _, ok := h.dev.Accounts()[name]; ok {
+				t.Error("an administrator was created on a unit whose administrator table this driver cannot address")
+			}
+			for _, cmd := range h.dev.Commands() {
+				if strings.HasPrefix(cmd, "config system admin") {
+					t.Errorf("the driver sent %q to a multi-VDOM unit; on that shape the table is inside `config global` and this edits something else", cmd)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryOperationRefusesAMultiVDOMUnit covers the rest of the surface.
+//
+// Creation is not the only wrong sequence there: `delete` and `show system
+// admin` at the top level of a multi-VDOM unit are pointed at a table this
+// driver cannot vouch for either, and a removal that "succeeded" against the
+// wrong scope would leave a live privileged administrator that the reaper then
+// reports as gone.
+func TestEveryOperationRefusesAMultiVDOMUnit(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{VDOMMode: sshtest.FortiOSVDOMMultiple})
+	ctx := context.Background()
+	const name = "hl-a1b2-alice-0f0f0f0f"
+
+	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); !errors.Is(err, ErrMultiVDOM) {
+		t.Errorf("RemoveAccount returned %v, want ErrMultiVDOM — a removal against the wrong scope reads as success and leaves the account", err)
+	}
+	if _, err := h.driver.ListAccounts(ctx, device.ListRequest{Endpoint: h.ep, Prefix: "hl-"}); !errors.Is(err, ErrMultiVDOM) {
+		t.Errorf("ListAccounts returned %v, want ErrMultiVDOM — an empty sweep of the wrong table is how an orphan is never found", err)
+	}
+	err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+		Endpoint: h.ep, Name: name, Kind: control.CredentialKindPassword, Password: "irrelevant",
+	})
+	if !errors.Is(err, ErrMultiVDOM) {
+		t.Errorf("InstallCredential returned %v, want ErrMultiVDOM", err)
+	}
+}
+
+// TestAUnitThatWillNotSayIsRefused is the fail-closed half of the VDOM check.
+//
+// The failure this whole phase corrects is a driver that was certain about a
+// device shape it had never asked about. A unit whose status output this driver
+// cannot read is another shape nobody has asked about, and the direction that
+// does not create privileged accounts on a hunch is refusal.
+func TestAUnitThatWillNotSayIsRefused(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{
+		Faults: sshtest.FortiOSFaults{FailCommand: regexp.MustCompile(`^get system status$`)},
+	})
+
+	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+		Endpoint: h.ep, Name: "hl-a1b2-alice-0f0f0f0f",
+	})
+	if err == nil {
+		t.Fatal("a unit that would not report its VDOM mode was provisioned anyway")
+	}
+}
+
+// TestTheFakeDeviceRejectsAnUnwrappedAdminTable pins the FAKE, not the driver.
+//
+// It is the test that would have caught phase 0014's gap, and it has to exist
+// separately because this driver now declines a multi-VDOM unit rather than
+// driving one: nothing else here would notice if the fake went back to
+// accepting `config system admin` at the top level. Whichever phase adds
+// multi-VDOM support inherits a device that refuses the sequence 0014 wrote.
+func TestTheFakeDeviceRejectsAnUnwrappedAdminTable(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{VDOMMode: sshtest.FortiOSVDOMMultiple})
+
+	client, err := ssh.Dial("tcp", h.dev.Addr().String(), &ssh.ClientConfig{
+		User:            "hoplock-mgmt",
+		Auth:            []ssh.AuthMethod{ssh.Password("mgmt-secret")},
+		HostKeyCallback: ssh.FixedHostKey(h.dev.HostKey()),
+	})
+	if err != nil {
+		t.Fatalf("dial the device: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	transcript := func(t *testing.T, script string) string {
+		t.Helper()
+		sess, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("open a session: %v", err)
+		}
+		defer func() { _ = sess.Close() }()
+		var out, errOut bytes.Buffer
+		sess.Stdin = strings.NewReader(script)
+		sess.Stdout = &out
+		sess.Stderr = &errOut
+		if err := sess.Shell(); err != nil {
+			t.Fatalf("request a shell: %v", err)
+		}
+		if err := sess.Wait(); err != nil {
+			t.Fatalf("shell session: %v", err)
+		}
+		return out.String()
+	}
+
+	unwrapped := transcript(t, "config system admin\nedit \"probe\"\nnext\nend\nexit\n")
+	if !strings.Contains(unwrapped, "Command fail") {
+		t.Errorf("the fake accepted `config system admin` at the top level of a multi-VDOM unit; a driver that drops the `config global` wrapper would pass its tests and edit the wrong scope. It said:\n%s", unwrapped)
+	}
+
+	wrapped := transcript(t, "config global\nconfig system admin\nedit \"probe\"\nnext\nend\nend\nexit\n")
+	if strings.Contains(wrapped, "Command fail") {
+		t.Errorf("the fake refused Fortinet's own documented multi-VDOM sequence, so it is strict in a way the device is not. It said:\n%s", wrapped)
+	}
+	if _, ok := h.dev.Accounts()["probe"]; !ok {
+		t.Error("the documented sequence did not create an administrator; the fake is not modelling the wrapped table at all")
+	}
+}
+
+// TestAnIPv6SourceAddressIsRefusedRatherThanMisrendered covers the other half
+// of claim 9.
+//
+// `trusthost1` is an `ipv4-classnet` field. Phase 0014 rendered an IPv6 source
+// as `<addr>/128` and wrote it there, so an IPv6-fronted proxy would have met a
+// parse error from the device instead of a sentence naming the limitation.
+func TestAnIPv6SourceAddressIsRefusedRatherThanMisrendered(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{})
+	const name = "hl-a1b2-alice-0f0f0f0f"
+
+	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+		Endpoint: h.ep, Name: name, SourceAddress: "2001:db8::7",
+	})
+	if err == nil {
+		t.Fatal("an IPv6 source address was accepted; it would have been written into an IPv4 field")
+	}
+	if _, ok := h.dev.Accounts()[name]; ok {
+		t.Error("an administrator was created despite the pin the route asked for not being applicable")
+	}
+	for _, cmd := range h.dev.Commands() {
+		if strings.HasPrefix(cmd, "set trusthost1") {
+			t.Errorf("the driver sent %q; an IPv6 address in an ipv4-classnet field is a device error, not a pin", cmd)
+		}
+	}
+}
+
+// TestAnUnnamedAccessProfileIsRefused is phase 0015's access-profile decision,
+// as a test rather than as a comment.
+//
+// There is no default: `prof_admin_readonly` — the profile the old default was
+// ranked against — appears in no Fortinet source, `super_admin_readonly` cannot
+// run `diagnose` from 7.4.x, and neither fits a per-VDOM account. A privileged
+// account's scope is named by somebody or the account is not created.
+func TestAnUnnamedAccessProfileIsRefused(t *testing.T) {
+	h := newHarness(t, sshtest.FortiOSOptions{})
+	unconfigured, err := New(Options{Dialer: stubDialer{}})
+	if err != nil {
+		t.Fatalf("a driver with no access profile must still build, because a route may name its own: %v", err)
+	}
+
+	const name = "hl-a1b2-alice-0f0f0f0f"
+	_, err = unconfigured.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+	if err == nil {
+		t.Fatal("an administrator was created with no access profile at all")
+	}
+	// Not ErrUnsupported: the platform scopes administrators perfectly well,
+	// this proxy was simply never told which scope to use, and a skipped rung
+	// would answer a configuration gap with a weaker credential.
+	if errors.Is(err, device.ErrUnsupported) {
+		t.Error("a missing access profile was reported as a platform limitation, which skips the ladder rung instead of failing the attempt")
+	}
+	if _, ok := h.dev.Accounts()[name]; ok {
+		t.Error("the refused account is on the device anyway")
+	}
+}
+
+// stubDialer stands in for a dialer that is never reached: the profile check
+// happens before anything is opened, which is the point — refusing after
+// dialling would mean a connection to a customer's firewall to discover a
+// configuration mistake.
+type stubDialer struct{}
+
+func (stubDialer) Shell(context.Context, device.Endpoint) (device.Shell, error) {
+	return nil, errors.New("the access-profile check must refuse before anything is dialled")
+}
+
+// TestTheDeclaredNameLimitIsTheDocumentedOne guards the correction in both
+// directions: the driver's declaration and the fake device's enforcement have
+// to move together, or one of them is quietly standing in for a device that
+// does not exist.
+func TestTheDeclaredNameLimitIsTheDocumentedOne(t *testing.T) {
+	if sshtest.FortiOSMaxNameLen != FortiOSMaxNameLenDeclared {
+		t.Fatalf("the fake device enforces %d characters and the driver declares %d; a fake more permissive than the device is how a driver bug becomes a green build",
+			sshtest.FortiOSMaxNameLen, FortiOSMaxNameLenDeclared)
+	}
+
+	h := newHarness(t, sshtest.FortiOSOptions{})
+	ctx := context.Background()
+
+	atLimit := "hl-" + strings.Repeat("a", FortiOSMaxNameLenDeclared-3)
+	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: atLimit}); err != nil {
+		t.Errorf("a name of exactly %d characters was refused: %v", FortiOSMaxNameLenDeclared, err)
+	}
+
+	overLimit := atLimit + "a"
+	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: overLimit}); err == nil {
+		t.Errorf("a name of %d characters was accepted; the field stops at %d", len(overLimit), FortiOSMaxNameLenDeclared)
 	}
 }
