@@ -34,6 +34,11 @@ The two claims that change the design are **2** and **8**. Claim **1** is wrong
 but harmless. Claims **7** and **10**, which the author flagged as least
 certain, both hold up.
 
+Reading the same pages also turned up something none of the ten claims covers
+and the driver does not handle at all: **multi-VDOM**. It is written up after
+claim 10, and on the estate PLAN §14 describes it is likely to outrank
+everything in the table above.
+
 ---
 
 ## 1 — Administrator name length: **wrong (35 → 64)**
@@ -392,27 +397,98 @@ batching mechanism inside the same shell.
 
 ---
 
+## Beyond the ten claims — multi-VDOM
+
+None of the ten claims mentions VDOMs, and neither does the driver: `vdom`
+appears nowhere in the package. That is a gap rather than a wrong claim, and on
+the estate PLAN §14 describes — a telco running ~300,000 FortiGates and
+FortiSwitches — it is likely to be the common case rather than the exception.
+
+The Administration Guide's own CLI recipe for creating an administrator on a
+multi-VDOM unit is **not** the sequence the driver sends:
+
+```
+config global
+    config system admin
+        edit <name>
+            set vdom <VDOM_name>
+            set password <password>
+            set accprofile <admin_profile>
+            ...
+        next
+    end
+end
+```
+
+Source: [General configurations → Create per-VDOM administrators, 7.6.4](https://docs.fortinet.com/document/fortigate/7.6.4/administration-guide/32293/general-configurations),
+repeated verbatim in [Technical Tip: Configuring per-VDOM administrators](https://community.fortinet.com/t5/FortiGate/Technical-Tip-Configuring-per-VDOM-administrators/ta-p/197736).
+The `vdom` field is real and documented in `config system admin`: "Virtual
+domain(s) that the administrator can access", string, maximum length 79.
+
+Three things follow, in descending order of confidence:
+
+1. **The `config global` wrapper is missing.** The driver opens with
+   `config system admin` at the top level. Every Fortinet document that shows
+   this table on a multi-VDOM unit nests it inside `config global`, and the same
+   nesting appears for other global tables (`config global` / `config system
+   global` / `set management-vdom`). The driver's `end`-unwinding in
+   `cliSession.Close` (`end\nend\nexit`) also assumes a fixed nesting depth that
+   would be one level short.
+2. **`set vdom` is never sent.** The public-key procedure lists it among the
+   requirements — "When multi-vdom mode is enabled, a VDOM must be specified" —
+   and the per-VDOM recipe above sets it explicitly. A global-scope administrator
+   may not need it; a VDOM-scoped one does.
+3. **The shipped default profile does not fit a per-VDOM account.** Per-VDOM
+   administrators "must use either the `prof_admin` administrator profile, or a
+   custom profile", and "when creating an administrator at the VDOM level, the
+   `super_admin` administrator profile cannot be used".
+   `super_admin_readonly` is the *global* read-only profile — it is exactly what
+   [ta-p/192017](https://community.fortinet.com/t5/FortiGate/Technical-Tip-How-to-access-to-the-GLOBAL-VDOM-with-read-only/ta-p/192017)
+   recommends for global read-only access — so it suits a global administrator
+   and not a VDOM-scoped one. The obvious narrower substitute would be
+   `prof_admin_readonly`, which is the profile claim 8 could not find evidence
+   for. The two findings meet here: on a multi-VDOM unit there appears to be **no
+   built-in read-only profile usable for a per-VDOM account**, so a custom
+   accprofile becomes necessary rather than optional.
+
+What is **not** established here is the exact failure mode of sending
+`config system admin` at the top level of a multi-VDOM unit — whether it is a
+parse error, or silently resolves somewhere unintended. Fortinet documents the
+correct sequence but not what the incorrect one does, and this is the kind of
+question a fake device cannot answer. It belongs on the same hardware-test list
+as claim 10 and the session-teardown half of claim 2.
+
+---
+
 ## Summary of what should change
 
-Nothing here breaks the driver at runtime. In rough order of consequence:
+Nothing here breaks the driver on a single-VDOM unit. In rough order of
+consequence:
 
-1. **Claim 2 is the real one.** `set schedule` + `config firewall schedule
+1. **Multi-VDOM is unhandled**, and on PLAN §14's estate it is probably the
+   common case. The documented sequence wraps `config system admin` in
+   `config global` and sets `set vdom`; the driver does neither, and its
+   `end`-unwinding assumes the shallower nesting. Confirm the failure mode on
+   hardware before deciding how much of this is a driver change and how much is
+   a contract question about what a target's identity means when a device holds
+   many.
+2. **Claim 2 is the real one among the ten.** `set schedule` + `config firewall schedule
    onetime` gives device-enforced, time-bounded administrator login. Revisit
    `EnforcesExpiry: false`, the skipped `target-enforced` rung, the discarded
    `req.Lifetime`, and the "reaper is the primary removal path" framing —
    knowing the field exists, and knowing it denies login rather than deleting
    the account.
-2. **Claim 8's fourth profile is not real** as far as Fortinet documents it. Drop
+3. **Claim 8's fourth profile is not real** as far as Fortinet documents it. Drop
    `prof_admin_readonly` from the three places that assert it, and record the
    7.4+ `diagnose` restriction on `super_admin_readonly`, which constrains what
    the shipped default can do.
-3. **Claim 9's IPv6 gap.** `ip6-trusthost1..10` default to `::/0`, so the source
+4. **Claim 9's IPv6 gap.** `ip6-trusthost1..10` default to `::/0`, so the source
    pin is IPv4-only; and an IPv6 `SourceAddress` would be written into an IPv4
    field.
-4. **Claim 1 is wrong but inert** — the field is 64, not 35. Correct the stated
+5. **Claim 1 is wrong but inert** — the field is 64, not 35. Correct the stated
    fact; `maxAccountNameLen = 35` can stay as a deliberate narrowing if that is
    what it is.
-5. **Claim 5's two string details** — `-3` is not a documented return code, and
+6. **Claim 5's two string details** — `-3` is not a documented return code, and
    the canonical parse error is `Command parse error before …`.
 
 Claims 3, 4, 6, 7 and 10 need no change. Claims 7 and 10, the two the author
