@@ -27,8 +27,11 @@ administrator-name limit (it selects the naming scheme, PLAN §5.3, and it is th
 single most consequential number in the driver); whether `config system admin`
 takes the same fields, `accprofile` and `trusthost` included; whether an
 administrator can carry an SSH public key; whether the platform can expire an
-account (FortiOS cannot, so `EnforcesExpiry` is false there — do not inherit
-that answer, establish it); and whether configuration is written to
+account (FortiOS **can** — `set schedule` against a `config firewall schedule
+onetime` entry — and the FortiGate driver still declares `EnforcesExpiry: false`
+by decision rather than by absence, which phase 0015 recorded in `docs/PLAN.md`
+§5.3 and deferred to **0028**; inherit neither the fact nor the declaration,
+establish both); and whether configuration is written to
 non-volatile storage the same way, which decides `PersistsAcrossReload` and its
 required `PersistenceReason`. Record each with its doc reference in your
 learnings.
@@ -39,6 +42,12 @@ learnings.
   tables. If it turns out to be the FortiGate driver with different declarations,
   say so and ship it as that — a second copy of a prompt/response state machine
   is a second thing to fix when a device surprises us.
+  Two pieces of that inheritance are FortiGate-specific and must be
+  re-established rather than reused: the driver reads `get system status` and
+  refuses any unit whose "Virtual domain configuration" is not `disable`
+  (phase 0015 — a FortiSwitch reporting no such line at all would be refused
+  by it), and it requires an access profile because no FortiOS built-in is a
+  safe default.
 - Registration into `device.Shipped()` and into `newDriverRegistry`, and the
   platform name in `config.example.yaml`.
 - Fake-device coverage for whatever differs, and a scenario in `test/e2e`.

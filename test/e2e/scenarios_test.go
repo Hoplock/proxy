@@ -714,10 +714,13 @@ func testNoEphemeralLeak(t *testing.T) {
 		t.Errorf("ephemeral home directories left on the target:\n%s", homes.stdout)
 	}
 
-	// The same check on the appliance. It matters more there, not less: FortiOS
-	// has no expiry field, so nothing but the proxy's own teardown and its
-	// reaper ever removes one of these — and what is left behind is a
-	// privileged administrator rather than an unprivileged shell account.
+	// The same check on the appliance. It matters more there, not less: this
+	// driver renders no expiry onto the device — FortiOS can deny an
+	// administrator's login on a schedule but never deletes one, and phase 0015
+	// declined even that (see docs/PLAN.md §5.3) — so nothing but the proxy's
+	// own teardown and its reaper ever removes one of these, and what is left
+	// behind is a privileged administrator rather than an unprivileged shell
+	// account.
 	var onDevice []string
 	for _, name := range deviceAccounts(t) {
 		if strings.HasPrefix(name, "hl-") {

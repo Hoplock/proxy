@@ -42,16 +42,29 @@ var accountNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // than ours. It is still an allow-list: a profile name arrives from proxy
 // configuration, and configuration is a thing an operator edits, not a thing
 // this driver may assume is well formed.
+//
+// The 35-character cap is the documented one for this field: `config system
+// admin`'s `accprofile` is `string, Maximum length: 35`. Phase 0014 reached the
+// same number from a general "most name fields accept 35 characters" line in
+// the naming-rules KB, which is right here and wrong for the administrator
+// name — see maxAccountNameLen.
 var profilePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,34}$`)
 
 // maxAccountNameLen is the administrator-name length FortiOS accepts.
 //
-// Verified against Fortinet's naming-rules guidance, which puts most name
-// fields at 35 characters (see the package comment for the sources). It is
-// above PLAN §5.3's threshold of 32, so FortiOS uses the READABLE naming
-// scheme: an administrator on the device names the person it belongs to, which
-// is the property the constrained scheme has to give up.
-const maxAccountNameLen = 35
+// It is 64. `config system admin`'s `name` parameter is `string, Maximum
+// length: 64`, identical in 7.0.17, 7.2.11, 7.4.9, 7.6.6 and 8.0.0
+// (docs/FORTIOS-DOC-VERIFICATION.md, claim 1). Phase 0014 declared 35, taken
+// from the naming-rules KB's general "most name fields accept 35 characters" —
+// guidance about *most* fields rather than about this one.
+//
+// The correction changes no behaviour: both figures clear PLAN §5.3's threshold
+// of 32, so FortiOS uses the READABLE naming scheme either way — an
+// administrator on the device names the person it belongs to, which is the
+// property the constrained scheme has to give up. It is declared at the real
+// limit rather than kept at the old one because a declaration is a claim about
+// the platform, and a narrowing nobody needs is a claim that is simply untrue.
+const maxAccountNameLen = 64
 
 // validateAccountName gates the one value that reaches `edit`, `delete`, and
 // every `set` in between.
@@ -79,31 +92,77 @@ func validateProfile(profile string) error {
 	return nil
 }
 
+// closedIPv6TrustHost is what `set ip6-trusthost1` is given when the account is
+// pinned to an IPv4 address.
+//
+// It has to be given something. `ip6-trusthost1`..`10` are ten fields parallel
+// to `trusthost1`..`10`, of type `ipv6-prefix`, and they default to `::/0` —
+// "Default allows access from any IPv6 address". Phase 0014 wrote only
+// `trusthost1`, so an administrator the provisioner believed was pinned to the
+// proxy stayed reachable from ANY IPv6 address on a unit with IPv6 management
+// access. That is precisely the failure trustHost's own comment argues against,
+// arriving through the field the driver did not set rather than through a
+// widened mask.
+//
+// `::/128` is the unspecified address and nothing else: no host sources traffic
+// from it, so the prefix matches nothing that can connect. That reading follows
+// from what a /128 prefix means rather than from a Fortinet statement about
+// this field — the documentation says what the DEFAULT allows and does not
+// enumerate how to close it — so it is on the hardware list in this phase's
+// learnings rather than presented as documented.
+const closedIPv6TrustHost = "::/128"
+
 // trustHost renders a source address as the `<address> <netmask>` pair
 // `set trusthost1` expects.
 //
-// A bare address is pinned as a /32 or /128 rather than widened to its
-// enclosing network: this restriction exists to say "only from the proxy", and
-// a helpful widening of it would be a silently weaker restriction than the one
-// the provisioner believed it applied.
+// A bare address is pinned as a /32 rather than widened to its enclosing
+// network: this restriction exists to say "only from the proxy", and a helpful
+// widening of it would be a silently weaker restriction than the one the
+// provisioner believed it applied.
+//
+// IPv4 ONLY, and an IPv6 source is refused rather than rendered. `trusthost1`
+// is an `ipv4-classnet` field; phase 0014 rendered an IPv6 source as
+// `<addr>/128` and wrote it there anyway, which the device would reject —
+// making an IPv6-fronted proxy fail at create time with a parse error instead
+// of a sentence naming the limitation. Pinning IPv6 properly means writing
+// `set ip6-trusthost1` with the real address and closing `trusthost1` against
+// IPv4, and the value that closes an `ipv4-classnet` field is not documented
+// anywhere this phase could check. Refusing is the honest half of the choice
+// docs/FORTIOS-DOC-VERIFICATION.md's claim 9 leaves open; supporting it is
+// listed as follow-up work rather than guessed at.
 func trustHost(source string) (string, error) {
 	if source == "" {
 		return "", fmt.Errorf("%w: an empty source address", errInvalidValue)
 	}
 	if ip := net.ParseIP(source); ip != nil {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String() + " 255.255.255.255", nil
+		v4 := ip.To4()
+		if v4 == nil {
+			return "", errIPv6SourceAddress(source)
 		}
-		return ip.String() + "/128", nil
+		return v4.String() + " 255.255.255.255", nil
 	}
 	if _, cidr, err := net.ParseCIDR(source); err == nil {
-		if v4 := cidr.IP.To4(); v4 != nil {
-			mask := net.IP(cidr.Mask).String()
-			return v4.String() + " " + mask, nil
+		v4 := cidr.IP.To4()
+		if v4 == nil {
+			return "", errIPv6SourceAddress(source)
 		}
-		return cidr.String(), nil
+		mask := net.IP(cidr.Mask).String()
+		return v4.String() + " " + mask, nil
 	}
 	return "", fmt.Errorf("%w: %q is not an address or a network", errInvalidValue, source)
+}
+
+// errIPv6SourceAddress says why an IPv6 proxy address cannot be pinned yet.
+//
+// It is NOT device.ErrUnsupported. That error means the PLATFORM cannot do
+// this, and the platform can: `ip6-trusthost1` exists. This driver cannot, and
+// the difference matters because ErrUnsupported would skip the ladder rung and
+// serve the session on a credential the server ranked lower, while this fails
+// the attempt — which is the right answer for a restriction the route asked for
+// and this build cannot apply.
+func errIPv6SourceAddress(source string) error {
+	return fmt.Errorf("%w: %q is an IPv6 address, and this driver pins an administrator "+
+		"through `set trusthost1`, which is an IPv4 field", errInvalidValue, source)
 }
 
 // validatePublicKey gates `set ssh-public-key1`.
@@ -119,6 +178,10 @@ func validatePublicKey(key string) error {
 	case strings.ContainsAny(key, "\r\n\x00"):
 		return fmt.Errorf("%w: a public key containing a newline", errInvalidValue)
 	case !strings.HasPrefix(key, "ssh-") && !strings.HasPrefix(key, "ecdsa-"):
+		// FortiOS documents RSA, ECDSA and EdDSA for `ssh-public-key1..3`, so
+		// these two prefixes cover the documented set (`ssh-rsa`,
+		// `ssh-ed25519`, `ecdsa-sha2-*`) — by prefix rather than by name, which
+		// is worth knowing before anyone reads this as a checked allow-list.
 		return fmt.Errorf("%w: %q is not an OpenSSH public key", errInvalidValue, key)
 	}
 	return nil

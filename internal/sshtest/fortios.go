@@ -26,7 +26,7 @@ import (
 // which is exactly the test that lets a driver ship broken. CI must never need
 // an appliance, and with this it does not.
 //
-// Three behaviours here are faithful on purpose, because each one is a thing
+// Four behaviours here are faithful on purpose, because each one is a thing
 // the driver has to survive:
 //
 //   - it ECHOES what it is given, as a device with a terminal does, so the
@@ -34,19 +34,45 @@ import (
 //   - it PAGES long output when asked to, because `config system console`
 //     defaults to paging and that setting is permanent and device-wide;
 //   - it reports failure as OUTPUT TEXT with no exit status, because that is
-//     the only failure channel FortiOS has.
+//     the only failure channel FortiOS has;
+//   - it has a VDOM MODE, and in multi-VDOM mode it refuses `config system
+//     admin` outside `config global`.
+//
+// That last one is phase 0015's lesson and it is worth stating plainly:
+// docs/FORTIOS-DOC-VERIFICATION.md found that the driver's command sequence is
+// wrong on a multi-VDOM unit, and THE TESTS PASSED THE WHOLE TIME — because
+// this fake accepted every sequence the report faults. A fake more permissive
+// than the device it stands in for converts a driver bug into a green build, so
+// where the real device is known to be strict, so is this.
+//
+// Where the real behaviour is NOT known, this fake does not invent one. Each
+// such place carries a comment naming the open question instead; searching for
+// "unverified" finds them.
 
 // FortiOSAccount is one administrator on the fake device.
 type FortiOSAccount struct {
 	Name      string
 	Profile   string
 	TrustHost string
+	// IP6TrustHost is the IPv6 half of the source restriction. An account the
+	// driver never wrote it on holds FortiOSOpenIPv6TrustHost, which is the
+	// device's own default and means "reachable from any IPv6 address" — so a
+	// test can assert the pin is real rather than half-applied.
+	IP6TrustHost string
+	// VDOM is the virtual domain a per-VDOM administrator is scoped to. Nothing
+	// sets it yet; it is here so that a driver which starts sending `set vdom`
+	// is asserted against rather than silently accepted.
+	VDOM string
 	// Password and PublicKey are what the driver installed. They are here so a
 	// test can assert the credential ARRIVED; nothing in the device ever prints
 	// them, exactly as a real one prints `ENC …` rather than the secret.
 	Password  string
 	PublicKey string
 }
+
+// FortiOSOpenIPv6TrustHost is `ip6-trusthost1`'s documented default: "Default
+// allows access from any IPv6 address".
+const FortiOSOpenIPv6TrustHost = "::/0"
 
 // FortiOSFaults make the device fail the way real ones do.
 type FortiOSFaults struct {
@@ -77,15 +103,49 @@ type FortiOSOptions struct {
 	AdminPassword string
 	// Accounts are administrators that already exist.
 	Accounts []FortiOSAccount
-	// Profiles are the access profiles the device has. Empty means FortiOS's
-	// two built-ins.
+	// Profiles are the access profiles the device has. Empty means the
+	// documented built-ins (FortiOSBuiltinProfiles).
 	Profiles []string
+	// VDOMMode is what `get system status` reports as the unit's virtual
+	// domain configuration. Empty means FortiOSVDOMDisabled.
+	//
+	// It is a MODE rather than a fault because it is not a malfunction: a
+	// multi-VDOM FortiGate is a correctly configured unit, and on PLAN §13's
+	// UC1 estate it is likely the common one. What makes it interesting is that
+	// the administrator table moves inside `config global` there, so a driver
+	// written against the single-VDOM recipe is silently editing the wrong
+	// scope.
+	VDOMMode string
 	// Faults make it misbehave.
 	Faults FortiOSFaults
 }
 
 // FortiOSMaxNameLen is the administrator-name length FortiOS accepts.
-const FortiOSMaxNameLen = 35
+//
+// 64, per `config system admin`'s `name` parameter ("string, Maximum length:
+// 64") in every supported release. It was 35 here until phase 0015, which is
+// the general figure the naming-rules KB gives for most name fields and the
+// right one for `accprofile` and `schedule` — not for this one.
+const FortiOSMaxNameLen = 64
+
+// The virtual domain configurations `get system status` reports.
+//
+// Fortinet documents `disable` and `multiple` as the values of the "Virtual
+// domain configuration" line, and the Administration Guide adds split-task
+// mode as a third shape of the same feature. A driver that has not been written
+// for virtual domains should decline every value but `disable`.
+const (
+	FortiOSVDOMDisabled  = "disable"
+	FortiOSVDOMMultiple  = "multiple"
+	FortiOSVDOMSplitTask = "split-task"
+)
+
+// FortiOSBuiltinProfiles are the access profiles Fortinet documents.
+//
+// THREE, not four. `prof_admin_readonly` appears in no Fortinet source and used
+// to be in this list, which meant a driver defaulting to a profile that does
+// not exist resolved happily against a fake that had invented it.
+var FortiOSBuiltinProfiles = []string{"super_admin", "prof_admin", "super_admin_readonly"}
 
 // FakeFortiOS is an in-process SSH server that answers FortiOS CLI commands.
 type FakeFortiOS struct {
@@ -94,6 +154,7 @@ type FakeFortiOS struct {
 	hostKey  ssh.Signer
 	hostname string
 	profiles map[string]bool
+	vdomMode string
 	faults   FortiOSFaults
 
 	wg     sync.WaitGroup
@@ -146,11 +207,16 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	if d.faults.MaxNameLen == 0 {
 		d.faults.MaxNameLen = FortiOSMaxNameLen
 	}
+	d.vdomMode = opts.VDOMMode
+	if d.vdomMode == "" {
+		d.vdomMode = FortiOSVDOMDisabled
+	}
 	profiles := opts.Profiles
 	if len(profiles) == 0 {
-		// The four FortiOS built-ins, so a driver's default profile resolves
-		// against the same set a real unit has.
-		profiles = []string{"super_admin", "prof_admin", "super_admin_readonly", "prof_admin_readonly"}
+		// The documented FortiOS built-ins, so a profile resolves against the
+		// same set a real unit has — and, just as importantly, so one that is
+		// not on a real unit fails here.
+		profiles = append([]string(nil), FortiOSBuiltinProfiles...)
 	}
 	for _, p := range profiles {
 		d.profiles[p] = true
@@ -158,6 +224,9 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	for _, a := range opts.Accounts {
 		if a.Profile == "" {
 			a.Profile = "super_admin"
+		}
+		if a.IP6TrustHost == "" {
+			a.IP6TrustHost = FortiOSOpenIPv6TrustHost
 		}
 		d.accounts[a.Name] = a
 	}
@@ -259,6 +328,9 @@ func (d *FakeFortiOS) Logins() []string {
 // AddAccount puts an administrator on the device without going through the CLI,
 // which is how a test stages what a crashed session left behind.
 func (d *FakeFortiOS) AddAccount(a FortiOSAccount) {
+	if a.IP6TrustHost == "" {
+		a.IP6TrustHost = FortiOSOpenIPv6TrustHost
+	}
 	d.record(func() { d.accounts[a.Name] = a })
 }
 
@@ -360,8 +432,12 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 	fmt.Fprintf(ch, "FortiGate-VM64 (%s)\r\nSystem is starting...\r\n", d.hostname)
 	d.prompt(ch, "")
 
+	// scope is the nesting the CLI is in. On a multi-VDOM unit the
+	// administrator table lives one level deeper, inside `config global`, and
+	// modelling that as a stack rather than a flag is what lets the fake tell
+	// `config system admin` from `config global` / `config system admin`.
 	var (
-		mode    string // "", "admin"
+		scope   []string
 		editing *FortiOSAccount
 	)
 	scanner := bufio.NewScanner(ch)
@@ -369,7 +445,7 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(strings.TrimRight(scanner.Text(), "\r"))
 		if line == "" {
-			d.prompt(ch, promptSuffix(mode, editing))
+			d.prompt(ch, promptSuffix(scope, editing))
 			continue
 		}
 		d.record(func() { d.commands = append(d.commands, line) })
@@ -378,35 +454,76 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 		fmt.Fprintf(ch, "%s\r\n", line)
 
 		if d.faults.FailCommand != nil && d.faults.FailCommand.MatchString(line) {
-			d.fail(ch, "Command fail. Return code -3")
-			d.prompt(ch, promptSuffix(mode, editing))
+			d.fail(ch, failReturnCode)
+			d.prompt(ch, promptSuffix(scope, editing))
 			continue
 		}
 
-		done := d.dispatch(ch, line, &mode, &editing)
+		done := d.dispatch(ch, line, &scope, &editing)
 		if done {
 			return
 		}
-		d.prompt(ch, promptSuffix(mode, editing))
+		d.prompt(ch, promptSuffix(scope, editing))
 	}
 }
 
+// failReturnCode is the generic refusal line FortiOS appends to a failure.
+//
+// -1 is on Fortinet's documented table of CLI error codes. This fake used -3,
+// which is not on it — harmless, because the driver reports the code and never
+// branches on it, but an invented example in the one place a reader would take
+// one from.
+const failReturnCode = "Command fail. Return code -1"
+
 // dispatch runs one command and reports whether the session should end.
-func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, mode *string, editing **FortiOSAccount) bool {
+func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, scope *[]string, editing **FortiOSAccount) bool {
 	fields := strings.Fields(line)
+	inAdmin := len(*scope) > 0 && (*scope)[len(*scope)-1] == "admin"
 	switch {
 	case line == "exit" || line == "quit":
 		return true
 
+	case line == "get system status":
+		d.showStatus(ch)
+		return false
+
+	case line == "config global":
+		// `config global` exists only when virtual domains are enabled. On a
+		// single-VDOM unit the real device has no such command; it is answered
+		// here the way any unknown command is.
+		if d.vdomMode == FortiOSVDOMDisabled {
+			d.fail(ch, "Unknown action 0")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		*scope = append(*scope, "global")
+		return false
+
 	case line == "config system admin":
-		*mode = "admin"
+		// The strictness this fake exists for. On a multi-VDOM unit Fortinet's
+		// own recipe reaches this table through `config global`, and a driver
+		// that sends it at the top level is editing something else — or
+		// nothing.
+		//
+		// UNVERIFIED: what a real multi-VDOM unit does with `config system
+		// admin` at the top level is not documented — a parse error, or
+		// something quieter. This fake refuses it, which is the strictest
+		// reading and the one that fails a driver bug rather than hiding it. It
+		// is on phase 0015's hardware list; do not read the exact wording below
+		// as Fortinet's.
+		if d.vdomMode != FortiOSVDOMDisabled && !containsScope(*scope, "global") {
+			d.fail(ch, "Command parse error before 'system'")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		*scope = append(*scope, "admin")
 		return false
 
 	case line == "abort":
 		// The property the driver relies on for failure isolation: an
 		// uncommitted block is discarded outright.
 		*editing = nil
-		*mode = ""
+		*scope = nil
 		return false
 
 	case line == "end":
@@ -414,7 +531,9 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, mode *string, editin
 			d.commit(**editing)
 			*editing = nil
 		}
-		*mode = ""
+		if len(*scope) > 0 {
+			*scope = (*scope)[:len(*scope)-1]
+		}
 		return false
 
 	case line == "next":
@@ -424,25 +543,32 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, mode *string, editin
 		}
 		return false
 
-	case *mode == "admin" && len(fields) >= 2 && fields[0] == "edit":
+	case inAdmin && len(fields) >= 2 && fields[0] == "edit":
 		name := unquote(strings.Join(fields[1:], " "))
 		if len(name) > d.faults.MaxNameLen {
+			// UNVERIFIED WORDING: Fortinet documents that a failure carries a
+			// `Command fail. Return code -X` line, which is what the driver
+			// actually matches, but publishes no canonical text for a
+			// too-long name. The first line here is plausible rather than
+			// quoted, and nothing may be made to depend on it.
 			d.fail(ch, fmt.Sprintf("The string is too long. The maximum allowed length is %d.", d.faults.MaxNameLen))
-			d.fail(ch, "Command fail. Return code -3")
+			d.fail(ch, failReturnCode)
 			return false
 		}
 		existing, ok := d.account(name)
 		if !ok {
-			existing = FortiOSAccount{Name: name}
+			// A fresh entry starts at the device's own defaults, which for the
+			// IPv6 restriction means WIDE OPEN.
+			existing = FortiOSAccount{Name: name, IP6TrustHost: FortiOSOpenIPv6TrustHost}
 		}
 		*editing = &existing
 		return false
 
-	case *mode == "admin" && len(fields) >= 2 && fields[0] == "delete":
+	case inAdmin && len(fields) >= 2 && fields[0] == "delete":
 		name := unquote(strings.Join(fields[1:], " "))
 		if _, ok := d.account(name); !ok {
 			d.fail(ch, "Entry not found in datasource")
-			d.fail(ch, "Command fail. Return code -3")
+			d.fail(ch, failReturnCode)
 			return false
 		}
 		d.record(func() { delete(d.accounts, name) })
@@ -458,9 +584,32 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, mode *string, editin
 
 	default:
 		d.fail(ch, "Unknown action 0")
-		d.fail(ch, "Command fail. Return code -1")
+		d.fail(ch, failReturnCode)
 		return false
 	}
+}
+
+// containsScope reports whether a nesting level is open.
+func containsScope(scope []string, want string) bool {
+	for _, s := range scope {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// showStatus answers `get system status`.
+//
+// Only the line a driver has any business reading is modelled. Fortinet
+// documents it as the way to tell whether virtual domains are enabled — "the
+// output will display the 'Virtual domain configuration' status" — with
+// `disable` and `multiple` as its values.
+func (d *FakeFortiOS) showStatus(ch ssh.Channel) {
+	fmt.Fprintf(ch, "Version: FortiGate-VM64 v7.6.6,build2775,250000 (GA.F)\r\n")
+	fmt.Fprintf(ch, "Hostname: %s\r\n", d.hostname)
+	fmt.Fprintf(ch, "Virtual domains status: 1 in NAT mode, 0 in TP mode\r\n")
+	fmt.Fprintf(ch, "Virtual domain configuration: %s\r\n", d.vdomMode)
 }
 
 // set applies one field to the entry being edited.
@@ -471,21 +620,51 @@ func (d *FakeFortiOS) set(ch ssh.Channel, fields []string, acct *FortiOSAccount)
 		if d.faults.RejectProfile && !d.profiles[value] {
 			d.fail(ch, "entry not found in datasource")
 			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
-			d.fail(ch, "Command fail. Return code -3")
+			d.fail(ch, failReturnCode)
 			return
 		}
 		acct.Profile = value
 	case "trusthost1":
+		// An `ipv4-classnet` field: an address and a netmask, and nothing else.
+		// Modelling the type is the point — phase 0014 rendered an IPv6 source
+		// as `<addr>/128` and wrote it here, and a fake that stored any string
+		// let that pass.
+		if !ipv4ClassnetPattern.MatchString(value) {
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
 		acct.TrustHost = value
+	case "ip6-trusthost1":
+		// The parallel IPv6 restriction, defaulting to `::/0` on a real unit —
+		// which is why an account pinned only through `trusthost1` is not
+		// pinned. The fake starts every account at the documented default so a
+		// test can tell "closed" from "never set".
+		if !ipv6PrefixPattern.MatchString(value) {
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
+		acct.IP6TrustHost = value
 	case "password":
 		acct.Password = value
 	case "ssh-public-key1":
 		acct.PublicKey = value
+	case "vdom":
+		acct.VDOM = value
 	default:
 		d.fail(ch, "Unknown action 0")
-		d.fail(ch, "Command fail. Return code -1")
+		d.fail(ch, failReturnCode)
 	}
 }
+
+// ipv4ClassnetPattern is the `<address> <netmask>` pair `trusthost1` takes.
+var ipv4ClassnetPattern = regexp.MustCompile(`^(\d{1,3}\.){3}\d{1,3} (\d{1,3}\.){3}\d{1,3}$`)
+
+// ipv6PrefixPattern is the `<address>/<length>` form `ip6-trusthost1` takes.
+// It is deliberately loose about the address: what it is here to reject is an
+// IPv4 pair or a bare address, not a malformed hextet.
+var ipv6PrefixPattern = regexp.MustCompile(`^[0-9A-Fa-f:]+/\d{1,3}$`)
 
 // showAdmins renders the administrator table the way `show system admin` does,
 // paging it when the fault says to.
@@ -510,6 +689,12 @@ func (d *FakeFortiOS) showAdmins(ch ssh.Channel) {
 		}
 		if a.TrustHost != "" {
 			lines = append(lines, fmt.Sprintf("        set trusthost1 %s", a.TrustHost))
+		}
+		if a.IP6TrustHost != "" && a.IP6TrustHost != FortiOSOpenIPv6TrustHost {
+			lines = append(lines, fmt.Sprintf("        set ip6-trusthost1 %s", a.IP6TrustHost))
+		}
+		if a.VDOM != "" {
+			lines = append(lines, fmt.Sprintf("        set vdom %q", a.VDOM))
 		}
 		// A real device prints the credential as an opaque blob, never the
 		// secret. So does this one — a fake that leaked it would make the
@@ -569,14 +754,14 @@ func (d *FakeFortiOS) record(f func()) {
 	f()
 }
 
-func promptSuffix(mode string, editing *FortiOSAccount) string {
+func promptSuffix(scope []string, editing *FortiOSAccount) string {
 	if editing != nil {
 		return editing.Name
 	}
-	if mode == "admin" {
-		return "admin"
+	if len(scope) == 0 {
+		return ""
 	}
-	return ""
+	return scope[len(scope)-1]
 }
 
 // unquote strips the quoting the driver applies, so the device stores the value

@@ -10,6 +10,21 @@ the list.
 This is that check. Both sites were reachable from this session and every page
 below was read directly. **Findings only — no code was changed.**
 
+> **Acted on by phase 0015.** Every finding below has been either corrected in
+> the code and docs or deliberately declined with the reasoning recorded; see
+> `docs/learnings/0015-fortios-driver-corrections-learnings.md` and
+> `docs/PLAN.md` §5.3 ("As corrected (phase 0015)"). This file stays as the
+> evidence base — the pages, the versions and the wording — and is not rewritten
+> as the driver changes. Phase 0015 re-read the pages behind claims 1, 2, 8, 9
+> and the multi-VDOM section from a session that could also reach both sites,
+> and every one of them held as written here.
+>
+> Two corrections to this file's own text, neither affecting a verdict: the
+> estate it attributes to "PLAN §14" is **PLAN §13, UC1** — there is no §14 —
+> and the naming-rules KB gives **32** characters for "schedule names" where the
+> CLI reference gives 35 for `system admin`'s `schedule` field, which phase 0028
+> will have to reconcile.
+
 Unless a row says otherwise, each finding was checked in the FortiGate CLI
 reference / Administration Guide for **7.0.17, 7.2.11, 7.4.9, 7.6.6 and 8.0.0**
 and is identical in all five. FortiOS 6.4 and earlier are end-of-support and

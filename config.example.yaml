@@ -257,18 +257,26 @@ auth:
       # denial, never the nearest driver.
       platforms: []
       # The platform authorization scope created administrators are given.
-      # Empty means the driver's own default, which on FortiOS is
-      # `super_admin_readonly`: the most restrictive built-in that cannot be
-      # edited out from under us. `prof_admin_readonly` is narrower but is
-      # editable, so an operator who widened it once would silently widen every
-      # Hoplock session on that unit.
+      # REQUIRED: no driver in this build has a default, and the proxy refuses
+      # to start without one rather than choosing a privileged account's scope
+      # on your firewalls for you.
       #
-      # A read-only default WILL be wrong for routes whose purpose is to change
-      # a device — set this to `prof_admin` or a profile of your own for those.
+      # FortiOS documents three built-in profiles: `super_admin` and
+      # `prof_admin` (read-write) and `super_admin_readonly` (read-only,
+      # immutable, and not shown under System > Admin profiles in the GUI).
+      # Two things to know before picking one:
+      #
+      #   * `super_admin_readonly` cannot run `diagnose` commands from FortiOS
+      #     7.4.x, so it is narrower than "read-only" suggests. Fortinet's own
+      #     answer for a read-only account that must troubleshoot is a custom
+      #     profile with CLI commands permitted.
+      #   * a read-only profile is wrong for any route whose purpose is to
+      #     CHANGE the device, which is most privileged-access work.
+      #
       # WHICH profile a route gets is a policy question that phase 0016 gives a
       # vocabulary and phase 0017 applies; this proxy-wide setting is what that
       # replaces.
-      access_profile: ""
+      access_profile: "super_admin_readonly"
       # The address devices see this proxy connect from. Where a driver declares
       # it can pin an account to a source address, this is what it is pinned to.
       # Empty means no pin — a restriction not applied, rather than one applied

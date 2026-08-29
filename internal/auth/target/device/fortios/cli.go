@@ -29,9 +29,25 @@ import (
 //     changes it again, and `end` unwinds them. A command sent in the wrong mode
 //     is not an error the device reports usefully; it is a command that means
 //     something else.
-//  3. FortiOS reports failure as OUTPUT, not as an exit status. There is no exit
-//     status at all: the entire conversation happens inside one shell channel,
-//     so "did that work" is a question about text.
+//  3. FortiOS reports failure as OUTPUT, not as an exit status. Fortinet
+//     documents the shape — "CLI error codes are shown in the command line if
+//     the command execution fails… a summary, followed by `Command fail. Return
+//     code -X`" — and there is no exit status to read alongside it, because the
+//     entire conversation happens inside one shell channel. So "did that work"
+//     is a question about text.
+//
+// The conversation is held over a SHELL channel rather than an exec request,
+// and the reason is worth stating at its real strength rather than as an
+// absolute. Fortinet does not document whether the FortiOS SSH server honours
+// an exec request either way. What Fortinet does document is that every
+// published way of driving a FortiGate over SSH uses an interactive shell, and
+// its own scripting example forces a PTY (`ssh -t -t`) — the flag you reach for
+// precisely when the far end will not work without one. Independently, FortiOS
+// devices return nothing to paramiko's `exec_command()` and need
+// `invoke_shell()`, and netmiko drives them through a shell throughout. A shell
+// channel is therefore the only mode with evidence behind it; that an exec
+// request is REFUSED is an inference from strong circumstantial evidence, and
+// it is on this phase's hardware list rather than stated as fact.
 //
 // Nothing here interprets what a command MEANS. It reads until the device is
 // waiting again, hands the text back, and lets the driver decide.
@@ -73,11 +89,15 @@ var errorPatterns = []struct {
 	pattern *regexp.Regexp
 	what    string
 }{
-	// The generic failure. FortiOS appends a return code that varies by cause
-	// and is not documented as a stable contract, so the code is reported but
-	// never branched on.
+	// The generic failure. Fortinet publishes a table of return codes and the
+	// code varies by cause, so it is reported and never branched on — which is
+	// what the same page justifies.
 	{regexp.MustCompile(`(?i)command fail\.?\s*return code\s*(-?\d+)`), "the command failed"},
-	// A value the parser could not accept — the shape a mis-escaped value takes.
+	// A value the parser could not accept — the shape a mis-escaped value
+	// takes. Both spellings are real: Fortinet's canonical example in the
+	// Administration Guide is `Command parse error before '<x>'` (matched
+	// below), while `value parse error before '<x>'` is what the KBs show,
+	// normally after a `node_check_object fail!` line.
 	{regexp.MustCompile(`(?i)value parse error before`), "the device rejected a value"},
 	// A reference to an object that does not exist, e.g. an access profile.
 	{regexp.MustCompile(`(?i)entry not found in datasource`), "the device does not have that object"},
@@ -87,6 +107,13 @@ var errorPatterns = []struct {
 	{regexp.MustCompile(`(?i)permission denied`), "the management administrator is not permitted to do that"},
 	{regexp.MustCompile(`(?i)the string is too long`), "the device rejected a value as too long"},
 	{regexp.MustCompile(`(?i)object (is )?in use`), "the object is in use on the device"},
+	// The rejection a name outside FortiOS's character set draws, documented in
+	// the naming-rules KB. accountNamePattern already excludes the characters
+	// that trigger it and it arrives alongside a `Command fail. Return code`
+	// line that is matched above, so this entry is belt and braces — which is
+	// the standard this list is held to, because a pattern missing here turns a
+	// failure into a silent success.
+	{regexp.MustCompile(`(?i)the string contains xss vulnerability characters`), "the device rejected a name"},
 }
 
 // notFoundPattern is the subset of failures that mean "there is nothing there".
@@ -248,6 +275,12 @@ func (s *cliSession) Close() error {
 	// `end` twice then `exit`: unwinding an edit and a config block costs
 	// nothing when there is nothing to unwind, and leaving a device sitting in
 	// configuration mode holds an object lock on units running workspace mode.
+	//
+	// TWO is a fixed depth and it is only correct because this driver refuses a
+	// multi-VDOM unit (Driver.checkSingleVDOM). Fortinet's recipe for that shape
+	// nests the same table one level deeper, inside `config global`, so a phase
+	// that adds multi-VDOM support has to unwind three and this line is one of
+	// the places it must change.
 	_, _ = io.WriteString(s.shell, "end\nend\nexit\n")
 	return s.shell.Close()
 }
