@@ -139,6 +139,15 @@ type cliSession struct {
 	reads   chan readResult
 	readErr error
 	closed  bool
+	// vdomMode is what the unit answered when the session opened. It decides
+	// which scope the administrator table lives in, so it belongs to the
+	// SESSION rather than to the driver: one driver serves every unit of its
+	// kind, and two of them can be running different modes.
+	vdomMode vdomMode
+	// depth is how many configuration levels this session has opened and not
+	// closed. Close unwinds exactly that many, which is what a fixed `end\nend`
+	// could not do once `config global` made the nesting depend on the unit.
+	depth int
 }
 
 type readResult struct {
@@ -197,6 +206,13 @@ func (s *cliSession) send(ctx context.Context, line string) (string, error) {
 		// something gets logged verbatim. The caller labels its own step.
 		return "", fmt.Errorf("auth/target/device/fortios: writing to the device failed: %w", err)
 	}
+	// The depth is tracked on the line being SENT rather than on a successful
+	// answer, and that direction is chosen on purpose: a `config` the device
+	// refused leaves the session where it was and costs Close one harmless
+	// extra `end`, while a `config` that succeeded on a device that then
+	// stopped answering would otherwise leave Close one `end` short — and that
+	// is the failure that strands a configuration block.
+	s.trackNesting(line)
 	out, err := s.readToPrompt(ctx)
 	if err != nil {
 		return out, err
@@ -266,23 +282,62 @@ func (s *cliSession) dropMoreMarker() {
 	s.buf.Write(cleaned)
 }
 
-// Close ends the conversation, leaving configuration mode first where it can.
+// Close ends the conversation, leaving configuration mode first.
+//
+// It unwinds ONE `end` PER LEVEL THIS SESSION OPENED, plus one for an entry
+// that may still be open under the innermost one, and never fewer than two —
+// which is byte-identical to what phase 0014 sent on the only unit shape it
+// served. Until phase 0016 the two were a fixed depth, correct only because the
+// driver refused a unit running virtual domains: there the administrator table
+// is one level deeper, inside `config global`, and two `end`s would leave the
+// session sitting in configuration mode. That is not cosmetic — a device left
+// in a configuration block holds an object lock on units running workspace
+// mode, so the next session's `config` fails on something this one did.
+//
+// Extra `end`s at the top level are harmless noise the device answers and
+// nobody reads, which is why the floor of two costs nothing; an `end` too few
+// is the failure this counts to avoid.
 func (s *cliSession) Close() error {
 	if s.closed {
 		return nil
 	}
 	s.closed = true
-	// `end` twice then `exit`: unwinding an edit and a config block costs
-	// nothing when there is nothing to unwind, and leaving a device sitting in
-	// configuration mode holds an object lock on units running workspace mode.
-	//
-	// TWO is a fixed depth and it is only correct because this driver refuses a
-	// multi-VDOM unit (Driver.checkSingleVDOM). Fortinet's recipe for that shape
-	// nests the same table one level deeper, inside `config global`, so a phase
-	// that adds multi-VDOM support has to unwind three and this line is one of
-	// the places it must change.
-	_, _ = io.WriteString(s.shell, "end\nend\nexit\n")
+	ends := s.depth + 1
+	if ends < minUnwindDepth {
+		ends = minUnwindDepth
+	}
+	_, _ = io.WriteString(s.shell, strings.Repeat("end\n", ends)+"exit\n")
 	return s.shell.Close()
+}
+
+// minUnwindDepth is the floor on Close's unwinding: one `end` for a
+// configuration block and one for an entry inside it.
+const minUnwindDepth = 2
+
+// trackNesting follows what a command did to the CLI's configuration depth.
+//
+// It is deliberately a property of the SESSION and not of the command tables:
+// every path that can leave a block open — a failed sequence, an abandoned
+// create, a read that entered `config global` — goes through send, and a depth
+// each caller maintained for itself would be a depth that drifts on the error
+// paths, which are exactly the paths that leave a device in configuration mode.
+//
+// `edit` is not counted. On FortiOS the `end` that closes a configuration block
+// commits and closes an open entry inside it as well, which is why Close's
+// floor of two covers one block plus one entry rather than two blocks.
+func (s *cliSession) trackNesting(line string) {
+	switch {
+	case line == "abort":
+		// `abort` discards the whole uncommitted block outright, wherever in it
+		// the session was.
+		s.depth = 0
+	case line == "end":
+		if s.depth > 0 {
+			s.depth--
+		}
+	case strings.HasPrefix(line, "config "):
+		s.depth++
+	}
 }
 
 // splitAtPrompt reports whether the device has finished speaking, and returns

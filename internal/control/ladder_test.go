@@ -5,6 +5,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -237,6 +238,45 @@ func TestCloneIsolatesTheLadder(t *testing.T) {
 	}
 }
 
+// deviceRungWithField builds a device rung carrying one raw parameter, for the
+// values deviceRung's "empty means remove" shorthand cannot express.
+func deviceRungWithField(name, value string) TargetAuth {
+	entry := deviceRung(nil)
+	entry.Params[name] = value
+	return entry
+}
+
+// manyDeviceFields builds a rung carrying n device fields. The namespace is
+// open; it is not unbounded, because a bag this large has stopped being policy
+// metadata about one route.
+func manyDeviceFields(n int) TargetAuth {
+	entry := deviceRung(nil)
+	for i := 0; i < n; i++ {
+		entry.Params[fmt.Sprintf("%sfield%d", ParamDeviceFieldPrefix, i)] = "x"
+	}
+	return entry
+}
+
+// TestDeviceFieldsAreReadWithoutTheirPrefix covers the read half of the
+// namespace: what a driver is handed is the field NAME, not the wire key it
+// arrived under, and everything outside the namespace stays where it was.
+func TestDeviceFieldsAreReadWithoutTheirPrefix(t *testing.T) {
+	entry := deviceRungWithField(ParamDeviceFieldPrefix+"vdom", "customer-a")
+	if err := entry.validate("target_auth"); err != nil {
+		t.Fatalf("a well-formed device field was refused: %v", err)
+	}
+
+	fields := entry.DeviceFields()
+	if len(fields) != 1 || fields["vdom"] != "customer-a" {
+		t.Fatalf("DeviceFields() = %v, want the vdom field keyed without its prefix", fields)
+	}
+	// The method reads the namespace and nothing else: `username` is a
+	// parameter of the method, not a field of the platform.
+	if _, ok := fields[ParamUsername]; ok {
+		t.Error("DeviceFields() returned a method parameter as a platform field")
+	}
+}
+
 // TestLadderVocabularyIsRefusedNeverCoerced walks every value the v3 vocabulary
 // closes. Each of these could be "helpfully" defaulted, and each default would
 // be a policy the server did not write.
@@ -300,6 +340,33 @@ func TestLadderVocabularyIsRefusedNeverCoerced(t *testing.T) {
 			name:  "an enforcing posture with no lifetime to enforce",
 			entry: deviceRung(map[string]string{ParamLifetimeSeconds: ""}),
 			want:  ParamLifetimeSeconds,
+		},
+		{
+			// The namespace is open in its NAMES and not in its shape: a key
+			// that is not an identifier is a policy the proxy cannot pass on to
+			// a driver as a field name.
+			name:  "a device field whose name is not a name",
+			entry: deviceRung(map[string]string{ParamDeviceFieldPrefix + "Virtual Domain": "root"}),
+			want:  ParamDeviceFieldPrefix,
+		},
+		{
+			// An empty field is not an absent one. Absent means "the driver's
+			// own default"; a route that names a field means to constrain
+			// something. (It is built by hand because deviceRung reads an empty
+			// override as "remove this parameter".)
+			name:  "a device field with no value",
+			entry: deviceRungWithField(ParamDeviceFieldPrefix+"vdom", ""),
+			want:  ParamDeviceFieldPrefix + "vdom",
+		},
+		{
+			name:  "more device fields than a route may name",
+			entry: manyDeviceFields(17),
+			want:  ParamDeviceFieldPrefix,
+		},
+		{
+			name:  "a device field carrying more than a field's worth of text",
+			entry: deviceRung(map[string]string{ParamDeviceFieldPrefix + "vdom": strings.Repeat("v", 257)}),
+			want:  ParamDeviceFieldPrefix + "vdom",
 		},
 	}
 

@@ -6,6 +6,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // Validate checks an authorize response against the contract in
@@ -241,6 +242,9 @@ func (a *TargetAuth) validateEphemeralAccount(where string) error {
 			where, ParamExpiryPosture, a.Params[ParamExpiryPosture],
 			ExpiryPostureTargetEnforced, ExpiryPostureProxyEnforced, ExpiryPostureAcceptedRisk)
 	}
+	if err := a.validateDeviceFields(where); err != nil {
+		return err
+	}
 	if posture != ExpiryPostureAcceptedRisk && a.Params[ParamLifetimeSeconds] == "" {
 		// A posture that enforces an expiry with no expiry to enforce is a
 		// statement with no content.
@@ -248,6 +252,92 @@ func (a *TargetAuth) validateEphemeralAccount(where string) error {
 			where, ParamLifetimeSeconds, ParamExpiryPosture, posture)
 	}
 	return nil
+}
+
+// validateDeviceFields checks the SHAPE of the device_field namespace, and only
+// the shape (contract v3.1, phase 0016).
+//
+// What a field MEANS is the driver's business, and which fields exist is the
+// driver's to declare — the set is as open as the set of platforms, and for the
+// same reason (D13). So this refuses what cannot be a field at all: an empty
+// name, a name that is not an identifier, an empty value, and a bag so large it
+// is no longer policy metadata. A field the named driver does not accept is a
+// SKIPPED RUNG at provisioning time (D14), not a contract violation, because
+// the server may legitimately name a field for a proxy build that carries a
+// driver this one does not.
+func (a *TargetAuth) validateDeviceFields(where string) error {
+	fields := a.DeviceFields()
+	if len(fields) > maxDeviceFields {
+		return fmt.Errorf("%s.params carries %d %s* fields, more than the %d a route may name",
+			where, len(fields), ParamDeviceFieldPrefix, maxDeviceFields)
+	}
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	// Sorted so that a response with two bad fields is refused with the same
+	// message every time; map order would make the failure irreproducible.
+	sort.Strings(names)
+	for _, name := range names {
+		if !validDeviceFieldName(name) {
+			return fmt.Errorf("%s.params.%s%s is not a device field name "+
+				"(lowercase letters, digits, hyphens and underscores, %d characters or fewer)",
+				where, ParamDeviceFieldPrefix, name, maxDeviceFieldNameLen)
+		}
+		value := fields[name]
+		if value == "" {
+			// An empty field is not an absent one. Absent means "the driver's
+			// own default" — a global administrator, where the field is a
+			// VDOM — and a route that names a field means to constrain
+			// something, so an empty value is a policy author's mistake rather
+			// than a way of saying nothing.
+			return fmt.Errorf("%s.params.%s%s is empty; omit the field to leave the driver's default",
+				where, ParamDeviceFieldPrefix, name)
+		}
+		if len(value) > maxDeviceFieldValueLen {
+			// The value is echoed nowhere: it is policy metadata rather than
+			// credential material, but it is also unbounded text from another
+			// system, and its length is the only thing wrong with it here.
+			return fmt.Errorf("%s.params.%s%s is longer than the %d characters a device field may carry",
+				where, ParamDeviceFieldPrefix, name, maxDeviceFieldValueLen)
+		}
+	}
+	return nil
+}
+
+// The bounds on the device_field namespace. They exist to keep an OPEN
+// namespace from becoming an unbounded payload; they are not an opinion about
+// what a platform's fields are called.
+const (
+	maxDeviceFields        = 16
+	maxDeviceFieldNameLen  = 64
+	maxDeviceFieldValueLen = 256
+)
+
+// validDeviceFieldName reports whether s is shaped like a field name:
+// lowercase letters and digits, with hyphens and underscores between them and
+// at neither end. It is the platform-name rule plus the underscore, because
+// device vocabularies are full of them (`short_name`, `ip6-trusthost1`) and
+// this names a field rather than a driver.
+func validDeviceFieldName(s string) bool {
+	if s == "" || len(s) > maxDeviceFieldNameLen {
+		return false
+	}
+	prevSeparator := true // a leading separator is as invalid as a doubled one
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			prevSeparator = false
+		case r == '-', r == '_':
+			if prevSeparator {
+				return false
+			}
+			prevSeparator = true
+		default:
+			return false
+		}
+	}
+	return !prevSeparator
 }
 
 // maxPlatformNameLen bounds a platform name. It is generous on purpose: the

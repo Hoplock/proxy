@@ -116,6 +116,17 @@ type FortiOSOptions struct {
 	// written against the single-VDOM recipe is silently editing the wrong
 	// scope.
 	VDOMMode string
+	// VDOMs are the virtual domains the unit has. It is read only when
+	// VDOMMode is a VDOM mode, and empty means the documented defaults for that
+	// mode: `root` alone under `multiple`, and the fixed management/traffic
+	// pair under `split-task`.
+	//
+	// They are modelled because `set vdom` naming one the unit does not have is
+	// how a route with a stale VDOM name fails, and a fake that accepted any
+	// string would turn that into a silent success — the same class of hole as
+	// accepting `config system admin` at the top level, which is what this fake
+	// exists to have closed.
+	VDOMs []string
 	// Faults make it misbehave.
 	Faults FortiOSFaults
 }
@@ -140,6 +151,14 @@ const (
 	FortiOSVDOMSplitTask = "split-task"
 )
 
+// FortiOSDefaultVDOM is the management virtual domain every partitioned unit
+// has, and FortiOSTrafficVDOM is the second one split-task mode fixes beside
+// it — "the management VDOM (root) and the traffic VDOM (FG-traffic)".
+const (
+	FortiOSDefaultVDOM = "root"
+	FortiOSTrafficVDOM = "FG-traffic"
+)
+
 // FortiOSBuiltinProfiles are the access profiles Fortinet documents.
 //
 // THREE, not four. `prof_admin_readonly` appears in no Fortinet source and used
@@ -155,6 +174,7 @@ type FakeFortiOS struct {
 	hostname string
 	profiles map[string]bool
 	vdomMode string
+	vdoms    []string
 	faults   FortiOSFaults
 
 	wg     sync.WaitGroup
@@ -168,6 +188,12 @@ type FakeFortiOS struct {
 	commands []string
 	logins   []string
 	down     bool
+	// strandedSessions counts CLI sessions that ended while still inside a
+	// configuration block. On a real unit that is what holds an object lock
+	// under workspace mode, and it is the failure a driver whose unwinding does
+	// not follow the nesting produces — silently, because every command it sent
+	// succeeded.
+	strandedSessions int
 }
 
 // StartFortiOS starts a fake device on a loopback port.
@@ -210,6 +236,15 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	d.vdomMode = opts.VDOMMode
 	if d.vdomMode == "" {
 		d.vdomMode = FortiOSVDOMDisabled
+	}
+	d.vdoms = append([]string(nil), opts.VDOMs...)
+	if len(d.vdoms) == 0 {
+		switch d.vdomMode {
+		case FortiOSVDOMMultiple:
+			d.vdoms = []string{FortiOSDefaultVDOM}
+		case FortiOSVDOMSplitTask:
+			d.vdoms = []string{FortiOSDefaultVDOM, FortiOSTrafficVDOM}
+		}
 	}
 	profiles := opts.Profiles
 	if len(profiles) == 0 {
@@ -316,6 +351,22 @@ func (d *FakeFortiOS) Commands() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]string(nil), d.commands...)
+}
+
+// StrandedSessions is how many CLI sessions ended inside a configuration
+// block, which is what a driver whose unwinding does not follow the nesting
+// leaves behind.
+func (d *FakeFortiOS) StrandedSessions() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.strandedSessions
+}
+
+// VDOMs is the unit's virtual domains, for assertions.
+func (d *FakeFortiOS) VDOMs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.vdoms...)
 }
 
 // Logins is every administrator name that attempted the management login.
@@ -440,6 +491,15 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 		scope   []string
 		editing *FortiOSAccount
 	)
+	// A session that ends inside a configuration block is recorded rather than
+	// tidied up. The whole point of modelling it is that the driver's teardown
+	// has to unwind its own nesting: a fake that quietly closed the block for
+	// it would make an under-unwinding driver look correct.
+	defer func() {
+		if len(scope) > 0 {
+			d.record(func() { d.strandedSessions++ })
+		}
+	}()
 	scanner := bufio.NewScanner(ch)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
@@ -579,7 +639,34 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, scope *[]string, edi
 		return false
 
 	case strings.HasPrefix(line, "show system admin"):
+		// The administrator table is a GLOBAL table. On a partitioned unit it
+		// is read where it is configured — inside `config global` — and a
+		// driver reading it at the top level is reading whatever the current
+		// VDOM has, which is the enumerate-path half of the same gap phase 0015
+		// found on the create path. An orphan sweep that reads the wrong table
+		// finds nothing and reports success.
+		if d.vdomMode != FortiOSVDOMDisabled && !containsScope(*scope, "global") {
+			d.fail(ch, "Command parse error before 'system'")
+			d.fail(ch, failReturnCode)
+			return false
+		}
 		d.showAdmins(ch)
+		return false
+
+	case strings.HasPrefix(line, "show system vdom"):
+		// `config system vdom` exists only on a unit that has virtual domains,
+		// and it is a global table like the administrator one.
+		if d.vdomMode == FortiOSVDOMDisabled {
+			d.fail(ch, "Unknown action 0")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		if !containsScope(*scope, "global") {
+			d.fail(ch, "Command parse error before 'system'")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		d.showVDOMs(ch)
 		return false
 
 	default:
@@ -651,6 +738,15 @@ func (d *FakeFortiOS) set(ch ssh.Channel, fields []string, acct *FortiOSAccount)
 	case "ssh-public-key1":
 		acct.PublicKey = value
 	case "vdom":
+		// A VDOM that does not exist is refused the way any dangling reference
+		// is on this platform. `Entry not found in datasource` is the string
+		// FortiOS uses for exactly that, and the driver already reads it.
+		if !d.hasVDOM(value) {
+			d.fail(ch, "entry not found in datasource")
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
 		acct.VDOM = value
 	default:
 		d.fail(ch, "Unknown action 0")
@@ -723,6 +819,29 @@ func (d *FakeFortiOS) showAdmins(ch ssh.Channel) {
 			fmt.Fprint(ch, "\r        \r")
 		}
 	}
+}
+
+// showVDOMs renders `config system vdom` the way `show` does — one `edit` per
+// virtual domain, in the same shape as the administrator table, which is what
+// lets a driver read both with one line matcher.
+func (d *FakeFortiOS) showVDOMs(ch ssh.Channel) {
+	vdoms := d.VDOMs()
+	sort.Strings(vdoms)
+	fmt.Fprint(ch, "config system vdom\r\n")
+	for _, name := range vdoms {
+		fmt.Fprintf(ch, "    edit %q\r\n", name)
+		fmt.Fprint(ch, "    next\r\n")
+	}
+	fmt.Fprint(ch, "end\r\n")
+}
+
+func (d *FakeFortiOS) hasVDOM(name string) bool {
+	for _, v := range d.VDOMs() {
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *FakeFortiOS) commit(a FortiOSAccount) {

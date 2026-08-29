@@ -74,7 +74,7 @@ info:
     `policy_version` is therefore `3`. Every other v3 field is additive with a
     documented absent-value default, and each default is the behaviour a v2
     server already produced.
-  version: 3.0.0
+  version: 3.1.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -1082,6 +1082,44 @@ components:
             here: customer-written drivers are a first-class case (D13), so the
             set of platforms is open and an unregistered one is an outage-class
             denial at provisioning time.
+
+            **Platform-specific fields: the `device_field.` namespace**
+            (contract v3.1, phase 0016). Some devices are not one target. A
+            FortiGate running virtual domains is one unit partitioned into
+            many, and an administrator on it is either global or scoped to one
+            VDOM; a FortiLink-managed FortiSwitch is administered *through* the
+            FortiGate in front of it. A route has to be able to say which of
+            them a session is for, and the endpoint cannot say it: `host`/`port`
+            is what DNS resolves, what the host key is pinned to, and what the
+            audit record names, so overloading it would make one device look
+            like several hosts that do not exist.
+
+            So `ephemeral-account` carries an **open namespace of additional
+            fields** beside its five parameters. Any parameter named
+            `device_field.<name>` is a platform-specific field handed to the
+            named driver as data. The contract does not enumerate them and never
+            will: customer-written drivers are a first-class case (D13), so the
+            set of fields is as open as the set of platforms. What the contract
+            checks is the SHAPE only — `<name>` is lowercase letters, digits,
+            hyphens and underscores, 64 characters or fewer; the value is
+            non-empty and 256 characters or fewer; and there are at most 16 of
+            them on one entry.
+
+            A driver **declares** the field names it accepts. A route naming a
+            field the driver does not declare is a **skipped ladder entry**
+            (D14), on the rule above: an unknown parameter may be a constraint,
+            and a proxy that cannot honour one must not connect.
+
+            Fields are policy metadata and never credential material, and they
+            are **audit facts**: the account-mapping record carries them,
+            because on a partitioned device the target string alone does not say
+            which partition an administrator was created in.
+
+            Documented today: **`device_field.vdom`** on a FortiGate — the
+            virtual domain a VDOM-scoped administrator is created in. Absent, a
+            unit running virtual domains gets a **global** administrator
+            instead, and a unit not running them is unaffected (phase 0016,
+            PLAN §5.3).
 
             Values are never logged, never echoed in an error, and never
             written to disk.

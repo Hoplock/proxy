@@ -3,7 +3,10 @@
 
 package control
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // This file carries the policy vocabulary added by phase 0006 (PLAN D5a, D6a,
 // D11, D12): the two channel axes a channel-type allow-list cannot express, the
@@ -323,7 +326,51 @@ const (
 	// ParamExpiryPosture says who, if anyone, enforces the account's expiry
 	// (D13).
 	ParamExpiryPosture = "expiry_posture"
+	// ParamDeviceFieldPrefix opens the namespace of PLATFORM-SPECIFIC fields an
+	// ephemeral-account route may carry (contract v3.1, phase 0016).
+	//
+	// It exists because some devices are not one target. A FortiGate running
+	// virtual domains is one unit partitioned into many, and an administrator
+	// on it is either global or scoped to one VDOM; a FortiLink-managed
+	// FortiSwitch is administered THROUGH the FortiGate in front of it. The
+	// route has to be able to say which of them a session is for, and the
+	// endpoint cannot: host and port are what DNS resolves, what the host key
+	// is pinned to, and what the audit record names, so overloading them would
+	// make one device look like several hosts that do not exist.
+	//
+	// The contract owns the SHAPE of these keys and nothing else. Which fields
+	// a platform has is the driver's to declare (device.Capabilities.Fields),
+	// for the same reason the set of platforms is open: D13 makes
+	// customer-written drivers a first-class case, and a contract that
+	// enumerated their fields would be a contract that had to be revised for
+	// every driver anybody writes.
+	ParamDeviceFieldPrefix = "device_field."
 )
+
+// DeviceFields returns the platform-specific fields on an ephemeral-account
+// entry, keyed WITHOUT the namespace prefix.
+//
+// It is a read of what the route said, not a judgement about it: whether a
+// driver accepts a field is answered by the driver's declarations at
+// provisioning time, where an unaccepted one is a skipped rung (D14) rather
+// than a contract violation.
+func (a *TargetAuth) DeviceFields() map[string]string {
+	if a == nil || len(a.Params) == 0 {
+		return nil
+	}
+	var fields map[string]string
+	for k, v := range a.Params {
+		name, ok := strings.CutPrefix(k, ParamDeviceFieldPrefix)
+		if !ok {
+			continue
+		}
+		if fields == nil {
+			fields = map[string]string{}
+		}
+		fields[name] = v
+	}
+	return fields
+}
 
 // CredentialKind is the credential an ephemeral-account driver installs on the
 // device (D13, PLAN §5.3).

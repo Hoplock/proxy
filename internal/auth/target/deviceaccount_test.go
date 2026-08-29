@@ -84,6 +84,10 @@ type deviceHarnessOptions struct {
 	// threshold, and the constrained path is every tighter platform's.
 	nameLimit int
 	now       func() time.Time
+	// accessProfile overrides the scope created administrators are given.
+	// A VDOM-scoped administrator cannot hold a global profile, so the routes
+	// that name one need a profile a per-VDOM account may actually have.
+	accessProfile string
 }
 
 func newDeviceHarness(t *testing.T, opts deviceHarnessOptions) *deviceHarness {
@@ -125,11 +129,15 @@ func newDeviceHarness(t *testing.T, opts deviceHarnessOptions) *deviceHarness {
 	if proxyID == "" {
 		proxyID = "proxy-a"
 	}
+	accessProfile := opts.accessProfile
+	if accessProfile == "" {
+		accessProfile = testDeviceAccessProfile
+	}
 	auth, err := NewDeviceAccountAuthenticator(DeviceAccountOptions{
 		ProxyID:        proxyID,
 		Drivers:        registry,
 		SourceAddress:  "198.51.100.7",
-		AccessProfile:  testDeviceAccessProfile,
+		AccessProfile:  accessProfile,
 		Events:         events,
 		ReaperInterval: -1, // no background sweeping; tests call Sweep directly
 		ReaperGrace:    opts.reaperGrace,
@@ -504,6 +512,80 @@ func TestSweepFailureIsReported(t *testing.T) {
 
 // TestUnsatisfiablePostureIsASkippedRungNotADowngrade covers D14's walk and the
 // distinction phase 0013's driver errors exist to carry.
+// TestARouteFieldReachesTheDriverAndTheAuditRecord is the contract v3.1
+// namespace end to end: a policy author writes `device_field.vdom`, the
+// administrator is created inside that virtual domain, and the mapping event
+// says so.
+//
+// The last part is not a nicety. On a partitioned unit the target string names
+// the UNIT — `host:port` is the same whether the account was global or scoped
+// to one customer's virtual domain — so an attribution record without the field
+// cannot answer what the privileged account could actually reach.
+func TestARouteFieldReachesTheDriverAndTheAuditRecord(t *testing.T) {
+	h := newDeviceHarness(t, deviceHarnessOptions{
+		deliverable: true,
+		// A per-VDOM administrator "must use either the `prof_admin`
+		// administrator profile, or a custom profile".
+		accessProfile: "prof_admin",
+		fortios: sshtest.FortiOSOptions{
+			VDOMMode: sshtest.FortiOSVDOMMultiple,
+			VDOMs:    []string{"root", "customer-a"},
+		},
+	})
+	tgt := h.tgt
+	tgt.Auth = deviceRouteAuth(map[string]string{
+		control.ParamDeviceFieldPrefix + "vdom": "customer-a",
+	})
+
+	access, err := h.auth.Provision(context.Background(), deviceIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { _ = access.Close(context.Background()) })
+
+	on, ok := h.dev.Accounts()[access.ClientConfig.User]
+	if !ok {
+		t.Fatalf("account %q was not created; the device has %v", access.ClientConfig.User, h.dev.Accounts())
+	}
+	if on.VDOM != "customer-a" {
+		t.Errorf("the administrator is scoped to VDOM %q, want %q", on.VDOM, "customer-a")
+	}
+
+	events := h.events.mapping()
+	if len(events) != 1 {
+		t.Fatalf("got %d mapping events, want exactly one", len(events))
+	}
+	if got := events[0].Fields["vdom"]; got != "customer-a" {
+		t.Errorf("the mapping event carries vdom=%q; on a partitioned unit the target alone does not say which partition", got)
+	}
+}
+
+// TestAnUndeclaredRouteFieldSkipsTheRung is the namespace's safety property,
+// and the reason it could be added without a new contract version.
+//
+// A field the driver does not declare may be a CONSTRAINT — a VDOM is one — so
+// the proxy must not connect having understood part of the route. It skips the
+// rung instead, which is what an older proxy meeting a newer field does too.
+func TestAnUndeclaredRouteFieldSkipsTheRung(t *testing.T) {
+	h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})
+
+	auth := deviceRouteAuth(map[string]string{
+		control.ParamDeviceFieldPrefix + "management-vdom": "root",
+	})
+	if err := h.auth.CanSatisfy(auth, h.tgt); !errors.Is(err, ErrRungUnsatisfiable) {
+		t.Fatalf("CanSatisfy = %v, want ErrRungUnsatisfiable so the ladder moves on", err)
+	}
+
+	tgt := h.tgt
+	tgt.Auth = auth
+	if _, err := h.auth.Provision(context.Background(), deviceIdentity(), tgt); !errors.Is(err, ErrRungUnsatisfiable) {
+		t.Fatalf("Provision = %v, want ErrRungUnsatisfiable", err)
+	}
+	if len(h.dev.Accounts()) != 0 {
+		t.Error("an administrator was created on a route this proxy could not fully honour")
+	}
+}
+
 func TestUnsatisfiablePostureIsASkippedRungNotADowngrade(t *testing.T) {
 	h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})
 

@@ -21,6 +21,22 @@ import (
 // stable across releases.
 const PlatformFortiGate = "fortigate"
 
+// FieldVDOM is the route field naming the virtual domain an administrator is
+// scoped to (control.ParamDeviceFieldPrefix + "vdom", contract v3.1).
+//
+// It is a FIELD rather than part of the endpoint because a VDOM is a partition
+// of one device and not a device: `fgt-edge-1:22` is what DNS resolves, what
+// the host key is pinned to, and what the reaper sweeps, and one unit holding
+// twelve virtual domains is still one unit to every one of those. What the
+// field changes is the SCOPE of the administrator created on it, which is
+// exactly what a route parameter is for.
+//
+// Absent, the administrator is created at global scope. That is the more
+// privileged of the two and it is nobody's default by accident: it is what a
+// proxy administering the whole unit — the shape phase 0014 was written for —
+// keeps getting on a unit that has since been partitioned.
+const FieldVDOM = "vdom"
+
 // There is deliberately NO default access profile, and this comment is where
 // the reasoning lives because the absence is the decision (phase 0015).
 //
@@ -185,6 +201,11 @@ func (d *Driver) Capabilities() device.Capabilities {
 			control.CredentialKindPublicKey,
 		},
 		PinsSourceAddress: true,
+		Fields: []device.Field{{
+			Name: FieldVDOM,
+			Description: "the virtual domain a VDOM-scoped administrator is created in; " +
+				"absent, a unit running virtual domains gets a global administrator",
+		}},
 	}
 }
 
@@ -240,6 +261,16 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	if err := validateProfile(profile); err != nil {
 		return nil, err
 	}
+	vdom, err := requestedVDOM(req.Fields)
+	if err != nil {
+		return nil, err
+	}
+	if vdom != "" {
+		if err := checkVDOMProfile(profile); err != nil {
+			return nil, err
+		}
+	}
+
 	var trust string
 	if req.SourceAddress != "" {
 		var err error
@@ -267,6 +298,20 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	}
 	defer func() { _ = s.Close() }()
 
+	if vdom != "" {
+		// Checked BEFORE anything is created, not read off a failed
+		// `set vdom`. A VDOM the route names and the unit does not have is an
+		// outage-class denial (D13) either way; the difference is whether the
+		// denial leaves a half-created privileged administrator on a customer's
+		// firewall for the rollback to catch. The check is not a guarantee —
+		// the VDOM can be deleted between the read and the write — so
+		// `set vdom` failing is still a failed attempt, and both paths are
+		// closed.
+		if err := d.checkVDOMExists(ctx, s, vdom); err != nil {
+			return nil, err
+		}
+	}
+
 	exists, err := d.accountExists(ctx, s, req.Name)
 	if err != nil {
 		return nil, err
@@ -276,11 +321,17 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			device.ErrAccountExists, req.Name, req.Host)
 	}
 
-	steps := []step{
-		{command: "config system admin", label: "enter administrator configuration"},
-		{command: "edit " + quote(req.Name), label: "create the administrator"},
-		{command: "set accprofile " + quote(profile), label: "set the access profile"},
+	steps := append(s.enterAdminTable(),
+		step{command: "edit " + quote(req.Name), label: "create the administrator"},
+	)
+	if vdom != "" {
+		// Fortinet's recipe sets the virtual domain first, before the profile
+		// and the credential, and the order is kept: on a platform that reports
+		// failure as text, a sequence that matches the published one is a
+		// sequence whose failures somebody can look up.
+		steps = append(steps, step{command: "set vdom " + quote(vdom), label: "scope the administrator to its virtual domain"})
 	}
+	steps = append(steps, step{command: "set accprofile " + quote(profile), label: "set the access profile"})
 	if trust != "" {
 		steps = append(steps,
 			step{command: "set trusthost1 " + trust, label: "pin the administrator to the proxy's address"},
@@ -296,8 +347,8 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	steps = append(steps,
 		step{command: "set password " + quote(placeholder), label: "set a placeholder password", secret: true},
 		step{command: "next", label: "commit the administrator"},
-		step{command: "end", label: "leave administrator configuration"},
 	)
+	steps = append(steps, s.leaveAdminTable()...)
 
 	if err := d.run(ctx, s, steps); err != nil {
 		// `abort` leaves the configuration block WITHOUT applying it, so a
@@ -348,13 +399,12 @@ func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialReq
 	}
 	defer func() { _ = s.Close() }()
 
-	steps := []step{
-		{command: "config system admin", label: "enter administrator configuration"},
-		{command: "edit " + quote(req.Name), label: "open the administrator"},
+	steps := append(s.enterAdminTable(),
+		step{command: "edit " + quote(req.Name), label: "open the administrator"},
 		install,
-		{command: "next", label: "commit the credential"},
-		{command: "end", label: "leave administrator configuration"},
-	}
+		step{command: "next", label: "commit the credential"},
+	)
+	steps = append(steps, s.leaveAdminTable()...)
 	if err := d.run(ctx, s, steps); err != nil {
 		d.abandon(ctx, s, req.Name)
 		return err
@@ -379,11 +429,10 @@ func (d *Driver) RemoveAccount(ctx context.Context, req device.RemoveRequest) er
 	}
 	defer func() { _ = s.Close() }()
 
-	return d.run(ctx, s, []step{
-		{command: "config system admin", label: "enter administrator configuration"},
-		{command: "delete " + quote(req.Name), label: "remove the administrator", notFoundIsSuccess: true},
-		{command: "end", label: "leave administrator configuration"},
-	})
+	steps := append(s.enterAdminTable(),
+		step{command: "delete " + quote(req.Name), label: "remove the administrator", notFoundIsSuccess: true},
+	)
+	return d.run(ctx, s, append(steps, s.leaveAdminTable()...))
 }
 
 // ListAccounts implements device.Driver.
@@ -438,46 +487,107 @@ const vdomStatusCommand = "get system status"
 // than assumes it can serve.
 var vdomConfigurationPattern = regexp.MustCompile(`(?im)^\s*Virtual domain configuration\s*:\s*(\S+)\s*$`)
 
-// vdomDisabled is the one answer this driver serves.
-const vdomDisabled = "disable"
+// vdomMode is the unit shape this session is talking to.
+//
+// Fortinet documents `disable` and `multiple` as the values of the "Virtual
+// domain configuration" line, and the Administration Guide carries split-task
+// mode as a third shape of the same feature — two fixed VDOMs, a management one
+// and a traffic one, with its own "Create per-VDOM administrators" procedure
+// identical to the multi-VDOM recipe. So the two VDOM shapes are served by one
+// code path and the third value is "the unit is not partitioned".
+type vdomMode string
 
-// checkSingleVDOM refuses anything but a single-VDOM unit.
+const (
+	vdomModeDisabled  vdomMode = "disable"
+	vdomModeMultiple  vdomMode = "multiple"
+	vdomModeSplitTask vdomMode = "split-task"
+)
+
+// partitioned reports whether the administrator table lives inside
+// `config global` on this unit.
+//
+// This is the ONE question the rest of the driver asks about VDOM mode, and it
+// is a method rather than a comparison scattered through the command tables so
+// that a future third shape changes one line here instead of five sequences.
+func (m vdomMode) partitioned() bool {
+	return m == vdomModeMultiple || m == vdomModeSplitTask
+}
+
+// readVDOMMode asks the unit which shape it is, and refuses a shape this driver
+// has not been written for.
 //
 // Phase 0014's command sequences were written from the single-VDOM recipe and
 // are wrong on a unit with virtual domains in three ways at once, all
 // documented: the administrator table lives inside `config global` there,
 // `set vdom` is required for a VDOM-scoped account, and cliSession.Close's
-// `end\nend\nexit` unwinds one level shallower than that nesting needs.
-// Running them anyway is a silent mismatch on a customer's firewall, and it is
-// what shipped — the fake device accepted every one of those sequences, so the
-// tests passed the whole time.
+// unwinding is one level shallower than that nesting needs. Phase 0015 refused
+// the whole shape rather than mis-editing it; phase 0016 sends the documented
+// sequence instead, and what is left of the refusal is narrower: a status line
+// this pattern cannot read, or a virtual-domain configuration that is none of
+// the three values above.
 //
-// An UNREADABLE answer is refused too, not assumed benign. The whole reason
-// this check exists is that the driver was previously certain about a device
-// shape it had never asked about; a version or model whose status output this
-// pattern does not match is another shape nobody has asked about, and the fail
-// -closed direction is the one that does not create privileged accounts on a
-// hunch. Full multi-VDOM support is a queued phase, and it owns the question of
-// what a "target" is when one unit holds many (the same question the FortiLink
-// switch driver owns).
-func (d *Driver) checkSingleVDOM(ctx context.Context, s *cliSession) error {
+// An UNREADABLE answer stays refused, and stays refused for phase 0015's
+// reason. The driver was once certain about a device shape it had never asked
+// about; a version or model whose status output this pattern does not match is
+// another shape nobody has asked about, and the fail-closed direction is the one
+// that does not create privileged accounts on a hunch.
+func (d *Driver) readVDOMMode(ctx context.Context, s *cliSession) (vdomMode, error) {
 	out, err := s.send(ctx, vdomStatusCommand)
 	if err != nil {
-		return fmt.Errorf("auth/target/device/fortios: read the unit's VDOM mode: %w", err)
+		return "", fmt.Errorf("auth/target/device/fortios: read the unit's VDOM mode: %w", err)
 	}
 	if err := checkOutput("read the unit's VDOM mode", out); err != nil {
-		return err
+		return "", err
 	}
 	m := vdomConfigurationPattern.FindStringSubmatch(out)
 	if m == nil {
-		return fmt.Errorf("%w: `%s` did not report a virtual domain configuration, so this driver cannot tell which administrator table it would be editing",
+		return "", fmt.Errorf("%w: `%s` did not report a virtual domain configuration, so this driver cannot tell which administrator table it would be editing",
 			ErrMultiVDOM, vdomStatusCommand)
 	}
-	if mode := strings.ToLower(m[1]); mode != vdomDisabled {
-		return fmt.Errorf("%w: the unit reports virtual domain configuration %q", ErrMultiVDOM, mode)
+	switch mode := vdomMode(strings.ToLower(m[1])); mode {
+	case vdomModeDisabled, vdomModeMultiple, vdomModeSplitTask:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("%w: the unit reports virtual domain configuration %q, which is none of %q, %q or %q",
+			ErrMultiVDOM, mode, vdomModeDisabled, vdomModeMultiple, vdomModeSplitTask)
 	}
-	return nil
 }
+
+// globalScopeCommand enters the scope the administrator table lives in on a
+// partitioned unit.
+//
+// Fortinet's own recipe for a per-VDOM administrator opens with it, and every
+// document that shows `config system admin` on such a unit reaches it this way.
+// On a unit that is NOT partitioned the command does not exist, which is why it
+// is sent on the strength of what the unit reported rather than always.
+const globalScopeCommand = "config global"
+
+// enterAdminTable is the path to `config system admin` on this unit, and
+// leaveAdminTable is its exact inverse.
+//
+// They are a pair on purpose. The nesting is what phase 0015 found the driver
+// getting wrong, and a sequence that opens two levels and closes one leaves a
+// configuration block open on a customer's firewall — so the two are written
+// together, next to each other, rather than as an opening step in one table and
+// a matching `end` somebody has to remember in five others.
+func (s *cliSession) enterAdminTable() []step {
+	steps := make([]step, 0, 2)
+	if s.vdomMode.partitioned() {
+		steps = append(steps, step{command: globalScopeCommand, label: "enter global configuration"})
+	}
+	return append(steps, step{command: adminTableCommand, label: "enter administrator configuration"})
+}
+
+func (s *cliSession) leaveAdminTable() []step {
+	steps := []step{{command: "end", label: "leave administrator configuration"}}
+	if s.vdomMode.partitioned() {
+		steps = append(steps, step{command: "end", label: "leave global configuration"})
+	}
+	return steps
+}
+
+// adminTableCommand opens the administrator table itself.
+const adminTableCommand = "config system admin"
 
 // open dials the device, reads past its login banner, and refuses a unit this
 // driver cannot administer.
@@ -497,10 +607,17 @@ func (d *Driver) open(ctx context.Context, ep device.Endpoint) (*cliSession, err
 		_ = shell.Close()
 		return nil, err
 	}
-	if err := d.checkSingleVDOM(ctx, s); err != nil {
+	// The mode is read ONCE PER SESSION and before anything is configured,
+	// because every operation this driver performs depends on it and not only
+	// creation: on a partitioned unit `config system admin` at the top level is
+	// not the table Fortinet's own recipe edits, so `edit`, `delete` and `show`
+	// are all pointed at something the driver cannot vouch for.
+	mode, err := d.readVDOMMode(ctx, s)
+	if err != nil {
 		_ = s.Close()
 		return nil, err
 	}
+	s.vdomMode = mode
 	return s, nil
 }
 
@@ -532,15 +649,25 @@ func (d *Driver) run(ctx context.Context, s *cliSession, steps []step) error {
 }
 
 // abandon backs out of a failed sequence.
+//
+// The unwinding follows the SAME nesting the sequence used, which on a
+// partitioned unit is one level deeper: `abort` discards the uncommitted block
+// wherever in it the session was, and the delete afterwards has to re-enter the
+// table through `config global` again or it deletes nothing — quietly, on the
+// one path whose whole job is to leave no administrator behind.
 func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) {
 	// `abort` discards an uncommitted configuration block outright. Its own
 	// failure is swallowed: the session is being denied either way, and what it
 	// could not undo is what the reaper is for.
 	_, _ = s.send(ctx, "abort")
 	_, _ = s.send(ctx, "end")
-	_, _ = s.send(ctx, "config system admin")
+	for _, st := range s.enterAdminTable() {
+		_, _ = s.send(ctx, st.command)
+	}
 	_, _ = s.send(ctx, "delete "+quote(name))
-	_, _ = s.send(ctx, "end")
+	for _, st := range s.leaveAdminTable() {
+		_, _ = s.send(ctx, st.command)
+	}
 }
 
 // accountExists reports whether an administrator of that name is on the device.
@@ -567,11 +694,8 @@ var accprofilePattern = regexp.MustCompile(`^\s*set\s+accprofile\s+"?([^"\s]+)"?
 // prefix. An empty prefix returns everything, which is only ever used by the
 // non-existence check on the create path — the reaper always names one.
 func (d *Driver) listAccounts(ctx context.Context, s *cliSession, prefix string) ([]device.Account, error) {
-	out, err := s.send(ctx, "show system admin")
+	out, err := d.showGlobal(ctx, s, adminShowCommand, "list administrators")
 	if err != nil {
-		return nil, fmt.Errorf("auth/target/device/fortios: list administrators: %w", err)
-	}
-	if err := checkOutput("list administrators", out); err != nil {
 		return nil, err
 	}
 
@@ -612,6 +736,176 @@ func (d *Driver) listAccounts(ctx context.Context, s *cliSession, prefix string)
 		}
 	}
 	return filtered, nil
+}
+
+// adminShowCommand and vdomShowCommand read the two global tables this driver
+// cares about.
+//
+// UNVERIFIED against hardware: that `show system admin` inside `config global`
+// renders the SAME table this parser reads at the top level of a single-VDOM
+// unit. Fortinet documents the table and documents that it lives in global
+// scope on a partitioned unit; nothing found says the rendering differs, and
+// nothing says it does not. It is on this phase's hardware list, and the fake
+// device models them as one table because that is the reading the documentation
+// supports — which is exactly the kind of assumption a fake can hide, so it is
+// written down here rather than only there.
+const (
+	adminShowCommand = "show system admin"
+	vdomShowCommand  = "show system vdom"
+)
+
+// showGlobal runs a read against a table that lives in global scope.
+//
+// On a unit that is not partitioned that is simply the top level and there is
+// nothing to enter. On one that is, the scope has to be entered and left again,
+// and leaving it is deferred rather than appended so that a read which fails
+// half way does not leave the session in `config global` — the state that makes
+// the NEXT command mean something other than what it says.
+func (d *Driver) showGlobal(ctx context.Context, s *cliSession, command, label string) (string, error) {
+	if s.vdomMode.partitioned() {
+		out, err := s.send(ctx, globalScopeCommand)
+		if err != nil {
+			return "", fmt.Errorf("auth/target/device/fortios: enter global configuration: %w", err)
+		}
+		if err := checkOutput("enter global configuration", out); err != nil {
+			return "", err
+		}
+		defer func() { _, _ = s.send(ctx, "end") }()
+	}
+	out, err := s.send(ctx, command)
+	if err != nil {
+		return "", fmt.Errorf("auth/target/device/fortios: %s: %w", label, err)
+	}
+	if err := checkOutput(label, out); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// ErrUnknownVDOM means the route named a virtual domain this unit does not
+// have — or has no virtual domains at all.
+//
+// Like ErrMultiVDOM it is deliberately NOT device.ErrUnsupported. The platform
+// is capable, the driver is capable, and the route is the only thing that is
+// wrong: answering it by skipping the rung would serve the session on a
+// credential the server ranked lower because a policy author typed a VDOM name
+// that has since been renamed. D13's rule makes that an outage-class denial.
+var ErrUnknownVDOM = errors.New("auth/target/device/fortios: the unit does not have that virtual domain")
+
+// requestedVDOM reads the route's virtual domain out of its device fields.
+//
+// An undeclared field is refused here as well as by the provisioner, which
+// checks it against Capabilities.Fields before this driver is reached. The
+// duplication is deliberate and it is the same belt-and-braces rule the value
+// validation follows: "the caller checked" describes today's caller, and what
+// is at stake is a configuration command on a firewall.
+func requestedVDOM(fields map[string]string) (string, error) {
+	for name := range fields {
+		if name != FieldVDOM {
+			return "", fmt.Errorf("%w: %q is not a field this driver accepts", errInvalidValue, name)
+		}
+	}
+	vdom := strings.TrimSpace(fields[FieldVDOM])
+	if vdom == "" {
+		// Absent means global scope, which is a supported answer rather than a
+		// missing one. An EMPTY value never reaches here — the contract refuses
+		// it, because a route that names a field means to constrain something.
+		return "", nil
+	}
+	if err := validateVDOM(vdom); err != nil {
+		return "", err
+	}
+	return vdom, nil
+}
+
+// checkVDOMProfile refuses an access profile a per-VDOM administrator cannot
+// hold.
+//
+// Fortinet is explicit about this, twice: a per-VDOM administrator "must use
+// either the `prof_admin` administrator profile, or a custom profile", and
+// "when creating an administrator at the VDOM level, the `super_admin`
+// administrator profile cannot be used". `super_admin_readonly` is the GLOBAL
+// read-only profile and falls on the same side of that line.
+//
+// It is checked here rather than left to the device because of what the device
+// does with it: a refused `set accprofile` is a failure in the middle of a
+// sequence that has already created the entry, so the difference between
+// checking and not checking is whether a policy mistake leaves a rollback to
+// perform on a customer's firewall. Only the two documented built-ins are
+// refused — a custom profile the customer built is theirs to scope, and this
+// driver has no way to know what is in it.
+func checkVDOMProfile(profile string) error {
+	switch profile {
+	case builtinSuperAdmin, builtinSuperAdminReadOnly:
+		return fmt.Errorf("%w: %q is a global access profile and a VDOM-scoped administrator cannot hold one; "+
+			"FortiOS requires %q or a custom profile there",
+			errInvalidValue, profile, builtinProfAdmin)
+	default:
+		return nil
+	}
+}
+
+// The FortiOS built-in access profiles, as documented: three, not four (phase
+// 0015). They are named here only to say which of them a per-VDOM administrator
+// may not hold; this driver still has no default profile and does not want one.
+const (
+	builtinSuperAdmin         = "super_admin"
+	builtinSuperAdminReadOnly = "super_admin_readonly"
+	builtinProfAdmin          = "prof_admin"
+)
+
+// checkVDOMExists refuses a virtual domain the unit does not have.
+func (d *Driver) checkVDOMExists(ctx context.Context, s *cliSession, vdom string) error {
+	if !s.vdomMode.partitioned() {
+		// A route asking for a VDOM on a unit that has none is not a smaller
+		// version of the same request: whatever the policy author meant, this
+		// unit cannot serve it, and creating a global administrator instead
+		// would quietly hand out the WIDER scope the route was narrowing.
+		return fmt.Errorf("%w: the route names virtual domain %q and the unit reports virtual domain configuration %q",
+			ErrUnknownVDOM, vdom, s.vdomMode)
+	}
+	vdoms, err := d.listVDOMs(ctx, s)
+	if err != nil {
+		return err
+	}
+	for _, name := range vdoms {
+		if name == vdom {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: the unit has no virtual domain %q", ErrUnknownVDOM, vdom)
+}
+
+// listVDOMs reads the unit's virtual domains.
+//
+// `config system vdom` is an ordinary configuration table with one `edit
+// <name>` per virtual domain, so `show system vdom` renders in the same shape
+// as the administrator table and is read by the same line matcher. The
+// alternative every KB reaches for first is `diagnose sys vd list`, which is a
+// DIAGNOSE command: from FortiOS 7.4 a read-only profile cannot run those at
+// all, and this driver would then be unable to check a VDOM on exactly the
+// units whose management account is most tightly scoped.
+func (d *Driver) listVDOMs(ctx context.Context, s *cliSession) ([]string, error) {
+	out, err := d.showGlobal(ctx, s, vdomShowCommand, "list virtual domains")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if m := editPattern.FindStringSubmatch(strings.TrimRight(line, "\r")); m != nil {
+			names = append(names, m[1])
+		}
+	}
+	if len(names) == 0 {
+		// A partitioned unit has at least the management VDOM, so an empty
+		// answer means the read did not do what this driver thinks it did —
+		// a different rendering, a truncated page, a profile that cannot see
+		// the table. Refusing is fail-closed in the direction that does not
+		// create a privileged account in a scope nobody confirmed.
+		return nil, fmt.Errorf("%w: `%s` listed no virtual domains on a unit reporting %q",
+			ErrUnknownVDOM, vdomShowCommand, s.vdomMode)
+	}
+	return names, nil
 }
 
 // secretAlphabet is what a generated password is drawn from.

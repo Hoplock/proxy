@@ -4,6 +4,7 @@
 package logging
 
 import (
+	"sort"
 	"strconv"
 	"time"
 
@@ -66,6 +67,13 @@ func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
 	if ev.Lifetime > 0 {
 		attrs = attrs.Set(AttrLifetimeSeconds, strconv.Itoa(int(ev.Lifetime.Seconds())))
 	}
+	// The route's platform-specific fields, spelled as the route spelled them.
+	// On a partitioned device the target string names the unit and not the
+	// partition, so without these the record cannot say what the administrator
+	// was scoped to (PLAN §5.3).
+	for _, name := range sortedKeys(ev.Fields) {
+		attrs = attrs.Set(AttrDeviceFieldPrefix+name, ev.Fields[name])
+	}
 	if ev.PersistenceReason != "" {
 		// The reason travels with the session it applies to, so that a
 		// standing-account risk is recorded where the risk is taken rather than
@@ -86,6 +94,21 @@ func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
 		Attributes: attrs,
 	}
 	d.shipper.RecordPriority(rec)
+}
+
+// sortedKeys orders a field map so one session's record is byte-identical
+// however Go happened to iterate it. Log records are compared in tests and
+// diffed by operators; map order would make both noisy.
+func sortedKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // SweepFailure records an orphaned device account the reaper could not remove.

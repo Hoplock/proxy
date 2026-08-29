@@ -140,6 +140,22 @@ type CreateRequest struct {
 	// one that does not leaves it to the proxy, and the route's expiry posture
 	// is what decided that was acceptable (control.ExpiryPosture).
 	Lifetime time.Duration
+	// Fields are the route's platform-specific fields, keyed without the
+	// contract's namespace prefix (control.ParamDeviceFieldPrefix). Every key
+	// here was checked against Capabilities.Fields before the driver was
+	// reached, so a driver may treat an undeclared one as a programming error
+	// rather than as policy.
+	//
+	// They ride on CREATION and not on the other three operations, and that is
+	// a statement about what these fields are for on the platforms this
+	// repository serves: a VDOM scopes the administrator being created, while
+	// removal, enumeration and credential installation address the same
+	// administrator table on the same unit whatever it was scoped to. A
+	// platform where the field selects a DIFFERENT MANAGED DEVICE — a
+	// FortiLink-attached switch behind its FortiGate — needs them on the rest
+	// too, and that is the phase that adds them, on the reaper's terms: it
+	// sweeps a device it reaches from an endpoint, not from a route.
+	Fields map[string]string
 }
 
 // CredentialRequest asks a driver to install one credential on an account it
@@ -257,6 +273,49 @@ type Capabilities struct {
 	// used from. It is a free extra restriction where it exists and is not
 	// required anywhere.
 	PinsSourceAddress bool
+	// Fields are the PLATFORM-SPECIFIC fields this driver accepts on a route
+	// (control.ParamDeviceFieldPrefix, contract v3.1, phase 0016).
+	//
+	// They exist because some devices are not one target: a FortiGate running
+	// virtual domains is one unit partitioned into many, and a route has to be
+	// able to say which partition a session administers. The contract carries
+	// such a field as data and does not interpret it; this declaration is what
+	// says which ones mean anything here.
+	//
+	// It is a DECLARATION and therefore answerable without connecting, like
+	// every other value in this struct: the provisioner reads it to decide
+	// whether a rung is satisfiable before it opens anything. A route naming a
+	// field that is not declared here is a SKIPPED RUNG (D14) — an unknown
+	// parameter may be a constraint, and a proxy that cannot honour one must
+	// not connect — which is also what makes the namespace additive: a build
+	// that predates a field declines the route rather than dropping it.
+	//
+	// Nil means the platform has none, which is the honest answer for a device
+	// that is exactly one target.
+	Fields []Field
+}
+
+// Field is one platform-specific route field a driver accepts.
+//
+// The description is not decoration: an operator reading a skipped rung wants
+// to know what the field they misspelled was for, and a driver document (D13)
+// generated from these declarations needs something to say about each one.
+type Field struct {
+	// Name is the field's name WITHOUT the contract's namespace prefix — the
+	// `vdom` in `device_field.vdom`.
+	Name string
+	// Description says what the field means on this platform, in one line.
+	Description string
+}
+
+// AcceptsField reports whether the platform accepts a route field of that name.
+func (c Capabilities) AcceptsField(name string) bool {
+	for _, f := range c.Fields {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Accepts reports whether the platform accepts a credential kind.
