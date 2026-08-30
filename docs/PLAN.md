@@ -1519,6 +1519,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0026 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
 | 0027 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
 | 0028 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
+| 0029 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
