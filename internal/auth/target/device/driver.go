@@ -135,10 +135,21 @@ type CreateRequest struct {
 	// driver that cannot pin must report ErrUnsupported rather than creating an
 	// unpinned account, which would silently drop a restriction.
 	SourceAddress string
-	// Lifetime is how long the account should live. A driver whose platform
-	// enforces expiry (Capabilities.EnforcesExpiry) renders it on the device;
-	// one that does not leaves it to the proxy, and the route's expiry posture
-	// is what decided that was acceptable (control.ExpiryPosture).
+	// Lifetime is how long the account should live, and it is set ONLY when
+	// the DEVICE is to hold that deadline — when the route asked for
+	// control.ExpiryPostureTargetEnforced and this driver declares
+	// Capabilities.EnforcesExpiry. A driver that receives one renders it; a
+	// driver that receives zero renders nothing, and the proxy holds the
+	// deadline instead.
+	//
+	// The provisioner decides which of those it is, and that placement is
+	// deliberate (phase 0017). Rendering expiry on FortiOS means a SECOND
+	// OBJECT on a customer's firewall per session, so "does this route want the
+	// device to hold the deadline" must be answered in the one place that reads
+	// the route and the declaration together — not inside each driver, where a
+	// proxy-enforced route would start quietly paying for a device object it
+	// never asked for and the audit record would say `proxy-enforced` about a
+	// deadline the device is also holding.
 	Lifetime time.Duration
 	// Fields are the route's platform-specific fields, keyed without the
 	// contract's namespace prefix (control.ParamDeviceFieldPrefix). Every key
@@ -232,6 +243,25 @@ type Capabilities struct {
 	// control.ExpiryPostureTargetEnforced satisfiable; a route demanding that
 	// posture from a driver declaring false is a skipped ladder rung.
 	EnforcesExpiry bool
+	// ExpiryMechanism says WHAT the device does when the deadline passes, in
+	// one line. It is required on a driver that declares EnforcesExpiry and
+	// ignored otherwise, and CheckShipped holds a shipped driver to that.
+	//
+	// It exists because EnforcesExpiry is one bit and the platforms behind it
+	// do not agree on what the bit means. OpenSSH's expiry-time (PLAN §5.1)
+	// refuses new authentications and leaves an established session running;
+	// FortiOS's `set schedule` refuses new authentications, leaves the ACCOUNT
+	// on the device for the reaper, and says nothing anywhere about a session
+	// already open. Both are honestly "the device ends the account's usefulness
+	// whether or not the proxy is alive", and neither is "the device cuts the
+	// session at T" — which is what a reader of the bit alone would assume.
+	//
+	// It is a string for PersistenceReason's reason, and it reaches the
+	// operator through the same route: the provisioning record, on every
+	// session the driver serves. A posture in an audit record that says
+	// `target-enforced` without saying what the target enforces is a record
+	// that cannot answer the only question anybody asks of it afterwards.
+	ExpiryMechanism string
 	// PersistsAcrossReload says account creation survives a device reload —
 	// that the driver writes the account to saved configuration.
 	//
@@ -326,6 +356,61 @@ func (c Capabilities) Accepts(kind control.CredentialKind) bool {
 		}
 	}
 	return false
+}
+
+// Residue is an object a driver created BESIDE an account, which outlives the
+// account when a session dies at the wrong moment (phase 0017).
+//
+// It exists because ending an account's usefulness on a device is not always
+// one object. A FortiGate expires an administrator through a `config firewall
+// schedule onetime` entry that `set schedule` names, so a session that provides
+// the target-enforced posture writes TWO objects and a crash between them
+// leaves the second one behind. That is a new leak class, and a leak class with
+// no sweep is a leak.
+//
+// It is deliberately NOT modelled as an account. The reaper's account sweep
+// answers "is this administrator live", and a schedule is not something anybody
+// can log in as: reporting one through ListAccounts would put an object on the
+// operator's account records that is not an account, and would make the
+// reaper's liveness question meaningless for half its input.
+type Residue struct {
+	// Name is the object's name on the device. It carries the same reaper
+	// prefix the accounts do — that is what makes it sweepable at all.
+	Name string
+	// Kind names what the object is, for the log and the sweep-failure record:
+	// "firewall schedule", not "account". An operator reading that a sweep
+	// failed needs to know which object is still on their firewall.
+	Kind string
+}
+
+// ResidueSweeper is implemented by a driver that creates such objects.
+//
+// It is an OPTIONAL interface rather than a fifth Driver method, and that is a
+// judgement about who pays. Most platforms have no second object — a driver for
+// one would implement a no-op, and the declarative driver document and
+// subprocess contract D13 defers would each have to carry an operation that
+// does nothing on nearly every platform. A driver that creates residue
+// implements this; a driver that does not, does not, and the reaper asks.
+//
+// The two operations mirror ListAccounts and RemoveAccount exactly, including
+// the rules that matter: the prefix in the request is the caller's and is never
+// widened, and removal is idempotent because it runs from teardown, from the
+// reaper, and from a retry after a failure.
+type ResidueSweeper interface {
+	// ListResidue enumerates objects this proxy created beside its accounts
+	// that NO ACCOUNT ON THE DEVICE references any more.
+	//
+	// "No account references it" is the driver's to establish, because only the
+	// driver knows what the reference looks like. What the driver must not do
+	// is decide WHETHER to remove one: an object that is unreferenced right now
+	// may be one another session created a round trip ago and is about to name,
+	// so the reaper applies its own grace period to the answer, on the same
+	// first-seen rule it ages an untracked account by.
+	ListResidue(ctx context.Context, req ListRequest) ([]Residue, error)
+
+	// RemoveResidue removes one object this proxy created. Like RemoveAccount
+	// it is IDEMPOTENT: an object that is already gone is a success.
+	RemoveResidue(ctx context.Context, req RemoveRequest) error
 }
 
 // ErrUnsupported means THIS PLATFORM CANNOT do what was asked — pin a source

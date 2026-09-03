@@ -24,6 +24,14 @@ below was read directly. **Findings only — no code was changed.**
 > and the naming-rules KB gives **32** characters for "schedule names" where the
 > CLI reference gives 35 for `system admin`'s `schedule` field, which phase 0017
 > will have to reconcile.
+>
+> **Phase 0017 reconciled it by taking the smaller.** Nothing read since
+> resolves the disagreement, so the driver spends 32: the difference is one
+> character of token, and being wrong in the other direction is a name a device
+> refuses at the moment it is creating a privileged account's expiry. Nothing
+> this proxy creates comes near either figure — the naming scheme never emits a
+> name over 32 characters — which is what let 0017 give the schedule the
+> administrator's own name. See "What phase 0017 did with claim 2" below.
 
 Unless a row says otherwise, each finding was checked in the FortiGate CLI
 reference / Administration Guide for **7.0.17, 7.2.11, 7.4.9, 7.6.6 and 8.0.0**
@@ -164,6 +172,57 @@ via `config firewall schedule onetime` + `set schedule`, at least in the
 "device refuses new logins after T" sense. Whether that meets the contract's bar
 for `EnforcesExpiry` is a design decision, not a documentation question — but it
 should be made knowing the field exists.
+
+### What phase 0017 did with claim 2, and what it could NOT read
+
+Phase 0015 established this claim and declined the mechanism; **phase 0017 takes
+it**. `Capabilities.EnforcesExpiry` is true, a route asking for
+`target-enforced` on a FortiGate is served, and the driver creates, references,
+tears down and sweeps a `config firewall schedule onetime` object. The design
+decisions and their reasoning are in `docs/PLAN.md` §5.3, "As taken (phase
+0017)"; only the evidence question belongs here, and the honest answer is that
+this phase added no evidence.
+
+**Fortinet's sites were NOT reachable from the implementing session** —
+`docs.fortinet.com` was blocked by its egress policy, exactly as in phase 0014
+and unlike the reachable sessions 0015 and 0016 had. So phase 0017 sourced
+nothing new: everything it relies on is the reading above, and each thing it
+could not check is built so that being wrong fails loudly rather than quietly.
+Three of those, for whoever next has both a network and a unit:
+
+1. **Does the schedule gate EVERY authentication path, or only password login?**
+   This is the decisive one, because the decision to declare `EnforcesExpiry`
+   was taken conditional on it. The field description is about the
+   administrator — "Firewall schedule used to restrict when the administrator
+   can log in" — and the denial is logged at authentication; but the KB's worked
+   example is a password login and the driver also installs public keys. If a
+   public-key login bypasses the schedule, the declaration is wrong.
+2. **Is `config firewall schedule onetime` reached through `config global` on a
+   partitioned unit?** Firewall objects are ordinarily per-VDOM; what makes this
+   one plausibly global is that a global administrator's `set schedule` has to
+   resolve against something it can see. Nothing was read either way. The driver
+   creates the schedule **before** referencing it, so a wrong scope fails the
+   reference and fails the attempt rather than producing an administrator whose
+   deadline the device ignores.
+3. **Does `get system status` carry a readable system time, in what rendering?**
+   The window is an absolute datetime in the unit's local time, so the driver
+   reads the unit's clock rather than using the proxy's. A unit whose clock it
+   cannot read is refused an expiring route — and still served every route that
+   needs no schedule.
+
+Two smaller ones, both modelled in `internal/sshtest` at the strictest reading
+so that a driver bug fails rather than hides: whether a schedule an
+administrator still references can be deleted at all (the driver removes the
+administrator first, which makes the question moot), and whether the `end` minute
+is inclusive (the driver truncates, so its window can only be shorter than the
+lifetime asked for, never longer).
+
+And the session-teardown half of this claim — **whether an already-established
+session survives its administrator's window closing** — is still unanswered and
+is still the first item on the hardware list. Phase 0017 did not model an answer;
+it declared the mechanism instead, in `Capabilities.ExpiryMechanism`, which says
+in so many words that the account is not deleted and that a live session may
+outlive the deadline.
 
 ## 3 — Password *and* SSH keys: **correct**
 

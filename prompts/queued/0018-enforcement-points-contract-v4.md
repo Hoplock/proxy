@@ -29,11 +29,14 @@
 > builds on that namespace**, and does not author a second way to name a
 > partition of a device. If v4 needs to constrain it — an enforcement-point row
 > that only applies to a VDOM-scoped account, say — that is an extension of the
-> same namespace. **0017** decides whether a FortiGate can enforce expiry on the
-> device, which is a capability advertisement this survey would otherwise record
-> wrongly: phase 0015 established that FortiOS *has* the mechanism and this
-> repository declines it, and a survey that wrote "the platform cannot" would be
-> repeating the exact mistake 0015 was queued to fix. Read both phases'
+> same namespace. **0017** has decided whether a FortiGate can enforce expiry on
+> the device, and the answer is **yes**: it renders `set schedule` against a
+> `config firewall schedule onetime` entry, declares `EnforcesExpiry: true`, and
+> declares beside it — in `Capabilities.ExpiryMechanism` — what the device
+> actually does at the deadline, because the bit alone overstates it. A
+> capability survey has both to record: "the platform can expire an account" is
+> not the same advertisement as "the platform cuts a live session", and no
+> platform here does the second. Read both phases'
 > learnings before writing a row about a device.
 
 ## Read first
@@ -52,8 +55,8 @@
   `0013`/`0014` (what a device driver declares, and what a FortiOS access
   profile can actually constrain), `0015` (which corrected several of 0014's
   FortiOS facts and removed the fixed access-profile default), and `0016`/`0017`
-  (the target-identity answer and the expiry capability this survey must record
-  correctly).
+  (the target-identity answer, and the expiry capability — served, with a
+  declared mechanism beside it — that this survey must record correctly).
 
 ## Objective
 Answer, and write down, **where** each policy claim is actually enforced — then

@@ -316,6 +316,19 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
     second is a capability the estate paid for and did not get. The same holds
     for every other field in `Capabilities`.
 
+    **Phase 0017 added the other half of that rule**, having taken the FortiOS
+    mechanism 0015 declined. A declaration whose meaning a reader cannot recover
+    from the bit must carry its reasoning in the struct, and there are now two
+    such fields: `PersistenceReason` beside `PersistsAcrossReload`, and
+    **`ExpiryMechanism` beside `EnforcesExpiry`** — required on a shipped driver
+    that declares expiry, and checked by `device.CheckShipped` rather than
+    trusted. `EnforcesExpiry` is one bit over platforms that do not agree on
+    what it buys: OpenSSH's `expiry-time` and FortiOS's `set schedule` both
+    refuse the next authentication and neither disturbs a session already open,
+    while a reader of the bit alone would take the deadline to reach the live
+    session. Both reasons ride on the provisioning record, so the operator reads
+    the claim where the risk is taken rather than in a driver's source.
+
   **Customer-written drivers are a first-class case**, not an afterthought: the
   estates that need this most are the ones running a platform nobody else has.
   The seam is declarative first — a driver is a document naming the connect
@@ -850,21 +863,21 @@ session's*, so the device path verifies non-existence and, on collision,
 **retries with a fresh token** — it never adopts. A small retry budget, then
 refusal.
 
-**Expiry is rarely the platform's, and on FortiOS it is a decision rather than
-an absence.** No driver this repository ships renders expiry onto the device, so
-`target-enforced` is a posture most real routes cannot ask for, and asking is a
-**skipped ladder rung** rather than a downgrade. The practical consequence is
-the one above: the reaper is sized and reported as the primary removal path, not
+**Expiry is rarely the platform's, and on FortiOS it is now taken.** On most
+platforms nothing on the device ends the account, so `target-enforced` is a
+posture those routes cannot ask for and asking is a **skipped ladder rung**
+rather than a downgrade. The consequence is the one above and it survives the
+change below: the reaper is sized and reported as the primary removal path, not
 as a crash-recovery backstop, and a sweep that fails is an event on D8's
 priority path rather than a log line somebody might read.
 
-What changed in phase 0015 is the reason, not the outcome. Until then this
-paragraph said FortiOS "has no per-account expiry field and no schedule on
-`config system admin`". It has both: `set schedule` names a `config firewall
-schedule onetime` entry carrying an absolute `set end`, and FortiOS refuses the
-login out of window — Fortinet's KB shows the denial as
-`reason="out_of_schedule"`. The mechanism is not taken, and the reasoning is
-recorded under "As corrected" below rather than left as a fact nobody checked.
+Phase 0015 corrected the reason and left the outcome; **phase 0017 changed the
+outcome**. Until 0015 this paragraph said FortiOS "has no per-account expiry
+field and no schedule on `config system admin`". It has both: `set schedule`
+names a `config firewall schedule onetime` entry carrying an absolute `set end`,
+and FortiOS refuses the login out of window — Fortinet's KB shows the denial as
+`reason="out_of_schedule"`. 0015 declined to take the mechanism, with the
+reasoning under "As corrected" below; 0017 took it, under "As taken".
 
 **Attribution lives in the log, so the log is mandatory.** On a constrained
 platform the account name carries no login, so the proxy emits a mapping event
@@ -909,7 +922,9 @@ covered and the driver did not handle. Three decisions came out of that, settled
 with the user and recorded here because each changes what the contract means and
 not only what the driver types.
 
-1. **`EnforcesExpiry` stays false, by decision.** FortiOS *can* time-bound an
+1. **`EnforcesExpiry` stays false, by decision** — *superseded by phase 0017
+   below, which takes the mechanism; what survives is the reasoning about what
+   it costs, which 0017 pays rather than avoids.* FortiOS *can* time-bound an
    administrator — `set schedule` against a `config firewall schedule onetime`
    entry, denied at authentication. Taking it means creating and tearing down a
    **second object per session**, naming it under the scheme above (the field
@@ -1027,6 +1042,85 @@ three. The teardown unwinds the nesting the session opened rather than a fixed
 depth, because on a partitioned unit the administrator table is one level
 deeper and a session left inside a configuration block holds an object lock
 under workspace mode.
+
+**As taken (phase 0017): a FortiGate holds its own administrator's deadline,
+and it costs a second object.** Phase 0015 established the mechanism and
+declined it; this phase renders it. Four decisions came out of it, settled with
+the user.
+
+1. **Denying login MEETS the bar for `EnforcesExpiry`, and the bar is now
+   written down.** The field says the device ends the account's usefulness
+   whether or not the proxy is alive, and the thing to compare a firewall's
+   answer against is not another firewall: it is OpenSSH's `expiry-time`
+   restriction (§5.1), which is what `target-enforced` has meant on the POSIX
+   path since D6. That also refuses new authentications, also leaves an
+   established session running, and also leaves the credential object for the
+   reaper. FortiOS's `set schedule` is the same shape, so the posture is served
+   rather than skipped — the contract was already written around these
+   semantics.
+
+   The decision was taken **conditional on the window closing every door into
+   the account rather than one of them.** Fortinet's field description is about
+   the administrator — "Firewall schedule used to restrict when the
+   administrator can log in" — and the denial is logged at authentication; but
+   the worked example is a password login and this driver also installs public
+   keys. That is the decisive item on the hardware list, and it is decisive in
+   the strict sense: if a public-key login bypasses the schedule, the
+   declaration is wrong and comes back out.
+
+2. **What the device does at the deadline is DECLARED, not left to the bit.**
+   `EnforcesExpiry` cannot distinguish a platform that cuts a live session from
+   one that only refuses the next login, and no platform here does the first.
+   `Capabilities.ExpiryMechanism` carries the sentence, `device.CheckShipped`
+   requires it of a shipped driver that expires accounts, and it rides on the
+   account-mapping record (`expiry_mechanism`) for every session where the
+   device holds the deadline — so an audit record that says `target-enforced`
+   also says what that bought. Whether an already-established session survives
+   its window closing is undocumented and is stated as undocumented; ending the
+   SESSION at its deadline is 0025's, and was deliberately not conflated with
+   ending the account's usefulness here.
+
+3. **The schedule takes the administrator's own name, and teardown removes both
+   objects.** The naming scheme above never emits a name over 32 characters,
+   which is the smaller of the two documented schedule-name limits (the naming
+   KB's 32 against the `schedule` field's 35 — take the smaller), so the second
+   object inherits the reaper prefix and the uniqueness token by BEING the first
+   object's name. That is what makes an orphan decidable from a device read
+   alone rather than from proxy state a crash would have lost. Removal deletes
+   the administrator **first** and the schedule second, because the platform
+   refuses to delete an object something still references — and it attempts both
+   on every removal, since neither teardown nor the reaper knows which posture
+   created what it is removing.
+
+   The new leak class is swept rather than accepted. `device.ResidueSweeper` is
+   an **optional** driver interface — most platforms have no second object and
+   pay nothing — and the reaper calls it after its account pass, under the same
+   prefix scoping and the same first-seen grace period, because a schedule is
+   legitimately unreferenced for one round trip while another session is
+   creating it.
+
+4. **A route that asked for a device-held deadline is the only route that gets
+   one.** The provisioner hands a driver a lifetime only under the
+   target-enforced posture; every other route reaches the driver with zero and
+   gets the single-object session phase 0014 shipped. Rendering expiry on every
+   route would put a second object on a customer's firewall nobody asked for,
+   and would leave a device deadline behind a record that says
+   `proxy-enforced`. A route that asks and cannot be served **fails** — the
+   window is computed from the DEVICE's clock (`set end` is an absolute local
+   datetime, so the proxy's clock would be wrong by the offset between them),
+   and a unit that will not report its clock is refused rather than guessed at.
+
+**What is unverified here, and what it costs to be wrong.** This phase could not
+reach Fortinet's documentation — the egress block phase 0014 hit, not the
+reachable session 0015 and 0016 had — so it added no new sourced facts and
+built so that each guess fails loudly. That the schedule table is reached
+through `config global` on a partitioned unit is the prompt's reading, not a
+page read for it: the schedule is created **before** the administrator
+references it, so a schedule written where the administrator cannot see it
+fails the reference and fails the attempt, rather than leaving an administrator
+whose deadline the device ignores. That `get system status` carries a readable
+clock is likewise unverified, and an unreadable one refuses the expiring route
+while still serving every route that needs no schedule.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -1507,7 +1601,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0027/0028 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016 |
 | 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
 | 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0027's switch driver both build on rather than re-answer (deferred from 0015) |
-| 0017 | FortiOS target-enforced expiry          | render `expiry_posture: target-enforced` onto a FortiGate through `config firewall schedule onetime` + `set schedule`, with the schedule object named, torn down and swept; settles the capability 0018's survey must advertise (deferred from 0015) |
+| 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
 | 0018 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
 | 0020 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |

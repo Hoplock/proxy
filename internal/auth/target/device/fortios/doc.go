@@ -33,9 +33,13 @@
 //   - There IS a per-administrator expiry mechanism, and 0014 said there was
 //     not. `set schedule` points at a `config firewall schedule onetime` entry
 //     with an absolute `set end`, and FortiOS denies the login when the window
-//     has closed. This driver still declares Capabilities.EnforcesExpiry false,
-//     but by DECISION — see the reasoning on Capabilities — and a route
-//     demanding control.ExpiryPostureTargetEnforced is still a skipped rung.
+//     has closed. Phase 0015 established that and declined to take it; phase
+//     0017 takes it, so Capabilities.EnforcesExpiry is TRUE and a route
+//     demanding control.ExpiryPostureTargetEnforced is served. What the device
+//     does at that deadline — refuse the next authentication, leave the account
+//     for the reaper, say nothing about a session already open — is declared
+//     beside the bit in ExpiryMechanism and recorded on every session. The
+//     second object that carries the window is schedule.go.
 //   - FortiOS documents THREE built-in access profiles, not four: `super_admin`
 //     (immutable), `prof_admin` (editable), and `super_admin_readonly`
 //     (immutable, assignable, and absent from the GUI's profile list).

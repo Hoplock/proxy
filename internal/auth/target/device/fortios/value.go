@@ -9,6 +9,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Value handling at the boundary, in the spirit of internal/auth/target/script.go.
@@ -248,4 +249,117 @@ func validateSecret(secret string) error {
 func quote(v string) string {
 	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return `"` + replacer.Replace(v) + `"`
+}
+
+// maxScheduleNameLen is the longest name this driver gives a schedule object.
+//
+// TWO DOCUMENTED FIGURES DISAGREE and this takes the smaller (phase 0017).
+// `config system admin`'s `schedule` field is `string, Maximum length: 35`,
+// while the naming-rules KB gives 32 characters for "schedule names" — the
+// object's own limit rather than the reference field's. Nothing read for this
+// phase reconciles them, so the driver spends the smaller: the difference is
+// one character of token, and being wrong in the other direction is a name the
+// device truncates or refuses at the moment it is creating a privileged
+// account's expiry.
+//
+// Nothing this proxy creates comes near it. The naming scheme in
+// internal/auth/target never emits a name longer than 32 characters on ANY
+// platform (PLAN §5.3's readable scheme caps there), which is what makes the
+// decision below — the schedule takes the administrator's own name — fit
+// without a second budget.
+const maxScheduleNameLen = 32
+
+// validateScheduleName gates the name that reaches `edit` in the schedule table
+// and `set schedule` on the administrator.
+//
+// It is the account name's own validation against the schedule limit, because
+// the two objects share a name: the schedule carries the reaper prefix and the
+// uniqueness token by BEING the account name, rather than by having a second
+// scheme that has to be kept in step with the first. What this check exists for
+// is the one case where the shared name does not fit — a platform limit of 64
+// on the administrator and 32 on the schedule is a gap a future naming change
+// could walk into, and it must fail here rather than on the device, after the
+// schedule is created and before the administrator is.
+func validateScheduleName(name string) error {
+	if err := validateAccountName(name); err != nil {
+		return err
+	}
+	if len(name) > maxScheduleNameLen {
+		return fmt.Errorf("%w: %q is %d characters and a FortiOS schedule name is limited to %d, "+
+			"so this administrator cannot carry a device-enforced expiry",
+			errInvalidValue, name, len(name), maxScheduleNameLen)
+	}
+	return nil
+}
+
+// scheduleGranularity is the resolution of a one-time schedule.
+//
+// `set start` and `set end` are `hh:mm yyyy/mm/dd`: there are no seconds in the
+// format, so a deadline is expressible only to the minute.
+const scheduleGranularity = time.Minute
+
+// scheduleTimeLayout renders that format.
+const scheduleTimeLayout = "15:04 2006/01/02"
+
+// scheduleTimePattern is the last gate before a rendered datetime is sent.
+//
+// Every value this driver interpolates is validated and then quoted; this one
+// is validated and NOT quoted, which is the single exception in the file and so
+// gets the stricter check. `set start {hh:mm yyyy/mm/dd}` is a value with a
+// space in it, and whether the FortiOS parser accepts that value quoted is not
+// documented anywhere this phase could reach — Fortinet's own examples show it
+// bare. Quoting on a guess would turn every device-enforced session into a
+// parse error; sending it bare is what the documentation shows.
+//
+// What makes that safe is not the quoting it does not have: it is that the
+// string cannot carry anything. It is produced by time.Format from a time
+// value, so the only characters it can contain are digits, a colon, a slash and
+// one space — and this pattern is what says so at the boundary rather than
+// two hundred lines away where the formatting happens.
+var scheduleTimePattern = regexp.MustCompile(`^\d{2}:\d{2} \d{4}/\d{2}/\d{2}$`)
+
+// scheduleWindow renders the start and end of the account's window, in the
+// DEVICE's own wall-clock time.
+//
+// Two properties, and each is a decision:
+//
+// The window is computed from the DEVICE's clock, never this proxy's. `set end`
+// is an absolute local datetime on the unit, so a proxy in UTC writing a window
+// for a firewall in UTC+8 would either lock the account out for eight hours or
+// hold it open for eight hours past its deadline. The second is a security
+// failure and it is silent — the audit record would say the device holds a
+// deadline it does not hold.
+//
+// The end is TRUNCATED to the granularity, never rounded up. Truncation can
+// only make the window end at or before the deadline the route asked for, and
+// on this platform "expiry" means the device stops accepting authentications:
+// finishing up to 59 seconds early costs a session nothing it can notice, while
+// rounding up would hand out time nobody authorised. The same truncation
+// applied to the start opens the window at or before now, which is what keeps a
+// second of skew between reading the clock and writing the object from
+// producing an account that cannot log in at all.
+func scheduleWindow(deviceNow time.Time, lifetime time.Duration) (start, end string, err error) {
+	if lifetime < scheduleGranularity {
+		// Refused rather than rounded up. A lifetime FortiOS cannot express is
+		// not a lifetime to approximate upwards on a privileged account, and
+		// approximating it downwards is an account that has already expired.
+		return "", "", fmt.Errorf("%w: a lifetime of %s cannot be rendered onto a FortiOS one-time schedule, "+
+			"whose start and end are `hh:mm yyyy/mm/dd` and therefore no finer than %s",
+			errInvalidValue, lifetime, scheduleGranularity)
+	}
+	startAt := deviceNow.Truncate(scheduleGranularity)
+	endAt := deviceNow.Add(lifetime).Truncate(scheduleGranularity)
+	if !endAt.After(startAt) {
+		return "", "", fmt.Errorf("%w: a lifetime of %s leaves no whole minute between the schedule's start and end",
+			errInvalidValue, lifetime)
+	}
+	start, end = startAt.Format(scheduleTimeLayout), endAt.Format(scheduleTimeLayout)
+	for _, v := range []string{start, end} {
+		if !scheduleTimePattern.MatchString(v) {
+			// Unreachable while time.Format holds its contract, and checked
+			// because this is the one value that goes to the parser unquoted.
+			return "", "", fmt.Errorf("%w: %q is not a schedule datetime", errInvalidValue, v)
+		}
+	}
+	return start, end, nil
 }

@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/hoplock/proxy/internal/auth/target/device"
 	"github.com/hoplock/proxy/internal/control"
@@ -144,36 +145,53 @@ func (d *Driver) Platform() string { return d.platform }
 // page, the versions and the wording behind each one. Two are worth reading
 // twice.
 //
-// EnforcesExpiry is FALSE, and it is false BY DECISION rather than by absence.
-// Phase 0014 declared it false because "there is no `set expiry`, and `config
-// system admin` has no schedule". The second half is flatly wrong: `config
-// system admin` has `set schedule {string}`, it points at a `config firewall
-// schedule onetime` entry carrying an absolute `set end {hh:mm yyyy/mm/dd}`,
-// and FortiOS enforces it at authentication — Fortinet's own KB shows the
-// denial logged as `reason="out_of_schedule"`. A FortiGate CAN time-bound an
-// administrator by itself.
+// EnforcesExpiry is TRUE as of phase 0017, and what it rests on is a decision
+// about what the bit MEANS rather than a new fact about the platform.
 //
-// It stays false anyway, and phase 0015 settled that with the user:
+// The facts were settled in phase 0015 and are unchanged: `config system admin`
+// has `set schedule {string}`; it names a `config firewall schedule onetime`
+// entry carrying an absolute `set end {hh:mm yyyy/mm/dd}`; FortiOS enforces it
+// at authentication, and Fortinet's KB shows the denial logged as
+// `reason="out_of_schedule"`. Phase 0014 said none of that existed, phase 0015
+// established that it does and declined to take it, and this phase takes it.
 //
-//   - The mechanism is a SECOND OBJECT per session. Taking it means creating a
-//     schedule entry, naming it under PLAN §5.3's scheme (the field caps
-//     schedule names at 35), referencing it, tearing it down, and teaching the
-//     reaper to sweep an orphaned one. An orphaned schedule on a customer's
-//     firewall is a smaller problem than an orphaned administrator and it is
-//     not nothing — it is a new leak class, and a new leak class is a phase,
-//     not a correction.
-//   - It DENIES LOGIN; it does not remove the account. So it would not retire
-//     the reaper or touch PersistsAcrossReload either way.
-//   - Whether an ALREADY-ESTABLISHED session survives the window closing is
-//     undocumented, and a target-enforced posture that cannot cut a live
-//     session is not obviously the thing a PDP asking for one wants.
+// WHY DENYING LOGIN MEETS THE BAR. The field says the DEVICE ends the account's
+// usefulness whether or not this proxy is alive. The nearest thing in this
+// system to compare it with is not a firewall at all: it is OpenSSH's
+// `expiry-time` restriction in authorized_keys (PLAN §5.1), which is what
+// `target-enforced` has meant on the POSIX path since D6. That also refuses new
+// authentications, also leaves an established session running, and also leaves
+// the credential object on the target for the reaper to remove. The contract is
+// therefore already written around these semantics, and FortiOS's mechanism is
+// the same shape as the one the posture was named for.
 //
-// The consequence is unchanged and the reasoning under it is not: a route
-// demanding control.ExpiryPostureTargetEnforced is still a skipped ladder rung,
-// and the reaper is still the removal path. What is no longer true is that
-// FortiOS has nothing to offer here. Making the schedule mechanism real is a
-// queued phase of its own, and until it lands this declaration says "this
-// driver does not enforce expiry", not "this platform cannot".
+// WHAT IT DOES NOT DO, stated here because the bit alone would overstate it —
+// and carried to the operator in ExpiryMechanism rather than left in this
+// comment, because a declaration nobody can read from the audit record is a
+// declaration nobody can check:
+//
+//   - It does not remove the account. The reaper is still the removal path and
+//     PersistsAcrossReload is untouched.
+//   - It is undocumented whether an ALREADY-ESTABLISHED session survives its
+//     administrator's window closing. Nothing here models an answer; it is the
+//     first item on this phase's hardware list. Ending the SESSION at its
+//     deadline is a separate mechanism and a separate phase in any case.
+//   - It is undocumented whether every authentication path honours the
+//     schedule. Fortinet's field description — "Firewall schedule used to
+//     restrict when the administrator can log in" — is about the
+//     ADMINISTRATOR rather than about one credential, and the KB's denial is at
+//     authentication; but the KB's example is a password login, and this driver
+//     also installs public keys. That is the DECISIVE item on the hardware
+//     list: this declaration is worth what it says only if the window closes
+//     every door into the account rather than one of them.
+//
+// The consequences are the ones the declaration implies. A route asking for
+// control.ExpiryPostureTargetEnforced on FortiOS is now SERVED rather than
+// skipped; CreateRequest.Lifetime is rendered rather than discarded; and a
+// session that provisions under that posture writes TWO objects on the
+// customer's unit, which is why teardown removes both and why the reaper
+// carries a residue sweep (device.ResidueSweeper) for the one that can outlive
+// the other.
 //
 // PersistsAcrossReload is TRUE, and D13 had to be amended for it. FortiOS has no
 // runtime-only configuration plane: under the default `config system global` /
@@ -187,8 +205,15 @@ func (d *Driver) Platform() string { return d.platform }
 // provisioner records it on every session this driver serves.
 func (d *Driver) Capabilities() device.Capabilities {
 	return device.Capabilities{
-		MaxAccountNameLen:    maxAccountNameLen,
-		EnforcesExpiry:       false,
+		MaxAccountNameLen: maxAccountNameLen,
+		EnforcesExpiry:    true,
+		ExpiryMechanism: "FortiOS refuses the administrator's next authentication once the window " +
+			"closes: `set schedule` on the administrator names a `config firewall schedule onetime` " +
+			"entry carrying an absolute `set end`, and the denial is logged as " +
+			"`reason=\"out_of_schedule\"`. It does NOT delete the account — the orphan reaper is " +
+			"still what removes it — and Fortinet documents nothing either way about a session that " +
+			"is already established when the window closes, so a live session may outlive the " +
+			"deadline. These are the semantics OpenSSH's `expiry-time` has on the POSIX path.",
 		PersistsAcrossReload: true,
 		PersistenceReason: "FortiOS has no runtime-only configuration plane: under the default " +
 			"`config system global` / `set cfg-save automatic` an administrator is written to " +
@@ -278,14 +303,24 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			return nil, err
 		}
 	}
-	// Lifetime is accepted and not rendered. FortiOS could carry it — `set
-	// schedule` against a `config firewall schedule onetime` entry is a real
-	// mechanism (see Capabilities) — and this driver does not, which is exactly
-	// what Capabilities.EnforcesExpiry: false declares. The declaration is what
-	// lets the provisioner decide whether that is acceptable for this route
-	// BEFORE anything is created; silently ignoring a lifetime without it would
-	// be the bug this is not.
-	_ = req.Lifetime
+	// A lifetime means the DEVICE is to hold this account's deadline, and on
+	// this platform that is a second object (schedule.go). The provisioner sets
+	// it only for a route that asked for control.ExpiryPostureTargetEnforced,
+	// so the test here is not "did anyone mention a lifetime" but "was this
+	// driver asked to render one" — a proxy-enforced route reaches this line
+	// with zero and gets exactly the single-object session phase 0014 shipped.
+	//
+	// The NAME is checked before anything is dialled, because the account and
+	// its schedule share one and the schedule's limit is the shorter of the
+	// two: a name this unit would take as an administrator and refuse as a
+	// schedule must fail before the administrator exists, not between the two
+	// objects.
+	expiring := req.Lifetime > 0
+	if expiring {
+		if err := validateScheduleName(req.Name); err != nil {
+			return nil, err
+		}
+	}
 
 	placeholder, err := randomSecret(placeholderSecretLen)
 	if err != nil {
@@ -321,6 +356,55 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			device.ErrAccountExists, req.Name, req.Host)
 	}
 
+	if expiring {
+		// The schedule table is checked for the same name, and a hit is
+		// reported as the SAME collision the administrator table would be.
+		// The two objects share a name, so a taken schedule means a taken
+		// token: the provisioner draws another and retries, which is the one
+		// response that does not either adopt a stranger's object or fail a
+		// session over a coincidence.
+		taken, err := d.listSchedules(ctx, s, req.Name)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range taken {
+			if name == req.Name {
+				return nil, fmt.Errorf("%w: %q is already a one-time schedule on %s",
+					device.ErrAccountExists, req.Name, req.Host)
+			}
+		}
+
+		deviceNow, ok := s.deviceNow()
+		if !ok {
+			// Refused rather than computed from this proxy's clock, and this
+			// is the fail-closed half of reading the window off the device
+			// (see systemTimePattern). `set end` is an absolute LOCAL datetime
+			// on the unit: writing one from a clock in another timezone either
+			// locks the account out for hours or holds it open for hours past
+			// its deadline, and the second failure is silent and is the audit
+			// record claiming a deadline that does not exist. It is NOT
+			// device.ErrUnsupported — the platform can do this and so can this
+			// driver; this unit did not say what time it is, which fails the
+			// attempt rather than walking the session down to a weaker rung.
+			return nil, fmt.Errorf("%w: `%s` did not report a readable system time, and a one-time "+
+				"schedule's end is an absolute datetime in the unit's own local time — "+
+				"rendering one from this proxy's clock could hold the account open past its deadline",
+				ErrDeviceRefused, vdomStatusCommand)
+		}
+		start, end, err := scheduleWindow(deviceNow, req.Lifetime)
+		if err != nil {
+			return nil, err
+		}
+		if err := d.createSchedule(ctx, s, req.Name, start, end); err != nil {
+			// Nothing has been created in the administrator table yet, and the
+			// schedule's own sequence rolls itself back through run's
+			// stop-at-first-failure plus the abandon below, so the unit is left
+			// as it was found.
+			d.abandon(ctx, s, req.Name)
+			return nil, err
+		}
+	}
+
 	steps := append(s.enterAdminTable(),
 		step{command: "edit " + quote(req.Name), label: "create the administrator"},
 	)
@@ -332,6 +416,14 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		steps = append(steps, step{command: "set vdom " + quote(vdom), label: "scope the administrator to its virtual domain"})
 	}
 	steps = append(steps, step{command: "set accprofile " + quote(profile), label: "set the access profile"})
+	if expiring {
+		// The REFERENCE, and the reason the schedule is created first: naming
+		// an entry that is not there is a dangling reference the device
+		// refuses, which is also what makes a schedule written into a scope
+		// this administrator cannot see fail loudly instead of silently
+		// (schedule.go).
+		steps = append(steps, step{command: "set schedule " + quote(req.Name), label: "bound the administrator to its expiry schedule"})
+	}
 	if trust != "" {
 		steps = append(steps,
 			step{command: "set trusthost1 " + trust, label: "pin the administrator to the proxy's address"},
@@ -412,7 +504,9 @@ func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialReq
 	return nil
 }
 
-// RemoveAccount implements device.Driver.
+// RemoveAccount implements device.Driver, and removes BOTH objects a session
+// can leave on the unit: the administrator, and the one-time schedule that
+// carried its deadline (phase 0017).
 //
 // It is IDEMPOTENT because teardown runs on the normal path, on error, on
 // panic, on signal, and from the reaper (PLAN §5.1): an administrator that is
@@ -432,7 +526,35 @@ func (d *Driver) RemoveAccount(ctx context.Context, req device.RemoveRequest) er
 	steps := append(s.enterAdminTable(),
 		step{command: "delete " + quote(req.Name), label: "remove the administrator", notFoundIsSuccess: true},
 	)
-	return d.run(ctx, s, append(steps, s.leaveAdminTable()...))
+	if err := d.run(ctx, s, append(steps, s.leaveAdminTable()...)); err != nil {
+		return err
+	}
+
+	// THE SECOND OBJECT, and it is removed second on purpose. Fortinet's
+	// `object is in use` refusal — which cli.go already matches — suggests a
+	// schedule an administrator still references may not be deletable, and
+	// whether it actually is, is on this phase's hardware list. Removing the
+	// administrator first makes the question moot: by the time the schedule is
+	// deleted nothing references it. Getting the order the other way round
+	// would leave a removal that works on some units and not others, and the
+	// units it failed on would be the ones with a live privileged account still
+	// on them.
+	//
+	// It runs for EVERY account, not only the ones this process created with a
+	// schedule: teardown does not know which posture created what it is
+	// removing, and the reaper knows even less — the account may be the
+	// leftover of a session in a process that no longer exists. See
+	// removeSchedule.
+	if err := d.removeSchedule(ctx, s, req.Name); err != nil {
+		// Named separately from the administrator, because the two outcomes
+		// need different responses and one error would hide which happened:
+		// the administrator IS gone, and what is left behind is a schedule that
+		// grants no access to anything. The residue sweep is what finds it
+		// again (schedule.go).
+		return fmt.Errorf("auth/target/device/fortios: the administrator %q was removed but its %s was not: %w",
+			req.Name, scheduleResidueKind, err)
+	}
+	return nil
 }
 
 // ListAccounts implements device.Driver.
@@ -521,8 +643,8 @@ func (m vdomMode) partitioned() bool {
 	return m == vdomModeMultiple || m == vdomModeSplitTask
 }
 
-// readVDOMMode asks the unit which shape it is, and refuses a shape this driver
-// has not been written for.
+// readStatus asks the unit which shape it is and what time it thinks it is,
+// and refuses a shape this driver has not been written for.
 //
 // Phase 0014's command sequences were written from the single-VDOM recipe and
 // are wrong on a unit with virtual domains in three ways at once, all
@@ -539,14 +661,36 @@ func (m vdomMode) partitioned() bool {
 // about; a version or model whose status output this pattern does not match is
 // another shape nobody has asked about, and the fail-closed direction is the one
 // that does not create privileged accounts on a hunch.
-func (d *Driver) readVDOMMode(ctx context.Context, s *cliSession) (vdomMode, error) {
+//
+// It reads the unit's CLOCK from the same output, and the two answers are
+// deliberately not held to the same standard. The VDOM mode decides which
+// administrator table every command in the session addresses, so an unreadable
+// one refuses the session. The clock is needed only by a route that asked the
+// device to hold a deadline, so an unreadable one is remembered as absent and
+// refuses THAT — a unit whose status output this driver cannot fully parse
+// still serves every route that does not need a schedule.
+func (d *Driver) readStatus(ctx context.Context, s *cliSession) error {
+	readAt := time.Now()
 	out, err := s.send(ctx, vdomStatusCommand)
 	if err != nil {
-		return "", fmt.Errorf("auth/target/device/fortios: read the unit's VDOM mode: %w", err)
+		return fmt.Errorf("auth/target/device/fortios: read the unit's VDOM mode: %w", err)
 	}
 	if err := checkOutput("read the unit's VDOM mode", out); err != nil {
-		return "", err
+		return err
 	}
+	mode, err := parseVDOMMode(out)
+	if err != nil {
+		return err
+	}
+	s.vdomMode = mode
+	if t, ok := parseDeviceTime(out); ok {
+		s.deviceTime, s.readAt = t, readAt
+	}
+	return nil
+}
+
+// parseVDOMMode reads the virtual-domain line.
+func parseVDOMMode(out string) (vdomMode, error) {
 	m := vdomConfigurationPattern.FindStringSubmatch(out)
 	if m == nil {
 		return "", fmt.Errorf("%w: `%s` did not report a virtual domain configuration, so this driver cannot tell which administrator table it would be editing",
@@ -559,6 +703,52 @@ func (d *Driver) readVDOMMode(ctx context.Context, s *cliSession) (vdomMode, err
 		return "", fmt.Errorf("%w: the unit reports virtual domain configuration %q, which is none of %q, %q or %q",
 			ErrMultiVDOM, mode, vdomModeDisabled, vdomModeMultiple, vdomModeSplitTask)
 	}
+}
+
+// systemTimePattern matches the unit's clock in `get system status` output.
+//
+// UNVERIFIED, and it is on the hardware list: this phase could not reach
+// Fortinet's documentation (the same egress block phase 0014 hit), so that
+// `get system status` carries a "System time" line — and what its rendering is
+// on each release — is taken from what the command is universally shown
+// printing rather than from a page read for it. Everything downstream is built
+// so that being wrong here COSTS A REFUSAL AND NOT A WRONG WINDOW: an
+// unparsed clock leaves deviceTime zero, and a route that needs one is failed
+// with a sentence naming this, rather than served from the proxy's own clock.
+var systemTimePattern = regexp.MustCompile(`(?im)^\s*System time\s*:\s*(.+?)\s*$`)
+
+// deviceTimeLayouts are the renderings this driver will read a device clock in.
+//
+// The first is the Unix `date` shape FortiOS is shown printing; the others are
+// there because a clock is worth reading in whatever plausible form it arrives,
+// and a driver that refuses over a separator has refused a device-enforced
+// expiry on a unit that told it exactly what it needed to know. There is no
+// zone: the value IS the device's local wall clock, and treating it as anything
+// else is the mistake this whole path exists to avoid — so it is parsed into
+// UTC and used only for arithmetic against itself.
+var deviceTimeLayouts = []string{
+	"Mon Jan 2 15:04:05 2006",
+	"Jan 2 15:04:05 2006",
+	"2006-01-02 15:04:05",
+	"2006/01/02 15:04:05",
+}
+
+// parseDeviceTime reads the unit's wall clock, and reports whether it could.
+func parseDeviceTime(out string) (time.Time, bool) {
+	m := systemTimePattern.FindStringSubmatch(out)
+	if m == nil {
+		return time.Time{}, false
+	}
+	// `date`'s day field is space-padded, so "Sep  3" arrives with two spaces
+	// and Go's reference layout has one. Collapsing runs of whitespace is what
+	// makes one layout read both.
+	value := strings.Join(strings.Fields(m[1]), " ")
+	for _, layout := range deviceTimeLayouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // globalScopeCommand enters the scope the administrator table lives in on a
@@ -620,12 +810,10 @@ func (d *Driver) open(ctx context.Context, ep device.Endpoint) (*cliSession, err
 	// creation: on a partitioned unit `config system admin` at the top level is
 	// not the table Fortinet's own recipe edits, so `edit`, `delete` and `show`
 	// are all pointed at something the driver cannot vouch for.
-	mode, err := d.readVDOMMode(ctx, s)
-	if err != nil {
+	if err := d.readStatus(ctx, s); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
-	s.vdomMode = mode
 	return s, nil
 }
 
@@ -674,6 +862,18 @@ func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) {
 	}
 	_, _ = s.send(ctx, "delete "+quote(name))
 	for _, st := range s.leaveAdminTable() {
+		_, _ = s.send(ctx, st.command)
+	}
+	// And the schedule of the same name, unconditionally. This path does not
+	// know how far the sequence got before it failed — that is what makes it
+	// the backstop rather than the plan — and deleting a schedule that was
+	// never created costs one refused command that nobody reads, while leaving
+	// one behind costs a sweep.
+	for _, st := range s.enterScheduleTable() {
+		_, _ = s.send(ctx, st.command)
+	}
+	_, _ = s.send(ctx, "delete "+quote(name))
+	for _, st := range s.leaveScheduleTable() {
 		_, _ = s.send(ctx, st.command)
 	}
 }

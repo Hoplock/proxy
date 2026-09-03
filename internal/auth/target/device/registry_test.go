@@ -46,6 +46,10 @@ func wellBehaved(platform string) fixtureDriver {
 		caps: Capabilities{
 			MaxAccountNameLen: 32,
 			EnforcesExpiry:    true,
+			// Declared with the mechanism beside it, because phase 0017 made
+			// that the rule for a shipped driver: EnforcesExpiry is one bit and
+			// the platforms behind it do not agree on what it buys.
+			ExpiryMechanism:   "the device refuses the account's next authentication after the deadline",
 			CredentialKinds:   []control.CredentialKind{control.CredentialKindPublicKey},
 			PinsSourceAddress: true,
 		},

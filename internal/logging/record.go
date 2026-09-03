@@ -53,6 +53,21 @@ const (
 	AttrAccessProfile    = "access_profile"    // the platform's own scope for a device account
 	AttrLifetimeSeconds  = "lifetime_seconds"  // how long a provisioned credential was meant to live
 	AttrNameConstrained  = "name_constrained"  // true when the account name had to drop its login segment
+	// AttrExpiryMechanism carries a driver's declaration of WHAT the device
+	// does at the deadline onto the sessions where the device holds one
+	// (device.Capabilities.ExpiryMechanism, phase 0017).
+	//
+	// AttrExpiryPosture above says WHO holds the deadline and cannot say what
+	// holding it buys: on FortiOS, as on OpenSSH's expiry-time, the device
+	// refuses the next authentication, leaves the account for the reaper, and
+	// says nothing about a session already open. A record carrying
+	// `target-enforced` alone would let a reviewer read a stronger guarantee
+	// out of it than the platform gives.
+	AttrExpiryMechanism = "expiry_mechanism"
+	// AttrDeviceObjectKind names what a failed sweep could not remove when it
+	// was not an administrator — `firewall schedule`, the entry a FortiGate
+	// carries an account's deadline in (device.Residue, phase 0017).
+	AttrDeviceObjectKind = "device_object_kind"
 	// AttrPersistsAcrossReload and AttrPersistenceReason carry a driver's
 	// persistence declaration onto the session it served, so a standing-account
 	// risk is recorded where the risk is taken (D13).

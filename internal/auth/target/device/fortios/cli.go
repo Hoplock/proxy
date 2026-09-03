@@ -52,6 +52,24 @@ import (
 // Nothing here interprets what a command MEANS. It reads until the device is
 // waiting again, hands the text back, and lets the driver decide.
 
+// deviceNow is the unit's wall clock now, carried forward from the reading
+// taken when the session opened.
+//
+// The elapsed term is what keeps a window honest on a long session: a create
+// that happens forty seconds after the status read would otherwise open a
+// window forty seconds in the past, which on a one-minute granularity is a
+// whole unit of the thing being measured. It is measured against this process's
+// clock rather than re-read from the device because what can drift over one
+// session is the OFFSET between two clocks, not the passage of time.
+//
+// It returns false when the unit reported no readable clock.
+func (s *cliSession) deviceNow() (time.Time, bool) {
+	if s.deviceTime.IsZero() {
+		return time.Time{}, false
+	}
+	return s.deviceTime.Add(time.Since(s.readAt)), true
+}
+
 // readTimeout bounds how long one command may take to come back to a prompt.
 const readTimeout = 20 * time.Second
 
@@ -144,6 +162,21 @@ type cliSession struct {
 	// SESSION rather than to the driver: one driver serves every unit of its
 	// kind, and two of them can be running different modes.
 	vdomMode vdomMode
+	// deviceTime is the unit's own wall clock as it reported it when the
+	// session opened, and readAt is when this process read it.
+	//
+	// They are a PAIR and they are on the session for the same reason vdomMode
+	// is: one driver serves every unit of its kind, and two units can be in two
+	// timezones. What they are for is `set end`, which is an absolute local
+	// datetime on the device — so a window computed from this proxy's clock
+	// would be wrong by the offset between them, in one direction locking the
+	// account out and in the other holding it open past its deadline.
+	//
+	// deviceTime is the zero time when the unit's status did not carry a
+	// readable clock, and the driver refuses to render an expiry rather than
+	// falling back to its own (see CreateAccount).
+	deviceTime time.Time
+	readAt     time.Time
 	// depth is how many configuration levels this session has opened and not
 	// closed. Close unwinds exactly that many, which is what a fixed `end\nend`
 	// could not do once `config global` made the nesting depend on the unit.

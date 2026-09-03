@@ -133,6 +133,17 @@ type AccountMapping struct {
 	Rung   int
 	// ExpiryPosture is who, if anyone, enforces the account's end (D13).
 	ExpiryPosture string
+	// ExpiryMechanism is the driver's declaration of WHAT the device does at
+	// the deadline, carried on the record for the sessions where the device
+	// holds one (device.Capabilities.ExpiryMechanism, phase 0017).
+	//
+	// It is here for PersistenceReason's reason and it answers the question
+	// `target-enforced` raises and cannot settle: FortiOS refuses the next
+	// authentication and leaves the account for the reaper, and says nothing
+	// about a session already open. A record that names the posture without
+	// naming the mechanism cannot tell a reviewer whether the session they are
+	// looking at was cut at its deadline or merely could not be re-entered.
+	ExpiryMechanism string
 	// Lifetime is how long the account was meant to live. Zero under the
 	// accepted-risk posture.
 	Lifetime time.Duration
@@ -158,9 +169,22 @@ type AccountMapping struct {
 type SweepFailure struct {
 	Target   string
 	Platform string
-	Account  string
-	Reason   string
-	At       time.Time
+	// Account is the object's name on the device. It is an administrator
+	// unless ObjectKind says otherwise.
+	Account string
+	// ObjectKind is empty for an administrator and otherwise names what the
+	// object is — `firewall schedule` for the entry a FortiGate carries an
+	// account's deadline in (device.Residue.Kind, phase 0017).
+	//
+	// It is on the record rather than folded into Reason because the two
+	// failures need different responses and an operator has to be able to tell
+	// them apart at a glance: an administrator left behind is a standing
+	// privileged account on a firewall, while a schedule left behind grants
+	// access to nothing and is a tidiness problem. Reporting the second as the
+	// first is how the first stops being believed.
+	ObjectKind string
+	Reason     string
+	At         time.Time
 }
 
 // DeviceEventSink is where the device path's two must-not-be-lost events go.
@@ -432,6 +456,31 @@ func (r *deviceRoute) acceptedFields() []string {
 	return names
 }
 
+// deviceLifetime is the lifetime the DRIVER is given, which is not always the
+// lifetime the route named.
+//
+// A driver receives one only when the route asked for the target-enforced
+// posture and the driver declares it can serve it — that is, only when the
+// DEVICE is to hold this account's deadline. Under any other posture the driver
+// is handed zero and renders nothing, and the deadline is the proxy's
+// (enforceExpiry) or nobody's (accepted risk).
+//
+// The decision lives here rather than inside each driver because rendering
+// expiry is not free: on FortiOS it is a second object on a customer's firewall
+// per session, with its own teardown and its own orphan class (phase 0017). A
+// driver that rendered whatever lifetime it was handed would make every
+// proxy-enforced route start paying that cost silently, and would put a device
+// deadline behind an audit record that says `proxy-enforced`. resolve has
+// already established that the pair is coherent — a target-enforced route on a
+// driver that cannot expire is a skipped rung — so this is the one place that
+// has to be right.
+func (r *deviceRoute) deviceLifetime() time.Duration {
+	if r.posture == control.ExpiryPostureTargetEnforced && r.caps.EnforcesExpiry {
+		return r.lifetime
+	}
+	return 0
+}
+
 // loggingAvailable reports whether the mapping event has anywhere to go.
 func (a *DeviceAccountAuthenticator) loggingAvailable() bool {
 	return a.events != nil && a.events.Deliverable()
@@ -495,6 +544,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		Method:               MethodEphemeralAccount,
 		Rung:                 tgt.Rung,
 		ExpiryPosture:        string(r.posture),
+		ExpiryMechanism:      r.expiryMechanism(),
 		Lifetime:             r.lifetime,
 		Profile:              account.Profile,
 		Fields:               r.fields,
@@ -529,6 +579,19 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 	return access, nil
 }
 
+// expiryMechanism is the driver's declaration, on the sessions it applies to.
+//
+// It rides only where the device actually holds the deadline. On a
+// proxy-enforced or accepted-risk route the driver rendered nothing, and
+// repeating what the platform COULD have done would put a claim on the record
+// about a session where nothing on the device is enforcing anything.
+func (r *deviceRoute) expiryMechanism() string {
+	if r.deviceLifetime() == 0 {
+		return ""
+	}
+	return r.caps.ExpiryMechanism
+}
+
 // create draws a name and creates the account, retrying on collision.
 //
 // It NEVER adopts (D13, PLAN §5.3). The POSIX path's idempotent treatment of an
@@ -552,7 +615,7 @@ func (a *DeviceAccountAuthenticator) create(ctx context.Context, r *deviceRoute,
 			Name:          name,
 			Profile:       profile,
 			SourceAddress: source,
-			Lifetime:      r.lifetime,
+			Lifetime:      r.deviceLifetime(),
 			Fields:        r.fields,
 		})
 		switch {
