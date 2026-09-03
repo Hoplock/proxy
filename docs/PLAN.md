@@ -159,15 +159,25 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   security events are sent immediately** (flush the in-flight batch or use a
   dedicated priority channel). Local disk is only a **resilience buffer** for
   when the network is unavailable; logs drain to the server when it recovers.
-- **D9 — Tech choices.** Go (min **1.25**, target latest stable). SSH plumbing:
+- **D9 — Tech choices.** Go (min **1.26**, target latest stable). SSH plumbing:
   `golang.org/x/crypto/ssh`. Proxy bootstrap config: **YAML**. API + policy +
   log payloads: **JSON over HTTPS (REST)** for the prototype; a streaming/gRPC
   transport may be added later behind the same client interface.
   The floor is set by `golang.org/x/crypto`, which *is* this project's SSH
   implementation and so is the dependency least worth holding back: current
-  releases require Go ≥ 1.25.0, and pinning an older Go pins an older SSH
-  stack. The floor was 1.24 through phase 0004; it moves when x/crypto moves
-  it, and CI tracks the latest stable release rather than the floor.
+  releases require Go ≥ 1.26.0, and pinning an older Go pins an older SSH
+  stack. The floor was 1.24 through phase 0004 and 1.25 until x/crypto v0.56.0;
+  it moves when x/crypto moves it, and CI tracks the latest stable release
+  rather than the floor.
+
+  That rule earned itself in September 2026, which is worth recording because it
+  is the case the rule was written for. `x/crypto` v0.55.0 drew two advisories —
+  GO-2026-6354 and GO-2026-6355, denial of service on a deadlocked SSH channel —
+  reachable from both ends of this proxy: `proxy.Server.handleConn` and
+  `target.sshAdminDialer.Dial`. The fix ships only in v0.56.0, which requires Go
+  1.26. Holding the floor at 1.25 would have meant holding a known-vulnerable SSH
+  stack in an SSH proxy, which is precisely the trade this decision says not to
+  make.
 - **D10 — Proprietary/closed source.** Private repo, all rights reserved. A
   proprietary `LICENSE` and per-file SPDX + copyright headers are added in the
   scaffold phase (Section 8).
@@ -1402,7 +1412,7 @@ Still out of scope: tamper-evident/append-only storage at the destination
 ## 8. Cross-cutting conventions
 
 - **Module path**: `github.com/hoplock/proxy`.
-- **Go**: min 1.25 (the `go` directive in `go.mod`); CI pins the toolchain to the
+- **Go**: min 1.26 (the `go` directive in `go.mod`); CI pins the toolchain to the
   latest stable minor (`GO_VERSION` in `.github/workflows/ci.yml`). Keep the two
   distinct: the floor rises only when a dependency forces it, while CI moves with
   each Go release. The `build-test` job runs on **both**, with

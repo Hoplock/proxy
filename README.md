@@ -61,7 +61,7 @@ before reading the code.
 
 ## Requirements
 
-- Go **1.25** or newer (CI builds and tests on the latest stable release)
+- Go **1.26** or newer (CI builds and tests on the latest stable release)
 - [`golangci-lint`](https://golangci-lint.run) v2 (for `make lint`)
 - Python 3 with `openapi-spec-validator` (for `make openapi-check` only)
 - Docker with `compose`, and `ssh-keygen` (for `make e2e` and `make test-sshd`)
