@@ -23,18 +23,25 @@ jobs:
       # very different things, so never hide one behind the other.
       fail-fast: false
       matrix:
-        # 1.25 is the floor declared by go.mod; 1.26 is GO_VERSION above.
-        # Building on the floor is the only thing that keeps that directive
-        # honest — without this leg, "min 1.25" is an untested claim, and the
-        # first use of a 1.26-only API would break consumers silently.
-        go: ["1.25", "1.26"]
+        # The floor declared by go.mod, and GO_VERSION above. Building on the
+        # floor is the only thing that keeps that directive honest — without
+        # it, "min <x>" is an untested claim and the first use of a
+        # newer-than-floor API would break consumers silently.
+        #
+        # They COINCIDE at the moment: golang.org/x/crypto v0.56.0 requires Go
+        # 1.26, which moved the floor to the release CI already tracks (D9: the
+        # floor moves when x/crypto moves it). One entry is therefore the whole
+        # matrix until Go 1.27 ships and GO_VERSION moves ahead of the floor
+        # again — at which point this list grows back to two and the comment
+        # above starts earning its keep again.
+        go: ["1.26"]
     env:
       # Pin the toolchain to the matrix version. With the default (auto), a
       # go.mod floor newer than the installed Go is silently satisfied by
       # downloading a newer toolchain — both legs would then test the same
       # version and the floor leg would prove nothing. With `local`, raising
-      # the go directive past 1.25 fails this job loudly, which is the
-      # reminder to update the matrix.
+      # the go directive past the matrix fails this job loudly, which is the
+      # reminder to update it.
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
@@ -66,12 +73,18 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v8
         with:
-          # Must be built with a Go at least as new as GO_VERSION above:
-          # golangci-lint type-checks with the Go version it was compiled
-          # against, so an older binary panics on a newer stdlib
-          # ("file requires newer Go version go1.26 (application built with
-          # go1.25)"). Bump this whenever GO_VERSION moves to a new minor.
-          version: v2.12.2
+          # Must be built with a Go at least as new as the `go` directive in
+          # go.mod: golangci-lint type-checks with the Go version it was
+          # compiled against, so an older binary refuses the module outright
+          # ("the Go language version (go1.25) used to build golangci-lint is
+          # lower than the targeted Go version (1.26.0)"). Bump this whenever
+          # the floor or GO_VERSION moves to a new minor.
+          #
+          # Which release is safe is checkable rather than guessable: a
+          # release's own `go` directive is what its binaries are built with.
+          # v2.12.2 declares go 1.25.0 and v2.13.2 declares go 1.26.0, which is
+          # why this moved with the floor rather than staying put.
+          version: v2.13.2
 
   openapi:
     name: openapi contract
