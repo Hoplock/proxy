@@ -132,10 +132,17 @@ func Shipped() *Registry { return shipped }
 // CheckShipped reports whether every driver in a registry meets the rules a
 // HOPLOCK-SHIPPED driver must meet.
 //
-// Today there is one rule and it is D13's, as phase 0014 amended it: a Hoplock
-// driver may declare PersistsAcrossReload only when the platform leaves it no
-// choice, and must say which platform mechanism forces it. What is forbidden is
-// the SILENT declaration — persistence as a convenience, with nothing to review.
+// There are two rules and both are D13's, as phase 0015 generalised it: a
+// declaration must mean what it says, and the two that a reader cannot check
+// from the bit alone must carry their reasoning in the struct. A Hoplock driver
+// may declare PersistsAcrossReload only when the platform leaves it no choice
+// and must say which platform mechanism forces it (phase 0014's amendment); a
+// driver that declares EnforcesExpiry must say WHAT the device does at the
+// deadline (phase 0017), because "the device expires the account" covers both
+// a platform that cuts a live session and one that only refuses the next login,
+// and an operator reading `target-enforced` in an audit record is entitled to
+// know which one they bought. What is forbidden in both cases is the SILENT
+// declaration — a bit flipped with nothing to review.
 //
 // It is expressed as a check over the registry rather than as a comment on the
 // field because a comment is not something a build can fail, and this is
@@ -146,6 +153,20 @@ func Shipped() *Registry { return shipped }
 func CheckShipped(r *Registry) error {
 	for _, d := range r.Drivers() {
 		caps := d.Capabilities()
+		if caps.EnforcesExpiry && strings.TrimSpace(caps.ExpiryMechanism) == "" {
+			return fmt.Errorf(
+				"auth/target/device: shipped driver %q declares EnforcesExpiry with no "+
+					"ExpiryMechanism, which a Hoplock driver may not (D13): the declaration is "+
+					"what makes control.ExpiryPostureTargetEnforced satisfiable, and the "+
+					"platforms behind it do not agree on what it buys — OpenSSH's expiry-time "+
+					"and FortiOS's `set schedule` both refuse the next authentication and "+
+					"neither cuts a session already open, while a reader of the bit alone "+
+					"would assume the deadline reaches the live session too. A shipped driver "+
+					"must therefore name the mechanism, so the claim can be checked against "+
+					"the vendor's documentation and so the provisioner can record it on every "+
+					"session it serves",
+				d.Platform())
+		}
 		if caps.PersistsAcrossReload && strings.TrimSpace(caps.PersistenceReason) == "" {
 			return fmt.Errorf(
 				"auth/target/device: shipped driver %q declares PersistsAcrossReload with no "+

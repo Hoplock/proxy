@@ -55,11 +55,20 @@ type deviceReaper struct {
 	mu      sync.Mutex
 	live    map[string]map[string]bool
 	firstAt map[string]map[string]time.Time
-	seen    map[string]*seenDevice
-	timers  []*time.Timer
-	stop    chan struct{}
-	start   sync.Once
-	shut    sync.Once
+	// firstResidueAt ages the objects a driver created BESIDE its accounts
+	// (device.Residue), and it is a SEPARATE map from firstAt even though on
+	// FortiOS the two share a name. They measure different things: firstAt
+	// times an administrator from when this proxy first saw it, and a schedule
+	// only becomes residue when its administrator is gone — which is often the
+	// moment the same sweep removed it. Sharing one map would restart the
+	// schedule's clock every time the account's entry was forgotten, and the
+	// object that grants nothing would outlive the one that granted everything.
+	firstResidueAt map[string]map[string]time.Time
+	seen           map[string]*seenDevice
+	timers         []*time.Timer
+	stop           chan struct{}
+	start          sync.Once
+	shut           sync.Once
 
 	wg sync.WaitGroup
 }
@@ -74,13 +83,14 @@ type seenDevice struct {
 
 func newDeviceReaper(auth *DeviceAccountAuthenticator, interval, grace time.Duration) *deviceReaper {
 	r := &deviceReaper{
-		auth:     auth,
-		interval: interval,
-		grace:    grace,
-		live:     map[string]map[string]bool{},
-		firstAt:  map[string]map[string]time.Time{},
-		seen:     map[string]*seenDevice{},
-		stop:     make(chan struct{}),
+		auth:           auth,
+		interval:       interval,
+		grace:          grace,
+		live:           map[string]map[string]bool{},
+		firstAt:        map[string]map[string]time.Time{},
+		firstResidueAt: map[string]map[string]time.Time{},
+		seen:           map[string]*seenDevice{},
+		stop:           make(chan struct{}),
 	}
 	if r.interval == 0 {
 		r.interval = DefaultDeviceReaperInterval
@@ -230,7 +240,118 @@ func (r *deviceReaper) Sweep(ctx context.Context, ep device.Endpoint, route *dev
 		return removed, fmt.Errorf("auth/target: %d orphaned administrator(s) could not be removed on %s: %s",
 			len(failures), addrOf(ep), strings.Join(failures, ", "))
 	}
+
+	// The residue pass runs AFTER the account pass, in the same sweep, and the
+	// order is the point: on a platform where the second object is referenced
+	// by the first, an orphaned administrator removed a moment ago is what
+	// makes its schedule unreferenced and therefore sweepable now rather than
+	// on the next tick.
+	sweptResidue, err := r.sweepResidue(ctx, ep, route)
+	removed = append(removed, sweptResidue...)
+	return removed, err
+}
+
+// sweepResidue removes the objects a driver created beside its accounts and no
+// account references any more (device.ResidueSweeper, phase 0017).
+//
+// It is a SECOND LEAK CLASS and it is swept because it is one: a session that
+// created a FortiGate's expiry schedule and then failed before the
+// administrator existed leaves an object with this proxy's prefix on a
+// customer's firewall that nothing else will ever look for. It grants access to
+// nothing — which is why its failures are recorded as what they are rather than
+// as an account left behind (SweepFailure.ObjectKind) — but "harmless litter
+// this system cannot clean up" is not a sentence this product gets to say about
+// objects it writes on other people's devices.
+//
+// A driver that creates no such objects does not implement the interface, and
+// this returns immediately. That is the whole cost of the feature on every
+// platform that does not need it.
+func (r *deviceReaper) sweepResidue(ctx context.Context, ep device.Endpoint, route *deviceRoute) ([]string, error) {
+	sweeper, ok := route.driver.(device.ResidueSweeper)
+	if !ok {
+		return nil, nil
+	}
+	prefix := route.naming.prefix
+
+	residue, err := sweeper.ListResidue(ctx, device.ListRequest{Endpoint: ep, Prefix: prefix})
+	if err != nil {
+		r.auth.reportSweepFailure(SweepFailure{
+			Target: addrOf(ep), Platform: route.platform,
+			Reason: fmt.Sprintf("the device's leftover objects could not be enumerated: %v", err), At: r.auth.now(),
+		})
+		return nil, err
+	}
+
+	now := r.auth.now()
+	var removed, failures []string
+	for _, object := range residue {
+		if !strings.HasPrefix(object.Name, prefix) {
+			// The same distrust ListAccounts is treated with, for the same
+			// reason: a driver that widened the selection it was given must not
+			// be handed the consequence, which here is another proxy's object.
+			continue
+		}
+		if r.isLive(ep, object.Name) {
+			// Belt and braces over the driver's own "no account references it".
+			// An object named after an account this process is currently using
+			// is not residue whatever the device says, and the read that said
+			// otherwise raced a session that had not finished creating it.
+			continue
+		}
+		if !r.residueAgedOut(ep, object.Name, now) {
+			continue
+		}
+		if err := sweeper.RemoveResidue(ctx, device.RemoveRequest{Endpoint: ep, Name: object.Name}); err != nil {
+			failures = append(failures, object.Name)
+			r.auth.reportSweepFailure(SweepFailure{
+				Target: addrOf(ep), Platform: route.platform, Account: object.Name,
+				ObjectKind: object.Kind, Reason: err.Error(), At: now,
+			})
+			continue
+		}
+		r.forgetResidue(ep, object.Name)
+		removed = append(removed, fmt.Sprintf("%s (%s)", object.Name, object.Kind))
+	}
+	if len(failures) > 0 {
+		return removed, fmt.Errorf("auth/target: %d leftover device object(s) could not be removed on %s: %s",
+			len(failures), addrOf(ep), strings.Join(failures, ", "))
+	}
 	return removed, nil
+}
+
+// residueAgedOut reports whether a leftover object has been unreferenced long
+// enough to remove.
+//
+// It exists because "no account references this" is true for a moment on the
+// CREATE path too: a FortiGate's schedule is written one round trip before the
+// administrator that names it, and a sweep landing in that window would delete
+// another session's expiry object out from under it and fail that session's
+// provisioning. The grace period is the same one an untracked account gets and
+// it is measured the same way — from when THIS PROCESS first saw the object,
+// because no platform here timestamps one.
+func (r *deviceReaper) residueAgedOut(ep device.Endpoint, name string, now time.Time) bool {
+	key := addrOf(ep)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.firstResidueAt[key] == nil {
+		r.firstResidueAt[key] = map[string]time.Time{}
+	}
+	first, ok := r.firstResidueAt[key][name]
+	if !ok {
+		r.firstResidueAt[key][name] = now
+		return false
+	}
+	return now.Sub(first) >= r.grace
+}
+
+// forgetResidue drops an object's first-seen record once it is gone.
+func (r *deviceReaper) forgetResidue(ep device.Endpoint, name string) {
+	key := addrOf(ep)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if seen, ok := r.firstResidueAt[key]; ok {
+		delete(seen, name)
+	}
 }
 
 // agedOut reports whether an untracked account is old enough to remove.

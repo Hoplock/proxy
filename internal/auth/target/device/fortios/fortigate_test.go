@@ -345,14 +345,24 @@ func TestShippedDeclarationMeetsTheHoplockRule(t *testing.T) {
 	if strings.TrimSpace(caps.PersistenceReason) == "" {
 		t.Error("a shipped driver that persists must say which platform mechanism forces it")
 	}
-	if caps.EnforcesExpiry {
-		// FortiOS DOES have `set schedule`, and this driver still declares
-		// false — by decision, not by absence (see Capabilities). Flipping this
-		// to true is only honest once the driver actually creates, references
-		// and tears down a `config firewall schedule onetime` object, and the
-		// reaper sweeps an orphaned one; until then it would make the
-		// target-enforced posture satisfiable by nothing.
-		t.Error("EnforcesExpiry is true, but nothing in this driver renders a schedule onto the device")
+	if !caps.EnforcesExpiry {
+		// Phase 0017 made this true, and it is only honest because the driver
+		// now creates, references and tears down a `config firewall schedule
+		// onetime` object and the reaper sweeps an orphaned one. The tests
+		// below are what hold it to that: flipping the declaration back without
+		// removing the mechanism, or removing the mechanism without flipping
+		// the declaration, fails here or there.
+		t.Error("EnforcesExpiry is false, but the driver renders a schedule onto the device")
+	}
+	if strings.TrimSpace(caps.ExpiryMechanism) == "" {
+		// The declaration is one bit and the platforms behind it disagree about
+		// what the bit buys. A shipped driver says which (device.CheckShipped).
+		t.Error("a shipped driver that expires accounts must say what the device does at the deadline")
+	}
+	for _, want := range []string{"out_of_schedule", "reaper"} {
+		if !strings.Contains(caps.ExpiryMechanism, want) {
+			t.Errorf("ExpiryMechanism does not mention %q; it has to say what the device does and what it does not", want)
+		}
 	}
 	if caps.MaxAccountNameLen != FortiOSMaxNameLenDeclared {
 		t.Errorf("declared name limit %d, want %d", caps.MaxAccountNameLen, FortiOSMaxNameLenDeclared)

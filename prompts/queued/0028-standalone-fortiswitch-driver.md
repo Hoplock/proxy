@@ -28,10 +28,13 @@ single most consequential number in the driver); whether `config system admin`
 takes the same fields, `accprofile` and `trusthost` included; whether an
 administrator can carry an SSH public key; whether the platform can expire an
 account (FortiOS **can** — `set schedule` against a `config firewall schedule
-onetime` entry — and the FortiGate driver still declares `EnforcesExpiry: false`
-by decision rather than by absence, which phase 0015 recorded in `docs/PLAN.md`
-§5.3 and deferred to **0017**; inherit neither the fact nor the declaration,
-establish both); and whether configuration is written to
+onetime` entry — and since phase **0017** the FortiGate driver declares
+`EnforcesExpiry: true` and renders it, with the schedule object named after the
+administrator, torn down with it and swept through `device.ResidueSweeper`
+(`docs/PLAN.md` §5.3, "As taken (phase 0017)"). Inherit neither the fact nor the
+declaration: establish for FortiSwitchOS whether the same two tables exist, and
+declare `ExpiryMechanism` beside the bit if they do, as a shipped driver now
+must); and whether configuration is written to
 non-volatile storage the same way, which decides `PersistsAcrossReload` and its
 required `PersistenceReason`. Record each with its doc reference in your
 learnings.

@@ -11,8 +11,10 @@ import (
 	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -65,6 +67,10 @@ type FortiOSAccount struct {
 	// on a partitioned unit is the wider of the two scopes — so a test asserts
 	// on this field rather than on the account merely existing.
 	VDOM string
+	// Schedule is the one-time schedule this administrator's login is bounded
+	// by, set by `set schedule` (phase 0017). Empty means "no schedule means no
+	// restrictions", which is the device's own wording for the default.
+	Schedule string
 	// Password and PublicKey are what the driver installed. They are here so a
 	// test can assert the credential ARRIVED; nothing in the device ever prints
 	// them, exactly as a real one prints `ENC …` rather than the secret.
@@ -75,6 +81,39 @@ type FortiOSAccount struct {
 // FortiOSOpenIPv6TrustHost is `ip6-trusthost1`'s documented default: "Default
 // allows access from any IPv6 address".
 const FortiOSOpenIPv6TrustHost = "::/0"
+
+// FortiOSSchedule is one `config firewall schedule onetime` entry.
+//
+// It is modelled because it is the object a device-enforced expiry actually IS
+// on this platform: `set schedule` on an administrator is a reference, and a
+// reference to nothing is what a driver that got the second object wrong
+// produces. A fake that stored `set schedule` as a string on the account — and
+// nothing else — would accept a driver that never created the schedule, which
+// is precisely the session whose audit record claims a deadline the device does
+// not hold.
+type FortiOSSchedule struct {
+	Name string
+	// Start and End are the device's own `hh:mm yyyy/mm/dd` renderings, kept as
+	// the strings the driver sent so a test can assert on what was WRITTEN
+	// rather than on what this fake managed to parse back.
+	Start string
+	End   string
+	// ExpirationDays is "write an event log message this many days before the
+	// schedule expires", documented with a minimum of 0, a maximum of 100 and a
+	// DEFAULT OF 3 — which is why a new entry here starts at
+	// FortiOSDefaultExpirationDays rather than at zero. Every schedule this
+	// proxy creates is shorter than three days, so a driver that leaves the
+	// field alone earns the unit a warning log per session, and a fake that
+	// started it at zero would hide that.
+	ExpirationDays int
+}
+
+// FortiOSDefaultExpirationDays is `expiration-days`' documented default.
+const FortiOSDefaultExpirationDays = 3
+
+// FortiOSScheduleTimeLayout is the `hh:mm yyyy/mm/dd` format of a one-time
+// schedule's start and end.
+const FortiOSScheduleTimeLayout = "15:04 2006/01/02"
 
 // FortiOSFaults make the device fail the way real ones do.
 type FortiOSFaults struct {
@@ -91,6 +130,21 @@ type FortiOSFaults struct {
 	// PageEvery emits the pager's marker every n lines of `show` output. Zero
 	// means no paging.
 	PageEvery int
+	// HideClock makes the unit refuse to say what time it is, by every route:
+	// `execute date`, `execute time`, and the `System time` line in
+	// `get system status`.
+	//
+	// It is a FAULT rather than a mode because a driver that renders an
+	// absolute expiry datetime from the WRONG clock writes a window that is
+	// hours out — in one direction an account that cannot log in, in the other
+	// an account the device honours past its deadline. What the fault is here
+	// to prove is that the driver refuses instead.
+	HideClock bool
+	// NoExecuteClock hides only `execute date` and `execute time`, leaving the
+	// status line, so the fallback path can be exercised on its own. A unit
+	// that answers one and not the other is a unit whose clock is known, and
+	// refusing it would be refusing a route over a command name.
+	NoExecuteClock bool
 }
 
 // FortiOSOptions configures a FakeFortiOS.
@@ -129,6 +183,17 @@ type FortiOSOptions struct {
 	// accepting `config system admin` at the top level, which is what this fake
 	// exists to have closed.
 	VDOMs []string
+	// Schedules are one-time schedules that already exist, which is how a test
+	// stages the object a crashed session left behind.
+	Schedules []FortiOSSchedule
+	// Now is the device's own clock. Nil means time.Now.
+	//
+	// It is settable because the device's clock is not the proxy's, and that
+	// difference is the whole reason the driver reads a time off `get system
+	// status` at all: a fake that could only be "now" would let a driver
+	// computing the window from its own clock pass every test and then write an
+	// eight-hour-wrong window on a unit in another timezone.
+	Now func() time.Time
 	// Faults make it misbehave.
 	Faults FortiOSFaults
 }
@@ -162,6 +227,23 @@ const (
 	FortiOSTrafficVDOM = "FG-traffic"
 )
 
+// The one-time schedule table's command lines, spelled once.
+const (
+	scheduleTableLine = "config firewall schedule onetime"
+	scheduleShowLine  = "show firewall schedule onetime"
+)
+
+// FortiOSMaxScheduleNameLen is the schedule-name limit this device enforces.
+//
+// 31 — `config firewall schedule onetime`'s own `name` parameter ("Onetime
+// schedule name. | string | Maximum length: 31"), identical across the
+// supported releases. It was 32 here, from the naming KB's general figure for
+// "Schedule names", and 35 was never in the running: 35 is the width of the
+// fields that REFERENCE a schedule (`system admin`'s `schedule`,
+// `firewall policy`'s `schedule`), so a name can be referenced that cannot
+// exist.
+const FortiOSMaxScheduleNameLen = 31
+
 // FortiOSBuiltinProfiles are the access profiles Fortinet documents.
 //
 // THREE, not four. `prof_admin_readonly` appears in no Fortinet source and used
@@ -186,11 +268,13 @@ type FakeFortiOS struct {
 	adminUser     string
 	adminPassword string
 
-	mu       sync.Mutex
-	accounts map[string]FortiOSAccount
-	commands []string
-	logins   []string
-	down     bool
+	mu        sync.Mutex
+	now       func() time.Time
+	accounts  map[string]FortiOSAccount
+	schedules map[string]FortiOSSchedule
+	commands  []string
+	logins    []string
+	down      bool
 	// strandedSessions counts CLI sessions that ended while still inside a
 	// configuration block. On a real unit that is what holds an object lock
 	// under workspace mode, and it is the failure a driver whose unwinding does
@@ -223,12 +307,17 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	}
 
 	d := &FakeFortiOS{
-		hostKey:  hostKey,
-		hostname: opts.Hostname,
-		profiles: map[string]bool{},
-		faults:   opts.Faults,
-		closed:   make(chan struct{}),
-		accounts: map[string]FortiOSAccount{},
+		hostKey:   hostKey,
+		hostname:  opts.Hostname,
+		profiles:  map[string]bool{},
+		faults:    opts.Faults,
+		closed:    make(chan struct{}),
+		accounts:  map[string]FortiOSAccount{},
+		schedules: map[string]FortiOSSchedule{},
+		now:       opts.Now,
+	}
+	if d.now == nil {
+		d.now = time.Now
 	}
 	if d.hostname == "" {
 		d.hostname = "FGT-TEST"
@@ -259,6 +348,9 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	for _, p := range profiles {
 		d.profiles[p] = true
 	}
+	for _, sched := range opts.Schedules {
+		d.schedules[sched.Name] = sched
+	}
 	for _, a := range opts.Accounts {
 		if a.Profile == "" {
 			a.Profile = "super_admin"
@@ -285,6 +377,9 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 				return nil, nil
 			}
 			if acct, ok := d.account(conn.User()); ok && acct.Password != "" && acct.Password == string(given) {
+				if !d.scheduleAllows(acct) {
+					return nil, errors.New("sshtest: out_of_schedule")
+				}
 				return nil, nil
 			}
 			return nil, errors.New("sshtest: bad device login")
@@ -298,6 +393,9 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 			want, _, _, _, err := ssh.ParseAuthorizedKey([]byte(acct.PublicKey))
 			if err != nil || !bytes.Equal(want.Marshal(), key.Marshal()) {
 				return nil, errors.New("sshtest: bad device login")
+			}
+			if !d.scheduleAllows(acct) {
+				return nil, errors.New("sshtest: out_of_schedule")
 			}
 			return nil, nil
 		},
@@ -345,6 +443,85 @@ func (d *FakeFortiOS) Accounts() map[string]FortiOSAccount {
 		out[k] = v
 	}
 	return out
+}
+
+// Schedules is the one-time schedule table, for assertions. It is what makes
+// "teardown removed BOTH objects" an assertion rather than a hope.
+func (d *FakeFortiOS) Schedules() map[string]FortiOSSchedule {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]FortiOSSchedule, len(d.schedules))
+	for k, v := range d.schedules {
+		out[k] = v
+	}
+	return out
+}
+
+// AddSchedule puts a one-time schedule on the device without going through the
+// CLI, which is how a test stages the object a crashed session left behind
+// before its administrator ever existed.
+func (d *FakeFortiOS) AddSchedule(sched FortiOSSchedule) {
+	d.record(func() { d.schedules[sched.Name] = sched })
+}
+
+// Now is the device's own clock, and SetNow moves it.
+//
+// Moving it is how a test closes a window without touching the account: what
+// `set schedule` buys is that the DEVICE stops honouring the credential when
+// the time passes, and a test that proved it by editing the account would be
+// proving something else.
+func (d *FakeFortiOS) Now() time.Time { return d.clock()() }
+
+func (d *FakeFortiOS) SetNow(now func() time.Time) {
+	d.record(func() { d.now = now })
+}
+
+// clock returns the device's clock under the lock, so that a test moving it
+// races nothing. The function it returns is called OUTSIDE the lock, because a
+// test's clock is a test's to write and this device must not hold a mutex
+// through it.
+func (d *FakeFortiOS) clock() func() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.now
+}
+
+// scheduleAllows reports whether an administrator's schedule lets it log in
+// now, which is what `set schedule` BUYS and therefore the only thing worth
+// modelling about it.
+//
+// It is applied to BOTH authentication callbacks. Fortinet's field description
+// is about the administrator — "Firewall schedule used to restrict when the
+// administrator can log in" — and the denial their KB shows is at
+// authentication; but the KB's worked example is a password login, and nothing
+// read for phase 0017 says in so many words that a public-key login is checked
+// the same way. UNVERIFIED, and on that phase's hardware list as the item the
+// declaration rests on. It is modelled as covering both because that is the
+// strictest reading and the one that fails a driver bug rather than hiding it —
+// the same standard this fake applies to `config system admin` at the top level
+// of a partitioned unit.
+//
+// A schedule the device does not have DENIES, rather than being ignored: a
+// dangling reference is the shape a half-torn-down session leaves, and reading
+// it as "no restrictions" would make the most dangerous outcome the quiet one.
+func (d *FakeFortiOS) scheduleAllows(acct FortiOSAccount) bool {
+	if acct.Schedule == "" {
+		return true
+	}
+	d.mu.Lock()
+	sched, ok := d.schedules[acct.Schedule]
+	d.mu.Unlock()
+	if !ok {
+		return false
+	}
+	start, errStart := time.Parse(FortiOSScheduleTimeLayout, sched.Start)
+	end, errEnd := time.Parse(FortiOSScheduleTimeLayout, sched.End)
+	if errStart != nil || errEnd != nil {
+		return false
+	}
+	now := d.clock()()
+	wall := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), 0, time.UTC)
+	return !wall.Before(start) && wall.Before(end)
 }
 
 // Commands is every command line the device was sent, in order. It is what
@@ -486,20 +663,17 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 	fmt.Fprintf(ch, "FortiGate-VM64 (%s)\r\nSystem is starting...\r\n", d.hostname)
 	d.prompt(ch, "")
 
-	// scope is the nesting the CLI is in. On a multi-VDOM unit the
+	// The CLI's own state. `scope` is the nesting: on a multi-VDOM unit the
 	// administrator table lives one level deeper, inside `config global`, and
 	// modelling that as a stack rather than a flag is what lets the fake tell
 	// `config system admin` from `config global` / `config system admin`.
-	var (
-		scope   []string
-		editing *FortiOSAccount
-	)
+	var st cliState
 	// A session that ends inside a configuration block is recorded rather than
 	// tidied up. The whole point of modelling it is that the driver's teardown
 	// has to unwind its own nesting: a fake that quietly closed the block for
 	// it would make an under-unwinding driver look correct.
 	defer func() {
-		if len(scope) > 0 {
+		if len(st.scope) > 0 {
 			d.record(func() { d.strandedSessions++ })
 		}
 	}()
@@ -508,7 +682,7 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(strings.TrimRight(scanner.Text(), "\r"))
 		if line == "" {
-			d.prompt(ch, promptSuffix(scope, editing))
+			d.prompt(ch, st.promptSuffix())
 			continue
 		}
 		d.record(func() { d.commands = append(d.commands, line) })
@@ -518,15 +692,14 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 
 		if d.faults.FailCommand != nil && d.faults.FailCommand.MatchString(line) {
 			d.fail(ch, failReturnCode)
-			d.prompt(ch, promptSuffix(scope, editing))
+			d.prompt(ch, st.promptSuffix())
 			continue
 		}
 
-		done := d.dispatch(ch, line, &scope, &editing)
-		if done {
+		if done := d.dispatch(ch, line, &st); done {
 			return
 		}
-		d.prompt(ch, promptSuffix(scope, editing))
+		d.prompt(ch, st.promptSuffix())
 	}
 }
 
@@ -538,16 +711,62 @@ func (d *FakeFortiOS) converse(ch ssh.Channel) {
 // one from.
 const failReturnCode = "Command fail. Return code -1"
 
+// cliState is where in the CLI one session currently is.
+//
+// It is a struct rather than a handful of out-parameters because phase 0017
+// added a SECOND configuration table to this device — `config firewall schedule
+// onetime` beside `config system admin` — and "which table is open, and which
+// entry inside it" stopped being expressible as one pointer.
+type cliState struct {
+	// scope is the open nesting, innermost last: "global", "admin",
+	// "schedule".
+	scope []string
+	// admin and sched are the entry being edited in whichever table is open.
+	// At most one is ever set, because `edit` is only accepted inside a table.
+	admin *FortiOSAccount
+	sched *FortiOSSchedule
+}
+
+// in reports whether a table is the innermost open scope.
+func (st *cliState) in(table string) bool {
+	return len(st.scope) > 0 && st.scope[len(st.scope)-1] == table
+}
+
+func (st *cliState) promptSuffix() string {
+	switch {
+	case st.admin != nil:
+		return st.admin.Name
+	case st.sched != nil:
+		return st.sched.Name
+	case len(st.scope) == 0:
+		return ""
+	default:
+		return st.scope[len(st.scope)-1]
+	}
+}
+
 // dispatch runs one command and reports whether the session should end.
-func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, scope *[]string, editing **FortiOSAccount) bool {
+func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, st *cliState) bool {
 	fields := strings.Fields(line)
-	inAdmin := len(*scope) > 0 && (*scope)[len(*scope)-1] == "admin"
+	scope := &st.scope
+	editing := &st.admin
+	inAdmin := st.in("admin")
+	inSchedule := st.in("schedule")
 	switch {
 	case line == "exit" || line == "quit":
 		return true
 
 	case line == "get system status":
 		d.showStatus(ch)
+		return false
+
+	case line == "execute date" || line == "execute time":
+		if d.faults.HideClock || d.faults.NoExecuteClock {
+			d.fail(ch, "Unknown action 0")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		d.showClock(ch, line)
 		return false
 
 	case line == "config global":
@@ -585,25 +804,19 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, scope *[]string, edi
 	case line == "abort":
 		// The property the driver relies on for failure isolation: an
 		// uncommitted block is discarded outright.
-		*editing = nil
+		st.admin, st.sched = nil, nil
 		*scope = nil
 		return false
 
 	case line == "end":
-		if *editing != nil {
-			d.commit(**editing)
-			*editing = nil
-		}
+		d.commitOpenEntry(st)
 		if len(*scope) > 0 {
 			*scope = (*scope)[:len(*scope)-1]
 		}
 		return false
 
 	case line == "next":
-		if *editing != nil {
-			d.commit(**editing)
-			*editing = nil
-		}
+		d.commitOpenEntry(st)
 		return false
 
 	case inAdmin && len(fields) >= 2 && fields[0] == "edit":
@@ -639,6 +852,83 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, scope *[]string, edi
 
 	case *editing != nil && len(fields) >= 3 && fields[0] == "set":
 		d.set(ch, fields, *editing)
+		return false
+
+	case line == scheduleTableLine:
+		// The one-time schedule table, and it is held to the SAME scope rule as
+		// the administrator table: on a partitioned unit it is reached through
+		// `config global`.
+		//
+		// UNVERIFIED, and it is the assumption phase 0017 most wants a real
+		// unit to settle: firewall objects are ordinarily per-VDOM, and what
+		// makes this one plausibly global is that a global administrator's
+		// `set schedule` has to resolve against something it can see. The fake
+		// takes the driver's reading so the two agree; a real unit that
+		// disagrees fails the driver's `set schedule`, which is why the driver
+		// creates the schedule BEFORE it references it.
+		if d.vdomMode != FortiOSVDOMDisabled && !containsScope(*scope, "global") {
+			d.fail(ch, "Command parse error before 'firewall'")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		*scope = append(*scope, "schedule")
+		return false
+
+	case inSchedule && len(fields) >= 2 && fields[0] == "edit":
+		name := unquote(strings.Join(fields[1:], " "))
+		if len(name) > FortiOSMaxScheduleNameLen {
+			d.fail(ch, fmt.Sprintf("The string is too long. The maximum allowed length is %d.", FortiOSMaxScheduleNameLen))
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		existing, ok := d.schedule(name)
+		if !ok {
+			existing = FortiOSSchedule{Name: name, ExpirationDays: FortiOSDefaultExpirationDays}
+		}
+		st.sched = &existing
+		return false
+
+	case inSchedule && len(fields) >= 2 && fields[0] == "delete":
+		name := unquote(strings.Join(fields[1:], " "))
+		if _, ok := d.schedule(name); !ok {
+			d.fail(ch, "Entry not found in datasource")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		if user, ok := d.scheduleUser(name); ok {
+			// UNVERIFIED, and the strictest reading: FortiOS refuses to delete
+			// an object something still references, and `object is in use` is
+			// the string it uses — cli.go already matches it. Whether it
+			// applies to a schedule an administrator names is on phase 0017's
+			// hardware list. It is modelled because it makes the TEARDOWN ORDER
+			// load-bearing: a driver that deleted the schedule before the
+			// administrator would pass against a permissive fake and leave
+			// half the objects behind on a unit that behaves this way.
+			// Fortinet's published wording for a still-referenced delete is
+			// "The entry is used by other N entries" — a FortiSwitch KB, not a
+			// page about schedules, so the WORDING is sourced and this
+			// object's behaviour is still inferred. The count is 1 because
+			// exactly one administrator can be found referencing it here.
+			_ = user
+			d.fail(ch, "The entry is used by other 1 entries.")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		d.record(func() { delete(d.schedules, name) })
+		return false
+
+	case st.sched != nil && len(fields) >= 3 && fields[0] == "set":
+		d.setSchedule(ch, fields, st.sched)
+		return false
+
+	case strings.HasPrefix(line, scheduleShowLine):
+		// A read of the same table, under the same scope rule.
+		if d.vdomMode != FortiOSVDOMDisabled && !containsScope(*scope, "global") {
+			d.fail(ch, "Command parse error before 'firewall'")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		d.showSchedules(ch)
 		return false
 
 	case strings.HasPrefix(line, "show system admin"):
@@ -698,6 +988,14 @@ func containsScope(scope []string, want string) bool {
 func (d *FakeFortiOS) showStatus(ch ssh.Channel) {
 	fmt.Fprintf(ch, "Version: FortiGate-VM64 v7.6.6,build2775,250000 (GA.F)\r\n")
 	fmt.Fprintf(ch, "Hostname: %s\r\n", d.hostname)
+	if !d.faults.HideClock {
+		// The unit's own clock, in the shape `date` prints. It is here because
+		// `set end` is an ABSOLUTE datetime in the device's local time, so a
+		// driver that renders one has to ask the device what time it is —
+		// and a fake that never answered would let a driver use its own clock
+		// and pass.
+		fmt.Fprintf(ch, "System time: %s\r\n", d.clock()().Format("Mon Jan 2 15:04:05 2006"))
+	}
 	fmt.Fprintf(ch, "Virtual domains status: 1 in NAT mode, 0 in TP mode\r\n")
 	fmt.Fprintf(ch, "Virtual domain configuration: %s\r\n", d.vdomMode)
 }
@@ -740,6 +1038,19 @@ func (d *FakeFortiOS) set(ch ssh.Channel, fields []string, acct *FortiOSAccount)
 		acct.Password = value
 	case "ssh-public-key1":
 		acct.PublicKey = value
+	case "schedule":
+		// A reference, checked like every other reference on this platform. A
+		// fake that stored the string without looking would accept a driver
+		// that never created the schedule at all — an administrator with a
+		// dangling deadline, on a session whose audit record says the device
+		// holds one.
+		if _, ok := d.schedule(value); !ok {
+			d.fail(ch, "entry not found in datasource")
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
+		acct.Schedule = value
 	case "vdom":
 		// A VDOM that does not exist is refused the way any dangling reference
 		// is on this platform. `Entry not found in datasource` is the string
@@ -795,6 +1106,9 @@ func (d *FakeFortiOS) showAdmins(ch ssh.Channel) {
 		if a.VDOM != "" {
 			lines = append(lines, fmt.Sprintf("        set vdom %q", a.VDOM))
 		}
+		if a.Schedule != "" {
+			lines = append(lines, fmt.Sprintf("        set schedule %q", a.Schedule))
+		}
 		// A real device prints the credential as an opaque blob, never the
 		// secret. So does this one — a fake that leaked it would make the
 		// "nothing secret is ever printed" assertions vacuous.
@@ -847,6 +1161,124 @@ func (d *FakeFortiOS) hasVDOM(name string) bool {
 	return false
 }
 
+// setSchedule applies one field to the schedule entry being edited.
+func (d *FakeFortiOS) setSchedule(ch ssh.Channel, fields []string, sched *FortiOSSchedule) {
+	value := unquote(strings.Join(fields[2:], " "))
+	switch fields[1] {
+	case "start", "end":
+		// The type is modelled, for trustHost1's reason: `hh:mm yyyy/mm/dd` is
+		// a shape, and a driver that rendered a datetime some other way — or in
+		// some other timezone's idea of one — must fail here rather than have
+		// the fake store whatever it was handed.
+		if _, err := time.Parse(FortiOSScheduleTimeLayout, value); err != nil {
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
+		if fields[1] == "start" {
+			sched.Start = value
+			return
+		}
+		sched.End = value
+	case "expiration-days":
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 0 || days > 100 {
+			// The documented range is 0..100. Modelling it is what makes a
+			// driver that writes something else fail here.
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
+		sched.ExpirationDays = days
+	default:
+		d.fail(ch, "Unknown action 0")
+		d.fail(ch, failReturnCode)
+	}
+}
+
+// showSchedules renders `show firewall schedule onetime` in the same shape as
+// every other `show` on this device, which is what lets one line matcher read
+// all of them.
+func (d *FakeFortiOS) showSchedules(ch ssh.Channel) {
+	schedules := d.Schedules()
+	names := make([]string, 0, len(schedules))
+	for name := range schedules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fmt.Fprintf(ch, "%s\r\n", scheduleTableLine)
+	for _, name := range names {
+		sched := schedules[name]
+		fmt.Fprintf(ch, "    edit %q\r\n", name)
+		if sched.Start != "" {
+			fmt.Fprintf(ch, "        set start %s\r\n", sched.Start)
+		}
+		if sched.End != "" {
+			fmt.Fprintf(ch, "        set end %s\r\n", sched.End)
+		}
+		if sched.ExpirationDays != FortiOSDefaultExpirationDays {
+			fmt.Fprintf(ch, "        set expiration-days %d\r\n", sched.ExpirationDays)
+		}
+		fmt.Fprint(ch, "    next\r\n")
+	}
+	fmt.Fprint(ch, "end\r\n")
+}
+
+// commitOpenEntry commits whichever table's entry is open, which is what `next`
+// does and what `end` does on its way out of the block.
+// showClock answers the two documented clock commands.
+//
+// They are modelled because `set end` is an absolute datetime in the unit's
+// LOCAL time, so a driver that used its own clock would write a window wrong by
+// the offset between them — and a fake whose clock always agreed with the test
+// process would let that pass. The Administration Guide prints both outputs
+// verbatim, and this matches them.
+func (d *FakeFortiOS) showClock(ch ssh.Channel, line string) {
+	now := d.clock()()
+	if line == "execute date" {
+		fmt.Fprintf(ch, "current date is: %s\r\n", now.Format("2006-01-02"))
+		return
+	}
+	fmt.Fprintf(ch, "current time is: %s\r\n", now.Format("15:04:05"))
+	// The second line is real and is a TRAP: it is the time of the last NTP
+	// SYNCHRONISATION, not the time now. A driver that read the clock off it
+	// would put its window wherever that sync happened to be, so this fake
+	// reports one that is deliberately hours stale.
+	fmt.Fprintf(ch, "last ntp sync:%s\r\n", now.Add(-7*time.Hour).Format("Mon Jan 2 15:04:05 2006"))
+}
+
+func (d *FakeFortiOS) commitOpenEntry(st *cliState) {
+	if st.admin != nil {
+		d.commit(*st.admin)
+		st.admin = nil
+	}
+	if st.sched != nil {
+		sched := *st.sched
+		d.record(func() { d.schedules[sched.Name] = sched })
+		st.sched = nil
+	}
+}
+
+func (d *FakeFortiOS) schedule(name string) (FortiOSSchedule, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sched, ok := d.schedules[name]
+	return sched, ok
+}
+
+// scheduleUser reports the administrator that references a schedule, if any.
+func (d *FakeFortiOS) scheduleUser(name string) (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, a := range d.accounts {
+		if a.Schedule == name {
+			return a.Name, true
+		}
+	}
+	return "", false
+}
+
 func (d *FakeFortiOS) commit(a FortiOSAccount) {
 	d.record(func() { d.accounts[a.Name] = a })
 }
@@ -874,16 +1306,6 @@ func (d *FakeFortiOS) record(f func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	f()
-}
-
-func promptSuffix(scope []string, editing *FortiOSAccount) string {
-	if editing != nil {
-		return editing.Name
-	}
-	if len(scope) == 0 {
-		return ""
-	}
-	return scope[len(scope)-1]
 }
 
 // unquote strips the quoting the driver applies, so the device stores the value

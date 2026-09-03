@@ -119,6 +119,12 @@ func newDeviceHarness(t *testing.T, opts deviceHarnessOptions) *deviceHarness {
 	if err := registry.Register(toRegister); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	// A second platform that cannot expire an account, so the skipped-rung
+	// rule still has something to be tested against now that FortiOS CAN
+	// (phase 0017). Most platforms are this one.
+	if err := registry.Register(&unexpiringDriver{Driver: driver}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 
 	sink := &recordingSink{deliverable: opts.deliverable}
 	var events DeviceEventSink
@@ -170,6 +176,28 @@ type limitedDriver struct {
 func (d *limitedDriver) Capabilities() device.Capabilities {
 	caps := d.Driver.Capabilities()
 	caps.MaxAccountNameLen = d.limit
+	return caps
+}
+
+// unexpiringDriver is a driver on a platform with no per-account expiry, which
+// is what most platforms are and what FortiOS was declared to be until phase
+// 0017 rendered the schedule.
+//
+// It exists so that "a route demanding target-enforced from a driver that
+// cannot serve it is a SKIPPED RUNG" is still an assertion about behaviour
+// rather than about a driver that no longer declares false.
+type unexpiringDriver struct {
+	device.Driver
+}
+
+const unexpiringPlatform = "platform-without-expiry"
+
+func (d *unexpiringDriver) Platform() string { return unexpiringPlatform }
+
+func (d *unexpiringDriver) Capabilities() device.Capabilities {
+	caps := d.Driver.Capabilities()
+	caps.EnforcesExpiry = false
+	caps.ExpiryMechanism = ""
 	return caps
 }
 
@@ -594,7 +622,10 @@ func TestUnsatisfiablePostureIsASkippedRungNotADowngrade(t *testing.T) {
 		overrides map[string]string
 	}{
 		{"a platform this proxy has no driver for", map[string]string{control.ParamPlatform: "some-other-vendor"}},
-		{"a posture the driver cannot satisfy", map[string]string{control.ParamExpiryPosture: string(control.ExpiryPostureTargetEnforced)}},
+		{"a posture the driver cannot satisfy", map[string]string{
+			control.ParamPlatform:      unexpiringPlatform,
+			control.ParamExpiryPosture: string(control.ExpiryPostureTargetEnforced),
+		}},
 		{"a credential kind the platform does not accept", map[string]string{control.ParamCredentialKind: "certificate"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -810,5 +841,173 @@ func TestTheProvisionedAccountCanActuallyLogIn(t *testing.T) {
 				t.Errorf("the session did not reach the CLI as %q; it said:\n%s", cfg.User, out.String())
 			}
 		})
+	}
+}
+
+// The target-enforced posture on FortiOS (phase 0017).
+
+// TestTargetEnforcedIsServedRatherThanSkipped is the headline change, and the
+// acceptance criterion phase 0017 was written around.
+//
+// Until this phase a route asking the device to hold the deadline was a SKIPPED
+// RUNG on FortiOS: the driver declared it could not, so the ladder walked past
+// it to whatever the server ranked next. The declaration is true now, so the
+// route is served — and "served" means the second object is on the device and
+// the administrator names it, not that the proxy accepted the parameter.
+func TestTargetEnforcedIsServedRatherThanSkipped(t *testing.T) {
+	h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})
+	ctx := context.Background()
+
+	auth := deviceRouteAuth(map[string]string{
+		control.ParamExpiryPosture: string(control.ExpiryPostureTargetEnforced),
+	})
+	if err := h.auth.CanSatisfy(auth, h.tgt); err != nil {
+		t.Fatalf("CanSatisfy = %v, want the rung to be satisfiable", err)
+	}
+
+	tgt := h.tgt
+	tgt.Auth = auth
+	access, err := h.auth.Provision(ctx, deviceIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	name := access.ClientConfig.User
+
+	sched, ok := h.dev.Schedules()[name]
+	if !ok {
+		t.Fatalf("no schedule was created for %q; the device holds no deadline and the record says it does", name)
+	}
+	if sched.End == "" {
+		t.Error("the schedule carries no end, which is the only field that expires anything")
+	}
+	if on := h.dev.Accounts()[name]; on.Schedule != name {
+		t.Errorf("the administrator references schedule %q, want %q", on.Schedule, name)
+	}
+
+	// The record says what the device actually does, because `target-enforced`
+	// on its own would let a reviewer read a stronger guarantee out of it than
+	// the platform gives (device.Capabilities.ExpiryMechanism).
+	events := h.events.mappings
+	if len(events) != 1 {
+		t.Fatalf("got %d mapping events, want one", len(events))
+	}
+	if events[0].ExpiryPosture != string(control.ExpiryPostureTargetEnforced) {
+		t.Errorf("mapping records posture %q", events[0].ExpiryPosture)
+	}
+	for _, want := range []string{"out_of_schedule", "reaper"} {
+		if !strings.Contains(events[0].ExpiryMechanism, want) {
+			t.Errorf("the mapping event's expiry mechanism does not mention %q: %q", want, events[0].ExpiryMechanism)
+		}
+	}
+
+	if err := access.Close(ctx); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	if len(h.dev.Schedules()) != 0 {
+		t.Errorf("teardown left %v on the device", h.dev.Schedules())
+	}
+	if len(h.dev.Accounts()) != 0 {
+		t.Errorf("teardown left %v on the device", h.dev.Accounts())
+	}
+}
+
+// TestAProxyEnforcedRouteWritesNoSecondObject is where the cost of this phase
+// is bounded.
+//
+// The driver renders a deadline only when the provisioner hands it a lifetime,
+// and the provisioner hands it one only when the ROUTE asked the device to hold
+// it. Otherwise a proxy-enforced route would start paying for a second object
+// on a customer's firewall that nobody asked for, and the audit record would
+// say `proxy-enforced` about a deadline the device was also holding.
+func TestAProxyEnforcedRouteWritesNoSecondObject(t *testing.T) {
+	h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})
+	ctx := context.Background()
+
+	tgt := h.tgt
+	tgt.Auth = deviceRouteAuth(nil) // proxy-enforced, with a lifetime
+	access, err := h.auth.Provision(ctx, deviceIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { _ = access.Close(ctx) })
+
+	if len(h.dev.Schedules()) != 0 {
+		t.Errorf("a proxy-enforced route wrote %v onto the device", h.dev.Schedules())
+	}
+	if events := h.events.mappings; len(events) != 1 || events[0].ExpiryMechanism != "" {
+		t.Error("the record carries a device expiry mechanism on a session where the device holds no deadline")
+	}
+}
+
+// TestTheReaperSweepsAnOrphanedSchedule closes the leak class this phase
+// created.
+//
+// The orphan is specific: a session that wrote the schedule and died before its
+// administrator existed. No account sweep can find that object — there is no
+// account — so it is the residue pass or nothing.
+func TestTheReaperSweepsAnOrphanedSchedule(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	h := newDeviceHarness(t, deviceHarnessOptions{
+		deliverable: true, reaperGrace: 10 * time.Minute, now: clock,
+	})
+	ctx := context.Background()
+
+	tgt := h.tgt
+	tgt.Auth = deviceRouteAuth(map[string]string{
+		control.ParamExpiryPosture: string(control.ExpiryPostureTargetEnforced),
+	})
+	live, err := h.auth.Provision(ctx, deviceIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { _ = live.Close(ctx) })
+	liveName := live.ClientConfig.User
+
+	route, err := h.auth.resolve(tgt.Auth)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	orphan := route.naming.prefix + "orphan-00000001"
+	h.dev.AddSchedule(sshtest.FortiOSSchedule{Name: orphan, Start: "09:00 2031/03/04", End: "10:00 2031/03/04"})
+	// A schedule of the customer's own, which the prefix must keep out of this.
+	h.dev.AddSchedule(sshtest.FortiOSSchedule{Name: "workdays", Start: "09:00 2031/03/04", End: "17:00 2031/03/04"})
+
+	ep := device.Endpoint{Host: h.tgt.Host, Port: h.tgt.Port, HostKeyCallback: h.tgt.HostKeyCallback}
+
+	// The first sweep only notes it. An object with no timestamp gets a full
+	// grace period for the reason an account does, and one more besides: on the
+	// create path a schedule is unreferenced for a round trip before the
+	// administrator names it, and a sweep landing there would fail another
+	// session's provisioning.
+	removed, err := h.auth.reaper.Sweep(ctx, ep, route)
+	if err != nil {
+		t.Fatalf("first sweep: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("the first sweep removed %v; an object of unknown age must get a grace period", removed)
+	}
+
+	now = now.Add(11 * time.Minute)
+	removed, err = h.auth.reaper.Sweep(ctx, ep, route)
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if len(removed) != 1 || !strings.HasPrefix(removed[0], orphan) {
+		t.Fatalf("sweep removed %v, want just the orphaned schedule %q", removed, orphan)
+	}
+	if !strings.Contains(removed[0], "schedule") {
+		t.Errorf("the sweep reported %q without saying what kind of object it was", removed[0])
+	}
+
+	schedules := h.dev.Schedules()
+	if _, ok := schedules[orphan]; ok {
+		t.Error("the orphaned schedule is still on the device")
+	}
+	if _, ok := schedules["workdays"]; !ok {
+		t.Error("the sweep removed a schedule belonging to the customer")
+	}
+	if _, ok := schedules[liveName]; !ok {
+		t.Error("the sweep removed a live session's schedule, disarming a deadline the record says the device holds")
 	}
 }

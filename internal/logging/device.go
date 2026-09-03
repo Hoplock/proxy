@@ -74,6 +74,14 @@ func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
 	for _, name := range sortedKeys(ev.Fields) {
 		attrs = attrs.Set(AttrDeviceFieldPrefix+name, ev.Fields[name])
 	}
+	if ev.ExpiryMechanism != "" {
+		// Only on the sessions where the DEVICE holds the deadline, and it is
+		// what stops `target-enforced` from being a word in the record that
+		// nobody can cash: it says the unit refuses the next authentication,
+		// that the account itself stays for the reaper, and that a session
+		// already open may outlive the window.
+		attrs = attrs.Set(AttrExpiryMechanism, ev.ExpiryMechanism)
+	}
 	if ev.PersistenceReason != "" {
 		// The reason travels with the session it applies to, so that a
 		// standing-account risk is recorded where the risk is taken rather than
@@ -124,12 +132,25 @@ func (d *deviceSink) SweepFailure(ev target.SweepFailure) {
 		Set(AttrTargetAccount, ev.Account).
 		Set(AttrError, ev.Reason)
 
+	// An administrator left behind and one of the objects that carried its
+	// deadline left behind are not the same event, and the record says which.
+	// The first is a standing privileged account on a firewall; the second
+	// grants access to nothing. Both are reported because both are things this
+	// proxy put on a customer's device and could not take off again, and
+	// reporting the quieter one at the louder one's severity is how the louder
+	// one stops being read.
+	message := "a device administrator this proxy created could not be removed"
+	if ev.ObjectKind != "" {
+		attrs = attrs.Set(AttrDeviceObjectKind, ev.ObjectKind)
+		message = "a device object this proxy created beside an account could not be removed"
+	}
+
 	d.shipper.RecordPriority(control.LogRecord{
 		RecordID:   d.shipper.newRecordID(),
 		Timestamp:  at(ev.At, d.shipper),
 		Kind:       control.LogKindPolicyDecision,
 		Severity:   control.SeverityCritical,
-		Message:    "a device administrator this proxy created could not be removed",
+		Message:    message,
 		Target:     ev.Target,
 		Attributes: attrs,
 	})
