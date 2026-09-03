@@ -124,6 +124,13 @@ var errorPatterns = []struct {
 	{regexp.MustCompile(`(?i)input value is invalid`), "the device rejected a value"},
 	{regexp.MustCompile(`(?i)permission denied`), "the management administrator is not permitted to do that"},
 	{regexp.MustCompile(`(?i)the string is too long`), "the device rejected a value as too long"},
+	// A delete refused because something still points at the object. The FIRST
+	// pattern is Fortinet's published wording — "This error is generally
+	// encountered when attempting to delete any object which is still
+	// referenced in the configuration" — and the second is the phrasing phase
+	// 0017 assumed before anybody checked; it is kept because it costs nothing
+	// and because a missing pattern here turns a failure into a silent success.
+	{regexp.MustCompile(`(?i)the entry is used by other \d+ entries`), "the object is still referenced on the device"},
 	{regexp.MustCompile(`(?i)object (is )?in use`), "the object is in use on the device"},
 	// The rejection a name outside FortiOS's character set draws, documented in
 	// the naming-rules KB. accountNamePattern already excludes the characters

@@ -177,13 +177,20 @@ func (d *Driver) Platform() string { return d.platform }
 //     first item on this phase's hardware list. Ending the SESSION at its
 //     deadline is a separate mechanism and a separate phase in any case.
 //   - It is undocumented whether every authentication path honours the
-//     schedule. Fortinet's field description — "Firewall schedule used to
-//     restrict when the administrator can log in" — is about the
-//     ADMINISTRATOR rather than about one credential, and the KB's denial is at
-//     authentication; but the KB's example is a password login, and this driver
-//     also installs public keys. That is the DECISIVE item on the hardware
-//     list: this declaration is worth what it says only if the window closes
-//     every door into the account rather than one of them.
+//     schedule, and the verification pass narrowed this rather than closing it.
+//     What is established: the field is defined ONCE PER ADMINISTRATOR, in the
+//     same `config system admin` table that holds `password`,
+//     `ssh-public-key1`..`3`, `remote-auth` and `two-factor`, with no
+//     per-credential variant in any supported release — so there is nowhere for
+//     a per-credential exception to be expressed. What is NOT established: the
+//     only `reason="out_of_schedule"` denial Fortinet publishes is a GUI/HTTPS
+//     login, not an SSH one of either kind. So the coverage this driver depends
+//     on is an inference from the field's shape, and it is the DECISIVE item on
+//     the hardware list: this declaration is worth what it says only if the
+//     window closes every door into the account rather than one of them. The
+//     inference is carried to the operator in ExpiryMechanism rather than left
+//     here, because a caveat only the driver's source knows is a caveat nobody
+//     acts on.
 //
 // The consequences are the ones the declaration implies. A route asking for
 // control.ExpiryPostureTargetEnforced on FortiOS is now SERVED rather than
@@ -210,10 +217,15 @@ func (d *Driver) Capabilities() device.Capabilities {
 		ExpiryMechanism: "FortiOS refuses the administrator's next authentication once the window " +
 			"closes: `set schedule` on the administrator names a `config firewall schedule onetime` " +
 			"entry carrying an absolute `set end`, and the denial is logged as " +
-			"`reason=\"out_of_schedule\"`. It does NOT delete the account — the orphan reaper is " +
-			"still what removes it — and Fortinet documents nothing either way about a session that " +
-			"is already established when the window closes, so a live session may outlive the " +
-			"deadline. These are the semantics OpenSSH's `expiry-time` has on the POSIX path.",
+			"`reason=\"out_of_schedule\"`. These are the semantics OpenSSH's `expiry-time` has on " +
+			"the POSIX path. Three limits, stated because a posture of `target-enforced` would " +
+			"otherwise be read as more than this is. It does NOT delete the account — the orphan " +
+			"reaper is still what removes it. Fortinet documents nothing either way about a session " +
+			"already established when the window closes, so a live session may outlive the deadline. " +
+			"And the only denial Fortinet publishes is a GUI/HTTPS login: that the schedule also " +
+			"covers SSH — with a password or a public key, which is how this proxy connects — " +
+			"follows from the field being defined per-administrator rather than per-credential, and " +
+			"is UNTESTED on hardware.",
 		PersistsAcrossReload: true,
 		PersistenceReason: "FortiOS has no runtime-only configuration plane: under the default " +
 			"`config system global` / `set cfg-save automatic` an administrator is written to " +
@@ -374,7 +386,7 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			}
 		}
 
-		deviceNow, ok := s.deviceNow()
+		deviceNow, ok := d.readDeviceClock(ctx, s)
 		if !ok {
 			// Refused rather than computed from this proxy's clock, and this
 			// is the fail-closed half of reading the window off the device
@@ -386,10 +398,10 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			// device.ErrUnsupported — the platform can do this and so can this
 			// driver; this unit did not say what time it is, which fails the
 			// attempt rather than walking the session down to a weaker rung.
-			return nil, fmt.Errorf("%w: `%s` did not report a readable system time, and a one-time "+
+			return nil, fmt.Errorf("%w: neither `%s`/`%s` nor `%s` reported a readable clock, and a one-time "+
 				"schedule's end is an absolute datetime in the unit's own local time — "+
 				"rendering one from this proxy's clock could hold the account open past its deadline",
-				ErrDeviceRefused, vdomStatusCommand)
+				ErrDeviceRefused, executeDateCommand, executeTimeCommand, vdomStatusCommand)
 		}
 		start, end, err := scheduleWindow(deviceNow, req.Lifetime)
 		if err != nil {
@@ -707,30 +719,106 @@ func parseVDOMMode(out string) (vdomMode, error) {
 
 // systemTimePattern matches the unit's clock in `get system status` output.
 //
-// UNVERIFIED, and it is on the hardware list: this phase could not reach
-// Fortinet's documentation (the same egress block phase 0014 hit), so that
-// `get system status` carries a "System time" line — and what its rendering is
-// on each release — is taken from what the command is universally shown
-// printing rather than from a page read for it. Everything downstream is built
-// so that being wrong here COSTS A REFUSAL AND NOT A WRONG WINDOW: an
-// unparsed clock leaves deviceTime zero, and a route that needs one is failed
-// with a sentence naming this, rather than served from the proxy's own clock.
+// It is the FALLBACK, and it used to be the only source. Phase 0017 read the
+// device clock here because `get system status` is already sent once per
+// session and costs nothing extra; the verification pass found that choice
+// weakly sourced — Fortinet publishes no `get system status` page for
+// FortiGate at all, and the "System time" line appears only in a community KB,
+// against two units, rendered in C `asctime` shape with no timezone or offset.
+// So the primary source is now `execute date` / `execute time`, which the
+// Administration Guide documents in every supported release (see
+// executeDateCommand). This stays because it is free and because a unit that
+// answers it and not the other is still a unit whose clock is known.
 var systemTimePattern = regexp.MustCompile(`(?im)^\s*System time\s*:\s*(.+?)\s*$`)
 
 // deviceTimeLayouts are the renderings this driver will read a device clock in.
 //
-// The first is the Unix `date` shape FortiOS is shown printing; the others are
-// there because a clock is worth reading in whatever plausible form it arrives,
-// and a driver that refuses over a separator has refused a device-enforced
-// expiry on a unit that told it exactly what it needed to know. There is no
-// zone: the value IS the device's local wall clock, and treating it as anything
-// else is the mistake this whole path exists to avoid — so it is parsed into
-// UTC and used only for arithmetic against itself.
+// The first is the C `asctime` shape the KB shows `get system status` printing;
+// the others are there because a clock is worth reading in whatever plausible
+// form it arrives, and a driver that refuses over a separator has refused a
+// device-enforced expiry on a unit that told it exactly what it needed to know.
+//
+// NONE of them carries a zone, and neither does any output FortiOS is
+// documented to produce: the unit's timezone lives in `config system global` /
+// `set timezone`, and the schedule is evaluated against that same local clock
+// ("the configured schedule will be based on the firewall's local time
+// configured under 'config system global'"). So the value IS the device's local
+// wall clock; it is parsed into UTC and used only for arithmetic against
+// itself, and no zone is ever derived from it.
 var deviceTimeLayouts = []string{
 	"Mon Jan 2 15:04:05 2006",
 	"Jan 2 15:04:05 2006",
 	"2006-01-02 15:04:05",
 	"2006/01/02 15:04:05",
+}
+
+// The commands that read the unit's clock, and the shapes they answer in.
+//
+// `execute date` and `execute time` are documented in the Administration Guide
+// in 7.0.17, 7.2.11, 7.4.9, 7.6.6 and 8.0.0 — the 7.6 and 8.0 pages print the
+// output verbatim:
+//
+//	# execute date
+//	current date is: 2024-07-23
+//	# execute time
+//	current time is: 14:17:00
+//	last ntp sync:Tue Jul 23 13:25:21 2024
+//
+// They are two commands rather than one, and they are sent ON DEMAND rather
+// than when the session opens: only a route that asked the device to hold a
+// deadline needs a clock, and every other session should not pay two round
+// trips for something it will not read.
+//
+// The `last ntp sync` line is deliberately ignored. It is the time of a
+// SYNCHRONISATION, not the time now, and reading it as the clock would put a
+// window minutes or days in the past on any unit whose NTP is unhealthy — which
+// is exactly the unit whose clock is worth distrusting.
+const (
+	executeDateCommand = "execute date"
+	executeTimeCommand = "execute time"
+)
+
+var (
+	executeDatePattern = regexp.MustCompile(`(?im)^\s*current date is\s*:\s*(\d{4})[-/](\d{2})[-/](\d{2})\s*$`)
+	executeTimePattern = regexp.MustCompile(`(?im)^\s*current time is\s*:\s*(\d{2}):(\d{2}):(\d{2})\s*$`)
+)
+
+// readDeviceClock asks the unit what time it is, preferring the documented
+// commands and falling back to what `get system status` said when the session
+// opened.
+//
+// It returns false when neither answered, and the caller refuses the route
+// rather than reaching for this proxy's clock. That direction is the whole
+// point: `set end` is an absolute datetime in the unit's local time, so a
+// window computed from the wrong clock is wrong by the offset between them —
+// in one direction an account that cannot log in, in the other an account the
+// device honours long past the deadline its audit record claims.
+func (d *Driver) readDeviceClock(ctx context.Context, s *cliSession) (time.Time, bool) {
+	dateOut, dateErr := s.send(ctx, executeDateCommand)
+	timeOut, timeErr := s.send(ctx, executeTimeCommand)
+	if dateErr == nil && timeErr == nil {
+		if t, ok := parseExecutedClock(dateOut, timeOut); ok {
+			return t, true
+		}
+	}
+	// The reading taken from `get system status` when the session opened,
+	// carried forward by the elapsed time since (cliSession.deviceNow).
+	return s.deviceNow()
+}
+
+// parseExecutedClock assembles the two answers into one wall clock.
+func parseExecutedClock(dateOut, timeOut string) (time.Time, bool) {
+	date := executeDatePattern.FindStringSubmatch(dateOut)
+	clock := executeTimePattern.FindStringSubmatch(timeOut)
+	if date == nil || clock == nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("2006-01-02 15:04:05",
+		fmt.Sprintf("%s-%s-%s %s:%s:%s", date[1], date[2], date[3], clock[1], clock[2], clock[3]))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // parseDeviceTime reads the unit's wall clock, and reports whether it could.

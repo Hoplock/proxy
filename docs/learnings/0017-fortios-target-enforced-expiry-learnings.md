@@ -46,40 +46,61 @@
   direction is silent; sub-minute lifetimes cannot be expressed and are refused
   rather than rounded up; the schedule's datetimes are the **one** value this
   driver sends unquoted.
-- **What the NEXT session must know:** **Fortinet's documentation was NOT
-  reachable from this session** (the same egress block phase 0014 hit). This
-  phase added **no new sourced facts**; everything it could not check is built to
-  fail loudly, and the hardware list below is longer and more load-bearing than
-  usual. No `api/` change, so no cross-repo obligation
+- **Verified afterwards, out of band.** Fortinet's documentation was NOT
+  reachable from the implementing session (the egress block phase 0014 hit), so
+  the phase added no sourced facts; a verification pass on a reachable network
+  then settled most of them and **corrected three**: the schedule-name limit is
+  **31** (not the 32 or 35 this phase argued between), the clock is read with
+  **`execute date` / `execute time`** (documented in every release; the
+  `System time` line of `get system status` is on no Fortinet page and is now
+  the fallback), and **`expiration-days` defaults to 3** and would have logged a
+  warning on the customer's unit for every session — it is set to 0. Full
+  findings and sources: `docs/FORTIOS-DOC-VERIFICATION.md`, "The verification
+  pass on those questions".
+- **What the NEXT session must know:** two readings are still unverified and
+  need a unit — whether the schedule covers an **SSH** login (the only published
+  denial is GUI/HTTPS; the declaration rests on the field being
+  per-administrator), and **which scope** the schedule table lives in on a
+  partitioned unit (the evidence that exists leans *away* from `config global`).
+  No `api/` change, so no cross-repo obligation
   (`docs/CROSS-REPO-PROTOCOL.md` §1: no shared surface touched).
 
 ## Details
 
 ### The hardware list, decisive item first
 
-1. **Does the schedule gate EVERY authentication path, or only password login?**
-   The declaration was made conditional on this by the user, in those words. The
-   field description is about the administrator — "Firewall schedule used to
-   restrict when the administrator can log in" — and the denial is logged at
-   authentication; but Fortinet's worked example is a password login and this
-   driver also installs `ssh-public-key1`. **If a public-key login bypasses the
-   schedule, `EnforcesExpiry` is wrong and comes back out**, and the route that
-   most needs it is the one that would be least protected.
+1. **Does the schedule gate an SSH login at all — with a password or a public
+   key?** The declaration was made conditional on this by the user, in those
+   words, and the verification pass narrowed it rather than closing it. The only
+   published `out_of_schedule` denial is a **GUI/HTTPS** login; what supports
+   the wider reading is structural, not textual — one `schedule` field per
+   administrator, in the same table as `password`, `ssh-public-key1`..`3`,
+   `remote-auth` and `two-factor`, with no per-credential variant anywhere. **If
+   an SSH login bypasses the schedule, `EnforcesExpiry` is wrong and comes back
+   out**, and the route that most needs it is the one that would be least
+   protected. The test: an administrator with `ssh-public-key1` set and a closed
+   window, attempting SSH, and the resulting `method=` / `reason=` pair.
 2. **Does an already-established session survive its window closing?** Still
    unanswered, still undocumented, and inherited unchanged from 0015. It is not
    modelled in `internal/sshtest`; it is *declared* in `ExpiryMechanism`, which
    says the account is not deleted and a live session may outlive the deadline.
    Ending the session at its deadline is 0025's.
 3. **Is `config firewall schedule onetime` reached through `config global` on a
-   partitioned unit?** Firewall objects are ordinarily per-VDOM; the prompt
-   settles it as global and this phase could not check. Mitigated by ordering:
-   the schedule is created **before** `set schedule` names it, so a wrong scope
-   fails the reference and fails the attempt rather than leaving an
-   administrator whose deadline the device ignores.
-4. **Does `get system status` carry a readable system time, and in what
-   rendering?** `systemTimePattern` plus four layouts. Unreadable ⇒ the expiring
-   route is refused (a failed attempt, never `ErrUnsupported`), and every route
-   that needs no schedule is still served on the same unit.
+   partitioned unit?** Documented nowhere, and the verification pass found the
+   two signals that exist pointing the OTHER way — the Administration Guide's
+   multi-VDOM example configures firewall objects under `config vdom`, and the
+   schedule-expire log carries a VDOM field. Unchanged anyway, because the
+   alternative is not known-correct either: nothing says what a **global**
+   administrator's `set schedule` resolves against when schedules are per-VDOM.
+   Mitigated by ordering — the schedule is created **before** `set schedule`
+   names it, so a wrong scope fails the reference and fails the attempt — and
+   the error on a partitioned unit now names the assumption.
+4. ~~**Does `get system status` carry a readable system time?**~~ **Answered**:
+   no Fortinet page carries it. The clock is now read with `execute date` /
+   `execute time` (Administration Guide, all five releases), with the status
+   line as a fallback. Unreadable by both ⇒ the expiring route is refused (a
+   failed attempt, never `ErrUnsupported`), and every route that needs no
+   schedule is still served on the same unit.
 5. **Can a schedule an administrator still references be deleted?** The fake
    refuses it (`object is in use`, the string `cli.go` already matched), which
    is the strictest reading; the driver removes the administrator first, so the
@@ -154,6 +175,13 @@ three and two tests respectively.
 - **An account created for a public-key route keeps its placeholder password.**
   Pre-existing and deliberate: `InstallCredential` sets `ssh-public-key1` and
   leaves the 40-character throwaway in place, because a FortiOS administrator
-  with **no** password can be logged into with an empty one. It is worth
-  re-reading alongside hardware item 1, since both are about how many doors an
-  account has.
+  with **no** password can be logged into with an empty one. The verification
+  pass independently supports it — Fortinet's Public key SSH access page lists
+  "A password must be set for backup" among the requirements — but it is still
+  worth re-reading alongside hardware item 1, since both are about how many
+  doors an account has.
+- **`start-utc` / `end-utc` (epoch format) exist from 7.2 onwards** and would
+  sidestep the device-clock read entirely, which is the largest remaining source
+  of complexity here. Not taken: they are absent in 7.0.17, which is in the
+  supported set, and a driver that behaves differently by release needs a better
+  reason than convenience. Worth revisiting if 7.0 support is ever dropped.

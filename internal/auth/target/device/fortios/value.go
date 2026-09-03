@@ -253,21 +253,27 @@ func quote(v string) string {
 
 // maxScheduleNameLen is the longest name this driver gives a schedule object.
 //
-// TWO DOCUMENTED FIGURES DISAGREE and this takes the smaller (phase 0017).
-// `config system admin`'s `schedule` field is `string, Maximum length: 35`,
-// while the naming-rules KB gives 32 characters for "schedule names" — the
-// object's own limit rather than the reference field's. Nothing read for this
-// phase reconciles them, so the driver spends the smaller: the difference is
-// one character of token, and being wrong in the other direction is a name the
-// device truncates or refuses at the moment it is creating a privileged
-// account's expiry.
+// It is **31**, and neither of the two figures phase 0017 was arguing between
+// was right. The verification pass that phase asked for read the table's own
+// parameter list: `config firewall schedule onetime` gives `name | Onetime
+// schedule name. | string | Maximum length: 31`, identically in 7.0.17, 7.2.11,
+// 7.4.9, 7.6.6 and 8.0.0. The 35 is the width of the fields that POINT AT a
+// schedule (`system admin`'s `schedule` and `firewall policy`'s `schedule` are
+// both 35) and the 32 was the naming KB's general figure for "Schedule names";
+// the object's own limit is narrower than either.
 //
-// Nothing this proxy creates comes near it. The naming scheme in
-// internal/auth/target never emits a name longer than 32 characters on ANY
-// platform (PLAN §5.3's readable scheme caps there), which is what makes the
-// decision below — the schedule takes the administrator's own name — fit
-// without a second budget.
-const maxScheduleNameLen = 32
+// That the reference fields are WIDER than the object they reference is worth
+// knowing and is not this driver's problem to solve: a 32-to-35-character name
+// can be written into `set schedule` and cannot name anything that exists.
+//
+// **The naming scheme fits with nothing to spare, and that is now load-bearing
+// rather than lucky.** internal/auth/target never emits a name longer than 31
+// characters on any path — the readable scheme spends 8 on `hl-<tag>-`, 14 on
+// the login and 9 on `-<token>`, and the constrained scheme is capped by a
+// limit below 32. Widen `principalLoginLen` or `principalTokenLen` by one and
+// every device-enforced FortiOS route breaks at schedule creation, which is why
+// TestTheNamingSchemeFitsAFortiOSScheduleName pins it from the other side.
+const maxScheduleNameLen = 31
 
 // validateScheduleName gates the name that reaches `edit` in the schedule table
 // and `set schedule` on the administrator.
@@ -285,7 +291,8 @@ func validateScheduleName(name string) error {
 		return err
 	}
 	if len(name) > maxScheduleNameLen {
-		return fmt.Errorf("%w: %q is %d characters and a FortiOS schedule name is limited to %d, "+
+		return fmt.Errorf("%w: %q is %d characters and a FortiOS one-time schedule's own name is limited to %d "+
+			"(the `schedule` field that references one is wider, at 35, which is not the limit that matters here), "+
 			"so this administrator cannot carry a device-enforced expiry",
 			errInvalidValue, name, len(name), maxScheduleNameLen)
 	}
@@ -305,11 +312,17 @@ const scheduleTimeLayout = "15:04 2006/01/02"
 //
 // Every value this driver interpolates is validated and then quoted; this one
 // is validated and NOT quoted, which is the single exception in the file and so
-// gets the stricter check. `set start {hh:mm yyyy/mm/dd}` is a value with a
-// space in it, and whether the FortiOS parser accepts that value quoted is not
-// documented anywhere this phase could reach — Fortinet's own examples show it
-// bare. Quoting on a guess would turn every device-enforced session into a
-// parse error; sending it bare is what the documentation shows.
+// gets the stricter check.
+//
+// It is an UNTESTED CHOICE, not a documented one, and phase 0017's first
+// comment here claimed otherwise. `set start {hh:mm yyyy/mm/dd}` is a value
+// with a space in it, and the verification pass found that Fortinet publishes
+// no one-time schedule example at all: the nearest is a RECURRING schedule
+// (`set start 09:00`), whose values are single tokens and so do not exercise
+// the question. So nothing says whether the parser accepts this value quoted,
+// and nothing says it accepts it bare either. Bare is sent because it is the
+// literal reading of the documented format; a device that refuses it fails the
+// attempt loudly, which is the only reason it is safe to be wrong about.
 //
 // What makes that safe is not the quoting it does not have: it is that the
 // string cannot carry anything. It is produced by time.Format from a time

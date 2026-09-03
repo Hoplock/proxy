@@ -54,18 +54,30 @@ const (
 // partitioned unit the one-time schedule table is reached through `config
 // global`, like the administrator table. Phase 0017's prompt settles it that
 // way — an object an administrator in the global table can reference is reached
-// where that table is — and this phase could not reach Fortinet's documentation
-// to check it, so it is on the hardware list rather than presented as read.
+// where that table is.
+//
+// The verification pass looked and found NOTHING EITHER WAY: the CLI reference
+// carries no scope annotation on any command, and the Administration Guide's
+// list of global settings does not mention firewall objects. What it did find
+// are two indirect signals pointing the OTHER way — the guide's own multi-VDOM
+// example configures firewall objects underneath `config vdom`, and the
+// one-time schedule's expiry log message carries a Virtual Domain Name field.
+// Neither is a statement about this table, and neither says what a GLOBAL
+// administrator's `set schedule` resolves against when schedules are per-VDOM —
+// which is the question a fix would have to answer, and cannot be answered from
+// Fortinet's documentation today. So this stays as written, believed weaker
+// than when it was written, and first on the hardware list for a partitioned
+// unit.
 //
 // What makes being wrong SAFE rather than silent is the ORDER the create path
-// uses: the schedule is created first and the administrator's `set schedule`
-// names it second. A schedule written into a scope the administrator cannot see
-// makes that reference fail — `entry not found in datasource`, which cli.go
-// already matches — and a failed reference fails the whole attempt and rolls
-// the administrator back. The failure this ordering rules out is the one that
-// would matter: an administrator created with a `set schedule` the device
-// quietly ignored, on a session whose audit record says the device holds a
-// deadline.
+// uses, and it holds in both failure shapes. If the table cannot be entered in
+// this scope at all, the sequence fails before anything exists. If it can, but
+// the administrator cannot see what was written there, the administrator's
+// `set schedule` fails on a dangling reference — `entry not found in
+// datasource`, which cli.go already matches — and the attempt is rolled back.
+// The failure this rules out is the one that would matter: an administrator
+// created with a `set schedule` the device quietly ignored, on a session whose
+// audit record says the device holds a deadline.
 func (s *cliSession) enterScheduleTable() []step {
 	steps := make([]step, 0, 2)
 	if s.vdomMode.partitioned() {
@@ -96,9 +108,35 @@ func (d *Driver) createSchedule(ctx context.Context, s *cliSession, name, start,
 		step{command: "edit " + quote(name), label: "create the expiry schedule"},
 		step{command: "set start " + start, label: "set the expiry schedule's start"},
 		step{command: "set end " + end, label: "set the expiry schedule's end"},
+		// `expiration-days` DEFAULTS TO 3 and is not something this driver can
+		// leave alone. It means "write an event log message this many days
+		// before the schedule expires", so at its default every schedule
+		// shorter than three days — which is every schedule this proxy creates
+		// — is born already inside its own pre-expiration window and earns the
+		// unit a warning-severity event log (message id 32048, "One time
+		// schedule expiring") for a session that is behaving exactly as
+		// intended. PLAN §5.3 is explicit that Hoplock does not hide the
+		// configuration changes it makes; it is equally not entitled to fill a
+		// customer's event log with warnings about them.
+		//
+		// Zero is the documented minimum. That it means "no message" rather
+		// than "a message on the day" is the reading, not a quoted fact — but
+		// both readings are quieter than the default, so this is the direction
+		// to be wrong in.
+		step{command: "set expiration-days 0", label: "silence the schedule's pre-expiration warning"},
 		step{command: "next", label: "commit the expiry schedule"},
 	)
-	return d.run(ctx, s, append(steps, s.leaveScheduleTable()...))
+	if err := d.run(ctx, s, append(steps, s.leaveScheduleTable()...)); err != nil && s.vdomMode.partitioned() {
+		// The failure names the assumption, because on a partitioned unit this
+		// is the sequence most likely to be wrong and the device's own error
+		// will not say so (see enterScheduleTable).
+		return fmt.Errorf("%w — on a unit running virtual domains this driver reaches `%s` through `%s`, "+
+			"which is not documented either way and is the first thing to check on hardware",
+			err, scheduleTableCommand, globalScopeCommand)
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 // removeSchedule deletes one schedule, and an absent one is a success.

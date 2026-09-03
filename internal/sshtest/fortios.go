@@ -11,6 +11,7 @@ import (
 	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,7 +98,18 @@ type FortiOSSchedule struct {
 	// rather than on what this fake managed to parse back.
 	Start string
 	End   string
+	// ExpirationDays is "write an event log message this many days before the
+	// schedule expires", documented with a minimum of 0, a maximum of 100 and a
+	// DEFAULT OF 3 — which is why a new entry here starts at
+	// FortiOSDefaultExpirationDays rather than at zero. Every schedule this
+	// proxy creates is shorter than three days, so a driver that leaves the
+	// field alone earns the unit a warning log per session, and a fake that
+	// started it at zero would hide that.
+	ExpirationDays int
 }
+
+// FortiOSDefaultExpirationDays is `expiration-days`' documented default.
+const FortiOSDefaultExpirationDays = 3
 
 // FortiOSScheduleTimeLayout is the `hh:mm yyyy/mm/dd` format of a one-time
 // schedule's start and end.
@@ -118,15 +130,21 @@ type FortiOSFaults struct {
 	// PageEvery emits the pager's marker every n lines of `show` output. Zero
 	// means no paging.
 	PageEvery int
-	// HideSystemTime drops the clock from `get system status`, standing in for
-	// a unit whose status output a driver cannot read a time out of.
+	// HideClock makes the unit refuse to say what time it is, by every route:
+	// `execute date`, `execute time`, and the `System time` line in
+	// `get system status`.
 	//
 	// It is a FAULT rather than a mode because a driver that renders an
 	// absolute expiry datetime from the WRONG clock writes a window that is
 	// hours out — in one direction an account that cannot log in, in the other
 	// an account the device honours past its deadline. What the fault is here
 	// to prove is that the driver refuses instead.
-	HideSystemTime bool
+	HideClock bool
+	// NoExecuteClock hides only `execute date` and `execute time`, leaving the
+	// status line, so the fallback path can be exercised on its own. A unit
+	// that answers one and not the other is a unit whose clock is known, and
+	// refusing it would be refusing a route over a command name.
+	NoExecuteClock bool
 }
 
 // FortiOSOptions configures a FakeFortiOS.
@@ -217,13 +235,14 @@ const (
 
 // FortiOSMaxScheduleNameLen is the schedule-name limit this device enforces.
 //
-// 32, the naming-rules KB's figure for schedule names, which is the smaller of
-// the two documented numbers — `config system admin`'s `schedule` FIELD is
-// documented at 35. The device is modelled at the stricter one for the reason
-// this fake is strict everywhere: if the two disagree, a driver that fits the
-// looser figure and not the tighter one should fail here rather than on a
-// customer's unit.
-const FortiOSMaxScheduleNameLen = 32
+// 31 — `config firewall schedule onetime`'s own `name` parameter ("Onetime
+// schedule name. | string | Maximum length: 31"), identical across the
+// supported releases. It was 32 here, from the naming KB's general figure for
+// "Schedule names", and 35 was never in the running: 35 is the width of the
+// fields that REFERENCE a schedule (`system admin`'s `schedule`,
+// `firewall policy`'s `schedule`), so a name can be referenced that cannot
+// exist.
+const FortiOSMaxScheduleNameLen = 31
 
 // FortiOSBuiltinProfiles are the access profiles Fortinet documents.
 //
@@ -741,6 +760,15 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, st *cliState) bool {
 		d.showStatus(ch)
 		return false
 
+	case line == "execute date" || line == "execute time":
+		if d.faults.HideClock || d.faults.NoExecuteClock {
+			d.fail(ch, "Unknown action 0")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		d.showClock(ch, line)
+		return false
+
 	case line == "config global":
 		// `config global` exists only when virtual domains are enabled. On a
 		// single-VDOM unit the real device has no such command; it is answered
@@ -855,7 +883,7 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, st *cliState) bool {
 		}
 		existing, ok := d.schedule(name)
 		if !ok {
-			existing = FortiOSSchedule{Name: name}
+			existing = FortiOSSchedule{Name: name, ExpirationDays: FortiOSDefaultExpirationDays}
 		}
 		st.sched = &existing
 		return false
@@ -876,7 +904,13 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, st *cliState) bool {
 			// load-bearing: a driver that deleted the schedule before the
 			// administrator would pass against a permissive fake and leave
 			// half the objects behind on a unit that behaves this way.
-			d.fail(ch, fmt.Sprintf("Object is in use, referenced by administrator %s", user))
+			// Fortinet's published wording for a still-referenced delete is
+			// "The entry is used by other N entries" — a FortiSwitch KB, not a
+			// page about schedules, so the WORDING is sourced and this
+			// object's behaviour is still inferred. The count is 1 because
+			// exactly one administrator can be found referencing it here.
+			_ = user
+			d.fail(ch, "The entry is used by other 1 entries.")
 			d.fail(ch, failReturnCode)
 			return false
 		}
@@ -954,7 +988,7 @@ func containsScope(scope []string, want string) bool {
 func (d *FakeFortiOS) showStatus(ch ssh.Channel) {
 	fmt.Fprintf(ch, "Version: FortiGate-VM64 v7.6.6,build2775,250000 (GA.F)\r\n")
 	fmt.Fprintf(ch, "Hostname: %s\r\n", d.hostname)
-	if !d.faults.HideSystemTime {
+	if !d.faults.HideClock {
 		// The unit's own clock, in the shape `date` prints. It is here because
 		// `set end` is an ABSOLUTE datetime in the device's local time, so a
 		// driver that renders one has to ask the device what time it is —
@@ -1146,6 +1180,16 @@ func (d *FakeFortiOS) setSchedule(ch ssh.Channel, fields []string, sched *FortiO
 			return
 		}
 		sched.End = value
+	case "expiration-days":
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 0 || days > 100 {
+			// The documented range is 0..100. Modelling it is what makes a
+			// driver that writes something else fail here.
+			d.fail(ch, fmt.Sprintf("value parse error before '%s'", value))
+			d.fail(ch, failReturnCode)
+			return
+		}
+		sched.ExpirationDays = days
 	default:
 		d.fail(ch, "Unknown action 0")
 		d.fail(ch, failReturnCode)
@@ -1173,6 +1217,9 @@ func (d *FakeFortiOS) showSchedules(ch ssh.Channel) {
 		if sched.End != "" {
 			fmt.Fprintf(ch, "        set end %s\r\n", sched.End)
 		}
+		if sched.ExpirationDays != FortiOSDefaultExpirationDays {
+			fmt.Fprintf(ch, "        set expiration-days %d\r\n", sched.ExpirationDays)
+		}
 		fmt.Fprint(ch, "    next\r\n")
 	}
 	fmt.Fprint(ch, "end\r\n")
@@ -1180,6 +1227,27 @@ func (d *FakeFortiOS) showSchedules(ch ssh.Channel) {
 
 // commitOpenEntry commits whichever table's entry is open, which is what `next`
 // does and what `end` does on its way out of the block.
+// showClock answers the two documented clock commands.
+//
+// They are modelled because `set end` is an absolute datetime in the unit's
+// LOCAL time, so a driver that used its own clock would write a window wrong by
+// the offset between them — and a fake whose clock always agreed with the test
+// process would let that pass. The Administration Guide prints both outputs
+// verbatim, and this matches them.
+func (d *FakeFortiOS) showClock(ch ssh.Channel, line string) {
+	now := d.clock()()
+	if line == "execute date" {
+		fmt.Fprintf(ch, "current date is: %s\r\n", now.Format("2006-01-02"))
+		return
+	}
+	fmt.Fprintf(ch, "current time is: %s\r\n", now.Format("15:04:05"))
+	// The second line is real and is a TRAP: it is the time of the last NTP
+	// SYNCHRONISATION, not the time now. A driver that read the clock off it
+	// would put its window wherever that sync happened to be, so this fake
+	// reports one that is deliberately hours stale.
+	fmt.Fprintf(ch, "last ntp sync:%s\r\n", now.Add(-7*time.Hour).Format("Mon Jan 2 15:04:05 2006"))
+}
+
 func (d *FakeFortiOS) commitOpenEntry(st *cliState) {
 	if st.admin != nil {
 		d.commit(*st.admin)

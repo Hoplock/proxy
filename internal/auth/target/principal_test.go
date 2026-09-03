@@ -138,3 +138,39 @@ func TestProxyTagsDifferBetweenProxies(t *testing.T) {
 		}
 	}
 }
+
+// TestTheNamingSchemeFitsAFortiOSScheduleName is a cross-package invariant, and
+// it is here rather than in the driver because this is the file that can break
+// it (phase 0017, after verification).
+//
+// A FortiGate carries an account's deadline in a `config firewall schedule
+// onetime` entry NAMED AFTER THE ACCOUNT, and that table's own `name` field
+// accepts 31 characters. This scheme happens to produce exactly 31 at its
+// longest — 8 for `hl-<tag>-`, 14 for the login, 9 for `-<token>` — so it fits
+// with nothing to spare. Widen principalLoginLen or principalTokenLen by one
+// and every device-enforced FortiOS route starts failing at schedule creation,
+// which is a failure nothing in this package would otherwise show.
+func TestTheNamingSchemeFitsAFortiOSScheduleName(t *testing.T) {
+	// fortiOSScheduleNameLen is duplicated deliberately rather than imported:
+	// internal/auth/target must not depend on one driver, and a number that
+	// two files have to agree on is exactly the kind that drifts silently.
+	// If it changes there, this test is the thing that fails.
+	const fortiOSScheduleNameLen = 31
+
+	for _, limit := range []int{minAccountNameLen, 20, 31, readableSchemeMin, 64, 255} {
+		n, err := newNaming("proxy-a", limit)
+		if err != nil {
+			t.Fatalf("newNaming(%d): %v", limit, err)
+		}
+		for i := 0; i < 64; i++ {
+			name, err := n.name("a-very-long-login-name-indeed")
+			if err != nil {
+				t.Fatalf("name(limit %d): %v", limit, err)
+			}
+			if len(name) > fortiOSScheduleNameLen {
+				t.Fatalf("limit %d produced %q (%d characters), which cannot name a FortiOS one-time schedule (%d)",
+					limit, name, len(name), fortiOSScheduleNameLen)
+			}
+		}
+	}
+}

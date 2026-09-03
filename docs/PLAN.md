@@ -1060,13 +1060,19 @@ the user.
    semantics.
 
    The decision was taken **conditional on the window closing every door into
-   the account rather than one of them.** Fortinet's field description is about
-   the administrator — "Firewall schedule used to restrict when the
-   administrator can log in" — and the denial is logged at authentication; but
-   the worked example is a password login and this driver also installs public
-   keys. That is the decisive item on the hardware list, and it is decisive in
-   the strict sense: if a public-key login bypasses the schedule, the
-   declaration is wrong and comes back out.
+   the account rather than one of them**, and a verification pass on a
+   reachable network narrowed that condition without closing it. What is
+   established: `schedule` is one field **per administrator**, in the same
+   `config system admin` table as `password`, `ssh-public-key1`..`3`,
+   `remote-auth` and `two-factor`, with no per-credential variant in any
+   supported release — there is nowhere for an exception to be expressed. What
+   is not: the only `reason="out_of_schedule"` denial Fortinet publishes is a
+   **GUI/HTTPS** login, not an SSH one of either kind. So the coverage this
+   rests on is an inference from the field's shape, it is carried to the
+   operator on every session through `ExpiryMechanism` rather than left in a
+   comment, and it remains the decisive item on the hardware list in the strict
+   sense: if a public-key login bypasses the schedule, the declaration is wrong
+   and comes back out.
 
 2. **What the device does at the deadline is DECLARED, not left to the bit.**
    `EnforcesExpiry` cannot distinguish a platform that cuts a live session from
@@ -1081,11 +1087,16 @@ the user.
    ending the account's usefulness here.
 
 3. **The schedule takes the administrator's own name, and teardown removes both
-   objects.** The naming scheme above never emits a name over 32 characters,
-   which is the smaller of the two documented schedule-name limits (the naming
-   KB's 32 against the `schedule` field's 35 — take the smaller), so the second
-   object inherits the reaper prefix and the uniqueness token by BEING the first
-   object's name. That is what makes an orphan decidable from a device read
+   objects.** The naming scheme above produces exactly **31** characters at its
+   longest, which is exactly what `config firewall schedule onetime`'s own
+   `name` field accepts — so the second object inherits the reaper prefix and
+   the uniqueness token by BEING the first object's name, and it fits with
+   nothing to spare. (Neither figure this phase first argued between was right:
+   35 is the width of the fields that *reference* a schedule, and 32 was a
+   general KB figure. A reference field is wider than the object it points at.)
+   That the two limits meet exactly is now an invariant with a test on the
+   naming side, because one more character of login or token would break every
+   device-enforced FortiOS route. That is what makes an orphan decidable from a device read
    alone rather than from proxy state a crash would have lost. Removal deletes
    the administrator **first** and the schedule second, because the platform
    refuses to delete an object something still references — and it attempts both
@@ -1110,17 +1121,31 @@ the user.
    datetime, so the proxy's clock would be wrong by the offset between them),
    and a unit that will not report its clock is refused rather than guessed at.
 
-**What is unverified here, and what it costs to be wrong.** This phase could not
-reach Fortinet's documentation — the egress block phase 0014 hit, not the
-reachable session 0015 and 0016 had — so it added no new sourced facts and
-built so that each guess fails loudly. That the schedule table is reached
-through `config global` on a partitioned unit is the prompt's reading, not a
-page read for it: the schedule is created **before** the administrator
-references it, so a schedule written where the administrator cannot see it
-fails the reference and fails the attempt, rather than leaving an administrator
-whose deadline the device ignores. That `get system status` carries a readable
-clock is likewise unverified, and an unreadable one refuses the expiring route
-while still serving every route that needs no schedule.
+**What was verified afterwards, and what is still unverified.** The implementing
+session could not reach Fortinet's documentation — the egress block phase 0014
+hit, not the reachable session 0015 and 0016 had — so it added no new sourced
+facts and built so that each guess fails loudly. A verification pass then ran out
+of band and is recorded in `docs/FORTIOS-DOC-VERIFICATION.md` under claim 2. It
+corrected three things in this phase: the schedule-name limit (31, above), the
+clock (the device is now asked with `execute date` / `execute time`, which the
+Administration Guide documents in every supported release, rather than only the
+`System time` line of `get system status`, which no Fortinet page carries), and
+`expiration-days`, which defaults to 3 and would have earned the customer's unit
+a warning event log for every session — it is now set to 0 explicitly. It also
+established that FortiOS does **not** delete an expired one-time schedule, so
+the residue sweep is load-bearing rather than belt-and-braces.
+
+Two readings remain unverified and one of them got weaker. **Which scope the
+schedule table lives in on a partitioned unit** is documented nowhere, and the
+two indirect signals that exist point *away* from `config global`; the code is
+unchanged because there is no known-correct alternative — a global
+administrator's `set schedule` would still have to resolve somewhere nobody has
+written down — but the failure on such a unit now names the assumption. It stays
+safe for the same reason as before: the schedule is created **before** the
+administrator references it, so a schedule written where the administrator
+cannot see it fails the reference and fails the attempt, rather than leaving an
+administrator whose deadline the device ignores. And **whether the schedule
+covers an SSH login** is decision 1's inference, which needs a unit.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that

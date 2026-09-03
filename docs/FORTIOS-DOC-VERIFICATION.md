@@ -25,13 +25,13 @@ below was read directly. **Findings only — no code was changed.**
 > CLI reference gives 35 for `system admin`'s `schedule` field, which phase 0017
 > will have to reconcile.
 >
-> **Phase 0017 reconciled it by taking the smaller.** Nothing read since
-> resolves the disagreement, so the driver spends 32: the difference is one
-> character of token, and being wrong in the other direction is a name a device
-> refuses at the moment it is creating a privileged account's expiry. Nothing
-> this proxy creates comes near either figure — the naming scheme never emits a
-> name over 32 characters — which is what let 0017 give the schedule the
-> administrator's own name. See "What phase 0017 did with claim 2" below.
+> **Neither figure was right, and the verification pass found the one that is.**
+> `config firewall schedule onetime`'s own `name` parameter is **31**. The 35 is
+> the width of the fields that REFERENCE a schedule and the 32 was the naming
+> KB's general figure; the object's own limit is narrower than both, so a
+> reference field can hold a name that cannot exist. The driver spends 31, and
+> the naming scheme fits it with nothing to spare. See "What phase 0017 did with
+> claim 2" and the verification section under it.
 
 Unless a row says otherwise, each finding was checked in the FortiGate CLI
 reference / Administration Guide for **7.0.17, 7.2.11, 7.4.9, 7.6.6 and 8.0.0**
@@ -223,6 +223,144 @@ is still the first item on the hardware list. Phase 0017 did not model an answer
 it declared the mechanism instead, in `Capabilities.ExpiryMechanism`, which says
 in so many words that the account is not deleted and that a live session may
 outlive the deadline.
+
+### The verification pass on those questions
+
+**Run out of band from a session that could reach both sites**, against the same
+five releases as the rest of this document, and acted on in the same PR that
+raised the questions. Five findings changed the code. Two of them corrected
+phase 0017 rather than confirming it, and one of those was a number the phase
+had argued itself into from the wrong two sources.
+
+**A one-time schedule's own name is 31 characters, not 32 or 35.**
+
+```
+name | Onetime schedule name. | string | Maximum length: 31
+```
+
+Source: [`config firewall schedule onetime`, 7.6.6](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/260188243/config-firewall-schedule-onetime),
+identical in 7.0.17, 7.2.11, 7.4.9 and 8.0.0. The 35 belongs to the fields that
+*reference* a schedule — `system admin`'s `schedule` and `firewall policy`'s
+`schedule` are both `Maximum length: 35` — so **a reference field is wider than
+the object it points at**, and a 32-to-35-character name can be written into
+`set schedule` and name nothing that exists. The driver now spends 31; the
+account-naming scheme in `internal/auth/target` produces exactly 31 at its
+longest, so the shared-name design fits with nothing to spare, and
+`TestTheNamingSchemeFitsAFortiOSScheduleName` pins that from the naming side.
+
+**`expiration-days` defaults to 3 and writes an event log, not a deletion.**
+
+```
+expiration-days | Write an event log message this many days before the schedule
+                | expires. | integer | Minimum value: 0 Maximum value: 100 | 3
+```
+
+FortiOS is **not** documented to delete an expired one-time schedule anywhere,
+so the orphan sweep stays. What the default does do is earn the customer's unit
+a warning-severity event log — message id **32048**, "One time schedule
+expiring" ([log message reference,
+7.6.3](https://docs.fortinet.com/document/fortigate/7.6.3/fortios-log-message-reference/32048/32048-log-id-schedule-expire))
+— for *every* schedule shorter than three days, which is every schedule this
+proxy creates. The driver now sets `expiration-days 0` explicitly. That zero
+means "no message" rather than "a message on the day" is a reading, not a quoted
+fact; both readings are quieter than the default.
+
+**The clock has a documented command, and `get system status` does not.**
+Fortinet publishes no `get system status` page for FortiGate at all; the
+`System time` line appears only in a [community
+KB](https://community.fortinet.com/fortigate-3/technical-tip-explaining-get-system-status-command-output-154964),
+against two units. The Administration Guide documents `execute date` and
+`execute time` in every supported release and prints the output verbatim in 7.6
+and 8.0:
+
+```
+# execute date
+current date is: 2024-07-23
+# execute time
+current time is: 14:17:00
+last ntp sync:Tue Jul 23 13:25:21 2024
+```
+
+Source: [System date and time settings,
+8.0.0](https://docs.fortinet.com/document/fortigate/8.0.0/administration-guide/84878/system-date-and-time-settings).
+The driver reads those two on demand and keeps the status line as a fallback.
+Neither output carries a zone or an offset — the unit's timezone is `config
+system global` / `set timezone`, and the admin-schedule KB confirms the schedule
+is evaluated against that same clock ("the configured schedule will be based on
+the firewall's local time configured under 'config system global'"). The
+`last ntp sync` line is the time of a *synchronisation* and not the time now; it
+is a trap the fake device now sets deliberately.
+
+**The published `out_of_schedule` denial is a GUI/HTTPS login.** The KB's log
+sample carries `ui="https(12.1.2.1)" method="https"`, and
+[LOG_ID_ADMIN_LOGIN_FAIL](https://docs.fortinet.com/document/fortigate/7.6.3/fortios-log-message-reference/32002/32002-log-id-admin-login-fail)
+defines `reason` as a free 256-character string without enumerating its values.
+So **no Fortinet page shows this denial for an SSH login of either kind**. What
+*is* established is structural and is what the declaration now rests on:
+`schedule` is one field per administrator, in the same `config system admin`
+table as `password`, `ssh-public-key1`..`3`, `remote-auth` and `two-factor`,
+with no per-credential variant in any of the five releases — there is nowhere
+for an exception to be expressed. `Capabilities.ExpiryMechanism` now states both
+halves, so every session's record carries the inference rather than a claim.
+Worth knowing for whoever tests it: the KB's own scope line stops at v7.6, so
+nothing Fortinet publishes exercises `set schedule` on 8.0.x.
+
+**The scope question got weaker, not stronger.** Nothing states where `config
+firewall schedule onetime` lives on a partitioned unit, in either mode, and
+nothing states what a global administrator's `set schedule` resolves against.
+Two indirect signals point *away* from the driver's reading: the Administration
+Guide's own multi-VDOM example configures firewall objects underneath `config
+vdom`, and the schedule-expire log message carries a Virtual Domain Name field.
+Neither is a statement about this table. The code is unchanged — there is no
+known-correct alternative, since the global-administrator case would still be
+unanswered — but the comment now says which way the evidence leans, and the
+failure on a partitioned unit names the assumption.
+
+Three smaller results, none of which changed a decision:
+
+- **The delete refusal has published wording**, and it is not what phase 0017
+  guessed: "This error is generally encountered when attempting to delete any
+  object which is still referenced in the configuration", shown as *"The entry
+  is used by other N entries"*, with `diagnose sys cmdb refcnt show <table>` to
+  list the references
+  ([KB](https://community.fortinet.com/fortigate-3/troubleshooting-tip-cannot-delete-managed-fortiswitch-the-entry-is-used-by-other-x-entries-226315)).
+  That KB is about deleting a FortiSwitch, so the *wording* is sourced and this
+  object's behaviour is still inferred. The pattern is now in `cli.go` beside
+  the guessed one.
+- **H1 has an analogue and it is on the traffic side.** `config firewall policy`
+  has `schedule-timeout` — "Enable to force current sessions to end when the
+  schedule object times out. Disable allows them to end from inactivity" —
+  defaulting to **disable**. `config system admin` has no equivalent field in
+  any release. So there is no per-administrator control, no documented
+  behaviour, and what analogy there is leans towards a live session surviving —
+  which is the direction `ExpiryMechanism` already hedges.
+- **Nothing renders either `show` command's output.** `show firewall schedule
+  onetime` is confirmed to exist as a command; its output appears only as a
+  screenshot, and nothing compares `show system admin` inside `config global`
+  against the same command at the top level of a single-VDOM unit. Both parser
+  assumptions stay flagged.
+
+And two findings nobody had asked for:
+
+- **`start-utc` / `end-utc` exist from 7.2**, "Schedule start/end date and time,
+  in epoch format", in 7.2.11, 7.4.9, 7.6.6 and 8.0.0 but **not** in 7.0.17. On a
+  unit at 7.2 or later they would sidestep the device-clock read entirely, which
+  is the largest remaining source of complexity in this mechanism. Not taken:
+  7.0.x is in the supported set, and a driver that behaves differently by
+  release needs a reason better than convenience.
+- **A key-authenticated administrator is documented to need a password anyway**:
+  the [Public key SSH access](https://docs.fortinet.com/document/fortigate/7.4.9/administration-guide/813125/public-key-ssh-access)
+  page lists "A password must be set for backup" among its requirements. That
+  cuts against reading this driver's credential model as strictly either/or, and
+  it independently supports what the driver already does — leaving the
+  40-character throwaway in place on a public-key account rather than unsetting
+  it, since an administrator with no password can be logged into with an empty
+  one.
+
+One page was **not** read: the KB "Reasons for failed Admin login on FortiGate"
+(community 178292 / 332753) is client-rendered and its body is not served to a
+plain fetch. It may enumerate the `reason` values and is worth opening in a real
+browser by whoever next has one.
 
 ## 3 — Password *and* SSH keys: **correct**
 

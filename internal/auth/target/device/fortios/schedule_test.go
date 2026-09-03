@@ -242,7 +242,7 @@ func TestResidueEnumerationNeedsAPrefix(t *testing.T) {
 // audit record claims.
 func TestAnUnreadableDeviceClockRefusesTheExpiry(t *testing.T) {
 	h := expiringHarness(t, sshtest.FortiOSOptions{
-		Faults: sshtest.FortiOSFaults{HideSystemTime: true},
+		Faults: sshtest.FortiOSFaults{HideClock: true},
 	})
 	ctx := context.Background()
 
@@ -469,5 +469,104 @@ func TestTheScheduleIsReachedThroughGlobalScopeOnAPartitionedUnit(t *testing.T) 
 				t.Errorf("%d session(s) ended inside a configuration block", n)
 			}
 		})
+	}
+}
+
+// The verification pass's findings, as tests (phase 0017, post-verification).
+
+// TestAScheduleNameOverTheObjectLimitIsRefusedBeforeAnythingIsCreated pins the
+// number the verification pass corrected, and pins it at the boundary.
+//
+// A one-time schedule's own `name` is 31 characters — not the 32 this driver
+// first took from the naming KB, and not the 35 of the `schedule` field that
+// REFERENCES one. Since the schedule is named after the administrator, and an
+// administrator name may be 64 characters as far as this driver's own
+// validation is concerned, the gap has to fail before the first object exists
+// rather than between the two.
+func TestAScheduleNameOverTheObjectLimitIsRefusedBeforeAnythingIsCreated(t *testing.T) {
+	h := expiringHarness(t, sshtest.FortiOSOptions{})
+	const name32 = "hl-a1b2-abcdefghijklmn-0f0f0f0f0" // 32 characters
+
+	if len(name32) != maxScheduleNameLen+1 {
+		t.Fatalf("this test's fixture is %d characters, not %d", len(name32), maxScheduleNameLen+1)
+	}
+	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+		Endpoint: h.ep, Name: name32, Lifetime: time.Hour,
+	})
+	if err == nil {
+		t.Fatal("a 32-character name was accepted as a schedule name; the object's limit is 31")
+	}
+	if len(h.dev.Accounts()) != 0 || len(h.dev.Schedules()) != 0 {
+		t.Error("the refusal left an object on the device")
+	}
+
+	// The same name is fine on a route with no device-held deadline, because
+	// nothing there is named after it.
+	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+		Endpoint: h.ep, Name: name32,
+	}); err != nil {
+		t.Errorf("a 32-character administrator was refused on a route that creates no schedule: %v", err)
+	}
+}
+
+// TestTheClockComesFromTheDocumentedCommands is the verification pass's V3.
+//
+// `execute date` / `execute time` are documented in the Administration Guide in
+// every supported release; the `System time` line in `get system status` is
+// shown only in a community KB, so it is the fallback rather than the source.
+// Both paths must produce the same window, and neither may read the clock off
+// `execute time`'s second line — which is the last NTP SYNCHRONISATION, not the
+// time now, and which this fake deliberately reports as hours stale.
+func TestTheClockComesFromTheDocumentedCommands(t *testing.T) {
+	t.Run("documented commands", func(t *testing.T) {
+		h := expiringHarness(t, sshtest.FortiOSOptions{})
+		createExpiring(t, h, 45*time.Minute)
+
+		var asked bool
+		for _, cmd := range h.dev.Commands() {
+			if cmd == "execute date" {
+				asked = true
+			}
+		}
+		if !asked {
+			t.Errorf("the driver never asked the unit for its date: %v", h.dev.Commands())
+		}
+		if sched := h.dev.Schedules()[expiringAccount]; sched.End != "10:15 2031/03/04" {
+			t.Errorf("window ends at %q; the `last ntp sync` line is not the clock", sched.End)
+		}
+	})
+
+	t.Run("falling back to the status line", func(t *testing.T) {
+		h := expiringHarness(t, sshtest.FortiOSOptions{
+			Faults: sshtest.FortiOSFaults{NoExecuteClock: true},
+		})
+		createExpiring(t, h, 45*time.Minute)
+
+		sched, ok := h.dev.Schedules()[expiringAccount]
+		if !ok {
+			t.Fatal("a unit that answers only `get system status` was refused a schedule")
+		}
+		if sched.End != "10:15 2031/03/04" {
+			t.Errorf("the fallback produced %q, want the same window the documented commands do", sched.End)
+		}
+	})
+}
+
+// TestThePreExpirationWarningIsSilenced is the verification pass's V5.
+//
+// `expiration-days` defaults to 3 and means "write an event log message this
+// many days before the schedule expires". Every schedule this proxy creates is
+// shorter than three days, so at the default every session earns the customer's
+// unit a warning-severity event log for behaving exactly as intended. PLAN §5.3
+// says Hoplock does not hide the configuration changes it makes; it does not
+// follow that it may fill an event log with warnings about them.
+func TestThePreExpirationWarningIsSilenced(t *testing.T) {
+	h := expiringHarness(t, sshtest.FortiOSOptions{})
+	createExpiring(t, h, time.Hour)
+
+	sched := h.dev.Schedules()[expiringAccount]
+	if sched.ExpirationDays != 0 {
+		t.Errorf("expiration-days is %d, want 0: at the device's default of %d this schedule is born inside its own pre-expiration window",
+			sched.ExpirationDays, sshtest.FortiOSDefaultExpirationDays)
 	}
 }
