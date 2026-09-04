@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -179,9 +180,84 @@ type fixtureRoute struct {
 	NextProxyID string `yaml:"next_proxy_id"`
 	// FilterPolicy is the command filter policy for the connection.
 	FilterPolicy fixtureFilterPolicy `yaml:"filter_policy"`
+	// Enforcement is WHERE this route's policy is enforced, per axis
+	// (contract v4). Absent means both axes take their default, which is
+	// proxy-side enforcement only — what every fixture written before phase
+	// 0018 means, and why they all keep working.
+	Enforcement *fixtureEnforcement `yaml:"enforcement"`
+	// SessionDeadlineSeconds sets session_deadline this many seconds from the
+	// authorize call. It is a DURATION here and an absolute instant on the
+	// wire: a fixture cannot carry a timestamp that is still in the future
+	// tomorrow, and the contract deliberately refuses a duration (a duration
+	// re-anchors on every hop). Zero means no deadline.
+	SessionDeadlineSeconds int `yaml:"session_deadline_seconds"`
+	// RequireSessionCapture makes the route refuse a proxy that cannot record
+	// at all (D16). False is today's behaviour.
+	RequireSessionCapture bool `yaml:"require_session_capture"`
+	// GrantContext is why access was granted, as an external system asserted
+	// it. The proxy logs it and never reads it.
+	GrantContext *fixtureGrantContext `yaml:"grant_context"`
+	// Concurrency caps live sessions per subject and/or per target. Absent
+	// means uncapped.
+	Concurrency *fixtureConcurrency `yaml:"concurrency"`
 	// Cache authorises the proxy to reuse this decision. Absent (or a zero
 	// ttl_seconds) means the decision is not cacheable.
 	Cache fixtureCacheHint `yaml:"cache"`
+}
+
+// fixtureEnforcement mirrors control.EnforcementPolicy in YAML form.
+type fixtureEnforcement struct {
+	// Execution is the rung for what the session may execute: "proxy-inspected"
+	// (the default), "no-interactive-shell", "account-restricted",
+	// "account-confined", "platform-authorized", or "platform-attested".
+	Execution string `yaml:"execution"`
+	// Reach is the rung for what the session may reach:
+	// "proxy-channel-policy" (the default), "account-egress-restricted",
+	// "account-network-isolated", or "platform-attested".
+	Reach string `yaml:"reach"`
+	// PlatformRole is the device role the account is scoped to. Required by
+	// "platform-authorized", forbidden otherwise.
+	PlatformRole string `yaml:"platform_role"`
+	// PermittedDestinations are what a "account-egress-restricted" session's
+	// own processes may open. Same shape as permitted_forwards' entries, and
+	// deliberately a different thing.
+	PermittedDestinations []fixtureForwardDestination `yaml:"permitted_destinations"`
+	// Attestation names who asserts an attested rung. Required by
+	// "platform-attested" on either axis, forbidden otherwise.
+	Attestation *fixtureAttestation `yaml:"attestation"`
+}
+
+// fixtureAttestation mirrors control.Attestation in YAML form.
+type fixtureAttestation struct {
+	// AssertedBy is who makes the claim.
+	AssertedBy string `yaml:"asserted_by"`
+	// Reference is where the claim is written down.
+	Reference string `yaml:"reference"`
+	// AssertedAt is when it was last affirmed, RFC 3339. Optional.
+	AssertedAt string `yaml:"asserted_at"`
+}
+
+// fixtureGrantContext mirrors control.GrantContext in YAML form.
+//
+// Every value here is test data the proxy copies to its log records and never
+// reads. Nothing in a fixture makes it policy, which is the whole point.
+type fixtureGrantContext struct {
+	System    string `yaml:"system"`
+	Reference string `yaml:"reference"`
+	// WindowStart and WindowEnd are RFC 3339 instants. Recorded, not enforced.
+	WindowStart string `yaml:"window_start"`
+	WindowEnd   string `yaml:"window_end"`
+	// AdditionalText and AdditionalFields are the two forms
+	// additional_context takes on the wire. Setting both is a fixture error:
+	// the field is one or the other, never both.
+	AdditionalText   string            `yaml:"additional_context_text"`
+	AdditionalFields map[string]string `yaml:"additional_context_fields"`
+}
+
+// fixtureConcurrency mirrors control.ConcurrencyLimits in YAML form.
+type fixtureConcurrency struct {
+	PerSubject int `yaml:"max_sessions_per_subject"`
+	PerTarget  int `yaml:"max_sessions_per_target"`
 }
 
 // fixtureRequestPolicy mirrors control.RequestPolicy in YAML form.
@@ -535,11 +611,39 @@ func (f *fixtures) validate() error {
 					i, j, rule.Match, rule.Action)
 			}
 		}
+		if r.SessionDeadlineSeconds < 0 {
+			add("routes[%d].session_deadline_seconds must not be negative", i)
+		}
+		if e := r.Enforcement; e != nil {
+			if a := e.Attestation; a != nil {
+				if _, err := fixtureTime(a.AssertedAt); err != nil {
+					add("routes[%d].enforcement.attestation.asserted_at %q is not an RFC 3339 instant",
+						i, a.AssertedAt)
+				}
+			}
+		}
+		if g := r.GrantContext; g != nil {
+			for field, value := range map[string]string{
+				"window_start": g.WindowStart, "window_end": g.WindowEnd,
+			} {
+				if _, err := fixtureTime(value); err != nil {
+					add("routes[%d].grant_context.%s %q is not an RFC 3339 instant", i, field, value)
+				}
+			}
+			if g.AdditionalText != "" && len(g.AdditionalFields) > 0 {
+				// additional_context is a string OR an object on the wire, so a
+				// fixture that sets both is describing a response that cannot
+				// exist. Picking one would be the mock inventing policy.
+				add("routes[%d].grant_context sets both additional_context_text and "+
+					"additional_context_fields; the field is one or the other", i)
+			}
+		}
 		// The remaining policy rules — the exec tiers, the forwarding
-		// destinations, the request types — are exactly the ones the real
-		// client enforces, so the fixture is checked against that same code
-		// rather than against a second, drifting copy of it. A fixture the
-		// proxy would reject as a contract violation must not start the mock.
+		// destinations, the request types, the enforcement rungs and what each
+		// one requires — are exactly the ones the real client enforces, so the
+		// fixture is checked against that same code rather than against a
+		// second, drifting copy of it. A fixture the proxy would reject as a
+		// contract violation must not start the mock.
 		if err := r.authorizeResponse("fixture.invalid", nil).Validate(); err != nil {
 			add("routes[%d]: %v", i, err)
 		}
@@ -630,6 +734,10 @@ func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *cont
 		TargetAuthLadder:        ladderWire(r.TargetAuthLadder),
 		AlgorithmProfile:        control.AlgorithmProfile(r.AlgorithmProfile),
 		FilterPolicy:            r.FilterPolicy.wire(),
+		Enforcement:             r.Enforcement.wire(),
+		RequireSessionCapture:   r.RequireSessionCapture,
+		GrantContext:            r.GrantContext.wire(),
+		Concurrency:             r.Concurrency.wire(),
 	}
 	if resp.PermittedChannels == nil {
 		// An absent allow-list must serialise as [] (deny all), not null.
@@ -648,6 +756,18 @@ func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *cont
 		resp.Target = r.ResolvedTarget
 	}
 	return resp
+}
+
+// deadline resolves session_deadline_seconds against the clock at authorize
+// time. The contract carries an absolute instant on purpose (a duration
+// re-anchors on every hop), so the fixture's duration is anchored exactly once,
+// here, by the server that made the decision.
+func (r *fixtureRoute) deadline(now time.Time) *time.Time {
+	if r.SessionDeadlineSeconds <= 0 {
+		return nil
+	}
+	at := now.Add(time.Duration(r.SessionDeadlineSeconds) * time.Second)
+	return &at
 }
 
 func (p *fixtureRequestPolicy) wire() *control.RequestPolicy {
@@ -745,6 +865,72 @@ func (p *fixtureRestrictedExec) wire() *control.RestrictedExecPolicy {
 	return out
 }
 
+func (e *fixtureEnforcement) wire() *control.EnforcementPolicy {
+	if e == nil {
+		return nil
+	}
+	return &control.EnforcementPolicy{
+		Execution:             control.ExecutionRung(e.Execution),
+		Reach:                 control.ReachRung(e.Reach),
+		PlatformRole:          e.PlatformRole,
+		PermittedDestinations: forwardDestinations(e.PermittedDestinations),
+		Attestation:           e.Attestation.wire(),
+	}
+}
+
+func (a *fixtureAttestation) wire() *control.Attestation {
+	if a == nil {
+		return nil
+	}
+	out := &control.Attestation{AssertedBy: a.AssertedBy, Reference: a.Reference}
+	if t, err := fixtureTime(a.AssertedAt); err == nil {
+		out.AssertedAt = t
+	}
+	return out
+}
+
+func (g *fixtureGrantContext) wire() *control.GrantContext {
+	if g == nil {
+		return nil
+	}
+	out := &control.GrantContext{System: g.System, Reference: g.Reference}
+	out.WindowStart, _ = fixtureTime(g.WindowStart)
+	out.WindowEnd, _ = fixtureTime(g.WindowEnd)
+	switch {
+	case len(g.AdditionalFields) > 0:
+		fields := make(map[string]any, len(g.AdditionalFields))
+		for k, v := range g.AdditionalFields {
+			fields[k] = v
+		}
+		out.Additional = &control.AdditionalContext{Fields: fields}
+	case g.AdditionalText != "":
+		out.Additional = &control.AdditionalContext{Text: g.AdditionalText}
+	}
+	return out
+}
+
+func (c *fixtureConcurrency) wire() *control.ConcurrencyLimits {
+	if c == nil {
+		return nil
+	}
+	return &control.ConcurrencyLimits{PerSubject: c.PerSubject, PerTarget: c.PerTarget}
+}
+
+// fixtureTime parses an optional RFC 3339 instant from a fixture. An empty
+// string is an absent instant and not an error, because every timestamp in a
+// fixture is optional; a malformed one is reported by validate() rather than
+// silently becoming the zero time, which the contract refuses anyway.
+func fixtureTime(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 // identity converts the fixture identity into its wire form.
 func (u *fixtureUser) identity() *control.Identity {
 	return &control.Identity{
@@ -787,6 +973,14 @@ func (u *fixtureUser) chainIdentity(hop string) *control.Identity {
 // a case here, or the mock will hand it to a proxy that fails the session
 // closed on it.
 func vocabularyVersion(r *control.AuthorizeResponse) int {
+	switch {
+	case r.Enforcement != nil,
+		r.SessionDeadline != nil,
+		r.RequireSessionCapture,
+		r.GrantContext != nil,
+		r.Concurrency != nil:
+		return 4
+	}
 	switch {
 	case r.TargetAuthLadder != nil,
 		r.AlgorithmProfile != "",

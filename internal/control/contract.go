@@ -19,6 +19,12 @@ const (
 	PathReportHostKey        = "/v1/hostkeys/report"
 	PathIngestLogBatch       = "/v1/logs/batch"
 	PathIngestPriorityLog    = "/v1/logs/priority"
+	// PathReportCapabilities records what one target can enforce (contract v4).
+	// It exists because authorize happens BEFORE the proxy has touched the
+	// target, so a first-ever connection has nothing to put on
+	// AuthorizeRequest; the proxy learns by connecting and reports, exactly as
+	// it does for a host key.
+	PathReportCapabilities = "/v1/capabilities/report"
 	// PathProxyEvents is the revocation stream, templated on the proxy id.
 	// Build a concrete path with ProxyEventsPath rather than by formatting
 	// this constant, so the escaping stays in one place.
@@ -26,8 +32,8 @@ const (
 )
 
 // PolicyVersion is the highest policy vocabulary this client implements, sent
-// as AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12/D13/D14, phases 0006
-// and 0013).
+// as AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12/D13/D14/D16, phases
+// 0006, 0013 and 0018).
 //
 // Version 1 was the phase 0002/0003 vocabulary: permitted_channels and a
 // filter rule list. Version 2 adds in-channel requests, forwarding
@@ -35,14 +41,17 @@ const (
 // the exec enforcement mode. Version 3 (phase 0013) adds the ordered credential
 // ladder (D14), the ephemeral-account method and its device-driver parameters
 // (D13), the per-route algorithm profile, and the requirement that every
-// provisioning method names its username.
+// provisioning method names its username. Version 4 (phase 0018) adds WHERE
+// policy is enforced — the two enforcement axes (D12 as amended, PLAN §6.5) —
+// together with the session bounds D16 asks for: a deadline, required capture,
+// the grant context, and concurrency caps.
 //
 // The server must not answer with policy fields introduced after the version
 // the proxy declares. That is what makes it safe for this client to refuse an
 // authorize response carrying a field it does not understand rather than
 // dropping it: an unknown field may be a restriction, and a dropped
 // restriction is a silently widened policy.
-const PolicyVersion = 3
+const PolicyVersion = 4
 
 // QueryLastEventID is the query parameter carrying the last event the proxy
 // processed, so the server can replay the gap after a reconnect (PLAN §6.4).
@@ -206,8 +215,18 @@ type AuthorizeRequest struct {
 	// PolicyVersion is the highest policy vocabulary the proxy implements
 	// (PolicyVersion). Absent means 1. The server must not answer with policy
 	// fields introduced after it; the client refuses a response that does.
-	PolicyVersion int      `json:"policy_version,omitempty"`
-	Conn          ConnMeta `json:"conn"`
+	PolicyVersion int `json:"policy_version,omitempty"`
+	// Capabilities are the enforcement rungs this PROXY BUILD can provide
+	// (contract v4, phase 0018). It rides here beside PolicyVersion on 0006's
+	// pattern, and answers only "can this software do it" — whether a given
+	// TARGET can take a rung needs a login to find out and is reported
+	// separately (PathReportCapabilities).
+	//
+	// Absent declares nothing, which is what a v3 proxy implies and is the
+	// fail-safe reading: a server choosing from it can then only choose a rung
+	// that needs no capability at all.
+	Capabilities *ProxyCapabilities `json:"capabilities,omitempty"`
+	Conn         ConnMeta           `json:"conn"`
 }
 
 // RouteType says what AuthorizeResponse.Target refers to.
@@ -286,6 +305,58 @@ type AuthorizeResponse struct {
 	// Anything else is a weakening and is audited as one.
 	AlgorithmProfile AlgorithmProfile `json:"algorithm_profile,omitempty"`
 	FilterPolicy     FilterPolicy     `json:"filter_policy"`
+	// Enforcement is WHERE this connection's policy is enforced, on each of the
+	// two axes (contract v4, rendered by phase 0019). NIL MEANS BOTH AXES TAKE
+	// THEIR DEFAULT, which is exactly today's behaviour: the proxy decides at
+	// the exec request, and forwarding policy covers SSH channels only.
+	//
+	// A rung the proxy cannot provide is an OUTAGE-CLASS DENIAL naming the
+	// session id (PLAN §4.3), never a silent downgrade to a weaker one — D6a's
+	// rule for credential methods, applied unchanged and for the same reason: a
+	// session running at a weaker tier than its audit record claims is worse
+	// than a session that does not run.
+	Enforcement *EnforcementPolicy `json:"enforcement,omitempty"`
+	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
+	// (contract v4, D16; enforced locally by phase 0025). Nil means no deadline,
+	// which is today's behaviour.
+	//
+	// It is enforced by the PROXY, locally, so it holds when the revocation
+	// stream is down — which is exactly when an immortal root session is least
+	// acceptable, and the reason this is not "just use revocation". It is an
+	// instant rather than a duration because a duration re-anchors on every hop
+	// of a chained route, silently multiplying the window.
+	//
+	// Reaching it is neither a denial nor an outage: the session is closed and
+	// the close is explained (PLAN §4.3). It applies to any route, not only a
+	// privileged one.
+	SessionDeadline *time.Time `json:"session_deadline,omitempty"`
+	// RequireSessionCapture says this route may only run if the session is
+	// recorded (contract v4, D16). False — the absent value — is today's
+	// behaviour: capture happens if the proxy is configured for it, and its
+	// absence stops nothing.
+	//
+	// When true, a proxy with no recording path at all refuses the session as an
+	// OUTAGE (PLAN §4.3), and the check happens BEFORE the target leg is
+	// dialled rather than after. BUFFERING TO LOCAL DISK COUNTS AS RECORDING —
+	// the 0011 pipeline's disk buffer is a resilience path, not a degraded mode
+	// — so the refusal triggers only when there is no path at all.
+	//
+	// This is the compensating control that makes D16's unbounded-privilege
+	// grant defensible: root on a target can disable that target's auditing and
+	// scrub its traces; it cannot touch a session captured in the proxy.
+	RequireSessionCapture bool `json:"require_session_capture,omitempty"`
+	// GrantContext is WHY access was granted, as an external system asserted it
+	// (contract v4, D16). Nil means no external grant context, which is today's
+	// behaviour.
+	//
+	// THE PROXY TREATS IT AS OPAQUE: copied to every log record for the session,
+	// never parsed, never matched against, never the basis of a proxy-side
+	// decision (D2), and never shown to the user.
+	GrantContext *GrantContext `json:"grant_context,omitempty"`
+	// Concurrency caps how many sessions may be live at once (contract v4,
+	// PLAN §13 UC2). Nil means uncapped, which is today's behaviour. Exceeding
+	// a cap is a POLICY DENIAL — vague, PLAN §4.3 — and never an outage.
+	Concurrency *ConcurrencyLimits `json:"concurrency,omitempty"`
 	// Hop is set when RouteType is RouteTypeNextHop.
 	Hop *HopMetadata `json:"hop,omitempty"`
 	// DecisionID correlates this decision with the server's audit trail.
@@ -335,6 +406,30 @@ func (r *AuthorizeResponse) Profile() AlgorithmProfile {
 		return AlgorithmProfileDefault
 	}
 	return r.AlgorithmProfile
+}
+
+// EnforcedExecution returns the execution rung in force for this route,
+// resolving the absent-value default so no caller has to decide what an absent
+// enforcement object meant (contract v4).
+//
+// It is the value the AUDIT RECORD carries, and the record carries the rung that
+// was actually in force rather than the one requested — the whole point of the
+// vocabulary is that the claim differs per rung, so a record naming a rung the
+// session did not stand on would be worse than no record at all.
+func (r *AuthorizeResponse) EnforcedExecution() ExecutionRung {
+	if r == nil {
+		return ExecutionProxyInspected
+	}
+	return r.Enforcement.ExecutionRung()
+}
+
+// EnforcedReach returns the reach rung in force for this route, resolving the
+// absent-value default.
+func (r *AuthorizeResponse) EnforcedReach() ReachRung {
+	if r == nil {
+		return ReachProxyChannelPolicy
+	}
+	return r.Enforcement.ReachRung()
 }
 
 // CacheHint is Hoplock Control authorising the proxy to reuse this

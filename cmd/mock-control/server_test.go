@@ -1335,11 +1335,12 @@ routes:
 	}
 }
 
-// TestV2ProxyIsStillServedV2Routes covers the half of the version gate that a
-// vocabulary bump breaks most easily: raising PolicyVersion to 3 must not make
-// every pre-0013 route unservable to a proxy that declared 2. The gate answers
-// per route, not per build.
-func TestV2ProxyIsStillServedV2Routes(t *testing.T) {
+// TestVersionGateAnswersPerRoute covers the half of the version gate that a
+// vocabulary bump breaks most easily: raising PolicyVersion must not make every
+// older route unservable to a proxy that declared an older vocabulary. The gate
+// answers per ROUTE, not per build — a fixture using only the v2 vocabulary is
+// still v2 however many revisions the contract has had since.
+func TestVersionGateAnswersPerRoute(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
 	authorizeAs := func(t *testing.T, target string, version int) int {
@@ -1368,16 +1369,323 @@ func TestV2ProxyIsStillServedV2Routes(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// A v2 route (brokered-key, restricted exec) to a proxy declaring 2.
-	if got := authorizeAs(t, "edge-fw-01.company.com", 2); got != http.StatusOK {
+	// A v2 route (the wildcard rule: a single brokered-key target_auth and the
+	// forwarding axis) to a proxy declaring 2.
+	if got := authorizeAs(t, "anything.company.com", 2); got != http.StatusOK {
 		t.Errorf("a v2 route to a v2 proxy = %d, want %d", got, http.StatusOK)
 	}
-	// A v3 route (a ladder) to the same proxy: refused, and refused as an
-	// outage rather than served with policy it would fail closed on.
-	if got := authorizeAs(t, "core-fw-01.company.com", 2); got != http.StatusInternalServerError {
+	// A v3 route (a ladder, no enforcement object) to the same proxy: refused,
+	// and refused as an outage rather than served with policy it would fail
+	// closed on.
+	if got := authorizeAs(t, "crown-fw-01.company.com", 2); got != http.StatusInternalServerError {
 		t.Errorf("a v3 route to a v2 proxy = %d, want %d", got, http.StatusInternalServerError)
 	}
-	if got := authorizeAs(t, "core-fw-01.company.com", 3); got != http.StatusOK {
+	if got := authorizeAs(t, "crown-fw-01.company.com", 3); got != http.StatusOK {
 		t.Errorf("a v3 route to a v3 proxy = %d, want %d", got, http.StatusOK)
+	}
+	// A v4 route (an enforcement rung) to a v3 proxy: same answer, one
+	// vocabulary later. This is the case the gate exists for after phase 0018,
+	// and the reason vocabularyVersion needs a case per contract revision.
+	if got := authorizeAs(t, "edge-fw-01.company.com", 3); got != http.StatusInternalServerError {
+		t.Errorf("a v4 route to a v3 proxy = %d, want %d", got, http.StatusInternalServerError)
+	}
+	if got := authorizeAs(t, "edge-fw-01.company.com", 4); got != http.StatusOK {
+		t.Errorf("a v4 route to a v4 proxy = %d, want %d", got, http.StatusOK)
+	}
+}
+
+// --- contract v4: enforcement points and session bounds ---------------------
+
+// TestEnforcementRungsAreServedFromFixtures drives every rung on both axes
+// through the real client, from the worked example. It is the fixture half of
+// phase 0018's acceptance: a rung Control can name but the mock cannot serve is
+// a rung phase 0019 cannot be built or tested against.
+func TestEnforcementRungsAreServedFromFixtures(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+
+	tests := []struct {
+		name          string
+		login, target string
+		execution     control.ExecutionRung
+		reach         control.ReachRung
+		check         func(*testing.T, *control.AuthorizeResponse)
+	}{
+		{
+			name: "the defaults, on a route that names no rung",
+			// Every route written before phase 0018 lands here, which is the
+			// compatibility property the whole revision rests on.
+			login: "alice", target: "host.company.com",
+			execution: control.ExecutionProxyInspected,
+			reach:     control.ReachProxyChannelPolicy,
+			check: func(t *testing.T, resp *control.AuthorizeResponse) {
+				if resp.Enforcement != nil {
+					t.Error("a pre-0018 route must carry no enforcement object at all")
+				}
+			},
+		},
+		{
+			name:  "the free rung: no interactive shell",
+			login: "svc-deploy", target: "automation-01.company.com",
+			execution: control.ExecutionNoInteractiveShell,
+			reach:     control.ReachProxyChannelPolicy,
+			check: func(t *testing.T, resp *control.AuthorizeResponse) {
+				if resp.PermittedRequests.RequestPermitted(control.RequestShell) {
+					t.Error("the rung claims no interactive shell but the policy permits one")
+				}
+				if resp.Concurrency == nil || resp.Concurrency.PerSubject != 4 {
+					t.Errorf("concurrency = %+v, want a per-subject cap of 4", resp.Concurrency)
+				}
+			},
+		},
+		{
+			name:  "both applied rungs on an ephemeral-user route",
+			login: "svc-deploy", target: "build-01.company.com",
+			execution: control.ExecutionAccountRestricted,
+			reach:     control.ReachAccountEgressRestricted,
+			check: func(t *testing.T, resp *control.AuthorizeResponse) {
+				if got := len(resp.Enforcement.PermittedDestinations); got != 2 {
+					t.Errorf("permitted_destinations has %d entries, want 2", got)
+				}
+				if resp.FilterPolicy.Exec() != control.ExecModeRestricted {
+					t.Error("account-restricted must ride restricted exec: it renders what that names")
+				}
+			},
+		},
+		{
+			name:  "the strongest applied pair",
+			login: "svc-deploy", target: "sensor-01.company.com",
+			execution: control.ExecutionAccountConfined,
+			reach:     control.ReachAccountNetworkIsolated,
+		},
+		{
+			name:  "device RBAC, applied per session",
+			login: "svc-deploy", target: "core-fw-01.company.com",
+			execution: control.ExecutionPlatformAuthorized,
+			reach:     control.ReachProxyChannelPolicy,
+			check: func(t *testing.T, resp *control.AuthorizeResponse) {
+				if resp.Enforcement.PlatformRole == "" {
+					t.Error("platform-authorized carries no role; the role IS the rung")
+				}
+				// The applied rung is legal here only because the ladder's first
+				// entry provisions the target. The brokered-key entry behind it
+				// is a skipped rung, not a session without the rung.
+				rungs, named := resp.Ladder()
+				if !named || len(rungs) != 2 || !rungs[0].Method.Provisions() {
+					t.Errorf("ladder = %+v, want a provisioning first entry", rungs)
+				}
+			},
+		},
+		{
+			name: "an attested rung on a brokered-key route",
+			// The case that makes the appliance estate reachable: the proxy
+			// administers nothing, so no applied rung exists — and "none
+			// available" would still be the wrong record.
+			login: "svc-deploy", target: "edge-fw-01.company.com",
+			execution: control.ExecutionPlatformAttested,
+			reach:     control.ReachPlatformAttested,
+			check: func(t *testing.T, resp *control.AuthorizeResponse) {
+				att := resp.Enforcement.Attestation
+				if att == nil || att.AssertedBy == "" || att.Reference == "" {
+					t.Fatalf("attestation = %+v, want who asserts it and where that lives", att)
+				}
+				rungs, _ := resp.Ladder()
+				for _, rung := range rungs {
+					if rung.Method.Provisions() {
+						t.Error("this route is meant to provision nothing")
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := m.client.Authorize(context.Background(), &control.AuthorizeRequest{
+				Identity: &control.Identity{Subject: tc.login + "@example.com", Login: tc.login},
+				Target:   tc.target,
+				Conn:     testConn(),
+			})
+			if err != nil {
+				t.Fatalf("Authorize(%s): %v", tc.target, err)
+			}
+			if got := resp.EnforcedExecution(); got != tc.execution {
+				t.Errorf("execution rung = %q, want %q", got, tc.execution)
+			}
+			if got := resp.EnforcedReach(); got != tc.reach {
+				t.Errorf("reach rung = %q, want %q", got, tc.reach)
+			}
+			if tc.check != nil {
+				tc.check(t, resp)
+			}
+		})
+	}
+}
+
+// TestSessionBoundsAreServedFromFixtures covers D16's four fields on the UC3
+// route, including the one shape a fixture cannot hold directly: the deadline
+// is an absolute instant, anchored by the server at authorize time.
+func TestSessionBoundsAreServedFromFixtures(t *testing.T) {
+	now := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
+	m := startMock(t, nil, serverOptions{Now: func() time.Time { return now }})
+
+	resp, err := m.client.Authorize(context.Background(), &control.AuthorizeRequest{
+		Identity: &control.Identity{Subject: "alice@example.com", Login: "alice"},
+		Target:   "scan-target-01.company.com",
+		Conn:     testConn(),
+	})
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+
+	if resp.SessionDeadline == nil {
+		t.Fatal("the route carries no session_deadline")
+	}
+	if want := now.Add(time.Hour); !resp.SessionDeadline.Equal(want) {
+		t.Errorf("session_deadline = %v, want %v (anchored at authorize time)", resp.SessionDeadline, want)
+	}
+	if !resp.RequireSessionCapture {
+		t.Error("the route must require capture: it is what makes the grant defensible (D16)")
+	}
+	g := resp.GrantContext
+	if g == nil || g.System != "qualys" || g.Reference == "" {
+		t.Fatalf("grant_context = %+v, want the asserting system and its reference", g)
+	}
+	if g.WindowStart == nil || g.WindowEnd == nil || !g.WindowEnd.After(*g.WindowStart) {
+		t.Errorf("grant_context window = %v..%v, want an ordered pair", g.WindowStart, g.WindowEnd)
+	}
+	if g.Additional == nil || g.Additional.Fields["scan_profile"] != "authenticated-linux" {
+		t.Errorf("additional_context = %+v, want the object form intact", g.Additional)
+	}
+	if resp.Concurrency == nil || resp.Concurrency.PerTarget != 1 {
+		t.Errorf("concurrency = %+v, want a per-target cap of 1", resp.Concurrency)
+	}
+	// This route deliberately names NO rung: a scanner's command set changes
+	// with every content update, so every execution rung is worthless against
+	// it and the honest policy says so (PLAN §13 UC3).
+	if resp.Enforcement != nil {
+		t.Error("the scanner route must claim no enforcement rung")
+	}
+}
+
+// TestCapabilityReportIsRecorded drives the v4 endpoint through the real
+// client. The server decides nothing — a capability report is an observation —
+// so what is asserted is that it round-trips and is remembered.
+func TestCapabilityReportIsRecorded(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	observed := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+
+	resp, err := m.client.ReportCapabilities(context.Background(), &control.CapabilityReportRequest{
+		Target: "build-01.company.com",
+		Capabilities: control.TargetCapabilities{
+			Execution:  []control.ExecutionRung{control.ExecutionAccountRestricted},
+			Reach:      []control.ReachRung{control.ReachAccountNetworkIsolated},
+			ObservedAt: observed,
+			Detail:     map[string]string{"init": "systemd-257"},
+		},
+		Conn: testConn(),
+	})
+	if err != nil {
+		t.Fatalf("ReportCapabilities: %v", err)
+	}
+	if !resp.Accepted {
+		t.Error("the server did not accept the report")
+	}
+
+	stored, ok := m.server.reportedCapabilities("build-01.company.com")
+	if !ok {
+		t.Fatal("the report was not recorded")
+	}
+	if !stored.Fresh(observed.Add(time.Minute), control.DefaultCapabilityTTL) {
+		t.Error("the stored record is not fresh a minute after it was observed")
+	}
+	if !stored.ProvidesExecution(control.ExecutionAccountRestricted, observed, control.DefaultCapabilityTTL) {
+		t.Error("the stored record does not provide what it reported")
+	}
+	if stored.ProvidesExecution(control.ExecutionAccountConfined, observed, control.DefaultCapabilityTTL) {
+		t.Error("the stored record provides a rung it never reported")
+	}
+
+	// An undated record is a stale one by contract, so a server that stored it
+	// would be storing something nobody may use.
+	_, err = m.client.ReportCapabilities(context.Background(), &control.CapabilityReportRequest{
+		Target:       "build-01.company.com",
+		Capabilities: control.TargetCapabilities{Execution: []control.ExecutionRung{control.ExecutionAccountConfined}},
+		Conn:         testConn(),
+	})
+	if err == nil {
+		t.Error("an undated capability report was accepted")
+	}
+}
+
+// TestInvalidV4FixturesAreRefusedAtStartup. Fixture decoding is strict and the
+// route is checked against the CLIENT's own Validate, so a fixture describing a
+// policy a real proxy would refuse must not start the mock — which is the only
+// thing standing between a bad fixture and a scenario that fails three layers
+// away from its cause.
+func TestInvalidV4FixturesAreRefusedAtStartup(t *testing.T) {
+	const preamble = "users:\n  - login: alice\n    password: pw\n" +
+		"routes:\n  - target: h\n    filter_policy:\n      mode: blacklist\n"
+
+	tests := []struct {
+		name     string
+		yaml     string
+		wantErrs []string
+	}{
+		{
+			name: "an applied rung on a brokered-key ladder",
+			yaml: preamble +
+				"    target_auth_ladder:\n      - method: brokered-key\n        params:\n" +
+				"          username: monitor\n          credential_ref: fleet\n" +
+				"    enforcement:\n      execution: platform-authorized\n" +
+				"      platform_role: prof_admin\n",
+			wantErrs: []string{"no credential method on this route provisions the target"},
+		},
+		{
+			name:     "an unknown rung",
+			yaml:     preamble + "    enforcement:\n      reach: firewalled\n",
+			wantErrs: []string{"firewalled"},
+		},
+		{
+			name:     "an attested rung with no attestation",
+			yaml:     preamble + "    enforcement:\n      execution: platform-attested\n",
+			wantErrs: []string{"carries no attestation"},
+		},
+		{
+			name: "no-interactive-shell beside a permitted shell",
+			yaml: preamble + "    permitted_requests:\n      types: [exec, shell]\n" +
+				"    enforcement:\n      execution: no-interactive-shell\n",
+			wantErrs: []string{"shell"},
+		},
+		{
+			name: "both forms of additional context",
+			yaml: preamble + "    grant_context:\n      system: qualys\n" +
+				"      additional_context_text: hello\n" +
+				"      additional_context_fields:\n        a: b\n",
+			wantErrs: []string{"one or the other"},
+		},
+		{
+			name:     "a malformed grant window",
+			yaml:     preamble + "    grant_context:\n      window_end: \"yesterday\"\n",
+			wantErrs: []string{"RFC 3339"},
+		},
+		{
+			name:     "a negative deadline",
+			yaml:     preamble + "    session_deadline_seconds: -1\n",
+			wantErrs: []string{"session_deadline_seconds"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseFixtures(strings.NewReader(tc.yaml))
+			if err == nil {
+				t.Fatal("parseFixtures accepted a fixture the proxy would refuse")
+			}
+			for _, want := range tc.wantErrs {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
 	}
 }

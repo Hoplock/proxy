@@ -228,16 +228,47 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   Which mode applies is per connection and comes from the server. Marketing,
   docs, and the audit record use the same two words for the same two things.
 
-  **Where** either mode is enforced is a separate question, opened by phase
-  0018. Both tiers above are enforced *in the proxy, at the `exec` request*, so
-  both stop meaning anything the moment a route permits an interactive shell —
-  which this decision says in as many words. The ephemeral method (D6, §5.1)
-  creates the account, writes its `authorized_keys`, and chooses its shell, so
-  on those routes the same policy can be enforced by sshd and the kernel
-  instead, where it also survives a connection that never went through a proxy.
-  0018 surveys those enforcement points and gives Hoplock Control the vocabulary
-  to choose one per route; 0019 implements them. This decision is amended there
-  rather than replaced.
+  **Where** either mode is enforced is a separate question, and **phase 0018
+  answered it** (§6.5). Both tiers above are enforced *in the proxy, at the
+  `exec` request*, so both stop meaning anything the moment a route permits an
+  interactive shell — which this decision says in as many words. The ephemeral
+  method (D6, §5.1) creates the account, writes its `authorized_keys`, and
+  chooses its shell, so on those routes the same policy can be enforced by sshd
+  and the kernel instead, where it also survives a connection that never went
+  through a proxy.
+
+  **As amended (phase 0018).** The enforcement story is a **ladder**, not a
+  line, and which rung a route stands on is a policy decision that belongs to
+  the PDP (D2) — exactly as the credential method does (D6a). Four things
+  follow, and each is a decision rather than an observation:
+
+  - **There are two ladders, not one.** "What a session may run" and "what it
+    may reach" are separate questions with separate mechanisms, and only the
+    first is what D12 was about. An account that can run exactly `uptime` and
+    `cat`, and can also open a socket to anything in the estate, is a pivot
+    point wearing an allow-list. The contract names a rung on each axis
+    independently (`enforcement.execution`, `enforcement.reach`), and §6.5
+    surveys both.
+  - **Denying the interactive shell is itself an enforcement point, and it is
+    free.** It needs nothing of the target, nothing installed, and no new
+    mechanism: the axis has shipped since 0006 (D5a axis 2). A route permitting
+    `exec` but not `shell`/`pty-req` turns restricted exec from "a boundary for
+    the commands it sees" into a boundary, full stop. It is the first rung of
+    the ladder and the cheapest strong one in the table.
+  - **A rung is either APPLIED or ATTESTED, and the difference is in the
+    vocabulary.** An applied rung is one the proxy configures per session and
+    tears down; an attested one is enforced by the target already, configured by
+    somebody who is not this product — an IOS privilege level, a Junos login
+    class, a per-account ACL. The proxy applies nothing for an attested rung and
+    the record names who does. Attested rungs are how the appliance estate gets
+    a real enforcement claim instead of "none available", and they are the only
+    kind a `brokered-key` route can carry.
+  - **A rung the proxy cannot provide is an outage-class denial** (§4.3), never
+    a silent downgrade — D6a's rule for credential methods, unchanged and for
+    the same reason. The audit record carries the rung that was **in force**,
+    not the one requested.
+
+  0019 renders the rungs; this decision is amended here rather than replaced.
 - **D13 — Ephemeral accounts on devices the proxy cannot administer as a host
   (new, phase 0013).** D6a split target credentials into `ephemeral-user` for
   hosts that accept provisioning and `brokered-key` for everything else, on the
@@ -1304,6 +1335,12 @@ work in flight on its own.
     other direction and gets its own list. The proxy never resolves a name to
     decide policy: a CIDR matches only IP literals, and a DNS answer is not a
     decision the PDP made.
+
+    `permitted_forwards` governs what may be tunnelled **through SSH
+    channels**, and nothing else: a process the session starts on the target
+    opens its own sockets and never touches a channel. What a session may
+    *reach* is therefore a second axis with its own rungs (§6.5), and this
+    field is the weakest of them.
   - **Global requests** — `permitted_global_requests` (`types`). Remote
     forwarding is requested at the connection level (`tcpip-forward`), not by
     opening a channel, so it is invisible to a channel-type allow-list. Denying
@@ -1375,6 +1412,10 @@ visible to a reviewer.
 
 The audit event records which tier decided, so a later review can tell a
 boundary from a guardrail without re-reading the policy.
+
+All three tiers are enforced **in the proxy, at the `exec` request**. *Where*
+that claim is enforced is the separate question §6.5 answers, and the reason
+this section's guarantees stop at the proxy's own front door.
 
 **How each tier behaves in the code (phase 0010).** The engine is
 `internal/filter` — pure logic, no SSH types — and `internal/filter/inspect`
@@ -1457,6 +1498,218 @@ mid-command.
 
 Phase 0003 delivers the contract, the client-side cache, and the subscription;
 the session-kill hook it defines is implemented by the proxy in 0005.
+
+### 6.5 Where policy is actually enforced (D12 as amended, phase 0018)
+
+§6.3's three tiers are all enforced **in the proxy, at the `exec` request**, so
+all three stop meaning anything the moment a route permits an interactive shell.
+This section is the survey that answers the question D12 left open — *where* a
+claim is enforced — and the vocabulary Hoplock Control uses to choose per route.
+It sits here rather than inside §6.3 because half of it is not about commands at
+all: the second axis is about what a session may **reach**, which §6.2 is the
+nearest relative of. Phase 0019 renders what is named here; nothing in this
+section is enforced yet.
+
+The columns are the four things a reviewer has to be able to audit for each
+candidate: what it **guarantees**, what it does **not**, what the **target must
+already provide**, and **how it fails**.
+
+#### Axis 1 — what the session may execute
+
+| Candidate (where it runs) | Guarantees | Does not guarantee | Target must provide | How it fails |
+| --- | --- | --- | --- | --- |
+| **Pattern rule list**, filtered exec (proxy, per `exec` request) | Every `exec` string is seen before it runs, and an audit event names what matched | Anything. `sh -c`, any interpreter, a base64 pipe, or an editor escape passes a pattern (D12) | Nothing | **Silently**, by a command the pattern did not describe. The session continues and the record says "allowed" |
+| **Restricted exec**, argv-parsed (proxy, per `exec` request) | A parsed vector must be covered completely by a named executable and argument shape; nothing unnamed runs, and no shell re-expands what was approved | Anything about a session that was permitted `shell` or `pty-req` — there is then no request to parse. Nor anything about a connection that did not come through this proxy | Nothing | **Closed**, at the request: an unparseable or uncovered command is denied and recorded |
+| **Denying `shell`/`pty-req`** (proxy, per in-channel request; D5a axis 2, shipped 0006/0009) | The session can obtain no interactive terminal, so every command it runs is one the proxy decided. It is what makes the row above a boundary rather than a boundary-for-what-it-sees | Anything about a connection made around the proxy; the account itself is unchanged | Nothing | **Closed**, at the request, with the reason on the channel (§4.3) |
+| **`command=` / `ForceCommand` dispatcher** in the ephemeral `authorized_keys` (target, sshd, per connection) | Every login on that key runs one named program, whatever the client asked for, **including a login that never went through this proxy**. The requested command arrives as `SSH_ORIGINAL_COMMAND` for the dispatcher to vet | Anything about what the dispatcher then does. It is a program somebody writes, and it is the whole boundary | An sshd that honours `authorized_keys` options, and the dispatcher binary or script | **Closed** if the dispatcher is default-deny; **wide open** if it passes `SSH_ORIGINAL_COMMAND` to a shell, which is the classic mistake |
+| **`restrict` key options** — no pty, agent, port or X11 forwarding (target, sshd) | The key cannot obtain a pty, an agent, a forward, or X11, whatever the proxy or client asks | Which commands run. It is a capability fence, not an allow-list | An sshd new enough for `restrict` (OpenSSH 7.2+); older ones need each `no-*` option named | **Closed** at authentication for the fenced capability; an unknown option in `authorized_keys` makes OpenSSH **refuse the key**, which is an outage rather than a widening |
+| **Restricted shell + curated `PATH` directory** (target, shell) | The account's interactive shell refuses `/`-containing commands, redirection, and `PATH` changes, so it runs only what the curated directory holds | Much. `rbash` is a hardening measure with a long history of escapes, and any interpreter in the curated directory ends it | A shell supporting the mode, and a curated directory the account cannot write | **Silently**, through any list entry that can spawn a shell |
+| **Per-session `noexec`/`nosuid` home, or a mount namespace** (target, kernel) | The session cannot execute a binary it wrote, and cannot gain privilege through a setuid file it placed | Which of the system's own binaries it runs | A kernel and a mount the provisioner controls; per-session isolation needs the account to be per-session, which §5.1 makes it | **Closed** at `execve`. Its failure is an operational one: a home that was not mounted with the flags leaves no trace in the session record unless the rung is verified |
+| **systemd sandboxing** — `ProtectSystem=strict`, `ProtectHome=`, `NoNewPrivileges=`, `SystemCallFilter=`, `RestrictSUIDSGID=` — by a drop-in on the session's `user-<uid>.slice`, or a `systemd-run` wrapper behind `command=` (target, systemd + cgroup v2) | A read-only system tree, no privilege escalation, no setuid/setgid gain, and a syscall allow-list, applied to **every process the session starts** rather than to the one it asked for | Which permitted binaries run, and nothing at all on a target that is not systemd | systemd with cgroup v2, and the ability to drop a unit file and `daemon-reload` | **Closed** by the kernel; a process hitting the filter dies with `SIGSYS`, which looks like a crash to the user unless the rung is disclosed |
+| **MAC confinement** — SELinux type, AppArmor profile (target, kernel) | The strongest and most precise confinement available on Linux, and the only one that is not bypassable by a mistake in a shell script | Anything without a policy written for this estate's binaries and this product's account shape | An enforcing MAC with a policy module, plus login-to-context mapping | **Closed** by the kernel, and in practice **permissive**, because a fleet that hits denials turns the module off. The failure mode is organisational |
+| **Device RBAC** — the platform's own command authorization bound to the ephemeral account: a FortiOS access profile, an IOS privilege level or parser view, a Junos login class (target, vendor, **per session**, D13) | The device's own authorizer decides, **ahead of anything the proxy could parse**, on the account this session created — and it is effective against a connection that never went through a proxy | Fineness. Vendor RBAC is **coarse and named**: the guarantee is exactly the vendor's grouping and no finer | A driver (§5.3), and a role that exists on the platform | **Closed** by the device. It **leaks by grouping**: a profile that permits diagnostics may include a command with a shell escape, and one that permits "read-only" may still include configuration write on some releases. On FortiOS specifically the built-ins are three, `super_admin_readonly` cannot run `diagnose` from 7.4.x, and no built-in read-only profile can be held by a VDOM-scoped account at all (0015, 0016) — which is why the role is **named by the route** and never defaulted |
+| **Nothing** | — | — | — | Everything the session does is a policy question nobody answered |
+
+#### Axis 2 — what the session may reach
+
+| Candidate (where it runs) | Guarantees | Does not guarantee | Target must provide | How it fails |
+| --- | --- | --- | --- | --- |
+| **`permitted_forwards`, `permitted_global_requests`** (proxy, per channel open and global request; D5a axis 3, shipped) | No **SSH channel** carries traffic to a destination the route did not name, in either direction, and no listener is created on the target | **Anything a process on the target opens for itself.** A `curl`, a `psql`, a reverse shell — none of them is a channel, so the proxy never sees it | Nothing | **Closed** at the channel open, with the reason on the channel. Its real failure is being **mistaken for egress control**, which it is not |
+| **`no-port-forwarding` / `restrict`** in the ephemeral `authorized_keys` (target, sshd, per connection) | The key cannot forward, **including on a connection made around the proxy** | Same gap as the row above: sshd's forwarding restriction is about SSH forwarding, not about sockets a process opens | An sshd honouring `authorized_keys` options | **Closed** at the request; an unknown option makes OpenSSH refuse the key |
+| **systemd `IPAddressDeny=any` + `IPAddressAllow=`** on the session's slice (target, systemd + eBPF, cgroup v2) | Every socket **every process in the session** opens is filtered against an address allow-list, in the kernel | Names or ports. The filter is address-and-prefix only, so "the database on 5432 and nothing else" is expressible only as an address, and a policy written in hostnames cannot be rendered faithfully | systemd with cgroup v2 and BPF firewalling available to the manager | **Closed** — the connection is refused locally. It fails **open on a kernel or container without BPF firewalling**, where systemd logs a warning and proceeds, which is the case a capability probe has to catch |
+| **systemd `PrivateNetwork=yes`** (target, kernel netns) | The session's processes get loopback and nothing else. The strongest reach rung and the easiest to verify | Any session that legitimately needs the network — it is all or nothing | systemd and network namespaces | **Closed**, completely. It fails by being **too strong for the route**, which is a policy-authoring failure rather than a security one |
+| **Per-uid packet filter** — `iptables -m owner --uid-owner`, nftables `meta skuid` (target, netfilter) | Locally-originated traffic from that uid is filtered, with the port and protocol precision the systemd rung lacks | Anything not originating locally from that uid | netfilter reachable, and rules the provisioner may install and remove | **Closed** while the rule exists — and this rung carries a hazard of its own, below: a rule that outlives its account silently attaches to whoever gets that uid next |
+| **MAC network rules** — SELinux socket classes, AppArmor `network` rules (target, kernel) | Precise, kernel-enforced, and not bypassable by a mistake in a script | Anything without a policy written for this estate | An enforcing MAC with a policy module | As on axis 1: **closed** by the kernel, **permissive** in practice |
+| **The target's own ACL, role, or privilege level, pre-provisioned** (target, vendor) | What the platform already enforces for that account, against every connection, whether or not this product exists | Nothing this product configured, verified, or can change | An account already scoped by whoever administers the estate | It does not fail so much as **go unrecorded**: without an attestation, nobody can tell this rung from "none available" |
+| **Trusted-host / source-address pinning** on the ephemeral device account (target, vendor, **per session**, D13, §5.3) | Only the proxy's address may authenticate as that account, which closes the account against use from anywhere else | It bounds **who may reach the account**, not what the account may reach. It is on this axis by adjacency, not by kind | A platform declaring `PinsSourceAddress`; on FortiOS both `trusthost` and `ip6-trusthost` are written, and an IPv6 source address is refused rather than rendered into an IPv4 field (0015) | **Closed** at authentication. It is applied unconditionally wherever the driver declares it, so it earns **no rung name of its own** — a rung the server may or may not choose would make an unconditional protection look optional |
+| **Nothing** | — | — | — | The account can reach whatever the network lets it, and the record says nothing |
+
+#### What the survey concluded
+
+**`permitted_forwards` does not cover egress, and this is the most expensive
+place in the product to be wrong.** It governs what may be tunnelled *through
+SSH channels*. A process the session starts on the target opens its own sockets
+and never touches a channel, so the proxy cannot see it, let alone deny it. An
+operator reading a console that answered "can this account reach the database?"
+from `permitted_forwards` would believe an answer to a different question. The
+rungs that do cover it are `account-egress-restricted` and
+`account-network-isolated` — and, with this proxy applying nothing,
+`platform-attested`.
+
+**systemd is the best cost-to-strength ratio in the table, and the survey says
+so.** On a modern Linux fleet it is the only rung on either axis that needs no
+policy module, no custom MAC, and no binary installed: it is a drop-in file and
+a `daemon-reload`. It covers both axes, it applies to every process the session
+starts rather than to the one it asked for, and it is verifiable from the
+target's own state. Its two costs are real and are recorded rather than glossed:
+`IPAddressAllow=` speaks addresses and prefixes only, so a destination policy
+written in hostnames cannot be rendered faithfully; and BPF firewalling is not
+available everywhere, where systemd **warns and proceeds** — which is exactly the
+case the per-target capability report exists to catch before a route is
+authored.
+
+**An allow-list containing an interpreter is not an allow-list.** `find`, `awk`,
+`less`, `vi`, `tar`, `python`, and most editors hand back a shell. The decision:
+this is **the contract's problem as a documented rule, and Control's to enforce
+at policy-authoring time — not a proxy-side refusal.** A shipped deny-list of
+interpreter names in the proxy would be a blacklist masquerading as a boundary,
+which is precisely what D12 rejects; it would be incomplete on the day it
+shipped; and it would refuse a legitimate route over a name collision, at
+connect time, in front of a user. So a rung is a claim about the **mechanism**,
+bounded by the list it renders, and where that list can hand back a shell the
+real guarantee is `no-interactive-shell` at best. Phase 0019 may emit a
+`warn`-severity audit event when it renders a list containing a known
+interpreter; it must not refuse one.
+
+**A uid-keyed rung is part of the teardown contract.** `useradd` reuses a freed
+uid, so a per-uid packet filter rule that outlives its account silently attaches
+to whoever gets that uid next — a rule written for an automation becomes a rule
+governing a person. Any rung keyed on uid is therefore removed by the same
+teardown that removes the account, and is part of what the orphan reaper looks
+for, with the same guarantee as the account itself, or it is not a rung. Phase
+**0024**'s non-reusing uid range is the other half of the same problem, and
+0019 owns the teardown half.
+
+**Some rungs are attested rather than applied, and that is what makes appliances
+reachable.** A router, a firewall, or a filer typically enforces its own command
+authorization natively and permanently — IOS privilege levels and RBAC views,
+Junos login classes with `allow-commands`/`deny-commands`, per-account ACLs —
+configured once by the network team, not by this product. On such a target the
+session's account already stands behind a boundary at least as strong as
+anything a Linux rung provides, and calling that "no enforcement available"
+would be false. So the ladder has two kinds of rung, and the vocabulary says
+which: **applied** (the proxy configures it per session and tears it down) and
+**attested** (the target enforces it already; the proxy configures nothing).
+
+**What an attestation is worth without verification.** Nothing, unless it is
+attributable — and an unverified claim in an audit record is a liability, so the
+contract does not pretend. An attested rung **requires** `attestation.asserted_by`
+(who says so) and `attestation.reference` (where it is written down: a
+configuration baseline, a standard, a control id), and the audit record carries
+both plus the fact that this system verified neither. "Trust us" and an empty
+string are the same answer. Verifying an attestation — reading the device's own
+configuration back and checking it — is a real feature and is **not** this
+phase's; it would be a capability probe on the device driver, and the field
+shapes here do not have to change for it to arrive.
+
+**Enforcement point and credential method are coupled, conditionally.** An
+applied rung needs the proxy to administer the account, which only
+`ephemeral-user` and `ephemeral-account` do; `brokered-key` changes nothing on
+the target by definition (D6a). Since D14 the route names an *ordered ladder*, so
+the coupling is per entry rather than per route, and the decision is:
+
+- **The rung is a property of the ROUTE**, not of each ladder entry. One policy
+  stating two different guarantees would leave the audit record having to say
+  which, and a record that names a rung the session did not stand on is the
+  failure this whole section exists to prevent.
+- **An entry that cannot carry the route's rung is a skipped rung** (D14),
+  exactly as a posture or credential kind the driver cannot satisfy is. The
+  proxy walks on. It never runs the session without the rung — that is the
+  silent downgrade D6a forbids — and it never refuses the route because one
+  entry could not carry it.
+- **A route whose every named method leaves the target untouched, carrying an
+  applied rung, is a contract violation refused outright.** Skipping could only
+  ever exhaust the ladder there, so the policy can fail only at connect time, in
+  front of a user — and a policy that can only fail at connect time is one
+  Control should never have been able to author.
+- **An attested rung is unaffected**, on every method. It is the point of having
+  the distinction.
+
+**Capabilities are advertised in two halves, and both fail safe.** A server
+cannot sensibly choose a rung that cannot be provided, and what is available
+depends on the target far more than on the proxy. The proxy's own capabilities
+ride on `AuthorizeRequest` beside `policy_version` (0006's pattern); the
+target's are **discovered by probing it and reported** on
+`POST /v1/capabilities/report`, which takes the shape of `/v1/hostkeys/report`
+(D7) because authorize happens *before* the proxy has ever touched the target.
+A record that is **stale, undated, or absent** provides nothing that has to be
+applied — the three are treated identically, because they mean the same thing to
+anyone choosing a rung from one. What they do not affect is a rung needing
+nothing of the target: the two proxy-side defaults, and an attested rung, which
+nobody here applies — which is precisely how an appliance nobody can probe still
+carries a real enforcement claim. The reason this is safe rather than merely
+convenient is that **a report grants nothing**: the authority for a rung is the
+authorize response, the proxy re-checks it against the live target when it
+provisions, and the worst a stale record can cause is a refused session.
+
+#### The rung vocabulary
+
+Named after what each rung **guarantees**, never after its mechanism: an
+operator reading an audit record must not have to know what `rbash` is, and
+which mechanism a proxy reaches for is local to that proxy and belongs in this
+repository's docs and its config.
+
+| `enforcement.execution` | Guarantee | Kind | Candidates above |
+| --- | --- | --- | --- |
+| `proxy-inspected` | What the proxy sees at the `exec` request is what the proxy decides. **The absent-value default: today's behaviour** | applied, proxy | rows 1–2 |
+| `no-interactive-shell` | The session can obtain no interactive shell or terminal, so every command it runs is one the proxy decided | applied, proxy | row 3 |
+| `account-restricted` | The account can execute only the executables `restricted_exec` names, for every login to it | applied, target | rows 4–6 |
+| `account-confined` | `account-restricted`, plus the session's processes cannot gain privilege and cannot execute anything the session itself wrote | applied, target | rows 7–9 |
+| `platform-authorized` | The device's own command authorizer decides, under the role the route names | applied, target | row 10 |
+| `platform-attested` | The target enforces its own command authorization on the account already | **attested** | — |
+
+| `enforcement.reach` | Guarantee | Kind | Candidates above |
+| --- | --- | --- | --- |
+| `proxy-channel-policy` | SSH-channel forwarding is policed and nothing else. **The absent-value default: today's behaviour** | applied, proxy | rows 1–2 |
+| `account-egress-restricted` | The session's own processes reach only the destinations the policy names | applied, target | rows 3, 5, 6 |
+| `account-network-isolated` | The session's processes reach nothing off the host at all | applied, target | row 4 |
+| `platform-attested` | The target already constrains what the account can reach | **attested** | row 7 |
+
+`api/README.md` carries the wire half: where the object hangs, the required
+parameters per rung, the refusal rules, and the audit fields. Two shapes are
+worth stating here because they are architecture rather than encoding:
+
+- **The object hangs at the top level of the authorize response, not on
+  `filter_policy`.** The recommendation to hang it on `filter_policy` is right
+  about the execution axis — that rung really does select *where the existing
+  `restricted_exec` policy is enforced*. It is wrong about the reach axis, which
+  has no policy object to attach to and must not be attached to
+  `permitted_forwards`, because this survey's central finding is that
+  `permitted_forwards` does **not** cover what a reach rung covers. Splitting one
+  server decision across two places is how a session ends up with a record
+  claiming a rung that was never applied.
+- **`enforcement.permitted_destinations` reuses `ForwardDestination`'s shape and
+  none of its meaning.** An operator writes one destination vocabulary; the two
+  lists are never merged, and one never widens the other.
+
+#### Session bounds (D16)
+
+Four fields ride the same contract revision. They are not enforcement points —
+they bound how long and on what grounds a session exists — and they are here
+because they are fields on the same object, and a fifth contract bump for them
+would have cost Control a third sync for no gain.
+
+| Field | What it is | Absent means |
+| --- | --- | --- |
+| `session_deadline` | An **absolute instant** the **proxy enforces locally**, so it holds when the revocation stream is down — which is exactly when an immortal root session is least acceptable, and the reason this is not "just use revocation". An instant rather than a duration because a duration re-anchors on every hop of a chained route, silently multiplying the window. Applies to any route | No deadline (today's behaviour) |
+| `require_session_capture` | The route runs only if the session is recorded, checked **before the target leg is dialled**. **Buffering to local disk counts** (§7's buffer is a resilience path, not a degraded mode), so the refusal is outage-class and triggers only when there is no path at all | Capture happens if configured, and its absence stops nothing |
+| `grant_context` | Why access was granted: the external system, its reference, the window it asserted, and an `additional_context` admitting a string or an object. **Opaque to the proxy** — copied to every log record, never parsed, never matched against, never the basis of a proxy-side decision (D2, D15), and never shown to the user | No external grant context |
+| `concurrency` | A per-subject and/or per-target ceiling on live sessions, enforced by the proxy against its own registry because the live count is knowable only there. Exceeding it is a **policy denial** (vague, §4.3), never an outage | Uncapped |
+
+Reaching the deadline is **neither a denial nor an outage**: the session is
+closed and the close is explained (§4.3). Two questions are deliberately left
+to phase **0025**, which enforces it: what the user is told at expiry, and
+whether a warning precedes it.
 
 ## 7. Logging & telemetry (`internal/logging`, D8)
 
@@ -1637,7 +1890,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
 | 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0027's switch driver both build on rather than re-answer (deferred from 0015) |
 | 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
-| 0018 | Enforcement points — contract v4         | survey of where policy is actually enforced (D12 amendment) incl. device RBAC, server-chosen rung + capability advertisement, session deadline + grant context + required capture (D15, D16) |
+| 0018 | Enforcement points — contract v4         | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
 | 0020 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
 | 0021 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
@@ -1852,8 +2105,9 @@ per-session attribution, and the estate is exactly the population that gains
 most from an inline enforcement point because nothing else can reach it.
 
 Served by: D13 (method + driver layer), D14 (ladder), §5.3 (naming, expiry
-posture, config-change noise), phases 0013–0014, with the device enforcement
-rung in 0016–0017.
+posture, config-change noise), phases 0013–0017, with the device enforcement
+rung named by **0018** (`platform-authorized`, and `platform-attested` for the
+gear this product does not administer) and rendered by **0019**.
 
 ### UC2 — Machine-to-machine automation with a fixed command set
 
@@ -1873,8 +2127,11 @@ natural fit for a forced-command rung), and `login` is never the identity: the
 codebase forbids keying decisions on it, so per-automation separation must come
 from the credential.
 
-Served by: existing D5a/D12 vocabulary, plus D17 and phases 0018–0019 once the
-estate is large enough for connection-per-check to stop being viable.
+Served by: existing D5a/D12 vocabulary, sharpened by 0018's rungs — this is the
+use case `no-interactive-shell` beside `restricted_exec` was written for, and
+the one whose concurrency caps (§6.5, "Session bounds") bound an automation
+fleet — plus D17 and phases 0020–0021 once the estate is large enough for
+connection-per-check to stop being viable.
 
 ### UC3 — Scanners and ticket-scoped access
 
@@ -1889,4 +2146,5 @@ never *filtered*. Marketing, docs, and the audit record use those words.
 
 Served by: D15 (where the integrations live — not here), D16 (deadline, grant
 context, required capture), D6/D13 for the credential, §6.4's revocation stream
-for the stop path, and phase 0016 for the contract.
+for the stop path, and phase **0018** for the contract — which landed the four
+fields (§6.5, "Session bounds"). Phase 0025 enforces the deadline.

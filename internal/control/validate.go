@@ -45,6 +45,12 @@ func (r *AuthorizeResponse) Validate() error {
 	if err := r.FilterPolicy.validate(); err != nil {
 		return err
 	}
+	if err := r.validateEnforcement(); err != nil {
+		return err
+	}
+	if err := r.validateSessionBounds(); err != nil {
+		return err
+	}
 	if err := r.Hop.validate(r.RouteType); err != nil {
 		return err
 	}
@@ -367,6 +373,205 @@ func validPlatformName(s string) bool {
 		}
 	}
 	return !prevHyphen
+}
+
+// validateEnforcement checks the enforcement vocabulary (contract v4, PLAN
+// §6.5): that each rung is one this proxy knows, that the parameters a rung
+// needs are present and the ones it does not are absent, that the rung's claim
+// agrees with the rest of the response, and that an APPLIED rung was not asked
+// for on a route where no named credential method could ever apply it.
+//
+// Every one of those is refused rather than approximated, for the reason this
+// whole vocabulary exists: a session running at a weaker rung than its audit
+// record claims is worse than a session that does not run.
+func (r *AuthorizeResponse) validateEnforcement() error {
+	p := r.Enforcement
+	if p == nil {
+		return nil
+	}
+	switch p.Execution {
+	case "", ExecutionProxyInspected, ExecutionNoInteractiveShell,
+		ExecutionAccountRestricted, ExecutionAccountConfined,
+		ExecutionPlatformAuthorized, ExecutionPlatformAttested:
+	default:
+		// Never coerced to the default: coercing DOWN would run the session at a
+		// weaker rung than the policy names, and there is nothing to coerce up
+		// to.
+		return fmt.Errorf("enforcement.execution %q is not a rung this proxy knows", p.Execution)
+	}
+	switch p.Reach {
+	case "", ReachProxyChannelPolicy, ReachAccountEgressRestricted,
+		ReachAccountNetworkIsolated, ReachPlatformAttested:
+	default:
+		return fmt.Errorf("enforcement.reach %q is not a rung this proxy knows", p.Reach)
+	}
+
+	// An attested rung is a claim this system does not verify, so the response
+	// must at least say who makes it and where it is written down. An
+	// attestation on a rung the proxy APPLIES is refused for the mirror-image
+	// reason: it would put an unverified sentence next to a rung this proxy
+	// rendered itself, and a reader could not tell which half the record meant.
+	attested := p.Execution.Attested() || p.Reach.Attested()
+	switch {
+	case attested && p.Attestation == nil:
+		return fmt.Errorf("enforcement names an attested rung but carries no attestation "+
+			"(who asserts it, and where that assertion lives): execution %q, reach %q",
+			p.ExecutionRung(), p.ReachRung())
+	case !attested && p.Attestation != nil:
+		return errors.New("enforcement carries an attestation but names no attested rung")
+	case attested:
+		if p.Attestation.AssertedBy == "" {
+			return errors.New("enforcement.attestation.asserted_by is required for an attested rung")
+		}
+		if p.Attestation.Reference == "" {
+			// "Trust us" and an empty string are the same answer, and neither is
+			// something an auditor can follow.
+			return errors.New("enforcement.attestation.reference is required for an attested rung")
+		}
+	}
+
+	// platform_role is the device's own word for what the account may do, and it
+	// is the whole content of the platform-authorized rung.
+	if got := p.PlatformRole != ""; got != (p.Execution == ExecutionPlatformAuthorized) {
+		if got {
+			return fmt.Errorf("enforcement.platform_role is set but execution is %q, not %q",
+				p.ExecutionRung(), ExecutionPlatformAuthorized)
+		}
+		return fmt.Errorf("enforcement.platform_role is required for execution %q",
+			ExecutionPlatformAuthorized)
+	}
+
+	// The destination list is the whole content of the egress rung; on every
+	// other rung it would be a constraint nothing reads, which is the shape a
+	// dropped restriction takes.
+	if p.Reach == ReachAccountEgressRestricted {
+		if len(p.PermittedDestinations) == 0 {
+			return fmt.Errorf("enforcement.permitted_destinations is required and must not be empty for reach %q",
+				ReachAccountEgressRestricted)
+		}
+	} else if len(p.PermittedDestinations) > 0 {
+		return fmt.Errorf("enforcement.permitted_destinations is set but reach is %q, not %q",
+			p.ReachRung(), ReachAccountEgressRestricted)
+	}
+	if err := validateDestinations("enforcement.permitted_destinations", p.PermittedDestinations); err != nil {
+		return err
+	}
+
+	if err := r.validateRungAgreesWithPolicy(); err != nil {
+		return err
+	}
+	return r.validateRungIsReachable()
+}
+
+// validateRungAgreesWithPolicy refuses a response whose enforcement claim
+// contradicts the policy in the same response.
+//
+// Both checks below are the same rule seen twice: a rung names WHERE something
+// is enforced, so there has to be something to enforce, and the response must
+// not simultaneously permit what the rung says is impossible. A response that
+// disagreed with itself would be resolved by the proxy, and the proxy resolving
+// a policy conflict is the thing D2 exists to prevent.
+func (r *AuthorizeResponse) validateRungAgreesWithPolicy() error {
+	switch r.Enforcement.ExecutionRung() {
+	case ExecutionNoInteractiveShell:
+		// The rung's guarantee IS the request axis (D5a axis 2), so the claim is
+		// only true if the policy that carries it says so. Absent
+		// permitted_requests means "not policed", which permits every request —
+		// including the two this rung says cannot happen.
+		p := r.PermittedRequests
+		if p == nil {
+			return fmt.Errorf("enforcement.execution %q needs permitted_requests to deny %q and %q, "+
+				"but permitted_requests is absent, which polices nothing",
+				ExecutionNoInteractiveShell, RequestShell, RequestPTY)
+		}
+		for _, name := range []string{RequestShell, RequestPTY} {
+			if contains(p.Types, name) {
+				return fmt.Errorf("enforcement.execution %q but permitted_requests.types permits %q",
+					ExecutionNoInteractiveShell, name)
+			}
+		}
+	case ExecutionAccountRestricted, ExecutionAccountConfined:
+		// These rungs render the permitted executables onto the account, and the
+		// only place the contract names an executable is restricted_exec. A
+		// pattern rule list (the filtered tier) has patterns, not executables:
+		// there is nothing to render, and a rung rendered from nothing would
+		// claim a boundary that is an empty set or a wildcard depending on who
+		// guessed.
+		if r.FilterPolicy.Exec() != ExecModeRestricted {
+			return fmt.Errorf("enforcement.execution %q needs filter_policy.exec_mode %q "+
+				"(it is where the executables it renders are named), but the mode is %q",
+				r.Enforcement.ExecutionRung(), ExecModeRestricted, r.FilterPolicy.Exec())
+		}
+	}
+	return nil
+}
+
+// validateRungIsReachable refuses an APPLIED rung on a route where no credential
+// method the server named could ever apply it.
+//
+// This is the conditional form of D6a's coupling, as D14 left it. brokered-key
+// changes nothing on the target by definition, so no rung the proxy applies is
+// available on it — but a route now names an ORDERED LADDER, so the coupling is
+// per entry: a ladder of [ephemeral-user, brokered-key] reaches an applied rung
+// on its first entry and not on its second, and the entry that cannot carry the
+// route's rung is a SKIPPED RUNG (D14) at provisioning time, never a session
+// that quietly runs without it.
+//
+// What is refused here is the case where that skipping could only ever exhaust
+// the ladder: every named method leaves the target untouched. Such a policy can
+// only fail at connect time, in front of a user, and a policy that can only fail
+// at connect time is one Control should never have been able to author.
+//
+// An ABSENT ladder is not refused: it means the proxy uses its locally
+// configured method, which this response cannot see. That is resolved at
+// provisioning time, on the same outage-class rule.
+func (r *AuthorizeResponse) validateRungIsReachable() error {
+	if !r.Enforcement.RequiresProvisioning() {
+		return nil
+	}
+	rungs, named := r.Ladder()
+	if !named || len(rungs) == 0 {
+		return nil
+	}
+	for _, entry := range rungs {
+		if entry.Method.Provisions() {
+			return nil
+		}
+	}
+	return fmt.Errorf("enforcement names an applied rung (execution %q, reach %q) but no credential "+
+		"method on this route provisions the target, so nothing could ever apply it "+
+		"(an attested rung is what a %q route may carry)",
+		r.Enforcement.ExecutionRung(), r.Enforcement.ReachRung(), TargetAuthBrokeredKey)
+}
+
+// validateSessionBounds checks the fields that bound how long and on what
+// grounds a session exists (contract v4, D16).
+//
+// The grant context is checked for SHAPE and nothing else, deliberately. The
+// proxy never reads its content for a decision, so there is nothing here that
+// could become policy by accident — what is refused is a record that cannot be
+// true of any window.
+func (r *AuthorizeResponse) validateSessionBounds() error {
+	if d := r.SessionDeadline; d != nil && d.IsZero() {
+		// The zero instant is what an absent or unparsed timestamp decodes to,
+		// and enforcing it literally would close every session the moment it
+		// opened. Absent means "no deadline"; there is no third reading.
+		return errors.New("session_deadline is present but zero; omit it to leave the session unbounded")
+	}
+	if c := r.Concurrency; c != nil {
+		if c.PerSubject < 0 {
+			return fmt.Errorf("concurrency.max_sessions_per_subject %d is negative", c.PerSubject)
+		}
+		if c.PerTarget < 0 {
+			return fmt.Errorf("concurrency.max_sessions_per_target %d is negative", c.PerTarget)
+		}
+	}
+	if g := r.GrantContext; g != nil {
+		if g.WindowStart != nil && g.WindowEnd != nil && g.WindowEnd.Before(*g.WindowStart) {
+			return errors.New("grant_context.window_end is before grant_context.window_start")
+		}
+	}
+	return nil
 }
 
 func (p AlgorithmProfile) validate() error {
