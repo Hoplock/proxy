@@ -57,7 +57,10 @@ type RESTClient struct {
 	userAgent string
 }
 
-var _ Client = (*RESTClient)(nil)
+var (
+	_ Client             = (*RESTClient)(nil)
+	_ CapabilityReporter = (*RESTClient)(nil)
+)
 
 // NewRESTClient validates opts and returns a client for the Control API.
 func NewRESTClient(opts Options) (*RESTClient, error) {
@@ -221,6 +224,29 @@ func (c *RESTClient) ReportHostKey(ctx context.Context, req *HostKeyReportReques
 	case HostKeyAccept, HostKeyReject:
 	default:
 		return nil, protocolError(op, fmt.Errorf("unknown host key decision %q", resp.Decision))
+	}
+	return resp, nil
+}
+
+// ReportCapabilities implements CapabilityReporter (contract v4).
+//
+// It is not on Client on purpose: the report is made by phase 0019 once a target
+// leg is up, and every other holder of a Client in this tree would only have to
+// grow a stub for a call it never makes.
+func (c *RESTClient) ReportCapabilities(ctx context.Context, req *CapabilityReportRequest) (*CapabilityReportResponse, error) {
+	const op = "ReportCapabilities"
+	if req.Target == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: target is required", ErrBadRequest)}
+	}
+	resp, err := post[CapabilityReportResponse](ctx, c, op, PathReportCapabilities, req, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Accepted {
+		// A report the server did not record is one the proxy must not believe
+		// it made: the next session would choose a rung from a record that does
+		// not exist there.
+		return nil, protocolError(op, errors.New("server did not accept the capability report"))
 	}
 	return resp, nil
 }

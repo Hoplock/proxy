@@ -5,6 +5,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strconv"
 	"strings"
@@ -148,8 +149,9 @@ type CachingClient struct {
 }
 
 var (
-	_ Client          = (*CachingClient)(nil)
-	_ CacheController = (*CachingClient)(nil)
+	_ Client             = (*CachingClient)(nil)
+	_ CacheController    = (*CachingClient)(nil)
+	_ CapabilityReporter = (*CachingClient)(nil)
 )
 
 // NewCachingClient wraps inner with an authorize-decision cache.
@@ -226,6 +228,24 @@ func (c *CachingClient) IngestLogBatch(ctx context.Context, req *LogBatchRequest
 // IngestPriorityLog implements Client; it passes through.
 func (c *CachingClient) IngestPriorityLog(ctx context.Context, req *LogPriorityRequest) (*LogPriorityResponse, error) {
 	return c.inner.IngestPriorityLog(ctx, req)
+}
+
+// ReportCapabilities implements CapabilityReporter by forwarding to the wrapped
+// client, so a proxy holding a CachingClient can still report what a target can
+// enforce (contract v4).
+//
+// A capability report is an OBSERVATION and is never cached: it is the proxy
+// telling the server what it just saw, and a decorator that answered from
+// memory would be reporting the past. If the wrapped client cannot report — a
+// test double, a transport that predates the endpoint — that is a contract
+// failure and says so, rather than pretending the report was made.
+func (c *CachingClient) ReportCapabilities(ctx context.Context, req *CapabilityReportRequest) (*CapabilityReportResponse, error) {
+	reporter, ok := c.inner.(CapabilityReporter)
+	if !ok {
+		return nil, protocolError("ReportCapabilities",
+			errors.New("the wrapped client cannot report target capabilities"))
+	}
+	return reporter.ReportCapabilities(ctx, req)
 }
 
 // StreamAlive implements CacheController.

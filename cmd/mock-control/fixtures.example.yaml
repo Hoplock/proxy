@@ -184,6 +184,20 @@ routes:
       params:
         username: monitor
         credential_ref: edge-fleet-2026
+    # An ATTESTED rung on a brokered-key route (contract v4). The proxy
+    # administers nothing here — that is what brokered-key means — so no
+    # APPLIED rung is available and naming one would be a contract violation
+    # the mock refuses at startup. What IS available is the boundary the
+    # network team already configured on the device, and saying "none
+    # available" about it would be false. The proxy configures nothing,
+    # verifies nothing, and records who says so.
+    enforcement:
+      execution: platform-attested
+      reach: platform-attested
+      attestation:
+        asserted_by: network-engineering
+        reference: "NET-BASELINE-7.2 §4 (edge firewall RBAC + per-account ACL)"
+        asserted_at: "2026-07-01T00:00:00Z"
     filter_policy:
       # With an empty rule list, `whitelist` also blocks every command typed
       # into an interactive shell — which this route has no channel for anyway.
@@ -253,6 +267,21 @@ routes:
         params:
           username: netadmin
           credential_ref: core-fleet-2026
+    # The device's own command authorizer decides, for the administrator this
+    # session creates, under the role named here — ahead of anything the proxy
+    # could parse, and effective against a connection that never went through a
+    # proxy. `platform_role` is the route's to name: FortiOS documents three
+    # built-in profiles, `super_admin_readonly` cannot run `diagnose` from
+    # 7.4.x, and no built-in read-only profile can be held by a VDOM-scoped
+    # account at all — so there is no default to fall back on (PLAN §5.3).
+    #
+    # This is an APPLIED rung, and it is legal here because the FIRST ladder
+    # entry provisions the target. The brokered-key entry below it cannot carry
+    # it, and that entry is therefore a SKIPPED rung (D14) rather than a
+    # session that quietly runs without the rung its record claims.
+    enforcement:
+      execution: platform-authorized
+      platform_role: prof_admin
     filter_policy:
       mode: whitelist
       rules:
@@ -286,6 +315,179 @@ routes:
       rules:
         - match: "get system status"
           action: allow_and_log
+
+  # ENFORCEMENT POINTS, axis 1 (contract v4, PLAN §6.5). The cheapest strong
+  # rung in the whole table, and it is already shipped: this route permits
+  # `exec` and not `shell` or `pty-req`, so the session can never obtain a
+  # terminal and EVERY command it runs is one the proxy decided. That turns the
+  # filter from "a boundary for the commands it sees" into a boundary.
+  #
+  # The claim and the policy have to agree: a route naming this rung while
+  # `permitted_requests` permits `shell` or `pty-req` — or omitting
+  # `permitted_requests`, which polices nothing — is a contract violation and
+  # the mock refuses to start.
+  - login: svc-deploy
+    target: automation-01.company.com
+    route_type: direct
+    permissions: automationGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-automation
+        key_type: ed25519
+        lifetime_seconds: "300"
+    enforcement:
+      execution: no-interactive-shell
+      # `reach` is omitted, so it takes its default: SSH-channel forwarding is
+      # policed and a process this session starts on the target still opens its
+      # own sockets. The two axes are independent, and leaving one alone is a
+      # decision the policy is allowed to make.
+    # UC2: one automation host runs several automations, and a ceiling on live
+    # sessions is knowable only to the proxy, which holds the session registry.
+    # Exceeding it is a policy denial, not an outage.
+    concurrency:
+      max_sessions_per_subject: 4
+      max_sessions_per_target: 10
+    filter_policy:
+      mode: whitelist
+      rules:
+        - match: "deploy status"
+          action: allow_and_log
+
+  # ENFORCEMENT POINTS, both axes, rendered onto the ACCOUNT the proxy creates.
+  # `account-restricted` needs `exec_mode: restricted`, because `restricted_exec`
+  # is the only place the contract names an executable and a pattern rule list
+  # has nothing to render. `account-egress-restricted` needs its destinations:
+  # they are the whole content of the rung.
+  #
+  # `enforcement.permitted_destinations` reuses `permitted_forwards`' entry
+  # shape and shares NONE of its meaning. permitted_forwards is a rule about
+  # SSH channels the proxy sees; this is a rule about sockets the target's
+  # kernel sees. A console that answered "can this account reach the database?"
+  # from the first would be answering a different question.
+  - login: svc-deploy
+    target: build-01.company.com
+    route_type: direct
+    permissions: buildGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-build
+        key_type: ed25519
+        lifetime_seconds: "900"
+    enforcement:
+      execution: account-restricted
+      reach: account-egress-restricted
+      permitted_destinations:
+        - host: artifacts.company.com
+          port: 443
+        - host: 10.9.0.0/16
+          port_range:
+            from: 8080
+            to: 8090
+    filter_policy:
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          - executable: /usr/bin/make
+            form: positional
+            args:
+              - kind: oneof
+                values: [build, test]
+          - executable: /bin/uptime
+            form: exact
+            argv: []
+
+  # The strongest pair of applied rungs. `account-confined` adds what an
+  # executable allow-list cannot do on its own — the session cannot gain
+  # privilege and cannot execute anything it wrote — and
+  # `account-network-isolated` gives its processes loopback and nothing else.
+  # A sensor that reads local state and reports through the session needs
+  # neither the network nor a binary of its own.
+  - login: svc-deploy
+    target: sensor-01.company.com
+    route_type: direct
+    permissions: sensorGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-sensor
+        key_type: ed25519
+        lifetime_seconds: "300"
+    enforcement:
+      execution: account-confined
+      reach: account-network-isolated
+    filter_policy:
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          - executable: /usr/bin/sensor-report
+            form: exact
+            argv: []
+
+  # UC3 (PLAN §13): a scanner needs root and changes its command set with every
+  # content update, so EVERY rung of the execution ladder is worthless against
+  # it by construction — there is no argv shape to name. The honest claim is
+  # just-in-time, scoped, and recorded, never filtered, and this route says
+  # exactly that: the enforcement object is absent, and what bounds the access
+  # is time, scope, and a recording outside the target's reach (D16).
+  #
+  # `session_deadline_seconds` is a fixture convenience: the wire field is an
+  # ABSOLUTE INSTANT, anchored by the server at authorize time, because a
+  # duration re-anchors on every hop of a chained route and silently multiplies
+  # the window.
+  - login: alice
+    target: scan-target-01.company.com
+    route_type: direct
+    permissions: scannerGrant
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec]
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-scan
+        key_type: ed25519
+        lifetime_seconds: "3600"
+    # Enforced by the PROXY, locally, so it holds when the revocation stream is
+    # down — which is exactly when an immortal root session is least
+    # acceptable, and the reason this is not "just use revocation".
+    session_deadline_seconds: 3600
+    # The compensating control that makes an unbounded-privilege grant
+    # defensible: root on a target can disable that target's auditing and scrub
+    # its traces; it cannot touch a session captured in the proxy. A proxy with
+    # no recording path AT ALL refuses this route — buffering to local disk
+    # counts, so the refusal is rare and means what it says.
+    require_session_capture: true
+    # Why the access was granted. The proxy copies all of it to every log
+    # record for the session and reads NONE of it: it is never parsed, never
+    # matched against, and never the basis of a proxy-side decision. The
+    # decision it describes was already made upstream, by the PDP (D2, D15).
+    grant_context:
+      system: qualys
+      reference: SCAN-2026-09-04-1183
+      window_start: "2026-09-04T09:00:00Z"
+      window_end: "2026-09-04T17:00:00Z"
+      additional_context_fields:
+        scan_profile: authenticated-linux
+        requested_by: soc-oncall
+    concurrency:
+      max_sessions_per_target: 1
+    filter_policy:
+      # A blacklist with no rules filters nothing, which is the honest shape
+      # for this route: see above.
+      mode: blacklist
 
   # Whitelist: anything not matched by a rule is blocked by the mode. Port
   # forwarding is permitted for the deploy account — but only to one place.

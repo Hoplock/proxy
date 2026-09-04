@@ -74,7 +74,40 @@ info:
     `policy_version` is therefore `3`. Every other v3 field is additive with a
     documented absent-value default, and each default is the behaviour a v2
     server already produced.
-  version: 3.1.0
+
+    ## Policy vocabulary v4 (phase 0018)
+
+    v2 and v3 said WHAT a session may do. v4 says **where that is enforced**,
+    and bounds how long and on what grounds the session exists at all (PLAN
+    D12 as amended, D16, §6.5).
+
+    - `enforcement` — a rung on each of **two axes**: what the session may
+      execute, and what it may reach. The two are separate questions with
+      separate mechanisms, and a route may stand on a different rung of each.
+      Rungs are named after what they **guarantee**, never after their
+      mechanism. A rung the proxy cannot provide is an outage-class denial, and
+      never a silent downgrade.
+    - **Applied and attested rungs are different kinds.** An *applied* rung is
+      one the proxy configures per session and tears down; an *attested* one is
+      already enforced by the target, configured by somebody who is not this
+      product, and the proxy configures nothing. Attested rungs are how the
+      appliance estate carries a real enforcement claim, and they are the only
+      kind a `brokered-key` route can carry.
+    - `session_deadline`, `require_session_capture`, `grant_context`,
+      `concurrency` — the bounds D16 asks for. They are not enforcement points;
+      they ride this revision because they are fields on the same object, and
+      splitting them into a fifth contract bump would cost Control a third sync
+      for no gain.
+    - `AuthorizeRequest.capabilities` plus `POST /v1/capabilities/report` — what
+      a proxy build can provide, and what one target can take. A server cannot
+      sensibly choose a rung that cannot be provided, and what is available
+      depends on the target far more than on the proxy.
+
+    `policy_version` is therefore `4`. Every v4 field is additive with a
+    documented absent-value default, and each default is exactly the behaviour
+    a v3 server already produced: proxy-side enforcement only, no deadline, no
+    required capture, no grant context, and no concurrency cap.
+  version: 4.0.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -96,6 +129,8 @@ tags:
     description: session log ingestion (D8).
   - name: revocation
     description: server → proxy revocation stream (PLAN §6.4).
+  - name: capabilities
+    description: what a target can enforce, discovered by the proxy (contract v4).
 
 paths:
   /v1/auth/cert:
@@ -260,6 +295,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HostKeyReportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/capabilities/report:
+    post:
+      tags: [capabilities]
+      operationId: reportCapabilities
+      summary: Report the enforcement rungs one target can take.
+      description: |
+        Called once the proxy has probed a target it just logged into
+        (contract v4, phase 0019). The server accumulates the reports and uses
+        them to constrain what a policy author may choose per route: it cannot
+        sensibly select an enforcement rung the target cannot take, and the
+        proxy is the only party positioned to find that out, because it is the
+        only one that logs in.
+
+        It takes the shape of `/v1/hostkeys/report` (D7) for the same reason:
+        `/v1/authorize` happens **before** the proxy has ever touched the
+        target, so a first-ever connection has nothing to put on
+        `AuthorizeRequest`.
+
+        **A report is an observation and grants nothing.** The authority for a
+        rung is the authorize response; this record only stops a server
+        choosing one that cannot be provided. That is what makes a stale or
+        absent record safe: the proxy re-checks the rung against the live
+        target at provisioning time and fails the session as an outage if it
+        cannot provide it (PLAN §4.3). The worst a stale record can cause is a
+        refused session — never a session running below the rung its own audit
+        record claims.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CapabilityReportRequest'
+      responses:
+        '200':
+          description: The report was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityReportResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -672,9 +753,10 @@ components:
             The highest **policy vocabulary** version this proxy implements.
             Absent means `1` (the phase 0002/0003 vocabulary: `permitted_channels`
             and `filter_policy.rules` only). Version `2` added the phase 0006
-            policy axes; the current vocabulary is `3`, which added the
-            credential ladder, the `ephemeral-account` method, and the
-            per-route algorithm profile.
+            policy axes; version `3` added the credential ladder, the
+            `ephemeral-account` method, and the per-route algorithm profile; the
+            current vocabulary is `4`, which added the two enforcement axes and
+            the session bounds.
 
             The server MUST NOT answer with policy fields introduced after this
             version. That constraint is what makes the proxy's fail-closed rule
@@ -683,7 +765,9 @@ components:
             `policy_version` can add vocabulary freely, and a server that
             ignores it is caught immediately instead of having its restrictions
             silently dropped.
-          example: 2
+          example: 3
+        capabilities:
+          $ref: '#/components/schemas/ProxyCapabilities'
         conn:
           $ref: '#/components/schemas/ConnMeta'
 
@@ -775,6 +859,55 @@ components:
             would weaken a leg nobody asked to weaken.
         filter_policy:
           $ref: '#/components/schemas/FilterPolicy'
+        enforcement:
+          $ref: '#/components/schemas/EnforcementPolicy'
+        session_deadline:
+          type: string
+          format: date-time
+          description: |
+            When this session must end, as an **absolute instant** (contract
+            v4, D16; enforced locally by phase 0025). **Absent ⇒ no deadline**,
+            which is today's behaviour.
+
+            The proxy enforces it **locally**, so it holds when the revocation
+            stream is down — which is exactly when an immortal root session is
+            least acceptable, and the reason this is not "just use revocation".
+            Nothing else expresses it: `cache.ttl_seconds` bounds decision
+            *reuse* and `ephemeral-user`'s `lifetime_seconds` bounds the
+            *credential*, while an already-open session outlives both.
+
+            It is an instant rather than a duration because a duration
+            re-anchors on every hop of a chained route, silently multiplying
+            the window. It applies to any route, not only a privileged one.
+
+            Reaching it is **neither a denial nor an outage**: the session is
+            closed and the close is explained (PLAN §4.3). What the user is
+            told, and whether a warning precedes it, belong to phase 0025.
+          example: '2026-09-04T17:30:00Z'
+        require_session_capture:
+          type: boolean
+          default: false
+          description: |
+            This route may only run if the session is **recorded** (contract
+            v4, D16). **Absent ⇒ `false`**, which is today's behaviour: capture
+            happens if the proxy is configured for it, and its absence stops
+            nothing.
+
+            When `true`, a proxy with no recording path at all refuses the
+            session as an **outage** (PLAN §4.3), and the check happens
+            **before the target leg is dialled** rather than after. Buffering
+            to local disk **counts** as recording — the phase 0011 pipeline's
+            disk buffer is a resilience path, not a degraded mode — so the
+            refusal triggers only when there is no path at all.
+
+            This is the compensating control that makes D16's
+            unbounded-privilege grant defensible: root on a target can disable
+            that target's auditing and scrub its traces; it cannot touch a
+            session captured in the proxy.
+        grant_context:
+          $ref: '#/components/schemas/GrantContext'
+        concurrency:
+          $ref: '#/components/schemas/ConcurrencyLimits'
         hop:
           $ref: '#/components/schemas/HopMetadata'
         decision_id:
@@ -1182,6 +1315,414 @@ components:
           params:
             username: netadmin
             credential_ref: appliance-fleet-2026
+
+    EnforcementPolicy:
+      type: object
+      description: |
+        Where this connection's policy is **enforced**, on each of two axes
+        (contract v4, PLAN §6.5, rendered by phase 0019).
+
+        D12 says the quiet part itself: reliable interception of an
+        unrestricted shell command is still an unrestricted shell. Both exec
+        tiers are enforced in the proxy, at the `exec` request, so both stop
+        meaning anything the moment a route permits an interactive shell. This
+        object is how a server says the same `restricted_exec` policy is to be
+        enforced somewhere that survives it — on the ephemeral account the
+        proxy creates, where it also survives a connection that never went
+        through a proxy.
+
+        **Absent object ⇒ both axes take their default**, which is exactly the
+        behaviour a v3 server produced: the proxy decides at the `exec`
+        request, and forwarding policy covers SSH channels only. Each axis is
+        independent — a route may set either, both, or neither.
+
+        **A rung the proxy cannot provide is an outage-class denial** naming
+        the session id (PLAN §4.3), **never a silent downgrade** to a weaker
+        rung. That is D6a's rule for credential methods applied unchanged, and
+        for the same reason: a session that runs at a weaker tier than its
+        audit record claims is worse than a session that does not run. The
+        audit record carries the rung that was **actually in force**, not the
+        one requested.
+
+        **Applied versus attested.** An *applied* rung is one the proxy
+        configures per session and tears down; an *attested* rung
+        (`platform-attested` on either axis) is one the target enforces
+        already, configured by somebody who is not this product, where the
+        proxy configures nothing and records who says so. Attested rungs are
+        how the appliance estate gets a real enforcement claim instead of "none
+        available", and they are the only kind a `brokered-key` route can
+        carry.
+
+        **The coupling to the credential method is conditional, not
+        absolute.** An applied rung needs the proxy to administer the account,
+        which only `ephemeral-user` and `ephemeral-account` do. Since D14 a
+        route names an *ordered ladder*, so the rung is a property of the
+        **route** and an entry that cannot carry it is a **skipped rung**
+        (D14) — the proxy walks on, and never runs the session without the rung
+        its record would claim. A response naming an applied rung where **no**
+        entry in the named ladder provisions the target is refused outright: a
+        policy that can only fail at connect time is a policy that fails in
+        front of a user.
+      properties:
+        execution:
+          type: string
+          enum:
+            - proxy-inspected
+            - no-interactive-shell
+            - account-restricted
+            - account-confined
+            - platform-authorized
+            - platform-attested
+          description: |
+            Where the limit on what the session may **execute** is enforced
+            (axis 1). **Absent ⇒ `proxy-inspected`.**
+
+            - `proxy-inspected` — what the proxy sees at the `exec` request is
+              what the proxy decides (D12's two tiers). Guarantees nothing
+              about a session that was permitted a shell, and nothing at all
+              about a connection made around the proxy. *Applied, proxy.*
+            - `no-interactive-shell` — the session can obtain no interactive
+              shell or terminal, so every command it runs is one the proxy
+              decided. It needs nothing of the target and is enforced on an
+              axis that has shipped since phase 0006, which makes it the
+              cheapest strong rung in the table. `permitted_requests` must
+              deny `shell` and `pty-req`, or the response is refused: the claim
+              and the policy carrying it have to agree. *Applied, proxy.*
+            - `account-restricted` — the **account** can execute only the
+              executables `restricted_exec` names, for every login to it,
+              including one that never went through this proxy. Requires
+              `filter_policy.exec_mode: restricted`, which is the only place
+              the contract names an executable. *Applied, target.*
+            - `account-confined` — `account-restricted` plus a kernel- or
+              service-manager-enforced confinement of the session's processes:
+              they cannot gain privilege and cannot execute anything the
+              session itself wrote. It is the rung that survives an uploaded
+              binary. *Applied, target.*
+            - `platform-authorized` — the **device's own** command authorizer
+              decides, for the account the proxy created, under the role named
+              in `platform_role`. It runs ahead of anything the proxy could
+              parse (D13). *Applied, target.*
+            - `platform-attested` — the target enforces its own command
+              authorization on the account already and the proxy configures
+              nothing. Requires `attestation`. *Attested.*
+        reach:
+          type: string
+          enum:
+            - proxy-channel-policy
+            - account-egress-restricted
+            - account-network-isolated
+            - platform-attested
+          description: |
+            Where the limit on what the session may **reach** is enforced
+            (axis 2). **Absent ⇒ `proxy-channel-policy`.**
+
+            This is a second axis rather than a corner of the first because an
+            account that can run exactly `uptime` and `cat`, and can also open
+            a socket to anything in the estate, is a pivot point wearing an
+            allow-list.
+
+            - `proxy-channel-policy` — `permitted_forwards` and
+              `permitted_global_requests` decide, per channel open and global
+              request. **It covers SSH-channel forwarding and nothing else**: a
+              process the session starts on the target opens its own sockets
+              and never touches a channel, so the proxy cannot see it, let
+              alone deny it. *Applied, proxy.*
+            - `account-egress-restricted` — the session's own processes reach
+              only the destinations in `permitted_destinations`; a connection
+              anywhere else fails on the target, whether or not it went through
+              an SSH channel. *Applied, target.*
+            - `account-network-isolated` — the session's processes reach
+              nothing off the host at all. *Applied, target.*
+            - `platform-attested` — the target already constrains what the
+              account can reach and the proxy configures nothing. Requires
+              `attestation`. *Attested.*
+        platform_role:
+          type: string
+          description: |
+            The device role, access profile, or privilege level the ephemeral
+            account is scoped to. **Required** by
+            `execution: platform-authorized` and forbidden otherwise.
+
+            It is opaque to the contract and handed to the driver as data, for
+            the reason the platform vocabulary is open at all (D13): the set of
+            role names is as open as the set of platforms. It is deliberately
+            not called an access profile — that is one vendor's word for it.
+          example: prof_admin
+        permitted_destinations:
+          type: array
+          description: |
+            Destinations a `account-egress-restricted` session's own processes
+            may open. **Required and non-empty** for that rung, forbidden
+            otherwise.
+
+            It reuses `ForwardDestination`'s **shape** and shares none of its
+            meaning: `permitted_forwards` is a rule about SSH channels the
+            proxy sees, this is a rule about sockets the target's kernel sees.
+            Naming a destination the same way in both is the point — an
+            operator writes one vocabulary — but the two are never merged, and
+            one never widens the other.
+          items:
+            $ref: '#/components/schemas/ForwardDestination'
+        attestation:
+          $ref: '#/components/schemas/Attestation'
+
+    Attestation:
+      type: object
+      description: |
+        The source of an **attested** enforcement rung (contract v4).
+
+        An attested rung is a claim this system does not verify: the target
+        enforces something already, configured by somebody who is not this
+        product, and the proxy applies nothing. An unverified claim in an audit
+        record is a liability, so the contract's answer is not to pretend
+        otherwise but to make the claim **attributable** — the record carries
+        who asserted it and where the assertion lives, and says plainly that
+        the proxy verified neither.
+
+        Required when either axis is `platform-attested`; forbidden otherwise,
+        because an attestation beside a rung the proxy rendered itself would
+        leave a reader unable to tell which half the record meant.
+      required: [asserted_by, reference]
+      properties:
+        asserted_by:
+          type: string
+          description: |
+            Who makes the claim: the team, system, or role that configured the
+            target's own enforcement.
+          example: network-engineering
+        reference:
+          type: string
+          description: |
+            Where the assertion lives — a configuration baseline, a standard, a
+            ticket, a control id. Required, and required to be something an
+            auditor can follow: "trust us" and an empty string are the same
+            answer.
+          example: NET-BASELINE-7.2 §4 (edge firewall RBAC)
+        asserted_at:
+          type: string
+          format: date-time
+          description: |
+            When the claim was last affirmed. Absent means the assertion
+            carries no date, which is itself worth recording.
+
+    GrantContext:
+      type: object
+      description: |
+        **Why** access was granted, as an external system asserted it (contract
+        v4, D16, PLAN §13 UC3). Absent means no external grant context, which
+        is today's behaviour.
+
+        `decision_id` correlates a decision; nothing else carries the ticket,
+        the scan, or the window. This does.
+
+        **The proxy treats all of it as opaque.** It is copied to every log
+        record for the session, and it is **never parsed, never matched
+        against, and never the basis of a proxy-side decision** — the next
+        reader's instinct will be to make policy out of it, and D2 says that
+        decision was already made upstream, by the PDP, before this response
+        was written. It is also **not shown to the user** on denial: a denial
+        stays vague (PLAN §4.3), and this text is about the estate rather than
+        about the user's own request.
+
+        The systems on the other end are Control's and Enterprise's (D15). The
+        proxy never learns that any of them exist.
+      properties:
+        system:
+          type: string
+          description: The external system that asserted the grant. Opaque.
+          example: qualys
+        reference:
+          type: string
+          description: |
+            That system's own handle for the assertion — a ticket, a scan id,
+            an incident number. Opaque.
+          example: SCAN-2026-09-04-1183
+        window_start:
+          type: string
+          format: date-time
+          description: |
+            Start of the window the external system asserted. **Recorded, not
+            enforced.**
+        window_end:
+          type: string
+          format: date-time
+          description: |
+            End of the window the external system asserted. **Recorded, not
+            enforced** — the bound the proxy enforces is `session_deadline`,
+            which the PDP sets having already weighed this window. Two fields
+            that look like a deadline and are not one would be a trap, so the
+            difference is stated here rather than left to be discovered.
+        additional_context:
+          description: |
+            Whatever else the integration wanted recorded. It accepts a **JSON
+            string or a JSON object**, because the systems on the other end
+            differ more than a fixed schema can absorb: one has a sentence,
+            another has a bag of fields, and forcing either into the other's
+            shape would make the record worse. Anything else — a number, a
+            list, a boolean — is a contract violation rather than something to
+            coerce, because the proxy stores this verbatim for an auditor and
+            must not put words in the server's mouth.
+
+            Like the context it hangs on, it is carried and logged, never read
+            for a decision.
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+          example:
+            scan_profile: authenticated-linux
+            requested_by: soc-oncall
+
+    ConcurrencyLimits:
+      type: object
+      description: |
+        How many sessions may be live at once (contract v4, PLAN §13 UC2).
+        Both scopes are optional and independent; **absent (or `0`) means
+        uncapped**, which is today's behaviour.
+
+        It is a field here rather than a decision Control makes alone from
+        `conn` because the live session count is knowable **only to the
+        proxy**, which is the party holding the session registry.
+
+        Exceeding a cap is a **policy denial** — deliberately vague, PLAN §4.3
+        — and never an outage: the estate is healthy and the answer is "no",
+        which is exactly what a denial means.
+      properties:
+        max_sessions_per_subject:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Live sessions permitted for one authenticated subject, across every
+            target. `0` or absent is uncapped.
+          example: 3
+        max_sessions_per_target:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Live sessions permitted to one target, across every subject. `0` or
+            absent is uncapped.
+
+            A per-target ceiling exists whether or not policy names one: PLAN
+            §5.1 records that `useradd` and `userdel` serialise on the target's
+            own account database, so an `ephemeral-user` fleet has a
+            provisioning ceiling no amount of proxy capacity moves.
+          example: 10
+
+    ProxyCapabilities:
+      type: object
+      description: |
+        The enforcement rungs a **proxy build** can provide at all (contract
+        v4), declared on `AuthorizeRequest` beside `policy_version` — the same
+        pattern, for the same reason.
+
+        It answers only "can this software do it", never "can this target take
+        it": what is available depends on the target far more than on the
+        proxy, and finding that out needs a login (see
+        `POST /v1/capabilities/report`).
+
+        **Absent declares nothing**, which is what a v3 proxy implies and is
+        the fail-safe reading: a server choosing from it can then only choose a
+        rung that needs no capability at all — the two proxy-side defaults, and
+        an attested rung, which nobody here applies.
+      properties:
+        execution:
+          type: array
+          items:
+            type: string
+          example: [proxy-inspected, no-interactive-shell, account-restricted]
+        reach:
+          type: array
+          items:
+            type: string
+          example: [proxy-channel-policy, account-network-isolated]
+
+    TargetCapabilities:
+      type: object
+      description: |
+        The enforcement rungs one **target** can take, as the proxy found them
+        by connecting to it (contract v4, probed by phase 0019).
+
+        Whether a target runs systemd, whether cgroup v2 is mounted, whether
+        SELinux is enforcing, whether netfilter is reachable, whether it is a
+        Linux host at all — none of that is knowable from a policy database,
+        and all of it decides which rungs are real.
+      required: [observed_at]
+      properties:
+        execution:
+          type: array
+          items:
+            type: string
+          example: [proxy-inspected, no-interactive-shell, account-restricted, account-confined]
+        reach:
+          type: array
+          items:
+            type: string
+          example: [proxy-channel-policy, account-egress-restricted]
+        observed_at:
+          type: string
+          format: date-time
+          description: |
+            When the proxy probed. A record with **no observation time is
+            treated as stale**, because a capability with no date has no shelf
+            life — and a stale record and an absent one mean the same thing to
+            anyone choosing a rung from it.
+        detail:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Free-form observation for an operator reading the console — which
+            init the target runs, which module was missing. Never parsed, never
+            the basis of a decision.
+          example:
+            init: systemd-257
+            cgroup: v2
+
+    CapabilityReportRequest:
+      type: object
+      required: [target, capabilities, conn]
+      properties:
+        target:
+          type: string
+          description: The host the capabilities were observed on.
+          example: host.company.com
+        target_port:
+          type: integer
+          format: int32
+          description: The port, when it is not the default.
+        platform:
+          type: string
+          description: |
+            The device driver that observed them, for an `ephemeral-account`
+            target. Absent for a POSIX host.
+          example: fortios
+        capabilities:
+          $ref: '#/components/schemas/TargetCapabilities'
+        conn:
+          $ref: '#/components/schemas/ConnMeta'
+
+    CapabilityReportResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          description: |
+            True when the server recorded the report. A report the server did
+            not record is one the proxy must not believe it made, so anything
+            else is a contract violation.
+        report_after_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            When the server would like the next observation, in seconds. Absent
+            or `0` leaves the interval to the proxy. The server owns the
+            freshness of its own record, on the same reasoning as
+            `cache.ttl_seconds`: a proxy may re-observe sooner, never later.
+          example: 900
 
     CacheHint:
       type: object

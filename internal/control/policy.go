@@ -292,6 +292,25 @@ func (m TargetAuthMethod) requiresUsername() bool {
 	}
 }
 
+// Provisions reports whether this method CREATES the account it logs in as, and
+// therefore leaves the proxy administering the target for the session's
+// duration (contract v4, phase 0018).
+//
+// It is what decides whether an APPLIED enforcement rung is reachable on a
+// route (EnforcementPolicy.RequiresProvisioning). brokered-key changes nothing
+// on the target by definition (D6a), and static-key is the same shape wearing a
+// development label: both log into an account somebody else made, so neither
+// can carry a rung the proxy has to render. Attested rungs are unaffected —
+// nobody here applies them (PLAN §6.5).
+func (m TargetAuthMethod) Provisions() bool {
+	switch m {
+	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount:
+		return true
+	default:
+		return false
+	}
+}
+
 // Parameter names the contract defines for target_auth entries (api/README.md,
 // "Target credentials"). They are scoped to their method: username means the
 // account to create for ephemeral-user and the account that already exists for

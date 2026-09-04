@@ -14,7 +14,10 @@
   revocation"), §13 UC2/UC3.
 - `prompts/implemented/0018-*` — the deadline field it defined, its shape
   (absolute instant vs duration), and the two questions it left open.
-- `docs/learnings/` summaries: **0005** (the session lifecycle and failure
+- `docs/learnings/` summaries: **0018** (the field as shipped — it is an
+  absolute RFC 3339 instant, `AuthorizeResponse.SessionDeadline *time.Time`,
+  absent meaning no deadline, and the shape was **not** changed from what this
+  prompt is written against), **0005** (the session lifecycle and failure
   reporting), **0011** (capture points), **0012** (the topology you owe
   scenarios), **0003** (revocation — the kill path this must not duplicate).
 

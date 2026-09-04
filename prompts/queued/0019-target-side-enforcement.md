@@ -122,10 +122,21 @@ per session, because the proxy creates the account.
   checked at startup, and what you are replacing is a proxy-wide setting rather
   than a driver constant. Do not
   characterise a vendor's RBAC from memory.
-- **Reach** is the same story: where the driver declares source-address pinning,
-  a rung on the reach axis can restrict the ephemeral account to the proxy's
-  address, which is a genuinely strong control — the credential stops working
-  from anywhere else, including from a copy of it.
+- **Reach** is the same story with one correction 0018's survey made: where the
+  driver declares source-address pinning, the ephemeral account is restricted to
+  the proxy's address, which is a genuinely strong control — the credential stops
+  working from anywhere else, including from a copy of it. But it bounds **who
+  may reach the account**, not what the account may reach, so 0018 deliberately
+  gave it **no rung name of its own**: it is applied unconditionally wherever the
+  driver declares it (§5.3, 0015), and a rung the server may or may not choose
+  would make an unconditional protection look optional. What the reach axis
+  names on a device is `platform-attested` — the pre-provisioned ACL, role, or
+  privilege level the customer already configured — so do not build a reach rung
+  the contract does not carry.
+
+  `platform_role` on the enforcement object is what replaces the proxy-wide
+  `auth.target.ephemeral_account.access_profile` for the execution axis; it is
+  the route's, opaque to the contract, and handed to the driver as data.
 - **The failure mode is coarseness, and it must be recorded.** Vendor RBAC
   groups commands the vendor's way, so a profile permitting diagnostics may
   include a command with a shell escape or a configuration write. Where 0018's

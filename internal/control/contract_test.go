@@ -76,6 +76,7 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 		PathReportHostKey:        "200",
 		PathIngestLogBatch:       "202",
 		PathIngestPriorityLog:    "200",
+		PathReportCapabilities:   "200",
 	}
 
 	for path, success := range wantStatus {
@@ -422,6 +423,17 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		string(ExpiryPostureAcceptedRisk),
 		string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
 		string(AlgorithmProfileLegacyDevice),
+		// The phase 0018 vocabulary (D12 as amended, D16).
+		"enforcement", "platform_role", "permitted_destinations", "attestation",
+		"asserted_by", "session_deadline", "require_session_capture",
+		"grant_context", "additional_context", "concurrency",
+		"max_sessions_per_subject", "max_sessions_per_target", "observed_at",
+		"report_after_seconds", "enforcement_execution", "enforcement_reach",
+		string(ExecutionProxyInspected), string(ExecutionNoInteractiveShell),
+		string(ExecutionAccountRestricted), string(ExecutionAccountConfined),
+		string(ExecutionPlatformAuthorized), string(ExecutionPlatformAttested),
+		string(ReachProxyChannelPolicy), string(ReachAccountEgressRestricted),
+		string(ReachAccountNetworkIsolated),
 	} {
 		if !strings.Contains(readme, name) {
 			t.Errorf("%s does not document %q", readmePath, name)

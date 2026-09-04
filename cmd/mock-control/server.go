@@ -49,9 +49,13 @@ type server struct {
 	mu       sync.Mutex
 	mfa      map[string]*mfaChallenge
 	hostKeys map[string]bool // "target\x00fingerprint" -> seen
-	batched  []control.LogRecord
-	priority []control.LogRecord
-	seenLogs map[string]bool // record_id -> stored, for de-duplication
+	// capabilities is the last enforcement-capability report per target
+	// (contract v4). A real Control accumulates these and constrains policy
+	// authoring by them; the mock only has to remember that one arrived.
+	capabilities map[string]*control.TargetCapabilities
+	batched      []control.LogRecord
+	priority     []control.LogRecord
+	seenLogs     map[string]bool // record_id -> stored, for de-duplication
 	// subs are the open revocation streams; events are the retained history a
 	// reconnecting proxy replays from, trimmed to the fixture's buffer size.
 	subs           map[*subscriber]bool
@@ -86,14 +90,15 @@ type mfaChallenge struct {
 
 func newServer(fx *fixtures, opts serverOptions) *server {
 	s := &server{
-		fx:       fx,
-		logDir:   opts.LogDir,
-		logger:   opts.Logger,
-		now:      opts.Now,
-		mfa:      make(map[string]*mfaChallenge),
-		hostKeys: make(map[string]bool),
-		seenLogs: make(map[string]bool),
-		subs:     make(map[*subscriber]bool),
+		fx:           fx,
+		logDir:       opts.LogDir,
+		logger:       opts.Logger,
+		now:          opts.Now,
+		mfa:          make(map[string]*mfaChallenge),
+		hostKeys:     make(map[string]bool),
+		seenLogs:     make(map[string]bool),
+		capabilities: make(map[string]*control.TargetCapabilities),
+		subs:         make(map[*subscriber]bool),
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -139,6 +144,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+control.PathPollMFA, s.handlePollMFA)
 	mux.HandleFunc("POST "+control.PathAuthorize, s.handleAuthorize)
 	mux.HandleFunc("POST "+control.PathReportHostKey, s.handleReportHostKey)
+	mux.HandleFunc("POST "+control.PathReportCapabilities, s.handleReportCapabilities)
 	mux.HandleFunc("POST "+control.PathIngestLogBatch, s.handleIngestLogBatch)
 	mux.HandleFunc("POST "+control.PathIngestPriorityLog, s.handleIngestPriorityLog)
 	// The path constant is already a net/http wildcard pattern, so the proxy
@@ -340,6 +346,10 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	resp := route.authorizeResponse(req.Target, hopTrail)
 	resp.DecisionID = decisionID
 	resp.Cache = cacheHint(route, req.Identity.Subject, req.Target)
+	// The deadline is anchored here rather than in the fixture, because the
+	// contract carries an absolute instant and a fixture cannot hold one that
+	// is still in the future tomorrow (contract v4).
+	resp.SessionDeadline = route.deadline(s.now())
 
 	// A proxy declaring an older vocabulary must not be answered with fields it
 	// cannot read: it fails such a response closed, by contract. A real server
@@ -395,6 +405,49 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 		resp.Decision = control.HostKeyAccept
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleReportCapabilities records what a target can enforce (contract v4).
+//
+// A real Control accumulates these per target and constrains policy authoring
+// by them. The mock keeps the last report per target so a test can assert the
+// proxy reported at all, and answers `accepted` — there is nothing to decide,
+// which is the point: a capability report is an observation, not a request for
+// a decision.
+func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeProxy(w, r) {
+		return
+	}
+	var req control.CapabilityReportRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Target == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "target is required")
+		return
+	}
+	if req.Capabilities.ObservedAt.IsZero() {
+		// An undated record is a stale one by contract, so a server that stored
+		// it would be storing something nobody may use.
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"capabilities.observed_at is required")
+		return
+	}
+
+	s.mu.Lock()
+	s.capabilities[req.Target] = req.Capabilities.Clone()
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, control.CapabilityReportResponse{Accepted: true})
+}
+
+// reportedCapabilities returns the last capability report for a target, for
+// tests.
+func (s *server) reportedCapabilities(target string) (*control.TargetCapabilities, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.capabilities[target]
+	return c, ok
 }
 
 func (s *server) handleIngestLogBatch(w http.ResponseWriter, r *http.Request) {
@@ -485,6 +538,7 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.seenLogs = make(map[string]bool)
 	s.mfa = make(map[string]*mfaChallenge)
 	s.hostKeys = make(map[string]bool)
+	s.capabilities = make(map[string]*control.TargetCapabilities)
 	// Open subscriptions survive a reset; only the replayable history is
 	// cleared, so a reconnect after this point starts from now.
 	s.events = nil

@@ -3,6 +3,8 @@
 
 package control
 
+import "time"
+
 // Deep copies of the policy payloads.
 //
 // A decision is handed to a session, and a cached decision is handed to many.
@@ -144,6 +146,138 @@ func (p *RestrictedExecPolicy) Clone() *RestrictedExecPolicy {
 	return out
 }
 
+// Clone deep-copies an enforcement policy, destinations and attestation
+// included (contract v4).
+func (p *EnforcementPolicy) Clone() *EnforcementPolicy {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.PermittedDestinations = cloneDestinations(p.PermittedDestinations)
+	out.Attestation = p.Attestation.Clone()
+	return &out
+}
+
+// Clone deep-copies an attestation.
+func (a *Attestation) Clone() *Attestation {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	out.AssertedAt = cloneTime(a.AssertedAt)
+	return &out
+}
+
+// Clone deep-copies a grant context.
+//
+// It matters here as much as anywhere else even though the proxy makes no
+// decision from it: a cached decision is handed to many sessions, and every one
+// of them copies this into its own log records. One session mutating the map
+// another is logging would corrupt an audit trail, which is the one thing in
+// this system that cannot be reconstructed afterwards.
+func (c *GrantContext) Clone() *GrantContext {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.WindowStart = cloneTime(c.WindowStart)
+	out.WindowEnd = cloneTime(c.WindowEnd)
+	out.Additional = c.Additional.Clone()
+	return &out
+}
+
+// Clone deep-copies an additional-context payload, whichever form it took.
+func (c *AdditionalContext) Clone() *AdditionalContext {
+	if c == nil {
+		return nil
+	}
+	out := &AdditionalContext{Text: c.Text}
+	if c.Fields != nil {
+		fields, _ := cloneJSONValue(c.Fields).(map[string]any)
+		out.Fields = fields
+	}
+	return out
+}
+
+// cloneJSONValue deep-copies a decoded JSON value. The object form of
+// additional_context is arbitrary and nested — the systems on the other end of
+// a grant differ more than a fixed schema can absorb — so a one-level copy of
+// the top map would still let two sessions share a nested one.
+func cloneJSONValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			out[k] = cloneJSONValue(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	default:
+		// Strings, numbers, booleans and nil are values; nothing aliases.
+		return v
+	}
+}
+
+// Clone deep-copies concurrency limits.
+func (l *ConcurrencyLimits) Clone() *ConcurrencyLimits {
+	if l == nil {
+		return nil
+	}
+	out := *l
+	return &out
+}
+
+// Clone deep-copies the proxy's declared capabilities.
+func (c *ProxyCapabilities) Clone() *ProxyCapabilities {
+	if c == nil {
+		return nil
+	}
+	out := &ProxyCapabilities{}
+	if c.Execution != nil {
+		out.Execution = append([]ExecutionRung(nil), c.Execution...)
+	}
+	if c.Reach != nil {
+		out.Reach = append([]ReachRung(nil), c.Reach...)
+	}
+	return out
+}
+
+// Clone deep-copies an observed target capability record.
+func (c *TargetCapabilities) Clone() *TargetCapabilities {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	if c.Execution != nil {
+		out.Execution = append([]ExecutionRung(nil), c.Execution...)
+	}
+	if c.Reach != nil {
+		out.Reach = append([]ReachRung(nil), c.Reach...)
+	}
+	if c.Detail != nil {
+		out.Detail = make(map[string]string, len(c.Detail))
+		for k, v := range c.Detail {
+			out.Detail[k] = v
+		}
+	}
+	return &out
+}
+
+// cloneTime copies an optional instant. time.Time is a value, so only the
+// pointer needs breaking.
+func cloneTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	return &out
+}
+
 // Clone deep-copies hop metadata.
 func (h *HopMetadata) Clone() *HopMetadata {
 	if h == nil {
@@ -177,6 +311,10 @@ func (r *AuthorizeResponse) Clone() *AuthorizeResponse {
 	out.TargetAuth = r.TargetAuth.Clone()
 	out.TargetAuthLadder = r.TargetAuthLadder.Clone()
 	out.FilterPolicy = r.FilterPolicy.Clone()
+	out.Enforcement = r.Enforcement.Clone()
+	out.SessionDeadline = cloneTime(r.SessionDeadline)
+	out.GrantContext = r.GrantContext.Clone()
+	out.Concurrency = r.Concurrency.Clone()
 	out.Hop = r.Hop.Clone()
 	out.Cache = r.Cache.Clone()
 	return &out
