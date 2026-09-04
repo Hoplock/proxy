@@ -61,7 +61,7 @@ they only work together:
 
 The second rule would make any server upgrade a fleet-wide outage, so the proxy
 declares what it can read: `AuthorizeRequest.policy_version` carries the highest
-vocabulary it implements (absent means `1`; the current value is `3`, exported
+vocabulary it implements (absent means `1`; the current value is `4`, exported
 as `control.PolicyVersion`). **The server MUST NOT answer with policy fields
 introduced after that version.** A server that respects it can add vocabulary
 freely; a server that ignores it is caught at the first response instead of

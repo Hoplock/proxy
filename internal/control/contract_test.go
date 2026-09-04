@@ -380,6 +380,38 @@ func TestSpecDocumentsTheV2PolicySchemas(t *testing.T) {
 	}
 }
 
+// TestReadmeSaysWhichVocabularyIsCurrent pins the one sentence in api/README.md
+// that states a version rather than describing one, so it cannot go stale the
+// next time PolicyVersion moves.
+//
+// TestReadmeDocumentsTheContract below asks only whether a name APPEARS, and a
+// containment check cannot see a contradiction: phase 0018 added the whole v4
+// section and left the sentence three lines above it saying the current value
+// was 3, with every test still green. The downstream repository found it during
+// its sync, which is the most expensive place to find a contract that disagrees
+// with itself.
+//
+// Every other version in that document is HISTORICAL — "policy_version stays 3"
+// under the v3→v3.1 heading is a true statement about that revision and must not
+// be swept — so this pins the current-value sentence alone.
+func TestReadmeSaysWhichVocabularyIsCurrent(t *testing.T) {
+	raw, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+	want := fmt.Sprintf("the current value is `%d`", PolicyVersion)
+	if !strings.Contains(string(raw), want) {
+		t.Errorf("%s does not say %q; PolicyVersion is %d and the document must agree with it",
+			readmePath, want, PolicyVersion)
+	}
+	for v := 1; v < PolicyVersion; v++ {
+		stale := fmt.Sprintf("the current value is `%d`", v)
+		if strings.Contains(string(raw), stale) {
+			t.Errorf("%s still says %q; that was true of an earlier vocabulary", readmePath, stale)
+		}
+	}
+}
+
 // TestReadmeDocumentsTheContract guards the companion document. api/README.md
 // is what a session reads before the OpenAPI file, so a vocabulary it does not
 // mention is a vocabulary the next phase will not know exists.
