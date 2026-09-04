@@ -507,6 +507,177 @@ routes:
         - match: "/bin/echo *"
           action: allow_and_log
 
+  # ------------------------------------------- target-side enforcement (0019) ---
+  # The rungs of docs/PLAN.md §6.5, rendered onto the ephemeral account rather
+  # than enforced on a string in flight. Everything above this block is enforced
+  # by the PROXY, at the exec request or the channel open; everything in it is
+  # enforced by sshd and the kernel, where it also holds for a connection that
+  # never came through the proxy.
+  #
+  # UC2 exactly: an automation account that may run TWO BINARIES and reach ONE
+  # DESTINATION. The two axes are independent and this route sets both.
+  - login: svc-deploy
+    target: confined.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: automationGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-deploy
+        key_type: ed25519
+    enforcement:
+      # The allow-list below is rendered into an authorized_keys `command=`
+      # dispatcher on the account, so it holds for every login to it.
+      execution: account-restricted
+      # The half `permitted_forwards` cannot express: a process this session
+      # starts opens its own sockets and never touches an SSH channel, so the
+      # proxy never sees it. Loopback is NOT permitted unless the policy names
+      # it, and this policy names exactly one destination.
+      reach: account-egress-restricted
+      permitted_destinations:
+        - host: 127.0.0.1
+          port: 22
+    filter_policy:
+      # The contract requires the enforced tier beside an account rung: it is
+      # the only place the vocabulary names an executable, and the rung renders
+      # THIS list rather than authoring one of its own.
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          - executable: uptime
+            form: exact
+            argv: []
+          # A bare name rather than a path, deliberately: it is resolved on the
+          # target into the curated PATH directory the rung builds, which is
+          # the guardrail half of the mechanism.
+          - executable: nc
+            form: positional
+            args:
+              - kind: literal
+                value: "-z"
+              - kind: literal
+                value: "-w"
+              - kind: literal
+                value: "2"
+              - kind: any
+              - kind: any
+
+  # The strongest pair on both axes: nothing the session wrote may execute, no
+  # privilege may be gained, and nothing off the host may be reached.
+  - login: svc-deploy
+    target: isolated.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: automationGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-deploy
+        key_type: ed25519
+    enforcement:
+      execution: account-confined
+      reach: account-network-isolated
+    filter_policy:
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          - executable: uptime
+            form: exact
+            argv: []
+          - executable: nc
+            form: positional
+            args:
+              - kind: literal
+                value: "-z"
+              - kind: literal
+                value: "-w"
+              - kind: literal
+                value: "2"
+              - kind: any
+              - kind: any
+
+  # An ATTESTED rung on a brokered-key route: the target is unmodifiable by
+  # definition (D6a), the proxy configures nothing, and the session is still
+  # recorded at a real rung rather than at "none". The attestation is what makes
+  # that claim attributable — the record also says this system verified neither.
+  - login: svc-deploy
+    target: attested.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: applianceReadOnly
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    enforcement:
+      execution: platform-attested
+      reach: platform-attested
+      attestation:
+        asserted_by: network-engineering
+        reference: "NET-BASELINE-7.2 §4 (appliance RBAC + per-account ACL)"
+        asserted_at: "2026-07-01T00:00:00Z"
+    filter_policy:
+      mode: blacklist
+
+  # A rung this proxy cannot RENDER on this target, which is the case the
+  # capability report exists to make rare and can never make impossible: the
+  # proxy learns what a target supports only by touching it. A destination named
+  # by HOSTNAME cannot be rendered into a packet filter faithfully — a filter
+  # resolves a name once, at insert time — so the session is an OUTAGE-class
+  # denial naming the session id, and nothing is provisioned.
+  - login: svc-deploy
+    target: unrenderable.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: automationGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-deploy
+        key_type: ed25519
+    enforcement:
+      execution: account-restricted
+      reach: account-egress-restricted
+      permitted_destinations:
+        - host: artifacts.company.com
+          port: 443
+    filter_policy:
+      mode: whitelist
+      exec_mode: restricted
+      restricted_exec:
+        commands:
+          - executable: uptime
+            form: exact
+            argv: []
+
   # Nothing else is routed. A target with no rule here is a 401, which is the
   # denial half of the disclosure rule (PLAN §4.3): fixtures say yes explicitly.
 

@@ -454,3 +454,91 @@ func TestRouteFromAV1ServerIsUnpoliced(t *testing.T) {
 		t.Errorf("hop direction = %q, want %q", got, control.HopConnectionDial)
 	}
 }
+
+// TestResolveCarriesTheEnforcementChoice: the rung is read through the
+// accessors and never off the field, because an absent enforcement object is a
+// v3 server saying "proxy-inspected" rather than a server saying nothing.
+func TestResolveCarriesTheEnforcementChoice(t *testing.T) {
+	client := &fakeClient{resp: &control.AuthorizeResponse{
+		RouteType:         control.RouteTypeDirect,
+		Target:            "db-1",
+		TargetPort:        22,
+		PermittedChannels: []string{"session"},
+		Enforcement: &control.EnforcementPolicy{
+			Execution:             control.ExecutionAccountConfined,
+			Reach:                 control.ReachAccountEgressRestricted,
+			PermittedDestinations: []control.ForwardDestination{{Host: "10.1.2.3", Port: 5432}},
+		},
+	}}
+	resolver, err := NewResolver(ResolverOptions{Client: client})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	route, err := resolver.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "db-1"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if route.EnforcedExecution() != control.ExecutionAccountConfined {
+		t.Errorf("execution rung = %q, want the server's", route.EnforcedExecution())
+	}
+	if route.EnforcedReach() != control.ReachAccountEgressRestricted {
+		t.Errorf("reach rung = %q, want the server's", route.EnforcedReach())
+	}
+	// Deep-copied: the decision may be a cached one shared with other sessions,
+	// and a session that mutated a slice it was handed would rewrite their
+	// policy (PLAN §6.4).
+	route.Enforcement.PermittedDestinations[0].Host = "0.0.0.0/0"
+	if client.resp.Enforcement.PermittedDestinations[0].Host != "10.1.2.3" {
+		t.Error("the route shares its destination list with the authorize response")
+	}
+}
+
+// TestResolveDefaultsTheEnforcementChoice: a v3 server that never heard of the
+// object keeps working, and both axes read as today's behaviour.
+func TestResolveDefaultsTheEnforcementChoice(t *testing.T) {
+	client := &fakeClient{resp: &control.AuthorizeResponse{
+		RouteType: control.RouteTypeDirect, Target: "db-1", TargetPort: 22,
+	}}
+	resolver, err := NewResolver(ResolverOptions{Client: client})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	route, err := resolver.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "db-1"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if route.EnforcedExecution() != control.ExecutionProxyInspected {
+		t.Errorf("execution rung = %q, want the absent-value default", route.EnforcedExecution())
+	}
+	if route.EnforcedReach() != control.ReachProxyChannelPolicy {
+		t.Errorf("reach rung = %q, want the absent-value default", route.EnforcedReach())
+	}
+}
+
+// TestResolveAdvertisesTheProxysCapabilities: the half of capability
+// advertisement that needs no probe rides on every authorize request.
+func TestResolveAdvertisesTheProxysCapabilities(t *testing.T) {
+	client := &fakeClient{resp: &control.AuthorizeResponse{
+		RouteType: control.RouteTypeDirect, Target: "db-1", TargetPort: 22,
+	}}
+	caps := &control.ProxyCapabilities{
+		Execution: []control.ExecutionRung{control.ExecutionAccountRestricted},
+		Reach:     []control.ReachRung{control.ReachAccountNetworkIsolated},
+	}
+	resolver, err := NewResolver(ResolverOptions{Client: client, Capabilities: caps})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	if _, err := resolver.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "db-1"}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	sent := client.last.Capabilities
+	if sent == nil || len(sent.Execution) != 1 || sent.Execution[0] != control.ExecutionAccountRestricted {
+		t.Fatalf("capabilities = %+v, want the build's declaration", sent)
+	}
+	// Cloned per request, so one session's request cannot rewrite another's.
+	sent.Execution[0] = "account-confined"
+	if caps.Execution[0] != control.ExecutionAccountRestricted {
+		t.Error("the request shares the resolver's capability slice")
+	}
+}

@@ -259,6 +259,17 @@ func (s *session) setup() {
 	// authenticator owns neither. A provisioner that opens its own connection
 	// to the target — the ephemeral method's management login does — borrows
 	// the callback rather than deciding host trust for itself.
+	// A proxy-side rung must be true before the target leg is dialled, and this
+	// is the check that makes it so. The contract refuses a response that names
+	// no-interactive-shell while permitting shell or pty-req (0018's Validate),
+	// so reaching here means a locally configured route — and a session that ran
+	// with a shell while its record claimed the rung is exactly the silent
+	// downgrade PLAN §6.5 forbids.
+	if err := s.checkProxyRung(route); err != nil {
+		s.failSetup(&setupError{stage: stageRoute, err: err})
+		return
+	}
+
 	access, err := s.srv.targetAuth.Provision(s.ctx, s.identity, target.Target{
 		Host:            route.Host,
 		Port:            route.Port,
@@ -266,6 +277,9 @@ func (s *session) setup() {
 		Ladder:          route.TargetAuthLadder,
 		SessionID:       s.id,
 		HostKeyCallback: s.hostKeyCallback,
+		// The route's enforcement choice, deep-copied: the decision may be a
+		// cached one shared with other sessions (PLAN §6.4).
+		Enforcement: target.EnforcementFrom(route.Enforcement, route.Filter),
 	})
 	if err != nil {
 		s.failSetup(&setupError{stage: stageProvision, err: err})
@@ -273,6 +287,7 @@ func (s *session) setup() {
 	}
 	s.access = access
 	s.recordCredential(route, access)
+	s.recordEnforcement(access)
 
 	if err := s.dialTarget(access); err != nil {
 		s.failSetup(err)
@@ -281,6 +296,31 @@ func (s *session) setup() {
 
 	s.logf("proxy: session=%s target leg up target=%s route=%s permissions=%s channels=%v",
 		s.id, s.route.Addr(), s.route.Type, s.route.Permissions, s.route.PermittedChannels)
+}
+
+// checkProxyRung verifies that a rung the PROXY provides is actually being
+// provided by this session's own policy (PLAN §6.5).
+//
+// Only no-interactive-shell needs it. proxy-inspected is what the proxy does
+// anyway, the target rungs are checked against the live target where they are
+// rendered, and an attested rung is applied by nobody. What this catches is the
+// one shape the contract cannot: a route that names the rung and permits the
+// requests that make it a lie.
+func (s *session) checkProxyRung(route *routing.Route) error {
+	if route.EnforcedExecution() != control.ExecutionNoInteractiveShell {
+		return nil
+	}
+	if route.PermittedRequests == nil {
+		return fmt.Errorf("%w: the route names %q and polices no in-channel requests at all",
+			target.ErrRungUnavailable, control.ExecutionNoInteractiveShell)
+	}
+	for _, name := range []string{"shell", "pty-req"} {
+		if route.RequestPermitted(name) {
+			return fmt.Errorf("%w: the route names %q and permits %q",
+				target.ErrRungUnavailable, control.ExecutionNoInteractiveShell, name)
+		}
+	}
+	return nil
 }
 
 // sessionInspectors builds the inspector registry for this session: the

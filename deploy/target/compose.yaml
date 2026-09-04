@@ -14,3 +14,29 @@ services:
       - ../keys:/material:ro
     ports:
       - "127.0.0.1:${HOPLOCK_SSHD_PORT:-2022}:22"
+    # What phase 0019's enforcement rungs need from the kernel, and nothing
+    # else. NET_ADMIN is the per-uid packet filter (the reach axis); SYS_ADMIN
+    # is the bind-mount that makes a session's home noexec,nosuid,nodev (the
+    # second half of account-confined). The container has its own network
+    # namespace, so the rules it installs are its own.
+    #
+    # A deployment that will not grant these is a deployment whose targets
+    # cannot take those rungs, which is exactly what the capability probe
+    # reports and what an outage-class refusal then says out loud.
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    # Docker's DEFAULT APPARMOR PROFILE denies `mount` outright — `deny mount,`
+    # is a line in `docker-default`, and it is checked before capabilities, so
+    # CAP_SYS_ADMIN above is necessary and not sufficient. Without this the
+    # capability probe reports `bind_mount=no`, the `account-confined` rung is
+    # unavailable, and every route naming it is refused as an outage. That is the
+    # rung behaving correctly and the topology failing to offer it, which is a
+    # confusing pair to debug: the proxy is right and the container is wrong.
+    #
+    # It is scoped to the target node, which is the only one that mounts
+    # anything. A real fleet does not have this problem — a host is not inside a
+    # container — but a containerised target does, and it is a genuine
+    # prerequisite rather than a test-rig quirk: `docs/PLAN.md` §6.5 lists it.
+    security_opt:
+      - apparmor:unconfined

@@ -100,6 +100,16 @@ func (a *BrokeredKeyAuthenticator) Provision(ctx context.Context, id *identity.I
 		return nil, errors.New("auth/target: brokered-key has no account to log in as")
 	}
 
+	// The target is UNMODIFIABLE by definition (D6a), so an applied rung on this
+	// route is a contract violation and is refused before the credential is
+	// even fetched. An ATTESTED rung is the point of the distinction — the
+	// appliance enforces its own roles already — and the session runs, provisions
+	// nothing, and is recorded at that rung rather than at "none" (PLAN §6.5).
+	enforcement, err := resultForUnprovisioned(tgt.Enforcement, MethodBrokeredKey)
+	if err != nil {
+		return nil, err
+	}
+
 	cred, err := a.source.Credential(ctx, CredentialRequest{
 		Target:   tgt,
 		Ref:      ref,
@@ -121,6 +131,7 @@ func (a *BrokeredKeyAuthenticator) Provision(ctx context.Context, id *identity.I
 		id.Subject, tgt, username, a.source.Name(), refForLog(ref))
 
 	return &ProvisionedAccess{
+		Enforcement: enforcement,
 		ClientConfig: &ssh.ClientConfig{
 			User: username,
 			Auth: []ssh.AuthMethod{auth},

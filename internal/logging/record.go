@@ -82,6 +82,36 @@ const (
 	// customer-a's virtual domain" is the question this answers, and a joined
 	// string turns that into a substring search.
 	AttrDeviceFieldPrefix = "device_field."
+	// The four enforcement fields contract v4 defined and phase 0019 emits
+	// (PLAN §6.5). Each one names the rung IN FORCE and never the rung the
+	// route asked for: a record that says "boundary" for a session that ran at
+	// a weaker rung is the only outcome in this area worse than not shipping
+	// the feature.
+	AttrEnforcementExecution = "enforcement_execution"
+	AttrEnforcementReach     = "enforcement_reach"
+	// AttrEnforcementVerified is false on an ATTESTED rung: the target enforces
+	// something already, configured by somebody who is not this product, and
+	// this system verified neither the claim nor its source. An unverified
+	// claim in an audit record is a liability unless it says so.
+	AttrEnforcementVerified = "enforcement_verified"
+	// AttrEnforcementAttestedBy and AttrEnforcementAttestation are who asserts
+	// an attested rung and where the assertion lives. "Trust us" and an empty
+	// string are the same answer, which is why the contract requires both.
+	AttrEnforcementAttestedBy  = "enforcement_attested_by"
+	AttrEnforcementAttestation = "enforcement_attestation"
+	// AttrEnforcementMechanism* name what was ACTUALLY done on the target, in
+	// this repository's words rather than the contract's. The rung vocabulary
+	// is named after guarantees so an operator need not know what rbash is;
+	// these two are for the operator who does, and for the reviewer asking
+	// whether the guarantee was delivered by what they think it was.
+	AttrEnforcementMechanismExec  = "enforcement_mechanism_execution"
+	AttrEnforcementMechanismReach = "enforcement_mechanism_reach"
+	// AttrEnforcementCaveat is what the rung is actually enforcing where that
+	// is narrower or coarser than the guarantee's name — a vendor profile that
+	// groups a shell escape in with diagnostics, an allow-list naming an
+	// interpreter. PLAN §6.5: a record that names only the guarantee cannot
+	// answer the question anybody asks of it afterwards.
+	AttrEnforcementCaveat = "enforcement_caveat"
 	AttrPermittedChannels = "permitted_channels" //
 
 	// Channels, requests, and forwarding.

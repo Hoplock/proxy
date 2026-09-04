@@ -207,3 +207,81 @@ func TestSelectorNeedsAProxyIDForEphemeral(t *testing.T) {
 		t.Error("the ephemeral method was built without a proxy id")
 	}
 }
+
+// TestAMethodThatProvisionsNothingCarriesOnlyAnAttestedRung is the out-of-scope
+// half of phase 0019 stated as a test (PLAN §6.5, D6a).
+//
+// A brokered-key target is unmodifiable by definition, so an APPLIED rung on it
+// is a contract violation and is refused before the method runs. An ATTESTED
+// rung is the point of having the distinction: the session runs, nothing is
+// provisioned, and the record carries the rung rather than "none".
+func TestAMethodThatProvisionsNothingCarriesOnlyAnAttestedRung(t *testing.T) {
+	brokered := &recordingAuth{name: MethodBrokeredKey}
+	sel, err := NewSelector(map[string]TargetAuthenticator{MethodBrokeredKey: brokered}, MethodBrokeredKey, nil)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	ctx := context.Background()
+	id := &identity.Identity{Subject: "u-1", Login: "alice"}
+	route := &control.TargetAuth{Method: control.TargetAuthBrokeredKey}
+
+	t.Run("an attested rung runs and is recorded", func(t *testing.T) {
+		brokered.calls = 0
+		access, err := sel.Provision(ctx, id, Target{
+			Host: "appliance", Port: 22, Auth: route,
+			Enforcement: &Enforcement{
+				Execution: control.ExecutionPlatformAttested,
+				Reach:     control.ReachPlatformAttested,
+				Attestation: &control.Attestation{
+					AssertedBy: "network-engineering",
+					Reference:  "baseline/edge@v3",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Provision: %v", err)
+		}
+		e := access.Enforcement
+		switch {
+		case e == nil:
+			t.Fatal("no enforcement was recorded")
+		case e.Execution != control.ExecutionPlatformAttested || e.Reach != control.ReachPlatformAttested:
+			t.Errorf("rungs = %s/%s, want the attested pair", e.Execution, e.Reach)
+		case e.Verified:
+			t.Error("an attested rung is not verified by this system, and the record must say so")
+		case e.AttestedBy != "network-engineering":
+			t.Errorf("attested_by = %q, want the route's attestation", e.AttestedBy)
+		}
+	})
+
+	t.Run("an applied rung is refused before the method runs", func(t *testing.T) {
+		brokered.calls = 0
+		_, err := sel.Provision(ctx, id, Target{
+			Host: "appliance", Port: 22, Auth: route,
+			Enforcement: &Enforcement{
+				Execution:      control.ExecutionAccountRestricted,
+				RestrictedExec: &control.RestrictedExecPolicy{Commands: []control.RestrictedCommand{{Executable: "cat"}}},
+			},
+		})
+		if !errors.Is(err, ErrRungUnavailable) {
+			t.Fatalf("Provision error = %v, want ErrRungUnavailable", err)
+		}
+		if brokered.calls != 0 {
+			t.Error("the credential method ran for a route whose rung it can never carry")
+		}
+	})
+}
+
+// recordingAuth is a credential method that provisions nothing and counts its
+// calls.
+type recordingAuth struct {
+	name  string
+	calls int
+}
+
+func (a *recordingAuth) Name() string { return a.name }
+
+func (a *recordingAuth) Provision(context.Context, *identity.Identity, Target) (*ProvisionedAccess, error) {
+	a.calls++
+	return &ProvisionedAccess{ClientConfig: &ssh.ClientConfig{User: "netadmin"}}, nil
+}

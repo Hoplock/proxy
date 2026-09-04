@@ -62,6 +62,15 @@ type Target struct {
 	// by the Selector and read for the audit record: D14 makes the rung in
 	// force an audit fact, and the user is told nothing about it.
 	Rung int
+	// Enforcement is WHERE this route's policy is enforced, on each of the two
+	// axes (contract v4, PLAN §6.5, phase 0019), together with the allow-list
+	// an execution rung renders.
+	//
+	// It travels on the target for the reason Auth does: the server decides it
+	// per route, and rendering it is something only the party that provisions
+	// the account can do. Nil means both axes take their absent-value default —
+	// proxy-side enforcement only, which is exactly a v3 server's behaviour.
+	Enforcement *Enforcement
 }
 
 // Addr is the "host:port" to dial.
@@ -114,6 +123,11 @@ type ProvisionedAccess struct {
 	// tells an honest user nothing they can act on (D14).
 	Method string
 	Rung   int
+	// Enforcement is what was ACTUALLY rendered on the target, never what the
+	// route asked for (PLAN §6.5, phase 0019). Nil means the provisioner did
+	// not answer, and the Selector fills it in from the method's own
+	// capabilities rather than leaving the audit record silent.
+	Enforcement *EnforcementResult
 
 	once sync.Once
 	err  error

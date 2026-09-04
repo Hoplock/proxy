@@ -167,6 +167,19 @@ func CheckShipped(r *Registry) error {
 					"session it serves",
 				d.Platform())
 		}
+		if caps.AuthorizesCommands() && strings.TrimSpace(caps.AuthorizationCaveat) == "" {
+			return fmt.Errorf(
+				"auth/target/device: shipped driver %q declares CommandAuthorization with no "+
+					"AuthorizationCaveat, which a Hoplock driver may not (D13, PLAN §6.5): the "+
+					"declaration is what makes control.ExecutionPlatformAuthorized satisfiable, and "+
+					"that rung's whole failure mode is the VENDOR'S GROUPING — vendor RBAC is coarse "+
+					"and named, so a profile permitting diagnostics may include a command with a "+
+					"shell escape and one permitting read-only may still include a configuration "+
+					"write on some releases. A shipped driver must therefore say how its authorizer "+
+					"leaks, so the provisioner can put what the rung is ACTUALLY enforcing on the "+
+					"session's audit record rather than the name of the guarantee it was asked for",
+				d.Platform())
+		}
 		if caps.PersistsAcrossReload && strings.TrimSpace(caps.PersistenceReason) == "" {
 			return fmt.Errorf(
 				"auth/target/device: shipped driver %q declares PersistsAcrossReload with no "+

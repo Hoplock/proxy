@@ -193,8 +193,18 @@ auth:
       shell: "sh -c"
       # Parent directory of ephemeral home directories.
       home_base: "/home"
-      # Login shell given to ephemeral accounts.
+      # Login shell given to ephemeral accounts. A session whose route names an
+      # enforcement rung that renders a command dispatcher gets the dispatcher
+      # as its login shell instead (docs/PLAN.md §6.5), so this is the shell for
+      # the sessions no rung confines.
       target_shell: "/bin/sh"
+      # Parent directory of the per-account confinement material an enforcement
+      # rung renders on the target: the command dispatcher and the curated PATH
+      # directory. It is deliberately OUTSIDE the account's home — under the
+      # `account-confined` rung the home is mounted noexec, so a dispatcher
+      # living in it could not be executed, and one the account could write
+      # would not be an allow-list.
+      enforcement_base: "/var/lib/hoplock"
       # Write OpenSSH's expiry-time restriction into the ephemeral
       # authorized_keys entry when a route asks for a lifetime. Set it to false
       # only for a fleet whose sshd predates 8.2: a route that then asks for a

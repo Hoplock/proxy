@@ -317,7 +317,9 @@ func TestEphemeralToleratesALeftoverAccount(t *testing.T) {
 	// Force the collision the random token normally makes impossible.
 	name := auth.prefix + "alice-deadbeef"
 	h.addAccount(t, name, time.Hour)
-	script, err := auth.provisionScript(name, h.homeFor(name), "ssh-ed25519 AAAAnew")
+	script, err := auth.provisionScript(
+		&confinement{principal: name, home: h.homeFor(name), base: auth.enforceBase},
+		"ssh-ed25519 AAAAnew")
 	if err != nil {
 		t.Fatalf("provisionScript: %v", err)
 	}

@@ -99,6 +99,23 @@ type orphan struct {
 	principal string
 	home      string
 	age       time.Duration
+	// residue says this candidate was found by its ENFORCEMENT ARTEFACTS rather
+	// than by an account — a mounted home, a packet-filter rule, or a
+	// confinement directory whose account no longer exists (phase 0019).
+	//
+	// It is not subject to the grace period, and that is safe for one reason
+	// only: the provisioning script creates the ACCOUNT FIRST, so an artefact
+	// with no account can never be a session mid-provision. It can only be a
+	// session that died mid-rung, which is exactly what has to be swept — a
+	// rule that outlives its account attaches to whoever gets that uid next.
+	residue bool
+	// kinds names what was found, for the log line. An operator reading that a
+	// sweep removed something wants to know what was left behind.
+	kinds []string
+	// created and hasAccount are the discovery script's raw answers, resolved
+	// into age once the target's clock is known.
+	created    int64
+	hasAccount bool
 }
 
 func newReaper(auth *EphemeralAuthenticator, interval, grace time.Duration) *Reaper {
@@ -227,8 +244,15 @@ func (r *Reaper) Sweep(ctx context.Context, tgt Target) ([]string, error) {
 	var removed []string
 	var failures []string
 	for _, cand := range r.parseDiscovery(out) {
-		if r.isLive(tgt, cand.principal) || cand.age < r.grace {
+		if r.isLive(tgt, cand.principal) {
 			continue
+		}
+		if !cand.residue && cand.age < r.grace {
+			continue
+		}
+		if cand.residue {
+			r.auth.logf("auth/target: ephemeral-user found enforcement residue for %s on %s (%s) with no account; removing it",
+				cand.principal, tgt, strings.Join(cand.kinds, ", "))
 		}
 		script, err := r.auth.teardownScript(cand.principal, cand.home)
 		if err != nil {
@@ -260,7 +284,8 @@ func (r *Reaper) Sweep(ctx context.Context, tgt Target) ([]string, error) {
 // measured across it would either protect nothing or protect forever.
 func (r *Reaper) parseDiscovery(out []byte) []orphan {
 	now := r.auth.now().Unix()
-	var orphans []orphan
+	byName := map[string]*orphan{}
+	var order []string
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Split(strings.TrimRight(line, "\r"), "\t")
 		if len(fields) < 2 {
@@ -270,6 +295,27 @@ func (r *Reaper) parseDiscovery(out []byte) []orphan {
 			if ts, err := strconv.ParseInt(fields[1], 10, 64); err == nil && ts > 0 {
 				now = ts
 			}
+			continue
+		}
+		if fields[0] == "residue" {
+			// An artefact of an enforcement rung. It is recorded against the
+			// principal it names; whether that principal also has an account
+			// decides how it is aged, and merging here is what makes a live
+			// session's artefacts inherit the account's protection.
+			name, kind := fields[1], ""
+			if len(fields) > 2 {
+				kind = fields[2]
+			}
+			if !strings.HasPrefix(name, r.auth.prefix) || validatePrincipal(name) != nil {
+				continue
+			}
+			cand, ok := byName[name]
+			if !ok {
+				cand = &orphan{principal: name, home: r.auth.homeFor(name), residue: true}
+				byName[name] = cand
+				order = append(order, name)
+			}
+			cand.kinds = append(cand.kinds, kind)
 			continue
 		}
 		if !strings.HasPrefix(fields[0], r.auth.prefix) {
@@ -289,8 +335,28 @@ func (r *Reaper) parseDiscovery(out []byte) []orphan {
 		if len(fields) > 2 && validatePath(fields[2]) == nil {
 			home = fields[2]
 		}
-		age := time.Duration(now-created) * time.Second
-		orphans = append(orphans, orphan{principal: fields[0], home: home, age: age})
+		cand, ok := byName[fields[0]]
+		if !ok {
+			cand = &orphan{principal: fields[0]}
+			byName[fields[0]] = cand
+			order = append(order, fields[0])
+		}
+		// An account exists, so this candidate is aged like any other and the
+		// grace period protects it — including when a residue line named it
+		// first.
+		cand.home = home
+		cand.residue = false
+		cand.created = created
+		cand.hasAccount = true
+	}
+
+	orphans := make([]orphan, 0, len(order))
+	for _, name := range order {
+		cand := byName[name]
+		if cand.hasAccount {
+			cand.age = time.Duration(now-cand.created) * time.Second
+		}
+		orphans = append(orphans, *cand)
 	}
 	return orphans
 }

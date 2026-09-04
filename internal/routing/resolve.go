@@ -85,6 +85,11 @@ type Route struct {
 	// Filter is the command filter policy enforced by phase 0010, including
 	// which exec tier applies (D12).
 	Filter control.FilterPolicy
+	// Enforcement is WHERE this route's policy is enforced, on each of the two
+	// axes (contract v4, PLAN §6.5, rendered by phase 0019). Nil means both
+	// axes take their absent-value default: the proxy decides at the exec
+	// request, and forwarding policy covers SSH channels only.
+	Enforcement *control.EnforcementPolicy
 	// Hop carries the chaining constraints of a next-hop route, connection
 	// direction included (D11, phase 0008).
 	Hop *control.HopMetadata
@@ -183,6 +188,18 @@ func (r *Route) ForwardDestinations(channelType string) ([]control.ForwardDestin
 	return r.PermittedForwards.Destinations(channelType)
 }
 
+// EnforcedExecution reports the execution rung in force for this route (PLAN
+// §6.5), resolving the absent-value default. Callers must read the rung through
+// this rather than off the field: an absent enforcement object is a v3 server
+// saying "proxy-inspected", not a server saying nothing.
+func (r *Route) EnforcedExecution() control.ExecutionRung {
+	return r.Enforcement.ExecutionRung()
+}
+
+// EnforcedReach reports the reach rung in force for this route, on the same
+// rule.
+func (r *Route) EnforcedReach() control.ReachRung { return r.Enforcement.ReachRung() }
+
 // ExecMode reports which tier decides an exec request on this connection (D12,
 // enforced by phase 0010), resolving the absent-value default to
 // control.ExecModeFiltered.
@@ -200,6 +217,15 @@ type ResolverOptions struct {
 	// DefaultTargetPort is used when the server's route names no port. Zero
 	// means DefaultTargetPort.
 	DefaultTargetPort int
+	// Capabilities are the enforcement rungs this PROXY BUILD can provide at
+	// all (contract v4, PLAN §6.5). They ride on every authorize request beside
+	// policy_version, so a server never chooses a rung this software cannot
+	// render. Nil declares nothing, which is the fail-safe answer.
+	//
+	// It is only half the answer: what a TARGET can take is discovered by
+	// probing it and reported separately (control.CapabilityReporter), because
+	// authorize happens before the proxy has ever touched the target.
+	Capabilities *control.ProxyCapabilities
 	// Logger receives route decisions; nil discards them.
 	Logger *log.Logger
 }
@@ -210,6 +236,7 @@ type ResolverOptions struct {
 type Resolver struct {
 	client      control.Client
 	defaultPort int
+	caps        *control.ProxyCapabilities
 	logger      *log.Logger
 }
 
@@ -221,6 +248,7 @@ func NewResolver(opts ResolverOptions) (*Resolver, error) {
 	r := &Resolver{
 		client:      opts.Client,
 		defaultPort: opts.DefaultTargetPort,
+		caps:        opts.Capabilities.Clone(),
 		logger:      opts.Logger,
 	}
 	if r.defaultPort <= 0 {
@@ -249,6 +277,10 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		Target:     req.Target,
 		AuthMethod: req.Identity.Method.WireMethod(),
 		Conn:       req.Conn,
+		// Cloned per request: the response cache hands decisions to other
+		// sessions, and a slice shared with one of them is a slice another
+		// session could rewrite.
+		Capabilities: r.caps.Clone(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("authorize: %w", err)
@@ -271,6 +303,7 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		TargetAuth:              resp.TargetAuth.Clone(),
 		TargetAuthLadder:        resp.TargetAuthLadder.Clone(),
 		Filter:                  resp.FilterPolicy.Clone(),
+		Enforcement:             resp.Enforcement.Clone(),
 		Hop:                     resp.Hop.Clone(),
 		DecisionID:              resp.DecisionID,
 	}
@@ -291,9 +324,10 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		route.Port = r.defaultPort
 	}
 
-	r.logf("routing: session=%s subject=%s target=%s route=%s permissions=%s channels=%v exec=%s hop=%s decision=%s",
+	r.logf("routing: session=%s subject=%s target=%s route=%s permissions=%s channels=%v exec=%s enforcement=%s/%s hop=%s decision=%s",
 		req.Conn.SessionID, req.Identity.Subject, req.Target, route.Type,
 		route.Permissions, route.PermittedChannels, route.ExecMode(),
+		route.EnforcedExecution(), route.EnforcedReach(),
 		route.HopDirection(), route.DecisionID)
 	return route, nil
 }

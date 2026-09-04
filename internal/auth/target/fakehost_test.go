@@ -41,6 +41,9 @@ type fakeHost struct {
 	home   string
 	passwd string
 	log    string
+	mounts string
+	rules4 string
+	rules6 string
 	target *sshtest.Target
 
 	mu       sync.Mutex
@@ -71,6 +74,9 @@ func startFakeHost(t *testing.T) *fakeHost {
 		home:   filepath.Join(root, "home"),
 		passwd: filepath.Join(root, "passwd"),
 		log:    filepath.Join(root, "commands.log"),
+		mounts: filepath.Join(root, "mounts"),
+		rules4: filepath.Join(root, "rules4"),
+		rules6: filepath.Join(root, "rules6"),
 		env:    map[string]string{},
 	}
 	for _, dir := range []string{h.bin, h.home} {
@@ -107,6 +113,9 @@ func (h *fakeHost) exec(command string) (stdout, stderr []byte, status uint32) {
 		"FAKEHOST_PASSWD=" + h.passwd,
 		"FAKEHOST_HOME=" + h.home,
 		"FAKEHOST_LOG=" + h.log,
+		"FAKEHOST_MOUNTS=" + h.mounts,
+		"FAKEHOST_RULES4=" + h.rules4,
+		"FAKEHOST_RULES6=" + h.rules6,
 	}
 	for k, v := range h.env {
 		env = append(env, k+"="+v)
@@ -222,6 +231,101 @@ func (h *fakeHost) backdate(t *testing.T, home string, age time.Duration) {
 // homeFor is where the fake host keeps an account's home directory.
 func (h *fakeHost) homeFor(name string) string { return filepath.Join(h.home, name) }
 
+// run executes one command on the fake host, for a test that needs to change
+// the host BEHIND the proxy's back — the crash case, where something other than
+// this process removed an account and left a rung's state behind.
+func (h *fakeHost) run(t *testing.T, command string) ([]byte, error) {
+	t.Helper()
+	stdout, stderr, status := h.exec(command)
+	if status != 0 {
+		return stdout, fmt.Errorf("%q: exit %d: %s", command, status, stderr)
+	}
+	return stdout, nil
+}
+
+// breakCommand replaces one of the fake commands with one that always fails,
+// which is how a test says "this target cannot do that".
+//
+// It REPLACES rather than removes, deliberately. Deleting the fake would expose
+// whatever the machine running the tests happens to have on its own PATH — and
+// a probe that then really installed a packet filter rule would be a unit test
+// editing the firewall of whoever ran it.
+func (h *fakeHost) breakCommand(t *testing.T, name string) {
+	t.Helper()
+	body := "#!/bin/sh\necho \"" + name + " $* (broken)\" >> \"$FAKEHOST_LOG\"\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o755); err != nil {
+		t.Fatalf("break the fake %s: %v", name, err)
+	}
+}
+
+// rules are the packet-filter rules the host currently holds, per family.
+func (h *fakeHost) rules(t *testing.T, v6 bool) []string {
+	t.Helper()
+	path := h.rules4
+	if v6 {
+		path = h.rules6
+	}
+	return h.lines(t, path)
+}
+
+// mountPoints are the mount points the host currently holds.
+func (h *fakeHost) mountPoints(t *testing.T) []string {
+	t.Helper()
+	var points []string
+	for _, line := range h.lines(t, h.mounts) {
+		fields := strings.Fields(line)
+		for i := 0; i < len(fields)-1; i++ {
+			if fields[i] == "on" {
+				points = append(points, fields[i+1])
+				break
+			}
+		}
+	}
+	return points
+}
+
+// commandLog is every command the fake host's replacements have run, in order.
+// It is what a test asserts teardown ORDERING against: a rule removed after its
+// account is a rule attached to whoever gets that uid next.
+func (h *fakeHost) commandLog(t *testing.T) []string {
+	t.Helper()
+	return h.lines(t, h.log)
+}
+
+func (h *fakeHost) lines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// shellFor is the login shell the fake passwd database holds for an account.
+func (h *fakeHost) shellFor(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(h.passwd)
+	if err != nil {
+		t.Fatalf("read passwd: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 7 && fields[0] == name {
+			return fields[6]
+		}
+	}
+	return ""
+}
+
 // authorizedKeys reads an account's authorized_keys file.
 func (h *fakeHost) authorizedKeys(t *testing.T, name string) string {
 	t.Helper()
@@ -326,4 +430,117 @@ exit 1
 echo "chown $*" >> "$FAKEHOST_LOG"
 exit 0
 `,
+	// The six commands phase 0019's enforcement rungs reach for. Each one is a
+	// working model rather than a stub: the mounts file, the two rule files and
+	// the passwd shell field are all really changed, so a test can ask whether
+	// teardown removed a rule rather than whether this package sent a string
+	// that looks like a removal.
+	"usermod": `#!/bin/sh
+echo "usermod $*" >> "$FAKEHOST_LOG"
+shell=""; name=""
+while [ $# -gt 0 ]; do case "$1" in -s) shell=$2; shift ;; *) name=$1 ;; esac; shift; done
+grep -q "^$name:" "$FAKEHOST_PASSWD" || exit 6
+awk -F: -v OFS=: -v n="$name" -v s="$shell" '$1==n {$7=s} {print}' "$FAKEHOST_PASSWD" > "$FAKEHOST_PASSWD.tmp"
+mv "$FAKEHOST_PASSWD.tmp" "$FAKEHOST_PASSWD"
+exit 0
+`,
+	"mount": `#!/bin/sh
+echo "mount $*" >> "$FAKEHOST_LOG"
+f=$FAKEHOST_MOUNTS
+[ -f "$f" ] || : > "$f"
+if [ "$#" -eq 0 ]; then cat "$f"; exit 0; fi
+[ -z "$FAKEHOST_MOUNT_FAILS" ] || { echo "mount: operation not permitted (simulated)" >&2; exit 32; }
+bind=0; opts=""; args=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bind) bind=1 ;;
+    -o) opts=$2; shift ;;
+    *) args="$args $1" ;;
+  esac
+  shift
+done
+# shellcheck disable=SC2086
+set -- $args
+if [ "$bind" = 1 ]; then
+  printf 'hoplock-bind on %s type none (rw)\n' "$2" >> "$f"
+  exit 0
+fi
+case "$opts" in
+  *remount*)
+    grep -q " on $1 type" "$f" || { echo "mount: $1 is not mounted" >&2; exit 32; }
+    awk -v t="$1" -v o="$opts" 'index($0, " on " t " type") { print "hoplock-bind on " t " type none (" o ")"; next } { print }' "$f" > "$f.tmp"
+    mv "$f.tmp" "$f"
+    exit 0 ;;
+esac
+exit 0
+`,
+	"umount": `#!/bin/sh
+echo "umount $*" >> "$FAKEHOST_LOG"
+f=$FAKEHOST_MOUNTS
+[ -f "$f" ] || : > "$f"
+t=""
+for a in "$@"; do case "$a" in -*) ;; *) t=$a ;; esac; done
+grep -q " on $t type" "$f" || exit 1
+awk -v t="$t" '!index($0, " on " t " type")' "$f" > "$f.tmp"
+mv "$f.tmp" "$f"
+exit 0
+`,
+	"iptables":  fakeNetfilter("FAKEHOST_RULES4"),
+	"ip6tables": fakeNetfilter("FAKEHOST_RULES6"),
+	"setpriv": `#!/bin/sh
+echo "setpriv $*" >> "$FAKEHOST_LOG"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-new-privs) ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+  shift
+done
+[ "$#" -gt 0 ] || exit 1
+exec "$@"
+`,
+	"sshd": `#!/bin/sh
+echo "sshd $*" >> "$FAKEHOST_LOG"
+case "${1-}" in
+  -V) echo "${FAKEHOST_SSHD_VERSION:-OpenSSH_9.2p1 Debian-2+deb12u2, OpenSSL 3.0.11}" >&2; exit 0 ;;
+  -T) echo "pubkeyauthentication ${FAKEHOST_SSHD_PUBKEY:-yes}"; exit 0 ;;
+esac
+exit 0
+`,
+}
+
+// fakeNetfilter is a working iptables over a text file: append, delete by line
+// number or by rule, list with line numbers, and dump.
+//
+// It exists because the uid hazard PLAN §6.5 records — a rule that outlives its
+// account attaches to whoever gets that uid next — is only testable against
+// something that really holds rules and really removes them. The fake useradd
+// hands out the same uid every time, which makes the reuse case the DEFAULT
+// here rather than something a test has to contrive.
+func fakeNetfilter(file string) string {
+	return `#!/bin/sh
+echo "` + file + ` $*" >> "$FAKEHOST_LOG"
+f=$` + file + `
+[ -f "$f" ] || : > "$f"
+case "${1-}" in
+  -A) shift; chain=$1; shift; printf '%s\n' "-A $chain $*" >> "$f"; exit 0 ;;
+  -D)
+    [ -z "$FAKEHOST_RULE_DELETE_FAILS" ] || exit 0
+    shift; chain=$1; shift
+    if [ "$#" -eq 1 ] && [ "$1" -eq "$1" ] 2>/dev/null; then
+      awk -v n="$1" 'NR != n' "$f" > "$f.tmp"
+    else
+      awk -v r="-A $chain $*" '$0 != r' "$f" > "$f.tmp"
+    fi
+    mv "$f.tmp" "$f"
+    exit 0 ;;
+  -L)
+    i=0
+    while IFS= read -r l; do i=$((i + 1)); printf '%s %s\n' "$i" "$l"; done < "$f"
+    exit 0 ;;
+  -S) cat "$f"; exit 0 ;;
+esac
+exit 0
+`
 }
