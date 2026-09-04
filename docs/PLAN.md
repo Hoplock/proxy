@@ -1782,6 +1782,14 @@ leaves the host. `account-egress-restricted` permits loopback only if the policy
 names it — which is faithful to its sentence and is a real operational
 constraint: a session that needs a local resolver must have one named.
 
+**A containerised target needs one thing a host does not.** Docker's default
+AppArmor profile denies `mount` outright, before capabilities are consulted, so
+`CAP_SYS_ADMIN` is necessary and not sufficient for the filesystem half of
+`account-confined`. It is recorded here rather than only in `deploy/` because
+the estates this product is sold into increasingly *are* containers, and the
+symptom — a probe reporting `bind_mount=no` on a target that plainly has
+`mount` — reads as a proxy bug rather than a host policy.
+
 **What each rung needs of the target, and how the proxy finds out.** Every one of
 these is *measured* rather than inferred from a version number, over the
 management login, before anything is created: the probe installs and removes a

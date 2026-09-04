@@ -112,6 +112,15 @@ rule rather than to a search.
   session executing what it wrote. The container has its own network namespace,
   so the rules it installs are its own.
 
+  **`SYS_ADMIN` alone is not enough**, and this is the one that costs an
+  afternoon: Docker's default AppArmor profile carries a bare `deny mount,`,
+  checked before capabilities, so a container with `CAP_SYS_ADMIN` still cannot
+  bind-mount. Hence `security_opt: apparmor:unconfined` on the same service.
+  Without it the probe reports `bind_mount=no` and `account-confined` is
+  unavailable — the proxy behaving exactly as designed while the topology fails
+  to offer the rung, which is a confusing pair to debug from the failing
+  scenario alone.
+
   Take them away and nothing breaks quietly: the proxy's capability probe
   reports the rungs as unavailable and a route naming one is refused as an
   outage, which is the behaviour the `target-side enforcement` scenarios assert

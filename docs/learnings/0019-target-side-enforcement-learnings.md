@@ -48,8 +48,10 @@
 - **Gotchas:** teardown order is a guarantee, not tidiness — key, processes,
   **rules before the account**, mount before the home; a `case` pattern in POSIX
   `sh` is a WORD, so the blanks in the dispatcher's character set are
-  backslash-escaped or `dash` refuses the script outright; `iptables`/`mount`
-  need `NET_ADMIN`/`SYS_ADMIN` in a container.
+  backslash-escaped or `dash` refuses the script outright; in a container the
+  packet filter needs `NET_ADMIN` and the bind mount needs `SYS_ADMIN` **plus an
+  AppArmor profile that permits `mount`** — Docker's default profile denies it
+  before capabilities are consulted, which CI found on the first e2e run.
 - **What the NEXT session must know:** phase **0024** owns uid allocation and the
   two phases are halves of one fix — read *What a confined account can still
   leave behind* below. Three of 0018's follow-ups (`require_session_capture`,
@@ -132,8 +134,14 @@ worst a stale record can cause is a refused session.
 - an sshd honouring `authorized_keys` options (any OpenSSH; `restrict` needs
   7.2+, older ones get the individual `no-*` options and the same fence);
 - `util-linux`'s `setpriv`, and a kernel/namespace where the provisioning account
-  may bind-mount and remount (in a container: `CAP_SYS_ADMIN`) — for
-  `account-confined`;
+  may bind-mount and remount — for `account-confined`. **In a container that is
+  `CAP_SYS_ADMIN` *and* an AppArmor profile that permits `mount`:** Docker's
+  default profile carries a bare `deny mount,` which is checked before
+  capabilities, so a container with the capability still gets `EPERM`. CI found
+  this on the first e2e run (`bind_mount=no` with every other probe key `yes`)
+  and `deploy/compose.yaml` now sets `security_opt: apparmor:unconfined` on the
+  target node. The symptom is worth remembering because it reads as a proxy bug:
+  the refusal is the rung behaving exactly as designed;
 - `iptables` **and** `ip6tables` with the `owner` and `comment` matches, and the
   privilege to install rules (in a container: `CAP_NET_ADMIN`) — for either reach
   rung. Both families are required for both rungs;

@@ -489,13 +489,30 @@ func testEnforcement(t *testing.T) {
 	// here worse than not shipping the feature, so this asserts against what
 	// the target was actually made to do above rather than against the route.
 	t.Run("the audit record names the rung in force on each axis", func(t *testing.T) {
+		wanted := []string{"account-restricted", "account-confined", "platform-attested"}
 		var logs debugLogs
-		waitFor(t, "the enforcement records to reach Hoplock Control", func() bool {
+		missing := func() []string {
+			var absent []string
+			for _, rung := range wanted {
+				if enforcementRecord(logs, rung) == nil {
+					absent = append(absent, rung)
+				}
+			}
+			return absent
+		}
+		// The wait names WHICH rung is missing rather than timing out on "the
+		// records". A rung that never reached a record is usually a rung the
+		// target refused, and the refusal says why — but only if the failure
+		// points at it.
+		waitFor(t, "the enforcement records to reach Hoplock Control (missing so far: "+
+			strings.Join(wanted, ", ")+")", func() bool {
 			logs = fetchLogs(t)
-			return enforcementRecord(logs, "account-restricted") != nil &&
-				enforcementRecord(logs, "account-confined") != nil &&
-				enforcementRecord(logs, "platform-attested") != nil
+			return len(missing()) == 0
 		})
+		if absent := missing(); len(absent) > 0 {
+			t.Fatalf("no enforcement record names %s; a rung that produced no record is usually one the target refused, and the proxy's log says why",
+				strings.Join(absent, ", "))
+		}
 
 		restricted := enforcementRecord(logs, "account-restricted")
 		if got := restricted.Attributes["enforcement_reach"]; got != "account-egress-restricted" {

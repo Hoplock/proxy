@@ -26,3 +26,17 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
+    # Docker's DEFAULT APPARMOR PROFILE denies `mount` outright — `deny mount,`
+    # is a line in `docker-default`, and it is checked before capabilities, so
+    # CAP_SYS_ADMIN above is necessary and not sufficient. Without this the
+    # capability probe reports `bind_mount=no`, the `account-confined` rung is
+    # unavailable, and every route naming it is refused as an outage. That is the
+    # rung behaving correctly and the topology failing to offer it, which is a
+    # confusing pair to debug: the proxy is right and the container is wrong.
+    #
+    # It is scoped to the target node, which is the only one that mounts
+    # anything. A real fleet does not have this problem — a host is not inside a
+    # container — but a containerised target does, and it is a genuine
+    # prerequisite rather than a test-rig quirk: `docs/PLAN.md` §6.5 lists it.
+    security_opt:
+      - apparmor:unconfined
