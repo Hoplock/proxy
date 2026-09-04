@@ -294,15 +294,21 @@ func nssPasswdBackend() string {
 	return "unknown"
 }
 
-// diagnoseSaturation names what stopped the sweep going faster. It reasons from
-// the measured shape rather than guessing: perfect scaling means nothing
-// serialised; a flat throughput curve with rising per-cycle latency is a lock.
+// diagnoseSaturation names what stopped the sweep going faster.
+//
+// It reads the SHAPE of the curve rather than one ratio. A peak-versus-serial
+// number cannot tell a lock from a partly parallel workload: 1.5x could be
+// either. What distinguishes them is that a lock makes throughput flat and
+// latency linear — every added provisioner joins a queue and gets nothing —
+// while a resource under contention keeps buying something as it is added.
 func diagnoseSaturation(res *ProvisioningResult) string {
-	if len(res.Levels) < 2 {
+	levels := res.Levels
+	if len(levels) < 2 {
 		return "not established: the sweep had fewer than two levels"
 	}
-	var serial, best ProvisioningLevel
-	for _, l := range res.Levels {
+	var serial ProvisioningLevel
+	best := levels[0]
+	for _, l := range levels {
 		if l.Concurrency == 1 {
 			serial = l
 		}
@@ -313,24 +319,37 @@ func diagnoseSaturation(res *ProvisioningResult) string {
 	if serial.PerSec == 0 {
 		return "not established: no serial level in the sweep"
 	}
+	top := levels[len(levels)-1]
 	gain := best.PerSec / serial.PerSec
-	switch {
-	case gain < 1.25:
-		return fmt.Sprintf(
-			"the target's account-database lock: %d concurrent provisioners reached only %.2fx the serial "+
-				"rate while mean cycle latency rose from %.0fms to %.0fms — the work is serialised, "+
-				"not queued behind a resource that more of would relieve",
-			best.Concurrency, gain, serial.Cost.TotalMeanMS, best.Cost.TotalMeanMS)
-	case gain < float64(best.Concurrency)*0.5:
-		return fmt.Sprintf(
-			"partial serialisation: %d concurrent provisioners reached %.2fx the serial rate "+
-				"(perfect scaling would be %dx), so part of the cycle takes the account-database lock "+
-				"and part does not",
-			best.Concurrency, gain, best.Concurrency)
-	default:
+
+	// The knee is the LOWEST concurrency that already reaches the sweep's best
+	// rate. Everything above it bought nothing.
+	knee := best
+	for _, l := range levels {
+		if l.PerSec >= 0.95*best.PerSec && l.Concurrency < knee.Concurrency {
+			knee = l
+		}
+	}
+
+	if gain >= 0.5*float64(top.Concurrency) {
 		return fmt.Sprintf(
 			"nothing serialised within the levels swept: %d concurrent provisioners reached %.2fx "+
 				"the serial rate, so the ceiling is above this sweep",
 			best.Concurrency, gain)
 	}
+	if knee.Concurrency < top.Concurrency && top.PerSec >= 0.85*best.PerSec {
+		return fmt.Sprintf(
+			"the target's account-database lock. Throughput plateaus at ~%.1f cycles/s from "+
+				"concurrency %d and has not moved by %d, while mean cycle latency rises %.0fms → "+
+				"%.0fms — flat throughput with latency linear in concurrency is a queue in front of "+
+				"a lock, not a resource that more of would relieve. Only %.2fx of the serial rate "+
+				"(%.1f/s) is recoverable by adding provisioners",
+			best.PerSec, knee.Concurrency, top.Concurrency,
+			serial.Cost.TotalMeanMS, top.Cost.TotalMeanMS, gain, serial.PerSec)
+	}
+	return fmt.Sprintf(
+		"partial serialisation: %d concurrent provisioners reached %.2fx the serial rate "+
+			"(perfect scaling would be %dx), and the curve had not flattened by the top of the "+
+			"sweep — extend it before calling this a ceiling",
+		best.Concurrency, gain, best.Concurrency)
 }

@@ -100,13 +100,24 @@ func TestSaturationNamesControlLatency(t *testing.T) {
 }
 
 func TestProvisioningSaturationReadsTheCurve(t *testing.T) {
-	serialised := &ProvisioningResult{Levels: []ProvisioningLevel{
-		{Concurrency: 1, PerSec: 30, Cost: StageCost{TotalMeanMS: 33}},
-		{Concurrency: 8, PerSec: 33, Cost: StageCost{TotalMeanMS: 240}},
+	// Flat throughput from a low concurrency, with latency rising roughly
+	// linearly, is a queue in front of a lock. A peak-versus-serial ratio
+	// alone cannot say that: 1.5x could equally be a partly parallel workload,
+	// which is why the diagnosis looks for the plateau.
+	locked := &ProvisioningResult{Levels: []ProvisioningLevel{
+		{Concurrency: 1, PerSec: 38, Cost: StageCost{TotalMeanMS: 26}},
+		{Concurrency: 2, PerSec: 57, Cost: StageCost{TotalMeanMS: 35}},
+		{Concurrency: 8, PerSec: 57, Cost: StageCost{TotalMeanMS: 137}},
+		{Concurrency: 32, PerSec: 57, Cost: StageCost{TotalMeanMS: 513}},
 	}}
-	if got := diagnoseSaturation(serialised); !strings.Contains(got, "account-database lock") {
+	got := diagnoseSaturation(locked)
+	if !strings.Contains(got, "account-database lock") {
 		t.Errorf("diagnosis = %q, want it to name the lock", got)
 	}
+	if !strings.Contains(got, "concurrency 2") {
+		t.Errorf("diagnosis = %q, want it to name where the plateau starts", got)
+	}
+
 	scaling := &ProvisioningResult{Levels: []ProvisioningLevel{
 		{Concurrency: 1, PerSec: 30},
 		{Concurrency: 8, PerSec: 230},
@@ -114,6 +125,19 @@ func TestProvisioningSaturationReadsTheCurve(t *testing.T) {
 	if got := diagnoseSaturation(scaling); !strings.Contains(got, "nothing serialised") {
 		t.Errorf("diagnosis = %q, want it to say the ceiling is above the sweep", got)
 	}
+
+	// Still climbing at the top of the sweep: that is not a ceiling yet, and
+	// calling it one would put a number in docs/PLAN.md that the next level
+	// would have moved.
+	climbing := &ProvisioningResult{Levels: []ProvisioningLevel{
+		{Concurrency: 1, PerSec: 30, Cost: StageCost{TotalMeanMS: 33}},
+		{Concurrency: 4, PerSec: 60, Cost: StageCost{TotalMeanMS: 66}},
+		{Concurrency: 8, PerSec: 100, Cost: StageCost{TotalMeanMS: 80}},
+	}}
+	if got := diagnoseSaturation(climbing); !strings.Contains(got, "extend it") {
+		t.Errorf("diagnosis = %q, want it to refuse to call a rising curve a ceiling", got)
+	}
+
 	if got := diagnoseSaturation(&ProvisioningResult{}); !strings.Contains(got, "not established") {
 		t.Errorf("diagnosis = %q, want it to refuse an empty sweep", got)
 	}
