@@ -463,13 +463,23 @@ func testEnforcement(t *testing.T) {
 		if sessionIDOf(r) == "" {
 			t.Errorf("the outage does not name a session id\n%s", r)
 		}
-		if after := ephemeralAccountsOn(t); len(after) != len(before) {
-			t.Errorf("the refused session left accounts behind:\nbefore %v\nafter  %v", before, after)
+		// The claim is that the refused session provisioned NOTHING, so the
+		// assertion is that no account appeared — not that the count is
+		// unchanged. A previous scenario's teardown runs concurrently with this
+		// sample and legitimately makes the count fall, which an equality check
+		// reads as a failure. (It did, on the first CI run to get this far.)
+		if appeared := added(before, ephemeralAccountsOn(t)); len(appeared) > 0 {
+			t.Errorf("the refused session left accounts behind: %v", appeared)
 		}
 	})
 
 	t.Run("an attested rung runs, provisions nothing, and is recorded", func(t *testing.T) {
-		const snapshot = "cat /etc/passwd; cat /home/netadmin/.ssh/authorized_keys"
+		// The ephemeral accounts are filtered OUT of the snapshot: they churn
+		// while this scenario runs — a neighbouring session's teardown is
+		// concurrent with both samples — and they are not what this assertion is
+		// about. What it claims is that an attested rung configured nothing:
+		// the pre-existing account and its key are exactly as they were.
+		const snapshot = "grep -v '^hl-' /etc/passwd; cat /home/netadmin/.ssh/authorized_keys"
 		before := execIn(t, nodeTarget, "sh", "-c", snapshot)
 
 		s := svcOn(proxyDirect, "attested.company.com")
@@ -568,6 +578,21 @@ func hostIPFrom(t *testing.T, node, name string) string {
 		t.Fatalf("getent hosts %s returned nothing on %s\n%s", name, node, r)
 	}
 	return fields[0]
+}
+
+// added returns the accounts present in after that were not present in before.
+func added(before, after []string) []string {
+	was := make(map[string]bool, len(before))
+	for _, name := range before {
+		was[name] = true
+	}
+	var appeared []string
+	for _, name := range after {
+		if !was[name] {
+			appeared = append(appeared, name)
+		}
+	}
+	return appeared
 }
 
 // ephemeralAccountsOn lists the accounts this system has created on the target.
