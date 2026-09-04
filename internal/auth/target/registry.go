@@ -13,6 +13,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/target/device"
 	"github.com/hoplock/proxy/internal/auth/target/device/fortios"
 	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // Options are the dependencies every target authenticator shares.
@@ -30,6 +31,11 @@ type Options struct {
 	// on such a platform the mapping event is the only place attribution
 	// exists.
 	Events DeviceEventSink
+	// Reporter records what a target can enforce, so a server never chooses an
+	// enforcement rung the target cannot take (contract v4, PLAN §6.5). Nil
+	// skips reporting; a report GRANTS NOTHING, and every rung is re-checked
+	// against the live target when it is rendered.
+	Reporter control.CapabilityReporter
 }
 
 // NewFromConfig builds the proxy's target credential plane.
@@ -197,14 +203,16 @@ func newEphemeralFromConfig(cfg config.EphemeralUserAuth, opts Options) (*Epheme
 		return nil, err
 	}
 	return NewEphemeralAuthenticator(EphemeralOptions{
-		ProxyID:        opts.ProxyID,
-		Dialer:         dialer,
-		HomeBase:       cfg.HomeBase,
-		TargetShell:    cfg.TargetShell,
-		KeyExpiry:      cfg.EphemeralKeyExpiry(),
-		ReaperInterval: cfg.Reaper.Interval,
-		ReaperGrace:    cfg.Reaper.Grace,
-		Logger:         opts.Logger,
+		ProxyID:         opts.ProxyID,
+		EnforcementBase: cfg.EnforcementBase,
+		Reporter:        opts.Reporter,
+		Dialer:          dialer,
+		HomeBase:        cfg.HomeBase,
+		TargetShell:     cfg.TargetShell,
+		KeyExpiry:       cfg.EphemeralKeyExpiry(),
+		ReaperInterval:  cfg.Reaper.Interval,
+		ReaperGrace:     cfg.Reaper.Grace,
+		Logger:          opts.Logger,
 	})
 }
 

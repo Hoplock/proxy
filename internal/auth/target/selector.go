@@ -205,6 +205,18 @@ func (e *ladderError) Unwrap() []error {
 func (s *Selector) provisionOne(ctx context.Context, id *identity.Identity, tgt Target, method TargetAuthenticator, rung *control.TargetAuth, index int) (*ProvisionedAccess, error) {
 	tgt.Auth = rung
 	tgt.Rung = index
+	// An APPLIED target rung on a method that touches nothing is refused BEFORE
+	// the method runs, so the session is denied with the target exactly as it
+	// was found. The contract's own Validate refuses that combination for a
+	// named ladder (0018), which is why reaching it here means a locally
+	// configured route rather than a served one — and it is still refused,
+	// because serving it would put a rung on the audit record that nothing
+	// applied.
+	if !control.TargetAuthMethod(method.Name()).Provisions() {
+		if _, err := resultForUnprovisioned(tgt.Enforcement, method.Name()); err != nil {
+			return nil, err
+		}
+	}
 	access, err := method.Provision(ctx, id, tgt)
 	if err != nil {
 		return nil, err
@@ -218,6 +230,20 @@ func (s *Selector) provisionOne(ctx context.Context, id *identity.Identity, tgt 
 		}
 		if access.Rung == 0 {
 			access.Rung = index
+		}
+		if access.Enforcement == nil {
+			// A method that rendered nothing still owes the record an answer.
+			// The two proxy-side rungs and an ATTESTED rung are all satisfiable
+			// without touching the target, and the attested one is the point of
+			// having the distinction: the appliance enforces its own roles
+			// already, and the record must say `platform-attested` rather than
+			// "none" (0018).
+			result, err := resultForUnprovisioned(tgt.Enforcement, access.Method)
+			if err != nil {
+				_ = access.Close(ctx)
+				return nil, err
+			}
+			access.Enforcement = result
 		}
 	}
 	if index > 1 {

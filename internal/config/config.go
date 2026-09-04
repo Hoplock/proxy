@@ -369,8 +369,20 @@ type EphemeralUserAuth struct {
 	// means "/home".
 	HomeBase string `yaml:"home_base"`
 	// TargetShell is the login shell given to ephemeral accounts. Empty means
-	// "/bin/sh".
+	// "/bin/sh". A session whose route names an enforcement rung that renders a
+	// command dispatcher gets the dispatcher as its login shell instead, so
+	// this is the shell for the sessions no rung confines (PLAN §6.5).
 	TargetShell string `yaml:"target_shell"`
+	// EnforcementBase is the parent directory of the per-account confinement
+	// material an enforcement rung renders on the target — the command
+	// dispatcher and the curated PATH directory (PLAN §6.5, phase 0019). Empty
+	// means "/var/lib/hoplock".
+	//
+	// It is deliberately OUTSIDE the account's home. Under the
+	// `account-confined` rung the home is mounted noexec, so a dispatcher
+	// living in it could not be executed at all — and a dispatcher the account
+	// could write would not be an allow-list.
+	EnforcementBase string `yaml:"enforcement_base"`
 	// KeyExpiry writes OpenSSH's expiry-time restriction into the ephemeral
 	// authorized_keys entry when a route asks for a lifetime. Defaults to true.
 	// Set it to false only for a fleet whose sshd predates 8.2 — a route that

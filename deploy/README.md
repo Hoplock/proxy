@@ -74,7 +74,7 @@ who has the image — so regenerating never requires a rebuild.
 Each route says which scenarios it backs, so a failing scenario leads to one
 rule rather than to a search.
 
-## Three things the target image must not change
+## Four things the target image must not change
 
 - **`UsePAM yes`.** `useradd` leaves a new account with a locked password, and
   with `UsePAM no` `sshd` refuses it outright — *"not allowed because account is
@@ -105,8 +105,25 @@ rule rather than to a search.
   directive only if this `sshd` understands it. **A real fleet has to make the
   same decision deliberately**; `prompts/queued/0022-*` is the proxy-side half.
 
-`make test-sshd` runs the phase-0007 credential tests against this same image
-on its own (`target/compose.yaml`), published on a host port.
+- **`NET_ADMIN` and `SYS_ADMIN` on the target service.** They are what phase
+  0019's enforcement rungs (docs/PLAN.md §6.5) are actually made of:
+  `NET_ADMIN` for the per-uid packet filter that bounds what a session may
+  *reach*, `SYS_ADMIN` for the `noexec,nosuid,nodev` bind mount that stops a
+  session executing what it wrote. The container has its own network namespace,
+  so the rules it installs are its own.
+
+  Take them away and nothing breaks quietly: the proxy's capability probe
+  reports the rungs as unavailable and a route naming one is refused as an
+  outage, which is the behaviour the `target-side enforcement` scenarios assert
+  in both directions. `iptables`, `netcat-openbsd` and `util-linux` are in the
+  image for the same reason — `nc` is there so the reach scenarios can open a
+  socket from inside a confined session using a binary the *execution* rung
+  permits, which is how the two axes are shown to be independent.
+
+`make test-sshd` runs the phase-0007 credential tests — and phase 0019's
+enforcement tests, which are the only place the "a rung holds for a connection
+made around the proxy" claim is executable — against this same image on its own
+(`target/compose.yaml`), published on a host port.
 
 ## Debugging a failed scenario
 

@@ -131,6 +131,12 @@ type AccountMapping struct {
 	// user-facing one.
 	Method string
 	Rung   int
+	// Enforcement is the rung actually IN FORCE on each axis, never the one the
+	// route asked for (PLAN §6.5, phase 0019). On a device it also carries the
+	// driver's caveat: vendor RBAC is coarse and named, so a record that says
+	// only "platform-authorized" cannot tell a reviewer what the profile
+	// actually permits.
+	Enforcement *EnforcementResult
 	// ExpiryPosture is who, if anyone, enforces the account's end (D13).
 	ExpiryPosture string
 	// ExpiryMechanism is the driver's declaration of WHAT the device does at
@@ -320,6 +326,13 @@ type deviceRoute struct {
 	driver   device.Driver
 	caps     device.Capabilities
 	naming   naming
+	// enforce is the route's enforcement choice (PLAN §6.5, phase 0019), and
+	// profile is the platform's authorization scope the account is actually
+	// created with: the ROUTE's platform_role under
+	// control.ExecutionPlatformAuthorized, and the proxy-wide
+	// auth.target.ephemeral_account.access_profile otherwise.
+	enforce *Enforcement
+	profile string
 }
 
 // CanSatisfy reports whether this proxy can serve a rung, WITHOUT connecting to
@@ -331,16 +344,17 @@ type deviceRoute struct {
 // the ladder is about to skip has nothing to connect to, and a check that
 // needed a connection would turn "skip this entry" into "dial a firewall to
 // find out whether to skip this entry".
-func (a *DeviceAccountAuthenticator) CanSatisfy(auth *control.TargetAuth, _ Target) error {
-	_, err := a.resolve(auth)
+func (a *DeviceAccountAuthenticator) CanSatisfy(auth *control.TargetAuth, tgt Target) error {
+	_, err := a.resolve(auth, tgt.Enforcement)
 	return err
 }
 
 // resolve parses a route and answers it against the named driver's
 // declarations.
-func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth) (*deviceRoute, error) {
+func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth, e *Enforcement) (*deviceRoute, error) {
 	p := newParams(auth)
 	r := &deviceRoute{
+		enforce:  e,
 		username: p.str(ParamUsername, ""),
 		platform: p.str(ParamPlatform, ""),
 		kind:     control.CredentialKind(p.str(ParamCredentialKind, "")),
@@ -427,7 +441,98 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth) (*deviceR
 		return nil, fmt.Errorf("%w: %s caps administrator names at %d characters, so the account name carries no login",
 			ErrNoLoggingPath, r.platform, r.caps.MaxAccountNameLen)
 	}
+	if err := a.resolveEnforcement(r); err != nil {
+		return nil, err
+	}
 	return r, nil
+}
+
+// resolveEnforcement answers the route's rungs against the driver's
+// DECLARATIONS, and decides which authorization scope the account is created
+// with (PLAN §6.5, phase 0019).
+//
+// It answers from declarations alone, exactly as everything else in resolve
+// does, because it runs inside CanSatisfy — a rung the ladder is about to skip
+// has nothing to connect to, and a check that needed a connection would turn
+// "skip this entry" into "dial a firewall to find out whether to skip this
+// entry".
+//
+// That is also what fixes the class of every refusal here. A rung a
+// DECLARATION rules out is a SKIPPED LADDER RUNG (D14, 0018: "an entry that
+// cannot carry the route's rung is a skipped rung"), so the proxy walks on and
+// an exhausted ladder is the outage-class denial it already was. It is never a
+// session served without the rung: that is the silent downgrade D6a forbids.
+func (a *DeviceAccountAuthenticator) resolveEnforcement(r *deviceRoute) error {
+	// The proxy-wide setting is the default, and it stays REQUIRED at startup:
+	// no FortiOS built-in is a safe default (0015), and a route that names no
+	// role must still get a scope somebody chose.
+	r.profile = a.profile
+
+	switch exec := r.enforce.ExecutionRung(); exec {
+	case control.ExecutionProxyInspected, control.ExecutionNoInteractiveShell:
+		// Proxy-side rungs. Nothing is applied on the device, and the account
+		// gets the proxy-wide scope.
+	case control.ExecutionPlatformAuthorized:
+		if !r.caps.AuthorizesCommands() {
+			return fmt.Errorf("%w: %s declares no command authorizer of its own, and the route requires %q",
+				ErrRungUnsatisfiable, r.platform, exec)
+		}
+		if r.enforce.PlatformRole == "" {
+			// The contract requires it beside this rung and refuses a response
+			// without it (0018's Validate), so reaching here is a locally
+			// configured route. It is refused rather than defaulted: falling
+			// back to the proxy-wide profile would put a scope the route did
+			// not name behind an audit record that says the route chose one.
+			return fmt.Errorf("%w: %q is rendered from enforcement.platform_role and the route names none",
+				ErrInvalidParam, exec)
+		}
+		// This is what replaces auth.target.ephemeral_account.access_profile on
+		// the execution axis (0015, 0018): the scope is the ROUTE's, opaque to
+		// the contract, and handed to the driver as data.
+		r.profile = r.enforce.PlatformRole
+	case control.ExecutionPlatformAttested:
+		// Pre-provisioned rungs stay pre-provisioned. The customer defined the
+		// scope on the device; this phase applies nothing for it, and the
+		// account still needs a scope, so it gets the proxy-wide one.
+	case control.ExecutionAccountRestricted, control.ExecutionAccountConfined:
+		return fmt.Errorf("%w: %q is a POSIX-host rung — %s has no authorized_keys, no shell and no kernel this proxy can confine",
+			ErrRungUnsatisfiable, exec, r.platform)
+	default:
+		return fmt.Errorf("%w: unknown execution rung %q", ErrRungUnsatisfiable, exec)
+	}
+
+	switch reach := r.enforce.ReachRung(); reach {
+	case control.ReachProxyChannelPolicy, control.ReachPlatformAttested:
+		// Nothing to apply. What the reach axis names on a device is
+		// platform-attested: the pre-provisioned ACL, role, or privilege level
+		// the customer already configured. Source-address pinning is applied
+		// unconditionally wherever the driver declares it and deliberately has
+		// NO RUNG NAME OF ITS OWN (0018, §5.3) — it bounds who may reach the
+		// account rather than what the account may reach, and a rung the server
+		// may or may not choose would make an unconditional protection look
+		// optional.
+	case control.ReachAccountEgressRestricted, control.ReachAccountNetworkIsolated:
+		return fmt.Errorf("%w: %q needs a kernel this proxy administers, and %s is a device",
+			ErrRungUnsatisfiable, reach, r.platform)
+	default:
+		return fmt.Errorf("%w: unknown reach rung %q", ErrRungUnsatisfiable, reach)
+	}
+	return nil
+}
+
+// enforcementResult is what the session actually stood on, for the audit
+// record. The caveat is the driver's declaration of how its authorizer leaks by
+// grouping, and it rides only where that authorizer is the thing enforcing.
+func (r *deviceRoute) enforcementResult() *EnforcementResult {
+	mechanism := ""
+	caveat := ""
+	if r.enforce.ExecutionRung() == control.ExecutionPlatformAuthorized {
+		mechanism = r.caps.CommandAuthorization + " (scope: " + r.profile + ")"
+		caveat = r.caps.AuthorizationCaveat
+	}
+	res := resultFor(r.enforce, mechanism, "")
+	res.Caveat = caveat
+	return res
 }
 
 // unacceptedField returns the first route field this driver has not declared,
@@ -491,7 +596,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 	if id == nil {
 		return nil, errors.New("auth/target: ephemeral-account requires an authenticated identity")
 	}
-	r, err := a.resolve(tgt.Auth)
+	r, err := a.resolve(tgt.Auth, tgt.Enforcement)
 	if err != nil {
 		return nil, err
 	}
@@ -511,9 +616,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		SessionID:       tgt.SessionID,
 		HostKeyCallback: watcher.callback(),
 	}
-	profile := a.profile
-
-	account, name, err := a.create(ctx, r, ep, profile)
+	account, name, err := a.create(ctx, r, ep, r.profile)
 	if err != nil {
 		return nil, err
 	}
@@ -543,6 +646,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		Platform:             r.platform,
 		Method:               MethodEphemeralAccount,
 		Rung:                 tgt.Rung,
+		Enforcement:          r.enforcementResult(),
 		ExpiryPosture:        string(r.posture),
 		ExpiryMechanism:      r.expiryMechanism(),
 		Lifetime:             r.lifetime,
@@ -556,8 +660,9 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 	if a.events != nil {
 		a.events.AccountMapping(mapping)
 	}
-	a.logf("auth/target: ephemeral-account provisioned subject=%s target=%s platform=%s account=%s posture=%s",
-		id.Subject, tgt, r.platform, name, r.posture)
+	a.logf("auth/target: ephemeral-account provisioned subject=%s target=%s platform=%s account=%s posture=%s enforcement=%s/%s profile=%s",
+		id.Subject, tgt, r.platform, name, r.posture,
+		r.enforce.ExecutionRung(), r.enforce.ReachRung(), r.profile)
 
 	access := &ProvisionedAccess{
 		ClientConfig: &ssh.ClientConfig{
@@ -565,8 +670,9 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 			Auth: []ssh.AuthMethod{auth},
 			// HostKeyCallback is the proxy's to set (D7).
 		},
-		Method: MethodEphemeralAccount,
-		Rung:   tgt.Rung,
+		Method:      MethodEphemeralAccount,
+		Rung:        tgt.Rung,
+		Enforcement: r.enforcementResult(),
 		Teardown: func(ctx context.Context) error {
 			cleanup()
 			return a.teardown(ctx, r, ep, name)

@@ -58,6 +58,16 @@ services:
     volumes:
       - ./keys:/material:ro
     networks: [core]
+    # The kernel privileges phase 0019's enforcement rungs need on a target:
+    # NET_ADMIN for the per-uid packet filter (the reach axis) and SYS_ADMIN for
+    # the noexec,nosuid,nodev bind mount (the second half of account-confined).
+    # Without them the capability probe reports the rungs as unavailable and a
+    # route naming one is refused as an outage — which is the behaviour the
+    # `enforcement` scenarios assert, so this list is load-bearing in both
+    # directions.
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
 
   # The appliance. It is on `core` for the same reason the target is: reachable
   # through a proxy and by nothing else. Its administrator password arrives in

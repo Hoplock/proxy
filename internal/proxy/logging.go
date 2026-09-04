@@ -128,6 +128,36 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 	s.rec.Provisioning(fmt.Sprintf("target access provisioned by %s", method), attrs)
 }
 
+// recordEnforcement captures the enforcement rung the session actually stood
+// on, per axis (contract v4, PLAN §6.5).
+//
+// It is a record of its own rather than four more attributes on the
+// provisioning event because it answers a different question. The provisioning
+// event says which credential got the proxy in; this says what bounds the
+// session once it is in, on both axes, together with what was actually done to
+// deliver it. A reviewer asking "what was this session allowed to run, and what
+// could it reach" reads one record.
+//
+// The rung named here is the one IN FORCE. Everything that could have made it
+// weaker than the route asked for has already failed the session by this point:
+// a rung the target could not provide is an outage-class denial with nothing
+// provisioned, never a downgrade.
+func (s *session) recordEnforcement(access *target.ProvisionedAccess) {
+	if access == nil || access.Enforcement == nil {
+		return
+	}
+	e := access.Enforcement
+	attrs := logging.EnforcementAttrs(logging.Attrs{}.Set(logging.AttrEvent, "enforcement.applied"), e)
+	message := fmt.Sprintf("session enforcement: execution=%s reach=%s", e.Execution, e.Reach)
+	if !e.Verified {
+		// Said in the message and not only in a field: an attested rung is a
+		// claim this system did not check, and a reader skimming messages must
+		// not take it for one it did.
+		message += " (attested, not verified by this proxy)"
+	}
+	s.rec.Provisioning(message, attrs)
+}
+
 // recordHostKey captures a target host key the proxy accepted (D7).
 func (s *session) recordHostKey(key ssh.PublicKey, known bool) {
 	message := "target host key trusted on first use"

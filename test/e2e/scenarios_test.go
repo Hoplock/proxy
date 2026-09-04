@@ -27,6 +27,7 @@ func TestTopology(t *testing.T) {
 	t.Run("command policy", testCommandPolicy)
 	t.Run("target credentials", testTargetCredentials)
 	t.Run("device credentials", testDeviceCredentials)
+	t.Run("target-side enforcement", testEnforcement)
 	t.Run("denial disclosure", testDenialDisclosure)
 	t.Run("telemetry", testTelemetry)
 	// Stops Hoplock Control, so nothing may run after it but the leak check.
@@ -397,6 +398,177 @@ func testTargetCredentials(t *testing.T) {
 	})
 }
 
+// --- target-side enforcement (PLAN §6.5, phase 0019) -------------------------
+
+// testEnforcement is the rungs against a real sshd and a real kernel.
+//
+// Everything the proxy enforces, it enforces on a string in flight. These
+// scenarios are about the half that is not: an account whose executables are
+// bounded by a dispatcher sshd runs, and whose sockets are bounded by a
+// per-uid packet filter. The claim that a rung also holds for a connection made
+// AROUND the proxy cannot be asserted from here — the user node has no route to
+// the target and no copy of the session key, which is the whole point of the
+// topology — so it is asserted in `make test-sshd` instead, against the same
+// image.
+func testEnforcement(t *testing.T) {
+	// An off-host destination that is genuinely reachable from the target when
+	// no rung is in force. A destination nothing could reach anyway would make
+	// every assertion below vacuous.
+	offHost := hostIPFrom(t, nodeTarget, "control")
+
+	t.Run("an automation account runs its two binaries and nothing else", func(t *testing.T) {
+		s := svcOn(proxyDirect, "confined.company.com")
+		s.command = "uptime"
+		r := ssh(t, s)
+		wantExit(t, r, "account-restricted: the permitted binary", 0)
+
+		// The account's whole PATH is the curated directory the rung built, so
+		// a bare name resolves there or nowhere.
+		s.command = "id -un"
+		wantFailure(t, ssh(t, s), "account-restricted: a binary the policy does not name")
+	})
+
+	t.Run("the reach rung permits the named destination and refuses the rest", func(t *testing.T) {
+		s := svcOn(proxyDirect, "confined.company.com")
+		s.command = "nc -z -w 2 127.0.0.1 22"
+		wantExit(t, ssh(t, s), "account-egress-restricted: the permitted destination", 0)
+
+		// Same session shape, same binary, a destination the policy did not
+		// name. Nothing about this connection is an SSH channel, so
+		// `permitted_forwards` never sees it — which is the finding the whole
+		// reach axis exists for.
+		s.command = "nc -z -w 2 " + offHost + " 8080"
+		wantFailure(t, ssh(t, s), "account-egress-restricted: a destination the policy did not name")
+	})
+
+	t.Run("an isolated account reaches loopback and nothing off the host", func(t *testing.T) {
+		s := svcOn(proxyDirect, "isolated.company.com")
+		s.command = "nc -z -w 2 127.0.0.1 22"
+		wantExit(t, ssh(t, s), "account-network-isolated: loopback", 0)
+
+		s.command = "nc -z -w 2 " + offHost + " 8080"
+		wantFailure(t, ssh(t, s), "account-network-isolated: an off-host destination")
+	})
+
+	t.Run("a rung the proxy cannot render is an outage that provisions nothing", func(t *testing.T) {
+		before := ephemeralAccountsOn(t)
+
+		s := svcOn(proxyDirect, "unrenderable.company.com")
+		s.command = "uptime"
+		r := ssh(t, s)
+		wantFailure(t, r, "an unrenderable rung")
+		// Outage class (PLAN §4.3): a service problem, with the session id to
+		// quote, and never a denial — the user asked for nothing wrong.
+		wantContains(t, r, "an unrenderable rung", "This is a service problem")
+		if sessionIDOf(r) == "" {
+			t.Errorf("the outage does not name a session id\n%s", r)
+		}
+		if after := ephemeralAccountsOn(t); len(after) != len(before) {
+			t.Errorf("the refused session left accounts behind:\nbefore %v\nafter  %v", before, after)
+		}
+	})
+
+	t.Run("an attested rung runs, provisions nothing, and is recorded", func(t *testing.T) {
+		const snapshot = "cat /etc/passwd; cat /home/netadmin/.ssh/authorized_keys"
+		before := execIn(t, nodeTarget, "sh", "-c", snapshot)
+
+		s := svcOn(proxyDirect, "attested.company.com")
+		s.command = "/bin/echo attested-ok"
+		r := ssh(t, s)
+		wantExit(t, r, "platform-attested", 0)
+		wantContains(t, r, "platform-attested", "attested-ok")
+
+		if after := execIn(t, nodeTarget, "sh", "-c", snapshot); after.stdout != before.stdout {
+			t.Errorf("an attested rung modified the target:\n--- before ---\n%s\n--- after ---\n%s",
+				before.stdout, after.stdout)
+		}
+	})
+
+	// The record names the rung IN FORCE on each axis. A record that said
+	// "boundary" for a session that ran at a weaker rung is the only outcome
+	// here worse than not shipping the feature, so this asserts against what
+	// the target was actually made to do above rather than against the route.
+	t.Run("the audit record names the rung in force on each axis", func(t *testing.T) {
+		var logs debugLogs
+		waitFor(t, "the enforcement records to reach Hoplock Control", func() bool {
+			logs = fetchLogs(t)
+			return enforcementRecord(logs, "account-restricted") != nil &&
+				enforcementRecord(logs, "account-confined") != nil &&
+				enforcementRecord(logs, "platform-attested") != nil
+		})
+
+		restricted := enforcementRecord(logs, "account-restricted")
+		if got := restricted.Attributes["enforcement_reach"]; got != "account-egress-restricted" {
+			t.Errorf("reach rung = %q, want the route's\n%+v", got, restricted.Attributes)
+		}
+		if got := restricted.Attributes["enforcement_verified"]; got != "true" {
+			t.Errorf("verified = %q, want true for a rung this proxy applied itself", got)
+		}
+		if got := restricted.Attributes["enforcement_mechanism_execution"]; !strings.Contains(got, "dispatcher") {
+			t.Errorf("mechanism = %q, want it to name what actually enforced the rung", got)
+		}
+
+		confined := enforcementRecord(logs, "account-confined")
+		if got := confined.Attributes["enforcement_reach"]; got != "account-network-isolated" {
+			t.Errorf("reach rung = %q, want the route's\n%+v", got, confined.Attributes)
+		}
+
+		attested := enforcementRecord(logs, "platform-attested")
+		if got := attested.Attributes["enforcement_verified"]; got != "false" {
+			t.Errorf("verified = %q: an attested rung is a claim this system did not check", got)
+		}
+		if got := attested.Attributes["enforcement_attested_by"]; got != "network-engineering" {
+			t.Errorf("attested_by = %q, want the attestation's source", got)
+		}
+	})
+}
+
+// enforcementRecord finds the enforcement record naming one execution rung.
+func enforcementRecord(logs debugLogs, rung string) *logRecord {
+	for _, set := range [][]logRecord{logs.Batched, logs.Priority} {
+		for i := range set {
+			r := set[i]
+			if r.Attributes["event"] == "enforcement.applied" &&
+				r.Attributes["enforcement_execution"] == rung {
+				return &set[i]
+			}
+		}
+	}
+	return nil
+}
+
+// hostIPFrom resolves a name from inside one node, so a scenario can name a
+// destination by address rather than relying on the target being able to
+// resolve it — which, under a reach rung, it may deliberately not be able to.
+func hostIPFrom(t *testing.T, node, name string) string {
+	t.Helper()
+	r := execIn(t, node, "getent", "hosts", name)
+	if r.code != 0 {
+		t.Fatalf("%s cannot resolve %s; the reach scenarios would prove nothing\n%s", node, name, r)
+	}
+	fields := strings.Fields(r.stdout)
+	if len(fields) == 0 {
+		t.Fatalf("getent hosts %s returned nothing on %s\n%s", name, node, r)
+	}
+	return fields[0]
+}
+
+// ephemeralAccountsOn lists the accounts this system has created on the target.
+func ephemeralAccountsOn(t *testing.T) []string {
+	t.Helper()
+	r := execIn(t, nodeTarget, "getent", "passwd")
+	if r.code != 0 {
+		t.Fatalf("read the target's account database: %v", r)
+	}
+	var names []string
+	for _, line := range strings.Split(r.stdout, "\n") {
+		if strings.HasPrefix(line, "hl-") {
+			names = append(names, strings.SplitN(line, ":", 2)[0])
+		}
+	}
+	return names
+}
+
 // --- device credentials (D13, D14, PLAN §5.3) --------------------------------
 
 // testDeviceCredentials is phase 0014 against a real SSH client.
@@ -762,6 +934,23 @@ func testNoEphemeralLeak(t *testing.T) {
 	homes := execIn(t, nodeTarget, "sh", "-c", "ls /home")
 	if strings.Contains(homes.stdout, "hl-") {
 		t.Errorf("ephemeral home directories left on the target:\n%s", homes.stdout)
+	}
+
+	// The artefacts an ENFORCEMENT RUNG leaves (PLAN §6.5, phase 0019). A
+	// packet filter rule that outlives its account is the worst of these by a
+	// distance: useradd reuses freed uids, so the rule silently attaches to
+	// whoever gets that uid next — an egress boundary transplanted onto an
+	// unrelated session, or an allow-list transplanted onto one that was
+	// supposed to have none.
+	for _, check := range []struct{ what, script string }{
+		{"packet filter rules", "iptables -S OUTPUT; ip6tables -S OUTPUT"},
+		{"confinement directories", "ls -a /var/lib/hoplock 2>/dev/null || true"},
+		{"mounted home directories", "mount"},
+	} {
+		r := execIn(t, nodeTarget, "sh", "-c", check.script)
+		if strings.Contains(r.stdout, "hl-") {
+			t.Errorf("enforcement residue left on the target (%s):\n%s", check.what, r.stdout)
+		}
 	}
 
 	// The same check on the appliance. It matters more there, not less: this

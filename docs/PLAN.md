@@ -742,6 +742,25 @@ Lifecycle per session:
 5. **Teardown** on session end (and on crash via a reaper): mgmt-cert login →
    kill the user's processes → remove the user and its home/keys.
 
+Since phase 0019 an **enforcement rung** (§6.5) may be rendered onto the account
+between steps 2 and 4, and it extends both ends of that lifecycle. The order is
+part of the guarantee rather than an implementation detail:
+
+- provisioning creates the **account first**, so every artefact a rung leaves has
+  an account to be attributed to. A residue with no account can then only be a
+  session that died mid-rung — never one mid-provision — which is what lets the
+  reaper remove it without waiting out a grace period;
+- teardown removes the **key** first (closing the account to new logins before
+  anything else is undone), then the processes, then **the packet filter rules
+  BEFORE the account**, then the mount, then the account and its home, then the
+  confinement directory — and it **verifies every one of them**. `useradd` reuses
+  freed uids, so a uid-keyed rule that outlives its account silently attaches to
+  whoever gets that uid next; phase **0024**'s non-reusing range is the other
+  half of the same problem;
+- the orphan reaper looks for those artefacts by name — every rule carries a
+  comment naming the account — so a rule, a mount, or a dispatcher whose account
+  is already gone is still findable and still removed.
+
 Robustness requirements:
 
 - **Guaranteed teardown**: teardown runs on normal close, error, panic, and
@@ -1003,6 +1022,22 @@ not only what the driver types.
    customer's firewall is now a decision an operator makes:
    `auth.target.ephemeral_account.access_profile` is **required**, checked at
    startup, and phase 0019 is what turns it into policy.
+
+   **As taken (phase 0019).** The route's `enforcement.platform_role` is what a
+   `platform-authorized` session's administrator is scoped to, and the
+   proxy-wide setting is what every other route still gets — so it stays
+   required rather than becoming optional: a route that names no rung must
+   still get a scope somebody chose. A route naming the rung with no role is
+   refused rather than falling back to the proxy's, because falling back would
+   put a scope the route did not name behind a record saying the route chose
+   one. The rung is satisfiable only where the driver declares an authorizer of
+   its own (`device.Capabilities.CommandAuthorization`) — a route naming it on a
+   platform that declares none is a **skipped ladder rung** (D14), not a session
+   served without it — and a shipped driver that declares one must also declare
+   how it **leaks by grouping** (`AuthorizationCaveat`, held by `CheckShipped`),
+   which the provisioner records on every session it serves. Source-address
+   pinning is unchanged and still has no rung name of its own: it is applied
+   unconditionally wherever the driver declares it (§6.5).
 
 Two smaller corrections landed with them. The administrator-name field is **64**
 characters, not 35 — both clear the threshold above, so the naming scheme is
@@ -1692,6 +1727,71 @@ worth stating here because they are architecture rather than encoding:
   none of its meaning.** An operator writes one destination vocabulary; the two
   lists are never merged, and one never widens the other.
 
+#### What this proxy actually renders (phase 0019)
+
+The vocabulary above is named after guarantees so that an operator reading an
+audit record need not know what `rbash` is. Which mechanism *this* proxy reaches
+for is local to this repository, and it is written down here so that a rung's
+claim can be checked against the thing that delivers it. The per-session record
+carries the same answer (`enforcement_mechanism_execution`,
+`enforcement_mechanism_reach`) for the session in front of you.
+
+| Rung | Rendered on a POSIX host by | Rendered on a device by |
+| --- | --- | --- |
+| `account-restricted` | an `authorized_keys` **`command=` dispatcher** plus the key's capability fence (`restrict`, or the individual `no-*` options on an sshd older than 7.2). The dispatcher validates `SSH_ORIGINAL_COMMAND` against the route's own `restricted_exec` list and `exec`s the approved argv directly, never through a shell. It is also the account's **login shell**, so `su`, `cron`, and a second key land on it too. Beneath it, as a **guardrail**, the account's whole `PATH` is a curated directory of symlinks it cannot write | — |
+| `account-confined` | the above, plus the home **bind-mounted `noexec,nosuid,nodev`** and every `exec` wrapped in **`setpriv --no-new-privs`**: the two things the rung's extra sentence names | — |
+| `account-egress-restricted` | a **per-uid packet filter** (`iptables`/`ip6tables -m owner --uid-owner`) permitting `permitted_destinations` and rejecting the rest, on **both address families always** | — |
+| `account-network-isolated` | the same filter, permitting loopback and rejecting every off-host destination on both families | — |
+| `platform-authorized` | — | the platform's own authorizer, named by the driver's `CommandAuthorization` declaration and scoped by the route's `platform_role`. On FortiOS that is `set accprofile` |
+| `platform-attested`, `proxy-inspected`, `proxy-channel-policy` | nothing is rendered | nothing is rendered |
+
+Four choices in that table are decisions rather than details, and each one was
+made against a candidate the survey lists:
+
+- **The dispatcher is the boundary; the curated `PATH` is a guardrail.** Row 6's
+  restricted shell is *not* used as the login shell, because a restricted shell
+  refuses to execute a command name containing `/` and the dispatcher must live
+  outside the home (which `account-confined` mounts `noexec`). Making `rbash` the
+  login shell would refuse the dispatcher and fail every session on the rung. What
+  survives of that row is the curated directory, and it is described as a
+  guardrail everywhere it appears.
+- **systemd sandboxing is not the mechanism for `account-confined`.** A `.slice`
+  unit carries resource-control settings; `NoNewPrivileges=`, `ProtectSystem=`
+  and `RestrictSUIDSGID=` are exec-context settings a slice does not carry, and
+  systemd logs an unknown key and proceeds. That is precisely the
+  silently-ignored directive this section says a capability probe exists to
+  catch, so this proxy does not write it. `setpriv` and a `noexec` home deliver
+  the same two guarantees with nothing to misread.
+- **`IPAddressAllow=` is not the mechanism for the reach axis.** It speaks
+  addresses and prefixes only, and a route's destinations carry **ports**. The
+  packet filter renders the port; the systemd rung would have had to widen "the
+  database on 5432" into "that address, every port".
+- **A destination named by hostname is refused, not resolved.** A filter resolves
+  a name once, at insert time, so the rule would drift from the policy it claims
+  to enforce. The refusal is outage-class, and it is the same finding this
+  section already records against `IPAddressAllow=`.
+
+**Both address families are always closed.** A destination list naming only IPv4
+addresses still gets an IPv6 default-reject. A rung that closes one family and
+leaves the other open is the mistake phase 0015 found on the device side, and it
+is not one this side repeats.
+
+**The reach rungs bound OFF-HOST reach and loopback is not free.**
+`account-network-isolated` permits loopback, because its sentence is about what
+leaves the host. `account-egress-restricted` permits loopback only if the policy
+names it — which is faithful to its sentence and is a real operational
+constraint: a session that needs a local resolver must have one named.
+
+**What each rung needs of the target, and how the proxy finds out.** Every one of
+these is *measured* rather than inferred from a version number, over the
+management login, before anything is created: the probe installs and removes a
+throwaway filter rule for a uid no account holds, bind-mounts and remounts a
+scratch directory, and runs `/bin/true` under `setpriv`. `systemd` and cgroup v2
+are recorded for the operator and read by no decision. The result is what
+`POST /v1/capabilities/report` carries, and it is re-checked against the live
+target at provisioning time — so a stale record costs a refused session and
+never a session running below the rung its own record claims.
+
 #### Session bounds (D16)
 
 Four fields ride the same contract revision. They are not enforcement points —
@@ -1891,7 +1991,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0027's switch driver both build on rather than re-answer (deferred from 0015) |
 | 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
 | 0018 | Enforcement points — contract v4         | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
-| 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account (`authorized_keys` options, shell/PATH, filesystem) and onto a device account (access profile, trusted host), teardown + reaper + e2e |
+| 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account — an `authorized_keys` `command=` dispatcher over the route's own `restricted_exec` list, a curated `PATH`, a `noexec,nosuid,nodev` home, `setpriv --no-new-privs`, and a per-uid packet filter on both address families — and onto a device account through the platform's own authorizer under `enforcement.platform_role`. Plus the capability probe and `POST /v1/capabilities/report`, the teardown ordering the uid hazard requires, the reaper's residue sweep, the four audit fields, and the e2e scenarios. The mechanism table is §6.5, "What this proxy actually renders" |
 | 0020 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
 | 0021 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
 | 0022 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |

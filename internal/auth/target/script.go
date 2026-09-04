@@ -44,7 +44,8 @@ var ErrInvalidScriptValue = errors.New("auth/target: invalid value for a provisi
 // it is absent, and the key file is written unconditionally — a leftover
 // account from another session's crash must end up holding THIS session's key
 // and nothing else, which is why the write truncates instead of appending.
-func (a *EphemeralAuthenticator) provisionScript(principal, home, authorizedKey string) (string, error) {
+func (a *EphemeralAuthenticator) provisionScript(c *confinement, authorizedKey string) (string, error) {
+	principal, home := c.principal, c.home
 	if err := validatePrincipal(principal); err != nil {
 		return "", err
 	}
@@ -54,8 +55,20 @@ func (a *EphemeralAuthenticator) provisionScript(principal, home, authorizedKey 
 	if err := validateScriptValue("authorized key", authorizedKey); err != nil {
 		return "", err
 	}
+	// The account's login shell is the DISPATCHER wherever one is rendered, so
+	// that a login reaching this account by another route — su, cron, a second
+	// key — lands on the same boundary as the one the key forces. Where no rung
+	// is rendered it is the proxy's configured target shell, unchanged from
+	// phase 0007.
 	shell := a.shell
+	if c.dispatcher {
+		shell = c.dir + "/" + dispatcherName
+	}
 	if err := validatePath(shell); err != nil {
+		return "", err
+	}
+	confine, err := a.confineProvisionFragment(c)
+	if err != nil {
 		return "", err
 	}
 
@@ -66,6 +79,15 @@ func (a *EphemeralAuthenticator) provisionScript(principal, home, authorizedKey 
 	b.WriteString(`if ! id -u "$p" >/dev/null 2>&1; then` + "\n")
 	fmt.Fprintf(&b, "  useradd -m -d \"$h\" -s %s \"$p\" || exit %d\n", quote(shell), exitCreateFailed)
 	b.WriteString("fi\n")
+	if c.dispatcher {
+		// A leftover account from another session's crash must end up on THIS
+		// session's terms, and the login shell is one of them: an adopted
+		// account still pointing at a previous session's dispatcher would run a
+		// previous session's allow-list. It runs only where a dispatcher is
+		// rendered, because that is the only case where the shell is this
+		// phase's to change.
+		fmt.Fprintf(&b, "usermod -s %s \"$p\" >/dev/null 2>&1 || true\n", quote(shell))
+	}
 	// A leftover account may have a home that useradd did not create.
 	b.WriteString(`mkdir -p "$h/.ssh"` + "\n")
 	fmt.Fprintf(&b, "printf '%%s\\n' %s > \"$h/.ssh/authorized_keys\"\n", quote(authorizedKey))
@@ -76,6 +98,11 @@ func (a *EphemeralAuthenticator) provisionScript(principal, home, authorizedKey 
 	// enable is rejected.
 	b.WriteString(`chown -R "$p" "$h/.ssh"` + "\n")
 	b.WriteString(`chown "$p" "$h"` + "\n")
+	// The enforcement rungs come LAST, and after the account exists, so that
+	// every artefact they create has an account to be attributed to. See
+	// confineProvisionFragment for why that ordering is what lets the reaper
+	// remove a residue without a grace period.
+	b.WriteString(confine)
 	return b.String(), nil
 }
 
@@ -93,21 +120,46 @@ func (a *EphemeralAuthenticator) teardownScript(principal, home string) (string,
 	if err := validatePath(home); err != nil {
 		return "", err
 	}
+	confine, err := confineTeardownFragment(a.enforceBase)
+	if err != nil {
+		return "", err
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "p=%s\n", quote(principal))
 	fmt.Fprintf(&b, "h=%s\n", quote(home))
-	// The user's processes go first: userdel refuses while the account is in
+	b.WriteString(confine)
+	// The key goes first. A teardown that fails halfway has then already closed
+	// the account to new logins, rather than leaving one that outlives the
+	// enforcement rung the rest of this script is removing.
+	b.WriteString(`rm -f "$h/.ssh/authorized_keys" >/dev/null 2>&1 || true` + "\n")
+	// The user's processes go next: userdel refuses while the account is in
 	// use, and a session that outlived its credentials is the case this whole
 	// method exists to prevent.
 	b.WriteString(`pkill -KILL -u "$p" >/dev/null 2>&1 || true` + "\n")
+	// BEFORE the account, always. See confineTeardownFragment: useradd reuses
+	// freed uids, so a uid-keyed rule that outlives its account silently
+	// attaches to whoever gets that uid next.
+	b.WriteString("purge_rules iptables\n")
+	b.WriteString("purge_rules ip6tables\n")
+	// Before the home is removed: rm -rf on a mount point empties the mounted
+	// filesystem and leaves the directory behind.
+	b.WriteString("i=0\n")
+	b.WriteString(`while [ "$i" -lt 8 ] && mounted; do` + "\n")
+	b.WriteString(`  umount "$h" >/dev/null 2>&1 || umount -l "$h" >/dev/null 2>&1 || break` + "\n")
+	b.WriteString("  i=$((i + 1))\n")
+	b.WriteString("done\n")
 	b.WriteString(`userdel -r "$p" >/dev/null 2>&1 || userdel "$p" >/dev/null 2>&1 || true` + "\n")
 	// -r may leave the home behind (a mail spool it could not remove aborts it
 	// on some systems), and a home directory holding an authorized_keys file is
 	// the half of the credential that still matters.
 	b.WriteString(`rm -rf "$h"` + "\n")
+	b.WriteString(`rm -rf "$c"` + "\n")
+	fmt.Fprintf(&b, "if rules_remain; then echo \"packet filter rules still present\" >&2; exit %d; fi\n", exitRuleRemains)
+	fmt.Fprintf(&b, "if mounted; then echo \"home directory is still mounted\" >&2; exit %d; fi\n", exitMountRemains)
 	fmt.Fprintf(&b, "if id -u \"$p\" >/dev/null 2>&1; then echo \"account still present\" >&2; exit %d; fi\n", exitUserRemains)
 	fmt.Fprintf(&b, "if [ -e \"$h\" ]; then echo \"home directory still present\" >&2; exit %d; fi\n", exitHomeRemains)
+	fmt.Fprintf(&b, "if [ -e \"$c\" ]; then echo \"confinement directory still present\" >&2; exit %d; fi\n", exitConfineRemains)
 	b.WriteString("exit 0\n")
 	return b.String(), nil
 }
@@ -140,6 +192,13 @@ func (a *EphemeralAuthenticator) discoverScript() (string, error) {
 	b.WriteString("  fi\n")
 	b.WriteString(`  printf '%s\t%s\t%s\n' "$n" "$t" "$h"` + "\n")
 	b.WriteString("done\n")
+	// The artefacts of a rung whose account may already be gone (phase 0019).
+	// A session that died mid-rung is the case this exists for.
+	residue, err := confineDiscoverFragment(a.enforceBase, a.homeBase, a.prefix)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(residue)
 	return b.String(), nil
 }
 

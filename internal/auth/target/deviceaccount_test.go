@@ -198,6 +198,12 @@ func (d *unexpiringDriver) Capabilities() device.Capabilities {
 	caps := d.Driver.Capabilities()
 	caps.EnforcesExpiry = false
 	caps.ExpiryMechanism = ""
+	// It declares no command authorizer either, which is the same "most
+	// platforms are this one" point on phase 0019's axis: until somebody maps a
+	// platform's own RBAC onto the rung vocabulary, a route naming
+	// `platform-authorized` is a skipped ladder entry there.
+	caps.CommandAuthorization = ""
+	caps.AuthorizationCaveat = ""
 	return caps
 }
 
@@ -472,7 +478,7 @@ func TestReaperRemovesWhatACrashLeftBehind(t *testing.T) {
 
 	// What a crashed process leaves: an account with this proxy's prefix that
 	// no live session owns.
-	route, err := h.auth.resolve(tgt.Auth)
+	route, err := h.auth.resolve(tgt.Auth, tgt.Enforcement)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -523,7 +529,7 @@ func TestSweepFailureIsReported(t *testing.T) {
 
 	tgt := h.tgt
 	tgt.Auth = deviceRouteAuth(nil)
-	route, err := h.auth.resolve(tgt.Auth)
+	route, err := h.auth.resolve(tgt.Auth, tgt.Enforcement)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -964,7 +970,7 @@ func TestTheReaperSweepsAnOrphanedSchedule(t *testing.T) {
 	t.Cleanup(func() { _ = live.Close(ctx) })
 	liveName := live.ClientConfig.User
 
-	route, err := h.auth.resolve(tgt.Auth)
+	route, err := h.auth.resolve(tgt.Auth, tgt.Enforcement)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

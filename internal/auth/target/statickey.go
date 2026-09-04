@@ -101,10 +101,19 @@ func (a *StaticKeyAuthenticator) Provision(_ context.Context, id *identity.Ident
 		return nil, errors.New("auth/target: static-key has no username to log in as")
 	}
 
+	// This method touches nothing on the target, so the only rungs it can carry
+	// are the two proxy-side ones and an ATTESTED rung — and it still owes the
+	// audit record an answer for those (PLAN §6.5).
+	enforcement, err := resultForUnprovisioned(tgt.Enforcement, MethodStaticKey)
+	if err != nil {
+		return nil, err
+	}
+
 	a.logf("auth/target: static-key provisioned subject=%s target=%s login=%s",
 		id.Subject, tgt, username)
 
 	return &ProvisionedAccess{
+		Enforcement: enforcement,
 		ClientConfig: &ssh.ClientConfig{
 			User: username,
 			Auth: []ssh.AuthMethod{ssh.PublicKeys(a.signer)},

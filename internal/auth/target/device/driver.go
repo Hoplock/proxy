@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -299,6 +300,33 @@ type Capabilities struct {
 	// a password and a public key have materially different exposure and the
 	// server chose.
 	CredentialKinds []control.CredentialKind
+	// CommandAuthorization names the platform's OWN command authorizer, in one
+	// line: what it is called on this platform, and what binds an account to
+	// it. It is what makes control.ExecutionPlatformAuthorized satisfiable
+	// (PLAN §6.5, phase 0019) — a driver declaring nothing here has no
+	// mechanism that delivers that guarantee, and a route naming the rung is a
+	// SKIPPED LADDER RUNG on this platform rather than a session run without
+	// the rung.
+	//
+	// It is a string rather than a bool for ExpiryMechanism's reason. "The
+	// device authorizes commands" is one bit and the platforms behind it do not
+	// agree on what the bit buys: a FortiOS access profile, an IOS privilege
+	// level, a Junos login class and a parser view group commands in different
+	// ways and at different granularities, and the rung's whole failure mode is
+	// the vendor's grouping. A reader of the bit alone would take
+	// `platform-authorized` for something finer than any vendor sells.
+	CommandAuthorization string
+	// AuthorizationCaveat says how the platform's authorizer LEAKS BY GROUPING,
+	// in one line. It is required on a driver declaring CommandAuthorization
+	// and ignored otherwise, and CheckShipped holds a shipped driver to that.
+	//
+	// Vendor RBAC is coarse and named (PLAN §6.5): a profile permitting
+	// diagnostics may include a command with a shell escape, and one permitting
+	// "read-only" may still include a configuration write on some releases. The
+	// provisioner puts this on the session's audit record, so that the record
+	// carries what the rung is ACTUALLY enforcing rather than the name of the
+	// guarantee it was asked for.
+	AuthorizationCaveat string
 	// PinsSourceAddress says an account can be restricted to the address it is
 	// used from. It is a free extra restriction where it exists and is not
 	// required anywhere.
@@ -336,6 +364,12 @@ type Field struct {
 	Name string
 	// Description says what the field means on this platform, in one line.
 	Description string
+}
+
+// AuthorizesCommands reports whether the platform has an authorizer of its own
+// that control.ExecutionPlatformAuthorized can be rendered onto.
+func (c Capabilities) AuthorizesCommands() bool {
+	return strings.TrimSpace(c.CommandAuthorization) != ""
 }
 
 // AcceptsField reports whether the platform accepts a route field of that name.

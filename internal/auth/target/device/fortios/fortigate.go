@@ -237,6 +237,19 @@ func (d *Driver) Capabilities() device.Capabilities {
 			control.CredentialKindPassword,
 			control.CredentialKindPublicKey,
 		},
+		CommandAuthorization: "a FortiOS ACCESS PROFILE, named by `set accprofile` on the " +
+			"administrator this proxy creates. The unit's own authorizer decides every command " +
+			"ahead of anything a proxy could parse, and it is effective against a connection that " +
+			"never went through one.",
+		AuthorizationCaveat: "FortiOS groups commands its own way and the guarantee is exactly that " +
+			"grouping and no finer. Three facts an operator has to know, verified against Fortinet's " +
+			"documentation in docs/FORTIOS-DOC-VERIFICATION.md: there are THREE built-in profiles " +
+			"(`super_admin`, `prof_admin`, `super_admin_readonly`) and NONE of them is a safe " +
+			"default, which is why the route names one; `super_admin_readonly` cannot run `diagnose` " +
+			"from FortiOS 7.4.x, so a profile chosen for diagnostics may not run them; and no " +
+			"built-in read-only profile can be held by a VDOM-scoped administrator at all, so a " +
+			"per-VDOM route needs `prof_admin` or a custom profile. A profile permitting " +
+			"configuration access permits configuration WRITES within its scope.",
 		PinsSourceAddress: true,
 		Fields: []device.Field{{
 			Name: FieldVDOM,

@@ -64,6 +64,7 @@ func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
 	if ev.Rung > 0 {
 		attrs = attrs.Set(AttrCredentialRung, strconv.Itoa(ev.Rung))
 	}
+	attrs = EnforcementAttrs(attrs, ev.Enforcement)
 	if ev.Lifetime > 0 {
 		attrs = attrs.Set(AttrLifetimeSeconds, strconv.Itoa(int(ev.Lifetime.Seconds())))
 	}
@@ -161,4 +162,37 @@ func at(t time.Time, s *Shipper) time.Time {
 		return s.now().UTC()
 	}
 	return t.UTC()
+}
+
+// EnforcementAttrs puts the rung IN FORCE on a record (contract v4's four
+// fields plus this repository's operator half, PLAN §6.5).
+//
+// It is one function used by every producer — the session's provisioning record
+// and the device method's mapping event — because the alternative is two
+// spellings of the same claim that eventually disagree, with the disagreement
+// landing in the audit trail rather than in a build failure.
+func EnforcementAttrs(attrs Attrs, e *target.EnforcementResult) Attrs {
+	if e == nil {
+		return attrs
+	}
+	attrs = attrs.
+		Set(AttrEnforcementExecution, string(e.Execution)).
+		Set(AttrEnforcementReach, string(e.Reach)).
+		SetBool(AttrEnforcementVerified, e.Verified)
+	if e.AttestedBy != "" {
+		attrs = attrs.Set(AttrEnforcementAttestedBy, e.AttestedBy)
+	}
+	if e.AttestationRef != "" {
+		attrs = attrs.Set(AttrEnforcementAttestation, e.AttestationRef)
+	}
+	if e.ExecutionMechanism != "" {
+		attrs = attrs.Set(AttrEnforcementMechanismExec, e.ExecutionMechanism)
+	}
+	if e.ReachMechanism != "" {
+		attrs = attrs.Set(AttrEnforcementMechanismReach, e.ReachMechanism)
+	}
+	if e.Caveat != "" {
+		attrs = attrs.Set(AttrEnforcementCaveat, e.Caveat)
+	}
+	return attrs
 }

@@ -146,6 +146,16 @@ func run(configPath string, logger *log.Logger) error {
 		// and refuses such a route when there is nowhere at all to put the
 		// event — which is also why the pipeline is now built before it.
 		Events: recorder.DeviceSink(),
+		// What a TARGET can enforce is discovered by probing it and reported
+		// here (contract v4, PLAN §6.5), because authorize happens before the
+		// proxy has ever touched the target. The report is an observation and
+		// grants nothing: it only lets Hoplock Control avoid choosing a rung
+		// this target cannot take.
+		//
+		// It is the REST client rather than the caching one: a capability
+		// report is an observation, and a decorator answering it from memory
+		// would be reporting the past.
+		Reporter: rest,
 	})
 	if err != nil {
 		return err
@@ -161,7 +171,12 @@ func run(configPath string, logger *log.Logger) error {
 	resolver, err := routing.NewResolver(routing.ResolverOptions{
 		Client:            cache,
 		DefaultTargetPort: cfg.Dial.DefaultTargetPort,
-		Logger:            logger,
+		// The enforcement rungs this BUILD can render, on every authorize
+		// request beside policy_version (contract v4). It is the half of
+		// capability advertisement that needs no probe: a server cannot
+		// sensibly choose a rung this software has never heard of.
+		Capabilities: target.ProxyCapabilities(),
+		Logger:       logger,
 	})
 	if err != nil {
 		return err

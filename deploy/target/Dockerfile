@@ -14,12 +14,32 @@
 #   for an appliance the proxy cannot administer. A scenario that finds it
 #   modified has found a bug.
 #
+# Phase 0019 adds a third set of prerequisites: the ones an ENFORCEMENT RUNG
+# needs (docs/PLAN.md §6.5). They are listed here rather than assumed, because
+# the whole point of the capability probe is that a target either has them or
+# the rung is refused:
+#
+#   account-restricted needs nothing but an sshd honouring authorized_keys
+#   options, which this one does.
+#
+#   account-confined needs `setpriv` (util-linux, already present) and a kernel
+#   that lets the provisioner bind-mount a home noexec,nosuid,nodev — which in a
+#   container means CAP_SYS_ADMIN, granted in the compose files rather than here.
+#
+#   the two reach rungs need `iptables`/`ip6tables` with the owner and comment
+#   matches, plus CAP_NET_ADMIN.
+#
+# `netcat-openbsd` is there for one reason: the reach rung's test has to open a
+# socket from inside a confined session using a binary the EXECUTION rung
+# permits, so the two axes can be shown to be independent.
+#
 # This image backs both `make test-sshd` (the phase-0007 credential tests) and
 # the e2e topology.
 FROM debian:stable-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server procps iproute2 \
+    iptables netcat-openbsd util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /run/sshd /root/.ssh /etc/ssh/sshd_config.d && chmod 700 /root/.ssh \

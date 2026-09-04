@@ -14,3 +14,15 @@ services:
       - ../keys:/material:ro
     ports:
       - "127.0.0.1:${HOPLOCK_SSHD_PORT:-2022}:22"
+    # What phase 0019's enforcement rungs need from the kernel, and nothing
+    # else. NET_ADMIN is the per-uid packet filter (the reach axis); SYS_ADMIN
+    # is the bind-mount that makes a session's home noexec,nosuid,nodev (the
+    # second half of account-confined). The container has its own network
+    # namespace, so the rules it installs are its own.
+    #
+    # A deployment that will not grant these is a deployment whose targets
+    # cannot take those rungs, which is exactly what the capability probe
+    # reports and what an outage-class refusal then says out loud.
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
