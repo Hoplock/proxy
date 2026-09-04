@@ -108,6 +108,24 @@ It is the prototype's acceptance gate and runs on every pull request.
 [`deploy/README.md`](deploy/README.md) explains the nodes, the networks, the
 fixtures, and how to debug a failing scenario.
 
+## Scale measurements
+
+`cmd/loadgen` measures what a connection costs a proxy and a Hoplock Control:
+establishment rate, memory per live connection, Control requests per
+connection, the decision cache under fan-out, and the per-target cost of
+`ephemeral-user` provisioning.
+
+```sh
+make load                                     # every connection scenario (~20 min)
+make load-one SCENARIO=load/scenarios/04-uc2-fanout.yaml
+sudo make load-provisioning                   # ROOT; creates real local accounts
+```
+
+It is **not** part of CI: a load run is neither fast nor deterministic, and
+gating a pull request on a shared runner's variance would measure the runner.
+[`load/README.md`](load/README.md) explains what it runs and how to read a
+report; the numbers and the sizing they support are in `docs/PLAN.md` §9.1.
+
 ## Supply-chain check
 
 `make vulncheck` reports vulnerabilities **reachable from this module's code**
@@ -152,10 +170,12 @@ per connection (`docs/PLAN.md`, D2).
 | ------------------- | ------------------------------------------------------------- |
 | `cmd/proxy`       | the proxy daemon                                              |
 | `cmd/mock-control` | reference/mock Control API for dev and CI                |
+| `cmd/loadgen`       | the scale harness (see `load/README.md`)                      |
 | `internal/`         | the implementation packages (see `docs/PLAN.md` §3)           |
 | `api/`              | Control API contract — source of truth                     |
 | `deploy/`           | the end-to-end container topology (see its README)            |
 | `test/`             | the e2e scenario suite and the topology's config checks       |
+| `load/`             | load scenarios and the raw measurements they produced         |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
 | `prompts/`          | queued and implemented phase prompts                          |
 

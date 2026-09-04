@@ -1,0 +1,291 @@
+{
+  "scenario": "01-establishment",
+  "description": "Establishment cost and the offered-rate sweep, with no decision caching, so every connection pays the full three control round trips PLAN §6.4 describes.\n",
+  "kind": "connection",
+  "started_at": "2026-09-04T23:19:29.337332623Z",
+  "host": {
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 4,
+    "go_version": "go1.26.0",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "total_memory_mib": 16075
+  },
+  "steps": [
+    {
+      "mode": "rate",
+      "measured_duration": "20s",
+      "warmup": "10s",
+      "offered_rate_per_sec": 100,
+      "subjects": 1,
+      "targets": 32,
+      "target_order": "cycle",
+      "cache_hint": false,
+      "attempted": 1999,
+      "succeeded": 1999,
+      "failed": 0,
+      "achieved_rate_per_sec": 99.94897861639008,
+      "peak_live_connections": 1,
+      "connect_mean_ms": 2.671901,
+      "connect_p50_ms": 2.622935,
+      "connect_p95_ms": 3.191161,
+      "connect_p99_ms": 3.645652,
+      "session_mean_ms": 3.561255,
+      "session_p95_ms": 4.32697,
+      "baseline_rss_kib": 11592,
+      "plateau_rss_kib": 0,
+      "plateau_live_connections": 0,
+      "plateau_samples": 0,
+      "rss_per_live_connection_kib": 0,
+      "peak_rss_kib": 18716,
+      "peak_fds": 13,
+      "fd_limit": 20000,
+      "peak_threads": 11,
+      "proxy_cpu_seconds": 11.690000000000001,
+      "proxy_cpu_ms_per_connection": 5.8479239619809915,
+      "proxy_cpu_cores_used": 0.5844940270263131,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 1999,
+          "per_connection": 1,
+          "mean_handling_micros": 44.51443271635818,
+          "max_handling_micros": 239.332
+        },
+        {
+          "path": "/v1/authorize",
+          "count": 1999,
+          "per_connection": 1,
+          "mean_handling_micros": 54.34605402701351,
+          "max_handling_micros": 448.515
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 1999,
+          "per_connection": 1,
+          "mean_handling_micros": 43.148735867933965,
+          "max_handling_micros": 374.751
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 360,
+          "per_connection": 0.18009004502251125,
+          "mean_handling_micros": 599.738475,
+          "max_handling_micros": 2932.284
+        }
+      ],
+      "control_calls_per_connection": 3.1800900450225114,
+      "authorize_calls": 1999,
+      "authorize_cache_hit_rate_pct": 0
+    },
+    {
+      "mode": "rate",
+      "measured_duration": "20.002s",
+      "warmup": "10s",
+      "offered_rate_per_sec": 300,
+      "subjects": 1,
+      "targets": 32,
+      "target_order": "cycle",
+      "cache_hint": false,
+      "attempted": 5999,
+      "succeeded": 5999,
+      "failed": 0,
+      "achieved_rate_per_sec": 299.9210162028441,
+      "peak_live_connections": 2,
+      "connect_mean_ms": 2.711851,
+      "connect_p50_ms": 2.57959,
+      "connect_p95_ms": 3.741693,
+      "connect_p99_ms": 4.70832,
+      "session_mean_ms": 3.760637,
+      "session_p95_ms": 5.113556,
+      "baseline_rss_kib": 18396,
+      "plateau_rss_kib": 0,
+      "plateau_live_connections": 0,
+      "plateau_samples": 0,
+      "rss_per_live_connection_kib": 0,
+      "peak_rss_kib": 19352,
+      "peak_fds": 17,
+      "fd_limit": 20000,
+      "peak_threads": 11,
+      "proxy_cpu_seconds": 25.379999999999995,
+      "proxy_cpu_ms_per_connection": 4.230705117519586,
+      "proxy_cpu_cores_used": 1.2688773781010472,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 5999,
+          "per_connection": 1,
+          "mean_handling_micros": 40.05086431071845,
+          "max_handling_micros": 741.059
+        },
+        {
+          "path": "/v1/authorize",
+          "count": 5999,
+          "per_connection": 1,
+          "mean_handling_micros": 55.64786931155193,
+          "max_handling_micros": 1901.841
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 5999,
+          "per_connection": 1,
+          "mean_handling_micros": 42.580224704117356,
+          "max_handling_micros": 1594.8
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 1041,
+          "per_connection": 0.17352892148691448,
+          "mean_handling_micros": 671.8623506243996,
+          "max_handling_micros": 4035.964
+        }
+      ],
+      "control_calls_per_connection": 3.1735289214869145,
+      "authorize_calls": 5999,
+      "authorize_cache_hit_rate_pct": 0
+    },
+    {
+      "mode": "rate",
+      "measured_duration": "20.009s",
+      "warmup": "10s",
+      "offered_rate_per_sec": 600,
+      "subjects": 1,
+      "targets": 32,
+      "target_order": "cycle",
+      "cache_hint": false,
+      "attempted": 11791,
+      "succeeded": 11791,
+      "failed": 0,
+      "achieved_rate_per_sec": 589.2957712041899,
+      "peak_live_connections": 12,
+      "connect_mean_ms": 6.890113,
+      "connect_p50_ms": 6.343682,
+      "connect_p95_ms": 12.122453,
+      "connect_p99_ms": 16.183721,
+      "session_mean_ms": 10.4813,
+      "session_p95_ms": 17.817093,
+      "baseline_rss_kib": 18436,
+      "plateau_rss_kib": 0,
+      "plateau_live_connections": 0,
+      "plateau_samples": 0,
+      "rss_per_live_connection_kib": 0,
+      "peak_rss_kib": 22572,
+      "peak_fds": 53,
+      "fd_limit": 20000,
+      "peak_threads": 12,
+      "proxy_cpu_seconds": 34.17,
+      "proxy_cpu_ms_per_connection": 2.8979730302773303,
+      "proxy_cpu_cores_used": 1.7077632518062225,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 11791,
+          "per_connection": 1,
+          "mean_handling_micros": 35.666734373674835,
+          "max_handling_micros": 2899.59
+        },
+        {
+          "path": "/v1/authorize",
+          "count": 11791,
+          "per_connection": 1,
+          "mean_handling_micros": 50.515306674582305,
+          "max_handling_micros": 4583.592
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 11791,
+          "per_connection": 1,
+          "mean_handling_micros": 37.259570350267154,
+          "max_handling_micros": 4513.911
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 2038,
+          "per_connection": 0.17284369434314306,
+          "mean_handling_micros": 717.9394911678115,
+          "max_handling_micros": 10891.575
+        }
+      ],
+      "control_calls_per_connection": 3.1728436943431433,
+      "authorize_calls": 11791,
+      "authorize_cache_hit_rate_pct": 0
+    },
+    {
+      "mode": "rate",
+      "measured_duration": "20.031s",
+      "warmup": "10s",
+      "offered_rate_per_sec": 900,
+      "subjects": 1,
+      "targets": 32,
+      "target_order": "cycle",
+      "cache_hint": false,
+      "attempted": 14335,
+      "succeeded": 14332,
+      "failed": 3,
+      "achieved_rate_per_sec": 715.5029547368982,
+      "peak_live_connections": 45,
+      "connect_mean_ms": 22.572888,
+      "connect_p50_ms": 21.494345,
+      "connect_p95_ms": 39.108461,
+      "connect_p99_ms": 48.865687,
+      "session_mean_ms": 35.288159,
+      "session_p95_ms": 57.660923,
+      "baseline_rss_kib": 20440,
+      "plateau_rss_kib": 0,
+      "plateau_live_connections": 0,
+      "plateau_samples": 0,
+      "rss_per_live_connection_kib": 0,
+      "peak_rss_kib": 30316,
+      "peak_fds": 121,
+      "fd_limit": 20000,
+      "peak_threads": 12,
+      "proxy_cpu_seconds": 37.61999999999999,
+      "proxy_cpu_ms_per_connection": 2.6248953391013115,
+      "proxy_cpu_cores_used": 1.8781203710021004,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 14335,
+          "per_connection": 1.0002093217973764,
+          "mean_handling_micros": 40.66274293686781,
+          "max_handling_micros": 16123.58
+        },
+        {
+          "path": "/v1/authorize",
+          "count": 14335,
+          "per_connection": 1.0002093217973764,
+          "mean_handling_micros": 52.94238535054064,
+          "max_handling_micros": 8689.656
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 14335,
+          "per_connection": 1.0002093217973764,
+          "mean_handling_micros": 37.88140020927799,
+          "max_handling_micros": 9137.985
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 2471,
+          "per_connection": 0.17241138710577728,
+          "mean_handling_micros": 817.3361987049777,
+          "max_handling_micros": 18007.748
+        }
+      ],
+      "control_calls_per_connection": 3.1730393524979066,
+      "authorize_calls": 14335,
+      "authorize_cache_hit_rate_pct": 0,
+      "errors": [
+        {
+          "stage": "exec: EOF: ",
+          "count": 3
+        }
+      ],
+      "notes": [
+        "3 of 14335 connections failed; see errors"
+      ]
+    }
+  ],
+  "saturation": "CPU: the top step offered 900 conn/s and achieved 716 (20% short) while the proxy used 1.88 of 4 cores. Note that the generator and the target share those cores, so this is a FLOOR on the proxy's rate, not its ceiling",
+  "proxy_log_tail": "2026/09/04 23:19:31 proxy: session=sess-571a7bbe091efab5 start subject=svc0@load.invalid login=svc0 target=t0000020.load.invalid client=127.0.0.1:59924 method=cert hop_peer=false trail=\n2026/09/04 23:19:31 routing: session=sess-571a7bbe091efab5 subject=svc0@load.invalid target=t0000020.load.invalid route=direct permissions=loadgen channels=[session] exec=filtered enforcement=proxy-inspected/proxy-channel-policy hop=dial decision=\n2026/09/04 23:19:31 auth/target: static-key provisioned subject=svc0@load.invalid target=127.0.0.1:41819 login=loadgen\n2026/09/04 23:19:31 proxy: session=sess-571a7bbe091efab5 target leg up target=127.0.0.1:41819 route=direct permissions=loadgen channels=[session]\n2026/09/04 23:19:31 proxy: session=sess-571a7bbe091efab5 end subject=svc0@load.invalid target=t0000020.load.invalid duration=4ms\n2026/09/04 23:19:31 auth: session=sess-cb9a9cc1b7da4508 method=cert login=\"svc0\" key=SHA256:AZV/RKHrUH5dZ0ULfoEJ0jOOcMm+Jx39j3ogbFYey5Y: asking Hoplock Control\n2026/09/04 23:19:31 auth: session=sess-cb9a9cc1b7da4508 method=cert login=\"svc0\" key=SHA256:AZV/RKHrUH5dZ0ULfoEJ0jOOcMm+Jx39j3ogbFYey5Y: authenticated subject=svc0@load.invalid source=loadgen\n2026/09/04 23:19:31 proxy: session=sess-cb9a9cc1b7da4508 start subject=svc0@load.invalid login=svc0 target=t0000021.load.invalid client=127.0.0.1:59936 method=cert hop_peer=false trail=\n2026/09/04 23:19:31 routing: session=sess-cb9a9cc1b7da4508 subject=svc0@load.invalid target=t0000021.load.invalid route=direct permissions=loadgen channels=[session] exec=filtered enforcement=proxy-inspected/proxy-channel-policy hop=dial decision=\n2026/09/04 23:19:31 auth/target: static-key provisioned subject=svc0@load.invalid target=127.0.0.1:41819 login=loadgen\n2026/09/04 23:19:31 proxy: session=sess-cb9a9cc1b7da4508 target leg up target=127.0.0.1:41819 route=direct permissions=loadgen channels=[session]\n2026/09/04 23:19:31 proxy: session=sess-cb9a9cc1b7da4508 end subject=svc0@load.invalid target=t0000021.load.invalid duration=3ms\n2026/09/04 23:19:31 auth: session=sess-e04fdbbfeeebc369 method=cert login=\"svc0\" key=SHA256:AZV/RKHrUH5dZ0ULfoEJ0jOOcMm+Jx39j3ogbFYey5Y: asking Hoplock Control\n2026/09/04 23:19:31 auth: session=sess-e04fdbbfeeebc369 method=cert login=\"svc0\" key=SHA256:AZV/RKHrUH5dZ0ULfoEJ0jOOcMm+Jx39j3ogbFYey5Y: authenticated subject=svc0@load.invalid source=loadgen\n2026/09/04 23:19:31 proxy: session=sess-e04fdbbfeeebc369 start subject=svc0@load.invalid login=svc0 target=t0000022.load.invalid client=127.0.0.1:59940 method=cert hop_peer=false trail=\n2026/09/04 23:19:31 routing: session=sess-e04fdbbfeeebc369 subject=svc0@load.invalid target=t0000022.load.invalid route=direct permissions=loadgen channels=[session] exec=filtered enforcement=proxy-inspected/proxy-channel-policy hop=dial decision=\n2026/09/04 23:19:31 auth/target: static-key provisioned subject=svc0@load.invalid target=127.0.0.1:41819 login=loadgen\n2026/09/04 23:19:31 proxy: session=sess-e04fdbbfeeebc369 target leg up target=127.0.0.1:41819 route=direct permissions=loadgen channels=[session]\n2026/09/04 23:19:31 proxy: session=sess-e04fdbbfeeebc369 end subject=svc0@load.invalid target=t0000022.load.invalid duration=4ms\n2026/09/04 23:19:31 auth: session=sess-6ffc0201d0ef4b7b method=cert login=\"svc0\" key=SHA256:AZV/RKHrUH5dZ0ULfoEJ0jOOcMm+Jx39j3ogbFYey5Y: asking Hoplock Control"
+}

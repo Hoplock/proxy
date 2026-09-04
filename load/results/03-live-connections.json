@@ -1,0 +1,82 @@
+{
+  "scenario": "03-live-connections",
+  "description": "Memory and descriptors per LIVE connection, from a held plateau, and the concurrency ceiling that implies at a stated memory budget.\n",
+  "kind": "connection",
+  "started_at": "2026-09-04T23:23:42.302061476Z",
+  "host": {
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 4,
+    "go_version": "go1.26.0",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "total_memory_mib": 16075
+  },
+  "steps": [
+    {
+      "mode": "hold",
+      "measured_duration": "1m1.245s",
+      "warmup": "15s",
+      "hold_target_connections": 2000,
+      "subjects": 1,
+      "targets": 2000,
+      "target_order": "cycle",
+      "cache_hint": false,
+      "attempted": 2000,
+      "succeeded": 2000,
+      "failed": 0,
+      "achieved_rate_per_sec": 32.65595496862677,
+      "peak_live_connections": 2000,
+      "connect_mean_ms": 2.926525,
+      "connect_p50_ms": 2.695546,
+      "connect_p95_ms": 3.739614,
+      "connect_p99_ms": 8.662711,
+      "session_mean_ms": 3.994737,
+      "session_p95_ms": 5.380752,
+      "baseline_rss_kib": 11708,
+      "plateau_rss_kib": 247755.5483870968,
+      "plateau_live_connections": 1996.6182795698924,
+      "plateau_samples": 186,
+      "rss_per_live_connection_kib": 118.22367390022377,
+      "peak_rss_kib": 248468,
+      "peak_fds": 4011,
+      "fd_limit": 20000,
+      "peak_threads": 10,
+      "proxy_cpu_seconds": 12.01,
+      "proxy_cpu_ms_per_connection": 6.005,
+      "proxy_cpu_cores_used": 0.19609900958660378,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 2000,
+          "per_connection": 1,
+          "mean_handling_micros": 47.452524,
+          "max_handling_micros": 853.28
+        },
+        {
+          "path": "/v1/authorize",
+          "count": 2000,
+          "per_connection": 1,
+          "mean_handling_micros": 58.964725,
+          "max_handling_micros": 429.988
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 2000,
+          "per_connection": 1,
+          "mean_handling_micros": 46.139002999999995,
+          "max_handling_micros": 1172.947
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 355,
+          "per_connection": 0.1775,
+          "mean_handling_micros": 641.4134788732395,
+          "max_handling_micros": 5593.135
+        }
+      ],
+      "control_calls_per_connection": 3.1775,
+      "authorize_calls": 2000,
+      "authorize_cache_hit_rate_pct": 0
+    }
+  ]
+}

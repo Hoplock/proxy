@@ -1,0 +1,32 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# The ephemeral-user provisioning ceiling, PER TARGET (PLAN §5.1).
+#
+# This is the one measurement here that is not about a proxy. `useradd` and
+# `userdel` take the target's account-database lock, so however many proxies
+# front a host, the host's account churn rate is what it is. D17 asserts that
+# per-check provisioning "is not a thing that can be done"; this is the number
+# behind that sentence, or the number that refutes it.
+#
+# It runs the full cycle the real path runs: create the account, write a session
+# key into its home, remove both. 07 runs it without the home directory, and the
+# difference between the two says whether the lock or the filesystem is the
+# limit.
+#
+# REQUIRES ROOT. It creates and removes real local accounts named with the
+# prefix below, on the machine it runs on. Use a throwaway host or container.
+
+name: 06-provisioning-ceiling
+kind: provisioning
+description: >
+  Provision/teardown cycles per second against one target, swept over concurrent
+  provisioners, with a home directory and an authorized_keys write.
+
+provisioning:
+  executor: local
+  cycles: 120
+  concurrency: [1, 2, 4, 8, 16, 32]
+  home: true
+  authorized_keys: true
+  prefix: hl-load

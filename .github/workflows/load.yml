@@ -1,0 +1,60 @@
+name: Load
+
+# The scale harness (docs/PLAN.md §10, phase 0020; load/README.md).
+#
+# MANUALLY TRIGGERED, deliberately. A load run is neither fast nor
+# deterministic, and a GitHub-hosted runner's throughput varies enough between
+# runs that gating a pull request on it would report the runner rather than the
+# proxy. It is here so a run is reproducible by anyone with the repository —
+# not so it can fail somebody's PR.
+#
+# The numbers a hosted runner produces are NOT the ones docs/PLAN.md §10.1
+# quotes: they were taken on the hardware that section names. Use this job to
+# see whether a change moved a number, not to establish one.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Scenario file to run (blank runs every connection scenario)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    name: scale harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: raise the descriptor limit
+        # A hold-mode scenario opens two descriptors per live connection in the
+        # proxy alone. The default soft limit would make the run a measurement
+        # of that limit, which is a real ceiling but not the one being asked
+        # about here — the report names descriptors when they are what bound a
+        # run, and this keeps that honest.
+        run: ulimit -n 65535 && ulimit -n
+
+      - name: run the harness
+        run: |
+          if [ -n "${{ inputs.scenario }}" ]; then
+            make load-one SCENARIO="${{ inputs.scenario }}"
+          else
+            make load
+          fi
+
+      - name: upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-results
+          path: load/results/
+          if-no-files-found: ignore

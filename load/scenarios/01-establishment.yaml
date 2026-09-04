@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# What one connection costs a proxy, and where the establishment rate stops
+# rising. Nothing is cached: this is the floor every other number sits on, and
+# it is the shape D17's arithmetic assumes for a health check — connect, run one
+# command, disconnect.
+
+name: 01-establishment
+kind: connection
+description: >
+  Establishment cost and the offered-rate sweep, with no decision caching, so
+  every connection pays the full three control round trips PLAN §6.4 describes.
+
+run:
+  mode: rate
+  rate_steps: [100, 300, 600, 900]
+  duration: 20s
+  warmup: 10s
+  session: exec
+  command: "show version"
+
+workload:
+  subjects: 1
+  # A small working set on purpose: this scenario is not about the cache, and
+  # a large one would make the numbers a measurement of map growth.
+  targets: 32
+  order: cycle
+
+control:
+  cache_hint: false

@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# What a live connection costs in memory. Rate mode cannot answer this: its
+# connections do not overlap, so there is no plateau to read a per-connection
+# figure off. This ramps to a fixed number of live connections and holds them.
+
+name: 03-live-connections
+kind: connection
+description: >
+  Memory and descriptors per LIVE connection, from a held plateau, and the
+  concurrency ceiling that implies at a stated memory budget.
+
+run:
+  mode: hold
+  concurrency: 2000
+  duration: 45s
+  # The ramp is the warmup here: connections are opened over this window rather
+  # than all at once, so the plateau is a plateau and not a spike.
+  warmup: 15s
+  session: exec
+  command: "show version"
+  sample_interval: 250ms
+
+workload:
+  subjects: 1
+  targets: 2000
+  order: cycle
+
+control:
+  cache_hint: false
