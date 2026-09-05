@@ -143,6 +143,52 @@ jobs:
         if: always()
         run: make e2e-down
 
+  test-sshd:
+    name: target credentials (real sshd)
+    runs-on: ubuntu-latest
+    # The tests that only a real sshd and a real kernel can answer, against the
+    # container deploy/target builds: does sshd honour the `authorized_keys`
+    # options an enforcement rung writes, for a connection that never went
+    # through the proxy; does a per-uid packet filter actually refuse a
+    # destination the policy did not name; does `useradd` handing out a freed
+    # uid give the next session anything the last one was standing behind.
+    #
+    # It is a SEPARATE JOB from `e2e topology` rather than another step in it,
+    # because the two answer different questions and a reviewer should not have
+    # to open a log to find out which one broke. They also share nothing but the
+    # image: this one publishes the target on a host port and drives it from the
+    # runner, with no proxy in the path at all — which is precisely the point,
+    # since the claim under test is that the rung holds without one.
+    #
+    # Everything here also skips cleanly without the container (each test calls
+    # requireSSHD), so `go test ./...` in the build job stays green on a machine
+    # with no Docker. This job is what stops that skip from being permanent.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # Split from `make test-sshd` for the reason the e2e job is split: the
+      # local target tears the container down on the way out, and this job wants
+      # its log first.
+      - name: bring the target up
+        run: make test-sshd-up
+
+      - name: run the target-credential tests
+        run: make test-sshd-run
+
+      - name: target log
+        if: always()
+        run: HOPLOCK_SSHD_PORT=2022 docker compose -p hoplock-sshd -f deploy/target/compose.yaml logs --no-color --tail 500
+
+      - name: tear the target down
+        if: always()
+        run: make test-sshd-down
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

@@ -4,6 +4,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -115,18 +116,35 @@ func TestSSHDAccountRestrictedHoldsAgainstADirectConnection(t *testing.T) {
 			t.Errorf("%s (%q) ran on the target: %q", name, command, out)
 		}
 	}
-	// No interactive session either: `restrict` denies the pty and the
-	// dispatcher denies a request carrying no command at all.
+	// No interactive session either, and the two halves of that fail at
+	// DIFFERENT LAYERS — which is the whole shape of the rung, so they are
+	// asserted separately rather than as one "no shell" check.
 	sess, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer func() { _ = sess.Close() }()
+
+	// sshd, from the key's `restrict`: the terminal request itself is refused.
 	if err := sess.RequestPty("xterm", 24, 80, ssh.TerminalModes{}); err == nil {
 		t.Error("the account obtained a terminal, which `restrict` is supposed to deny")
 	}
-	if err := sess.Shell(); err == nil {
-		t.Error("the account obtained a shell")
+
+	// The dispatcher, from `command=`: sshd ACCEPTS the shell request and runs
+	// the forced command in its place, so Shell() returning nil proves nothing
+	// — it means the request was accepted, not that a shell was obtained. What
+	// the account gets is the dispatcher, with no command in the environment,
+	// which is default-deny. The claim is therefore about what the session
+	// DID, so it is asserted on the exit status.
+	var out bytes.Buffer
+	sess.Stdout, sess.Stderr = &out, &out
+	if err := sess.Shell(); err != nil {
+		// Refused outright is also a pass: it is a stronger answer than the
+		// one below, and some sshd configurations give it.
+		return
+	}
+	if err := sess.Wait(); err == nil {
+		t.Errorf("the account obtained a working shell: %q", out.String())
 	}
 }
 

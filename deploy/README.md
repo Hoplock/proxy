@@ -132,7 +132,12 @@ rule rather than to a search.
 `make test-sshd` runs the phase-0007 credential tests — and phase 0019's
 enforcement tests, which are the only place the "a rung holds for a connection
 made around the proxy" claim is executable — against this same image on its own
-(`target/compose.yaml`), published on a host port.
+(`target/compose.yaml`), published on a host port. **It gates every pull
+request**, as the `target credentials (real sshd)` job. `make test-sshd-up`
+leaves the container running so a failing test can be poked at, `test-sshd-run`
+re-runs the tests against it, and `test-sshd-down` cleans up — the same split
+`e2e-up`/`e2e-down` has, and for the same reason: the all-in-one target tears
+down on the way out and takes the evidence with it.
 
 ## Debugging a failed scenario
 

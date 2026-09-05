@@ -1,5 +1,13 @@
 # 0019 — Target-side enforcement — Learnings
 
+> **One line has been overtaken by a later change, and the body below is left as
+> the record of what this phase shipped** (`docs/PROTOCOL.md` §3). Where it says
+> `make test-sshd` is not part of the CI gate — *Details → Testing* and *What
+> could not be run in this session* — that is no longer true: a follow-up added
+> the `target credentials (real sshd)` job, so the direct-connection, egress,
+> uid-reuse and mid-rung-residue tests now run on every pull request. Everything
+> else here stands.
+
 ## Summary
 - **What shipped:** the rungs of `docs/PLAN.md` §6.5 are now real on the target.
   `internal/auth/target` probes what a target can enforce, refuses a rung it
