@@ -1,18 +1,41 @@
 # 0021 — Machine-identity connection model: bound the snapshot, not the connection
 
-> New phase (privileged-access revision, PLAN §10). **Conditional on 0020.** If
-> 0020's measurements and the customer's answer show that connection-per-check
-> is comfortably within budget, this phase is not needed and the right outcome
-> is to say so and delete it. Read 0020's learnings summary before anything
-> else; its closing verdict may be the whole answer.
+> New phase (privileged-access revision, PLAN §10). **Conditional on 0020,
+> which has now run.** Read `docs/PLAN.md` **§9.1** and 0020's learnings summary
+> before anything else; between them they may be the whole answer. If
+> connection-per-check is comfortably within budget, this phase is not needed
+> and the right outcome is to say so and delete it.
+>
+> **The load premise did not survive.** A connection costs ~2.6 ms of proxy CPU
+> and a live one ~118 KiB, and the customer confirmed health checking is over
+> SSH every **five minutes** — sixty seconds is retained only as a worst case.
+> That is 1,167 conn/s: **one to two proxies**, and four to nine even at the
+> worst case. Per-check provisioning is not a wall either — one target sustains
+> **58 account cycles/s** against the **0.017/s** a poll of it asks for.
+>
+> **What is left is Hoplock Control load, and it now has a cheaper answer than
+> this phase.** 0020 also found that the decision cache holds 4,096 entries and
+> never evicts, so the **3.17** Control calls per connection do not amortise at
+> UC2's fan-out. Phases **0031** (cache eviction and a configurable bound) and
+> **0032** (host-key report reuse) did not exist when this prompt was written;
+> together they take 3.17 → ~1.17 without amending D2 at all. **Weigh this
+> phase against those two rather than against today's behaviour**, and say in
+> the learnings which comparison you made.
+>
+> One framing correction while you are deciding: §2 below, channel-level audit,
+> is a **cost this change incurs, not a reason to make it**. It exists only
+> because a persistent connection carries many checks. Do not read it as an
+> independent motivation that survives the load argument.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
 - `docs/learnings/0020-…` — **first, and possibly last**: the measured numbers
   and the verdict on whether D17's premise survived.
-- `docs/PLAN.md` — **D17** (what this implements, and what it amends in D2), D2
-  and §6.4 (the caching and revocation model this must not undermine), §7 (what
-  a session record contains today), §13 UC2.
+- `docs/PLAN.md` — **§9.1 first** (0020's measured sizing, which post-dates
+  this prompt and carries the numbers above with their methodology), then
+  **D17** (what this implements, what it amends in D2, and the amendment 0020
+  added to it), D2 and §6.4 (the caching and revocation model this must not
+  undermine), §7 (what a session record contains today), §13 UC2.
 - `docs/learnings/` — open `0003` (cache and revocation), `0005` (the connection
   lifecycle and the session registry), `0009` (the channel pipeline, since the
   unit of policy moves onto it), `0011` (what a log record is per session).
