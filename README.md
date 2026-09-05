@@ -71,7 +71,9 @@ before reading the code.
 ```sh
 make build                      # binaries into ./bin
 make test                       # unit tests with -race
-make test-sshd                  # credential tests against a real sshd (needs docker)
+make test-sshd                  # credential + enforcement tests against a real
+                                # sshd (needs docker); gated in CI, and
+                                # test-sshd-up / -run / -down split it up
 make vet                        # go vet
 make lint                       # golangci-lint
 make license-check              # every .go file carries the license header

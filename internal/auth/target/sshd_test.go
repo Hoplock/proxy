@@ -147,8 +147,9 @@ func TestSSHDOrphanIsReaped(t *testing.T) {
 		ProxyID:        "integration-orphan",
 		Dialer:         sshd.dialer,
 		ReaperInterval: -1,
-		// A zero grace period so the sweep does not have to wait out a real
-		// clock; the grace is tested against the fake host instead.
+		// The shortest grace the reaper accepts, so the sweep below does not
+		// have to wait out a real clock. It is NOT enough on its own — see the
+		// ageing step further down.
 		ReaperGrace: time.Nanosecond,
 	})
 	if err != nil {
@@ -163,6 +164,21 @@ func TestSSHDOrphanIsReaped(t *testing.T) {
 		t.Fatalf("Provision: %v", err)
 	}
 	principal := access.ClientConfig.User
+
+	// Age the orphan explicitly.
+	//
+	// The sweep ages a candidate by its home directory's mtime, on the TARGET's
+	// clock, in WHOLE SECONDS (Reaper.parseDiscovery). A home created in the
+	// same second as the sweep is therefore zero seconds old and inside any
+	// grace period however short — including the nanosecond above — so this
+	// test passed or failed on whether the target's clock happened to tick
+	// between two operations that take a few hundred milliseconds. On a CI
+	// runner it does not. The fake-host reaper tests never hit this because
+	// they set an account's age directly (fakeHost.addAccount).
+	//
+	// Touching the home into the distant past says what the test means — this
+	// orphan is old — instead of sleeping and hoping.
+	sshd.run(t, "touch -d @1 "+shellQuote(crashed.homeFor(principal)))
 
 	// The process dies: no teardown, no registry.
 	restarted, err := NewEphemeralAuthenticator(EphemeralOptions{

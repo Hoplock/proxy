@@ -15,14 +15,20 @@ SSHD_PORT ?= 2022
 E2E_PROJECT := hoplock-e2e
 COMPOSE := docker compose -p $(E2E_PROJECT) -f $(DEPLOY_DIR)/compose.yaml
 E2E_CLEAN := rm -rf $(DEPLOY_DIR)/keys $(DEPLOY_DIR)/bin $(DEPLOY_DIR)/control/fixtures.yaml
+# The target node on its own, published on a host port. It shares the e2e
+# topology's image and material, and its own compose project so the two can be
+# up at once without either tearing down the other's containers.
+SSHD_COMPOSE := HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -p hoplock-sshd -f $(DEPLOY_DIR)/target/compose.yaml
 
 LOAD_DIR := load
 LOAD_OUT ?= $(LOAD_DIR)/results
 LOAD_SCENARIOS := $(sort $(wildcard $(LOAD_DIR)/scenarios/0[1-5]-*.yaml))
 LOAD_PROVISIONING := $(sort $(wildcard $(LOAD_DIR)/scenarios/0[6-9]-*.yaml))
 
-.PHONY: all build test test-sshd e2e e2e-build e2e-up e2e-down vet lint fmt license-check \
-	openapi-check vulncheck tidy run-proxy run-mock clean load load-provisioning load-one
+.PHONY: all build test test-sshd test-sshd-up test-sshd-run test-sshd-down \
+	e2e e2e-build e2e-up e2e-down vet lint fmt license-check \
+	openapi-check vulncheck tidy run-proxy run-mock clean \
+	load load-provisioning load-one
 
 all: build vet test lint
 
@@ -36,23 +42,49 @@ build:
 test:
 	$(GO) test -race ./...
 
-## test-sshd: run the target-credential tests against a real sshd in a container
-## (needs docker). It shares the e2e topology's target image and material.
-test-sshd:
+## test-sshd: bring the target container up, run the tests against its real
+## sshd, tear it down (needs docker). It shares the e2e topology's target image
+## and material; see deploy/README.md.
+test-sshd: test-sshd-up
 	@set -e; \
-	$(DEPLOY_DIR)/gen-material.sh; \
-	trap 'HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -p hoplock-sshd -f $(DEPLOY_DIR)/target/compose.yaml down -v >/dev/null 2>&1; $(E2E_CLEAN)' EXIT; \
-	HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -p hoplock-sshd -f $(DEPLOY_DIR)/target/compose.yaml up -d --build; \
+	trap '$(MAKE) --no-print-directory test-sshd-down >/dev/null 2>&1' EXIT; \
+	$(MAKE) --no-print-directory test-sshd-run
+
+## test-sshd-up: generate key material and start the target container, waiting
+## for its sshd to answer (leaves it running, which is what makes a failing
+## test debuggable)
+test-sshd-up:
+	$(DEPLOY_DIR)/gen-material.sh
+	$(SSHD_COMPOSE) up -d --build
+	@echo "waiting for the target's sshd on 127.0.0.1:$(SSHD_PORT)"; \
 	for i in $$(seq 1 60); do \
-		if ssh-keyscan -p $(SSHD_PORT) 127.0.0.1 2>/dev/null | grep -q ssh; then break; fi; \
+		if ssh-keyscan -p $(SSHD_PORT) 127.0.0.1 2>/dev/null | grep -q ssh; then exit 0; fi; \
 		sleep 1; \
 	done; \
+	echo "the target's sshd did not answer within 60s; its log follows" >&2; \
+	$(SSHD_COMPOSE) logs --no-color --tail 200; \
+	exit 1
+
+## test-sshd-run: the tests alone, against a container that is already up
+#
+# The two key paths are ABSOLUTE, and that is not tidiness. `go test` runs each
+# test binary with its own PACKAGE DIRECTORY as the working directory, so a
+# relative path here resolves against internal/auth/target/ rather than the
+# repository root, and every test fails with "no such file or directory" on
+# material that is sitting right where it was generated. This target carried
+# that bug from phase 0007 until the CI job started running it.
+test-sshd-run:
 	HOPLOCK_TEST_SSHD_ADDR=127.0.0.1:$(SSHD_PORT) \
-	HOPLOCK_TEST_SSHD_MANAGEMENT_KEY=$(DEPLOY_DIR)/keys/management_key \
+	HOPLOCK_TEST_SSHD_MANAGEMENT_KEY=$(CURDIR)/$(DEPLOY_DIR)/keys/management_key \
 	HOPLOCK_TEST_SSHD_PROVISIONING_USER=root \
 	HOPLOCK_TEST_SSHD_BROKERED_USER=netadmin \
-	HOPLOCK_TEST_SSHD_BROKERED_KEY=$(DEPLOY_DIR)/keys/brokered_key \
-	$(GO) test -count=1 -v -run TestSSHD ./internal/auth/target/
+	HOPLOCK_TEST_SSHD_BROKERED_KEY=$(CURDIR)/$(DEPLOY_DIR)/keys/brokered_key \
+	$(GO) test -count=1 -v -timeout 15m -run TestSSHD ./internal/auth/target/
+
+## test-sshd-down: stop the target container and remove what it generated
+test-sshd-down:
+	-$(SSHD_COMPOSE) down -v
+	$(E2E_CLEAN)
 
 ## e2e: bring the 5-node topology up, run the scenario suite, tear it down.
 ## This is the prototype's acceptance gate (docs/PLAN.md §9); see deploy/README.md.

@@ -516,7 +516,8 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 hoplock/
 ├── cmd/
 │   ├── proxy/            # the proxy daemon (main)
-│   └── mock-control/    # reference/mock Control API for dev + CI
+│   ├── mock-control/    # reference/mock Control API for dev + CI
+│   └── loadgen/          # the scale harness (§9.1); not in any gating job
 ├── internal/
 │   ├── config/             # YAML bootstrap config loader
 │   ├── identity/           # identity + claims model (AD/Okta/OIDC-ready)
@@ -534,7 +535,9 @@ hoplock/
 │   └── sshtest/            # test support: in-process SSH target + key helpers
 ├── api/                    # API contract (OpenAPI/JSON Schema) — source of truth
 ├── deploy/                 # docker-compose e2e topology + fixtures
-├── .github/workflows/      # CI (build, vet, test, lint, e2e)
+├── load/                   # load scenarios + the measurements behind §9.1
+├── .github/workflows/      # CI (build, vet, test, lint, e2e, test-sshd) +
+│                           #   load (manual only — it gates nothing)
 ├── docs/
 │   ├── PLAN.md             # this file
 │   ├── PROTOCOL.md         # session workflow (read before any work)
@@ -1816,6 +1819,35 @@ leaves the host. `account-egress-restricted` permits loopback only if the policy
 names it — which is faithful to its sentence and is a real operational
 constraint: a session that needs a local resolver must have one named.
 
+**A default-REJECT on the session's own uid does not cut the session carrying
+it, and nobody should "fix" the fact that it looks like it should.** This is the
+first question anyone asks of the reach rungs, and getting the answer wrong in
+either direction is expensive.
+
+The rules match on `-m owner --uid-owner <the session's uid>`, and netfilter's
+owner match reads the socket's `sk_uid` — which is fixed when the socket is
+CREATED, from the creating process's uid. It is not the uid of whatever process
+later holds the descriptor. sshd's listening socket, and the connection accepted
+from it, are created by root long before sshd forks the session's child and
+drops to the ephemeral account. That connection therefore carries `sk_uid` 0 for
+its whole life and never matches these rules. What does match is every socket
+the session's own processes open for themselves — which is exactly, and only,
+what the rung is a claim about.
+
+Both halves are pinned by tests rather than left to the reading above: the
+`target-side enforcement` scenarios run a command over a session whose uid is
+under a default-REJECT and get its output back, and
+`TestSSHDEgressRungRefusesADestinationThePolicyDidNotName` does the same over a
+connection with no proxy in the path.
+
+**The trap this exists to prevent** is the plausible-looking repair. An engineer
+who assumes the filter must be strangling the session reaches for an exemption —
+`--dport 22 -j ACCEPT` before the reject — and that hole is not small: it lets a
+confined session reach **any host in the estate on port 22**, which is the
+pivot the reach axis exists to close (§6.5's survey opens on exactly that
+scenario). There is nothing to exempt. If a session ever does die the moment its
+rung is applied, the cause is elsewhere and the rule set is not where to look.
+
 **A containerised target needs one thing a host does not.** Docker's default
 AppArmor profile denies `mount` outright, before capabilities are consulted, so
 `CAP_SYS_ADMIN` is necessary and not sufficient for the filesystem half of
@@ -1943,11 +1975,31 @@ Still out of scope: tamper-evident/append-only storage at the destination
 - **Errors/logging**: no secrets in error strings; structured logging internally.
 - **Testing**: unit tests per package; table-driven where sensible; the mock
   Hoplock Control backs integration tests.
-- **CI**: six jobs gate a pull request (`.github/workflows/ci.yml`):
+- **CI**: seven jobs gate a pull request (`.github/workflows/ci.yml`):
   `build-test` (`go build`, `go vet`, `go test -race`, on the go.mod floor and
   on `GO_VERSION`), `lint` (`golangci-lint`), `openapi` (validates
-  `api/control.yaml`), `license` (per-file headers), `e2e` (Section 9), and
-  `govulncheck`. See D9.
+  `api/control.yaml`), `license` (per-file headers), `e2e` (Section 9),
+  `test-sshd`, and `govulncheck`. See D9.
+
+  An **eighth** workflow, `load`, exists and deliberately gates nothing: it is
+  `workflow_dispatch` only. A load run (§9.1) is neither fast nor
+  deterministic, and a hosted runner's throughput varies enough between runs
+  that gating a pull request on it would report the runner rather than the
+  proxy. It is in the repository so a run is reproducible by anyone, not so it
+  can fail somebody's PR.
+
+  **`test-sshd` runs the tests that only a real sshd and a real kernel can
+  answer**, against the `deploy/target/` container with **no proxy in the
+  path**: whether sshd honours the `authorized_keys` options an enforcement
+  rung writes for a connection made around the proxy (§6.5), whether a per-uid
+  packet filter really refuses a destination the policy did not name, and
+  whether a freed uid hands the next session anything the last one stood
+  behind. Those tests skip cleanly when the container is absent — which is what
+  keeps `go test ./...` green on a machine without Docker — so without this job
+  the skip is permanent and the strongest claim in §6.5 is untested. It is
+  separate from `e2e` rather than a step inside it because the two answer
+  different questions, and a reviewer should not have to open a log to learn
+  which one broke.
 
   **`govulncheck` is a gate rather than a periodic chore because of what this
   project's dependency tree is.** `golang.org/x/crypto/ssh` is not incidental
