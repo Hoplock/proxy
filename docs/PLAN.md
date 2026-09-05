@@ -512,7 +512,7 @@ hoplock/
 │   └── sshtest/            # test support: in-process SSH target + key helpers
 ├── api/                    # API contract (OpenAPI/JSON Schema) — source of truth
 ├── deploy/                 # docker-compose e2e topology + fixtures
-├── .github/workflows/      # CI (build, vet, test, lint, e2e)
+├── .github/workflows/      # CI (build, vet, test, lint, e2e, test-sshd)
 ├── docs/
 │   ├── PLAN.md             # this file
 │   ├── PROTOCOL.md         # session workflow (read before any work)
@@ -1909,11 +1909,24 @@ Still out of scope: tamper-evident/append-only storage at the destination
 - **Errors/logging**: no secrets in error strings; structured logging internally.
 - **Testing**: unit tests per package; table-driven where sensible; the mock
   Hoplock Control backs integration tests.
-- **CI**: six jobs gate a pull request (`.github/workflows/ci.yml`):
+- **CI**: seven jobs gate a pull request (`.github/workflows/ci.yml`):
   `build-test` (`go build`, `go vet`, `go test -race`, on the go.mod floor and
   on `GO_VERSION`), `lint` (`golangci-lint`), `openapi` (validates
-  `api/control.yaml`), `license` (per-file headers), `e2e` (Section 9), and
-  `govulncheck`. See D9.
+  `api/control.yaml`), `license` (per-file headers), `e2e` (Section 9),
+  `test-sshd`, and `govulncheck`. See D9.
+
+  **`test-sshd` runs the tests that only a real sshd and a real kernel can
+  answer**, against the `deploy/target/` container with **no proxy in the
+  path**: whether sshd honours the `authorized_keys` options an enforcement
+  rung writes for a connection made around the proxy (§6.5), whether a per-uid
+  packet filter really refuses a destination the policy did not name, and
+  whether a freed uid hands the next session anything the last one stood
+  behind. Those tests skip cleanly when the container is absent — which is what
+  keeps `go test ./...` green on a machine without Docker — so without this job
+  the skip is permanent and the strongest claim in §6.5 is untested. It is
+  separate from `e2e` rather than a step inside it because the two answer
+  different questions, and a reviewer should not have to open a log to learn
+  which one broke.
 
   **`govulncheck` is a gate rather than a periodic chore because of what this
   project's dependency tree is.** `golang.org/x/crypto/ssh` is not incidental
