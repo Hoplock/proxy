@@ -60,12 +60,19 @@ test-sshd-up:
 	exit 1
 
 ## test-sshd-run: the tests alone, against a container that is already up
+#
+# The two key paths are ABSOLUTE, and that is not tidiness. `go test` runs each
+# test binary with its own PACKAGE DIRECTORY as the working directory, so a
+# relative path here resolves against internal/auth/target/ rather than the
+# repository root, and every test fails with "no such file or directory" on
+# material that is sitting right where it was generated. This target carried
+# that bug from phase 0007 until the CI job started running it.
 test-sshd-run:
 	HOPLOCK_TEST_SSHD_ADDR=127.0.0.1:$(SSHD_PORT) \
-	HOPLOCK_TEST_SSHD_MANAGEMENT_KEY=$(DEPLOY_DIR)/keys/management_key \
+	HOPLOCK_TEST_SSHD_MANAGEMENT_KEY=$(CURDIR)/$(DEPLOY_DIR)/keys/management_key \
 	HOPLOCK_TEST_SSHD_PROVISIONING_USER=root \
 	HOPLOCK_TEST_SSHD_BROKERED_USER=netadmin \
-	HOPLOCK_TEST_SSHD_BROKERED_KEY=$(DEPLOY_DIR)/keys/brokered_key \
+	HOPLOCK_TEST_SSHD_BROKERED_KEY=$(CURDIR)/$(DEPLOY_DIR)/keys/brokered_key \
 	$(GO) test -count=1 -v -timeout 15m -run TestSSHD ./internal/auth/target/
 
 ## test-sshd-down: stop the target container and remove what it generated
