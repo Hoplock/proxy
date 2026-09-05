@@ -2082,8 +2082,9 @@ This is the number the sibling repository is sized by.
 is the other two. A cache hint removes the authorize call and **nothing else**.
 Authentication is never cached by design, but the host-key report is neither a
 decision nor cached: a proxy reconnecting to a target it has seen ten thousand
-times reports the same host key ten thousand times. That is a real call-rate
-finding and it is not this phase's to fix.
+times reports the same host key ten thousand times. At **46% of the residual
+2.17 calls** it is the largest remaining item rather than a rounding error, and
+phase **0032** proposes the fix.
 
 Log shipping scales with `logging.batch_size`, so 0.17 is a configuration
 rather than a property: roughly 11 records per session at 64 records per batch.
@@ -2241,10 +2242,18 @@ None of these were fixed here — this phase changes no behaviour.
   every time, so it is a third of the residual Control load after caching. It is
   a *report* rather than a decision, so §6.4's caching rules do not cover it and
   a change would be a contract question.
-- **Three connections in ~14,300 failed with an EOF during `exec`** at the
-  overloaded 900 conn/s step, and none at any rate the box could actually
-  serve. Not root-caused, not reproduced below saturation, and recorded here so
-  a future run that sees it below saturation knows it has something.
+- **A few connections fail with an EOF during `exec` under overload — and the
+  evidence says that is the harness, not the proxy.** Reproduced across
+  ~118,000 connections at 900 conn/s offered with the proxy's full log
+  captured: for a failing connection the proxy logs **nothing** unusual, every
+  session it starts has a matching end bar those in flight when it is stopped,
+  and the only proxy-side error in 397,673 log lines is `handshake failed: EOF`
+  — the proxy watching a *client* vanish before the handshake completes. The
+  generator, the in-process target and the proxy share four cores at that
+  offered rate, so a client losing a connection is the expected cost of
+  measuring past saturation. Recorded because the absence of a proxy-side error
+  is evidence rather than proof: a run that sees this **below** saturation, or
+  one where the proxy logs a dropped session, has something real.
 
 ---
 
@@ -2285,6 +2294,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0029 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract |
 | 0030 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0025's). The row this table was missing; the prompt has been queued since phase 0019 |
 | 0031 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache holds a fixed 4,096 entries with **no eviction**, so a working set larger than that caches the first 4,096 shapes and refuses the rest. Give it LRU eviction, make the bound configurable, and re-derive the default from §9.1's measured per-entry cost. No contract change |
+| 0032 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` is 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. Let the server attach a cache hint to the host-key decision, keyed on a shape that **includes the fingerprint** so a changed key still reports (D7). Contract change — carries a cross-repo obligation |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.

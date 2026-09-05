@@ -112,14 +112,28 @@ has to stand on those two or not at all.
 ### Two other findings, not fixed here
 
 - **The host-key report is per connection and never cached.** After caching it
-  is a third of the residual Control load, and a proxy reconnecting to a known
-  target re-reports the same key every time. It is a *report* rather than a
-  decision, so §6.4's caching rules do not cover it; changing that is a contract
-  question and deliberately not queued off one measurement.
-- **Three connections in ~14,300 failed with an EOF during `exec`**, only at the
-  overloaded 900 conn/s step and never at a rate the box could serve. Not
-  root-caused and not reproduced below saturation. Recorded so a future run that
-  sees it below saturation knows it has something real.
+  is **46%** of the residual Control load — the largest remaining item, tied
+  with authentication — and a proxy reconnecting to a known target re-reports
+  the same key every time. It is a *report* rather than a decision, so §6.4's
+  caching rules do not cover it. Queued as **0032**, which is a contract change
+  and therefore carries a cross-repo obligation.
+- **A few connections fail with an EOF during `exec` under overload, and it is
+  the harness rather than the proxy.** Chased down rather than left as an
+  anomaly: reproduced over ~118,000 connections at 900 conn/s offered with the
+  proxy's full stderr captured. For a failing connection the proxy logs
+  **nothing** unusual; every session it starts has a matching end bar the ~45
+  in flight when it is stopped (which matches 600/s × the p99 latency); and the
+  single proxy-side error in 397,673 log lines is `handshake failed: EOF` — the
+  proxy watching a *client* go away mid-handshake. At that offered rate the
+  generator, the in-process target and the proxy contend for four cores.
+  Absence of a proxy-side error is evidence and not proof, so the bar for
+  reopening it is stated in `docs/PLAN.md` §9.1: the same failure **below**
+  saturation, or a proxy log that shows a dropped session.
+
+  Method note for whoever chases the next one: the harness keeps only the last
+  20 log lines, and only on failure, which is useless for attributing a rare
+  event. Raising `maxLog` in `proxyproc.go` and the `tail(...)` bound in
+  `connrun.go` yields the whole log; that is how this was settled.
 
 ### How the harness is built, and why
 
@@ -183,7 +197,11 @@ has to stand on those two or not at all.
 
 - **0031 — The decision cache under fan-out.** The change this phase proposes
   and deliberately did not make.
+- **0032 — Host-key report reuse.** The other call-rate finding. It is a
+  contract change, so it carries a cross-repo obligation that 0031 does not;
+  the two are independent and either order works, though running 0031 first
+  means 0032 inherits a cache that evicts.
 
-No other prompt was renumbered: 0031 depends on nothing in 0021–0030 and nothing
-there depends on it, so it appends. `docs/PLAN.md` §10's table also gained the
+No other prompt was renumbered: 0031 and 0032 depend on nothing in 0021–0030
+and nothing there depends on them, so they append. `docs/PLAN.md` §10's table also gained the
 **0030** row it had been missing since that prompt was queued.
