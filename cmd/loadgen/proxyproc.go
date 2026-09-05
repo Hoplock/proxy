@@ -17,8 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hoplock/proxy/internal/sshtest"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/hoplock/proxy/internal/sshtest"
 )
 
 // proxyProcess is the real hoplock-proxy binary, run as a child process.

@@ -10,9 +10,10 @@ import (
 	"runtime"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/sshtest"
-	"golang.org/x/crypto/ssh"
 )
 
 // ConnectionResult is one connection-kind run: the header that says what was
