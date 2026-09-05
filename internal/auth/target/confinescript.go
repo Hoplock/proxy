@@ -385,6 +385,16 @@ func (c *confinement) egressFragment() (string, error) {
 	// than a hang: a process that hangs on a denied destination looks like a
 	// broken network to whoever is watching, and the whole point of an
 	// enforcement point is that its refusals are legible.
+	//
+	// THIS DOES NOT CUT THE SSH SESSION IT CONFINES, and the temptation to
+	// "fix" that by exempting port 22 is a hole big enough to drive the whole
+	// reach axis through — it would let a confined session reach any host in
+	// the estate on 22. The owner match reads the socket's sk_uid, fixed at
+	// socket CREATION: sshd accepted this connection as root before it dropped
+	// to the ephemeral account, so it carries uid 0 for its whole life and
+	// never matches. Only sockets the session opens for itself do. PLAN §6.5,
+	// "A default-REJECT on the session's own uid", has the long version and
+	// names the tests that pin both halves.
 	for _, bin := range []string{"iptables", "ip6tables"} {
 		reject := "icmp-port-unreachable"
 		if bin == "ip6tables" {
