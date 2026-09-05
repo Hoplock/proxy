@@ -3,12 +3,14 @@
 ## Summary
 - **Verdict on D17 — read this line first.** Its premise does **not** survive
   contact with measurement. A connection costs this proxy **2.6 ms of CPU** and
-  a live one **118 KiB**, so 5,800 conn/s is 4–9 proxies: a deployment, not an
-  architecture. Per-check provisioning is not the wall D17 calls it either —
-  one target sustains **58 account cycles/s** against the 0.017/s a 60-second
-  poll asks of it. **0021 must be argued from audit granularity and Control
-  load, not from the connection arithmetic**, and its author should read
-  `docs/PLAN.md` §9.1 before deciding it is needed at all.
+  a live one **118 KiB**, so even its own worst-case 5,800 conn/s is 4–9
+  proxies: a deployment, not an architecture. At the interval the customer
+  actually confirmed — five minutes — it is **one to two**. Per-check
+  provisioning is not the wall D17 calls it either: one target sustains **58
+  account cycles/s** against the 0.017/s a 60-second poll asks of it. **0021
+  must be argued from audit granularity and Control load, not from the
+  connection arithmetic**, and its author should read `docs/PLAN.md` §9.1
+  before deciding it is needed at all.
 - **The finding that replaces it:** the authorize cache holds a fixed **4,096**
   entries with **no eviction policy**, so UC2's fan-out gets a hit rate of
   `MaxEntries / N` — ~1.4% at 300,000 targets. A server sharing one key across
@@ -28,9 +30,11 @@
   `Makefile`, `.github/workflows/load.yml`, `README.md`, `docs/PLAN.md`
   (**§9.1 new**, §5.1, §6.4, §9, §10 table, §13 UC2, D17),
   `prompts/queued/0031-decision-cache-under-fanout.md`.
-- **Open, and owned by the customer, not by a benchmark:** whether these
-  estates are health-checked over SSH every sixty seconds at all. Asked, **not
-  yet known** — see "The customer question" below.
+- **The customer question was asked and answered:** health checking **is** over
+  SSH, at a **five-minute** interval, with sixty seconds kept as a worst case.
+  At five minutes the estate is 1,167 conn/s — **one to two proxies** — so the
+  connection-volume argument for D17 does not survive at the real interval
+  either. §9.1 sizes both rows.
 
 ## Details
 
@@ -81,22 +85,29 @@ per-entry cost, and a regression test that drives more shapes than the bound.
 No contract change — the fix is entirely in `internal/control`, which is what
 scenario 05 establishes.
 
-### The customer question, asked and unanswered
+### The customer question, asked and answered
 
 D17's chain rests on an assumption a benchmark cannot settle: that large estates
 health-check network devices **over SSH, every sixty seconds**. The question was
-put to the user in this session, verbatim:
+put in this session, verbatim:
 
 > For the estate this product is being sized for, what fraction of routine
 > health checking runs over SSH rather than SNMP or streaming telemetry, and at
 > what interval?
 
-**Answer: not yet known.** It was not available in this session and no customer
-was reachable from it. `docs/PLAN.md` §9.1 records the question and sizes the
-5-minute and 15-minute worlds beside the 60-second one, so the answer, whenever
-it arrives, lands on a table rather than requiring a new measurement. **In the
-5- and 15-minute worlds a single proxy serves the whole estate**, which is why
-this matters more than any other input to 0021.
+**Answer: it is SSH, at a five-minute interval. Sixty seconds is retained as a
+worst case, not as the design target.**
+
+So the row to size against is 1,167 conn/s: **one to two proxies**, and ~3,700
+Hoplock Control requests per second. `docs/PLAN.md` §9.1 keeps the 60-second row
+beside it, because a worst case worth naming is worth sizing and because a poll
+interval changes without anyone re-reading that section.
+
+**What this settles for 0021.** Its connection-volume argument is gone at the
+real interval and is single digits even at the worst case. What is left is
+Control load and the audit-granularity question — and Control load is the number
+that does not amortise, because the cache does not work at this fan-out. 0021
+has to stand on those two or not at all.
 
 ### Two other findings, not fixed here
 

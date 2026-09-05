@@ -496,9 +496,13 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   (§5.1). What measurement *did* find is a different problem in the same place:
   the proxy's decision cache stops working above a fixed 4,096-entry bound, so
   the Hoplock Control request rate — the largest number in the chain — does not
-  amortise across a fleet at all (phase **0031**). And the assumption under all
-  of it, that these estates are health-checked over SSH every sixty seconds,
-  is still **unanswered**: §9.1 records the question to put to the customer.
+  amortise across a fleet at all (phase **0031**).
+
+  The assumption under all of it was **asked rather than measured around**, and
+  answered: the health checking is over SSH, at a **five-minute** interval, with
+  sixty seconds kept as a worst case. At five minutes the estate is 1,167
+  connections per second — **one to two proxies** — so the connection-volume
+  argument for this decision does not survive at the real interval either.
 
   So **0021 must be argued from the audit-granularity question and from Control
   load, not from the connection arithmetic above**, and its author should read
@@ -2167,9 +2171,12 @@ against one target.
 
 | Poll interval | Connections/sec | Proxies at the measured floor (716/s) | Proxies at the derived ceiling (~1,500/s) | Control req/sec, uncached |
 | --- | --- | --- | --- | --- |
-| 60 s | 5,833 | 9 | 4 | 18,500 |
-| 5 min | 1,167 | 2 | 1 | 3,700 |
+| 60 s — *worst case* | 5,833 | 9 | 4 | 18,500 |
+| **5 min — the real interval** | **1,167** | **2** | **1** | **3,700** |
 | 15 min | 389 | 1 | 1 | 1,230 |
+
+The five-minute row is the one to size against; see "The assumption, now
+answered" below for why, and why the sixty-second row is kept anyway.
 
 Per 1,000 targets at a 60-second poll: **16.7 conn/s** and **53 Control
 requests/sec** uncached — 36 with a cache that worked, which today it does not
@@ -2199,21 +2206,31 @@ amortise at all.
 - **This is one machine.** Re-run the scenarios on the hardware you intend to
   deploy before quoting any of this as a capacity plan.
 
-#### The assumption still unmeasured
+#### The assumption, now answered
 
-Everything above sizes the model D17 assumes: **connection per check, over SSH,
-every sixty seconds**. Whether that model describes any real estate is a
-question for the customer and not for a benchmark, and it remains **open**.
-Large network estates commonly health-check over SNMP or streaming telemetry,
-and the subset checked over SSH is typically checked every five to fifteen
-minutes. The 5-minute and 15-minute rows above exist because that is the more
-likely world, and in it a single proxy serves the whole estate.
+Everything above sizes the model D17 assumes: connection per check, over SSH,
+every sixty seconds. Whether that describes a real estate is a question for the
+customer rather than for a benchmark, so phase 0020 asked it rather than
+measuring around it.
 
-The question to put, verbatim: *for the estate this product is being sized for,
-what fraction of routine health checking runs over SSH rather than SNMP or
-streaming telemetry, and at what interval?* Until it is answered, the 60-second
-row is a worst case rather than a requirement, and **0021 should not be
-justified by it**.
+**Answer: the health checking is over SSH, at a five-minute interval.** The
+sixty-second figure is retained as a **worst case**, not as the design target.
+
+That makes the **5-minute row the one to size against**: 1,167 conn/s,
+**one to two proxies**, and ~3,700 Hoplock Control requests per second — a
+single deployment on hardware no larger than the box these numbers were taken
+on. The 60-second row stays in the table because a worst case worth naming is
+worth sizing, and because a poll interval is the kind of thing that changes
+without anyone re-reading this section.
+
+Two consequences follow, and 0021's author should start from them:
+
+- **The connection volume argument for D17 is gone at the real interval.** One
+  to two proxies is not a reason to change the connection model, and at the
+  worst case it is still single digits.
+- **The Control request rate is what is left.** 3,700 req/s at the real
+  interval, and it is the number that does *not* amortise, because the decision
+  cache does not work at this fan-out (see above, and phase 0031).
 
 #### Other findings from the harness
 

@@ -110,10 +110,29 @@ fixtures, and how to debug a failing scenario.
 
 ## Scale measurements
 
-`cmd/loadgen` measures what a connection costs a proxy and a Hoplock Control:
-establishment rate, memory per live connection, Control requests per
-connection, the decision cache under fan-out, and the per-target cost of
-`ephemeral-user` provisioning.
+**Roughly what one proxy handles.** Measured on a 4-core Intel Xeon @ 2.10GHz
+with 16 GiB of RAM, running Linux — with the load generator and the stand-in
+target sharing those same four cores, so the rates are a floor rather than a
+ceiling.
+
+| | |
+| --- | --- |
+| New connections per second | **716 sustained** (~1,500 CPU-bound, derived) |
+| Connect latency, p50 / p99 at 600 conn/s | 6.3 ms / 16.2 ms |
+| CPU per connection | 2.6 ms |
+| Memory per live connection | 118 KiB, so ~35,000 concurrent in 4 GiB |
+| File descriptors per live connection | 2 |
+| Hoplock Control calls per connection | 3.17, or 2.17 on a cached decision |
+| `ephemeral-user` provisioning, per target | 58 create/teardown cycles per second |
+
+For scale: a 350,000-target estate polled every five minutes is 1,167 conn/s —
+**one to two proxies**. Full methodology, what each figure is derived from, and
+what these numbers cannot say are in `docs/PLAN.md` §9.1. Re-run them on your
+own hardware before treating any of it as a capacity plan.
+
+`cmd/loadgen` produces them: establishment rate, memory per live connection,
+Control requests per connection, the decision cache under fan-out, and the
+per-target cost of `ephemeral-user` provisioning.
 
 ```sh
 make load                                     # every connection scenario (~20 min)
