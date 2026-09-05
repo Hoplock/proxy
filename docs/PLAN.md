@@ -1782,6 +1782,35 @@ leaves the host. `account-egress-restricted` permits loopback only if the policy
 names it — which is faithful to its sentence and is a real operational
 constraint: a session that needs a local resolver must have one named.
 
+**A default-REJECT on the session's own uid does not cut the session carrying
+it, and nobody should "fix" the fact that it looks like it should.** This is the
+first question anyone asks of the reach rungs, and getting the answer wrong in
+either direction is expensive.
+
+The rules match on `-m owner --uid-owner <the session's uid>`, and netfilter's
+owner match reads the socket's `sk_uid` — which is fixed when the socket is
+CREATED, from the creating process's uid. It is not the uid of whatever process
+later holds the descriptor. sshd's listening socket, and the connection accepted
+from it, are created by root long before sshd forks the session's child and
+drops to the ephemeral account. That connection therefore carries `sk_uid` 0 for
+its whole life and never matches these rules. What does match is every socket
+the session's own processes open for themselves — which is exactly, and only,
+what the rung is a claim about.
+
+Both halves are pinned by tests rather than left to the reading above: the
+`target-side enforcement` scenarios run a command over a session whose uid is
+under a default-REJECT and get its output back, and
+`TestSSHDEgressRungRefusesADestinationThePolicyDidNotName` does the same over a
+connection with no proxy in the path.
+
+**The trap this exists to prevent** is the plausible-looking repair. An engineer
+who assumes the filter must be strangling the session reaches for an exemption —
+`--dport 22 -j ACCEPT` before the reject — and that hole is not small: it lets a
+confined session reach **any host in the estate on port 22**, which is the
+pivot the reach axis exists to close (§6.5's survey opens on exactly that
+scenario). There is nothing to exempt. If a session ever does die the moment its
+rung is applied, the cause is elsewhere and the rule set is not where to look.
+
 **A containerised target needs one thing a host does not.** Docker's default
 AppArmor profile denies `mount` outright, before capabilities are consulted, so
 `CAP_SYS_ADMIN` is necessary and not sufficient for the filesystem half of
