@@ -20,9 +20,15 @@ E2E_CLEAN := rm -rf $(DEPLOY_DIR)/keys $(DEPLOY_DIR)/bin $(DEPLOY_DIR)/control/f
 # up at once without either tearing down the other's containers.
 SSHD_COMPOSE := HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -p hoplock-sshd -f $(DEPLOY_DIR)/target/compose.yaml
 
+LOAD_DIR := load
+LOAD_OUT ?= $(LOAD_DIR)/results
+LOAD_SCENARIOS := $(sort $(wildcard $(LOAD_DIR)/scenarios/0[1-5]-*.yaml))
+LOAD_PROVISIONING := $(sort $(wildcard $(LOAD_DIR)/scenarios/0[6-9]-*.yaml))
+
 .PHONY: all build test test-sshd test-sshd-up test-sshd-run test-sshd-down \
 	e2e e2e-build e2e-up e2e-down vet lint fmt license-check \
-	openapi-check vulncheck tidy run-proxy run-mock clean
+	openapi-check vulncheck tidy run-proxy run-mock clean \
+	load load-provisioning load-one
 
 all: build vet test lint
 
@@ -103,6 +109,36 @@ e2e-up: e2e-build
 e2e-down:
 	-$(COMPOSE) down -v --remove-orphans
 	$(E2E_CLEAN)
+
+## load: run the scale harness against a locally built proxy and mock Control
+## (docs/PLAN.md §9.1, phase 0020; load/README.md). NOT part of CI: a load run is
+## neither fast nor deterministic, and gating a pull request on a shared
+## runner's variance would measure the runner. Takes ~20 minutes.
+load: build
+	@set -e; \
+	for s in $(LOAD_SCENARIOS); do \
+		echo; echo "=== $$s ==="; \
+		$(GO) run ./cmd/loadgen -scenario "$$s" -proxy $(BIN_DIR)/hoplock-proxy -out $(LOAD_OUT); \
+	done
+
+## load-provisioning: measure the PER-TARGET ephemeral-user ceiling (PLAN §5.1).
+## REQUIRES ROOT and creates/removes real local accounts prefixed hl-load — run
+## it on a throwaway host or in a container, never on a workstation.
+load-provisioning:
+	@set -e; \
+	if [ "$$(id -u)" != "0" ]; then \
+		echo "load-provisioning must run as root: it creates and removes real accounts"; \
+		exit 1; \
+	fi; \
+	for s in $(LOAD_PROVISIONING); do \
+		echo; echo "=== $$s ==="; \
+		$(GO) run ./cmd/loadgen -scenario "$$s" -out $(LOAD_OUT); \
+	done
+
+## load-one: run a single scenario, e.g. `make load-one SCENARIO=load/scenarios/04-uc2-fanout.yaml`
+load-one: build
+	@test -n "$(SCENARIO)" || { echo "set SCENARIO=<path to a scenario yaml>"; exit 1; }
+	$(GO) run ./cmd/loadgen -scenario $(SCENARIO) -proxy $(BIN_DIR)/hoplock-proxy -out $(LOAD_OUT)
 
 ## vet: run go vet
 vet:

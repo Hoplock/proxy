@@ -1,0 +1,41 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# The cache under UC2's access pattern: ONE subject against very many targets.
+#
+# This is the measurement the phase exists for. Every cache test written before
+# this one used a handful of targets, where a decision cache cannot help but
+# look good. UC2 polls a fleet: the working set is the fleet, and what matters
+# is what happens as it crosses the cache's entry bound. The sweep crosses it
+# deliberately — internal/control's DefaultMaxEntries is 4096 — so the curve
+# either shows the bound or shows that it does not bite.
+#
+# Each step restarts the proxy and uses a disjoint set of target names, so a
+# step measures its own working set rather than an entry table the last one
+# filled. The warmup is long enough for one full sweep of the largest step:
+# without that, a "miss" would just mean "first visit".
+
+name: 04-uc2-fanout
+kind: connection
+description: >
+  Decision-cache hit rate for one subject against a working set that crosses the
+  proxy cache's entry bound, with the server issuing a key per (subject,target).
+
+run:
+  mode: rate
+  rate: 250
+  duration: 40s
+  warmup: 40s
+  restart_between_steps: true
+  session: exec
+  command: "show version"
+
+workload:
+  subjects: 1
+  target_steps: [512, 2048, 4096, 8192]
+  order: cycle
+
+control:
+  cache_hint: true
+  cache_ttl: 3600s
+  cache_scope: per-target

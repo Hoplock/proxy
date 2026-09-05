@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# 06 without the home directory or the key write, so what is left is the
+# account-database operation alone. Run both: the difference is how much of the
+# ceiling is filesystem work that a faster disk would move, and how much is the
+# lock, which nothing moves.
+#
+# REQUIRES ROOT (see 06).
+
+name: 07-provisioning-accountdb-only
+kind: provisioning
+description: >
+  The same sweep as 06 with useradd -M / userdel (no home directory, no key),
+  isolating the account-database lock from filesystem cost.
+
+provisioning:
+  executor: local
+  cycles: 120
+  concurrency: [1, 2, 4, 8, 16, 32]
+  home: false
+  authorized_keys: false
+  prefix: hl-load

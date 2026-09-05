@@ -1,0 +1,135 @@
+{
+  "scenario": "07-provisioning-accountdb-only",
+  "description": "The same sweep as 06 with useradd -M / userdel (no home directory, no key), isolating the account-database lock from filesystem cost.\n",
+  "kind": "provisioning",
+  "started_at": "2026-09-04T23:38:15.99250212Z",
+  "host": {
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 4,
+    "go_version": "go1.26.0",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "total_memory_mib": 16075
+  },
+  "executor": "local",
+  "nss_passwd_backend": "files",
+  "creates_home_directory": false,
+  "writes_authorized_keys": false,
+  "cycles_per_level": 120,
+  "single_cycle": {
+    "samples": 120,
+    "create_mean_ms": 10.956949,
+    "create_p95_ms": 12.550813,
+    "remove_mean_ms": 12.726706,
+    "remove_p95_ms": 14.700421,
+    "total_mean_ms": 23.683655,
+    "total_p95_ms": 26.316458
+  },
+  "levels": [
+    {
+      "concurrency": 1,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.843s",
+      "cycles_per_sec": 42.20611646509689,
+      "parallel_efficiency": 1,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 10.956949,
+        "create_p95_ms": 12.550813,
+        "remove_mean_ms": 12.726706,
+        "remove_p95_ms": 14.700421,
+        "total_mean_ms": 23.683655,
+        "total_p95_ms": 26.316458
+      }
+    },
+    {
+      "concurrency": 2,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "1.935s",
+      "cycles_per_sec": 62.01096460926557,
+      "parallel_efficiency": 0.7346205929719529,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 15.761938,
+        "create_p95_ms": 18.239601,
+        "remove_mean_ms": 16.418763,
+        "remove_p95_ms": 18.651163,
+        "total_mean_ms": 32.180701,
+        "total_p95_ms": 35.155494
+      }
+    },
+    {
+      "concurrency": 4,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.109s",
+      "cycles_per_sec": 56.91008905212484,
+      "parallel_efficiency": 0.33709621862027783,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 34.259928,
+        "create_p95_ms": 38.781332,
+        "remove_mean_ms": 35.567597,
+        "remove_p95_ms": 40.563016,
+        "total_mean_ms": 69.827526,
+        "total_p95_ms": 75.51153
+      }
+    },
+    {
+      "concurrency": 8,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.174s",
+      "cycles_per_sec": 55.20980545247428,
+      "parallel_efficiency": 0.16351245410760257,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 70.49352,
+        "create_p95_ms": 79.695482,
+        "remove_mean_ms": 72.202769,
+        "remove_p95_ms": 81.406335,
+        "total_mean_ms": 142.69629,
+        "total_p95_ms": 154.160392
+      }
+    },
+    {
+      "concurrency": 16,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.153s",
+      "cycles_per_sec": 55.725535284829164,
+      "parallel_efficiency": 0.08251993424180652,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 134.872477,
+        "create_p95_ms": 193.630409,
+        "remove_mean_ms": 138.148978,
+        "remove_p95_ms": 182.147271,
+        "total_mean_ms": 273.021456,
+        "total_p95_ms": 333.938726
+      }
+    },
+    {
+      "concurrency": 32,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.035s",
+      "cycles_per_sec": 58.97857454358804,
+      "parallel_efficiency": 0.04366856296791236,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 236.263378,
+        "create_p95_ms": 294.286699,
+        "remove_mean_ms": 257.199927,
+        "remove_p95_ms": 296.913748,
+        "total_mean_ms": 493.463305,
+        "total_p95_ms": 567.547293
+      }
+    }
+  ],
+  "ceiling_cycles_per_sec": 62.01096460926557,
+  "ceiling_at_concurrency": 2,
+  "saturated": "the target's account-database lock. Throughput plateaus at ~62.0 cycles/s from concurrency 2 and has not moved by 32, while mean cycle latency rises 24ms → 493ms — flat throughput with latency linear in concurrency is a queue in front of a lock, not a resource that more of would relieve. Only 1.47x of the serial rate (42.2/s) is recoverable by adding provisioners"
+}

@@ -1,0 +1,142 @@
+{
+  "scenario": "06-provisioning-ceiling",
+  "description": "Provision/teardown cycles per second against one target, swept over concurrent provisioners, with a home directory and an authorized_keys write.\n",
+  "kind": "provisioning",
+  "started_at": "2026-09-04T23:38:02.258514518Z",
+  "host": {
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 4,
+    "go_version": "go1.26.0",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "total_memory_mib": 16075
+  },
+  "executor": "local",
+  "nss_passwd_backend": "files",
+  "creates_home_directory": true,
+  "writes_authorized_keys": true,
+  "cycles_per_level": 120,
+  "single_cycle": {
+    "samples": 120,
+    "create_mean_ms": 11.958457,
+    "create_p95_ms": 14.322447,
+    "key_mean_ms": 0.127337,
+    "remove_mean_ms": 13.535048,
+    "remove_p95_ms": 15.522984,
+    "total_mean_ms": 25.620842,
+    "total_p95_ms": 28.872376
+  },
+  "levels": [
+    {
+      "concurrency": 1,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "3.076s",
+      "cycles_per_sec": 39.014108713098736,
+      "parallel_efficiency": 1,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 11.958457,
+        "create_p95_ms": 14.322447,
+        "key_mean_ms": 0.127337,
+        "remove_mean_ms": 13.535048,
+        "remove_p95_ms": 15.522984,
+        "total_mean_ms": 25.620842,
+        "total_p95_ms": 28.872376
+      }
+    },
+    {
+      "concurrency": 2,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.077s",
+      "cycles_per_sec": 57.77198792905922,
+      "parallel_efficiency": 0.7403986639026133,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 17.724627,
+        "create_p95_ms": 20.9431,
+        "key_mean_ms": 0.143284,
+        "remove_mean_ms": 16.665701,
+        "remove_p95_ms": 19.612393,
+        "total_mean_ms": 34.533613,
+        "total_p95_ms": 39.101337
+      }
+    },
+    {
+      "concurrency": 4,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.101s",
+      "cycles_per_sec": 57.11752649901243,
+      "parallel_efficiency": 0.3660055835123794,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 35.009843,
+        "create_p95_ms": 39.62188,
+        "key_mean_ms": 0.153277,
+        "remove_mean_ms": 34.394929,
+        "remove_p95_ms": 38.353269,
+        "total_mean_ms": 69.55805,
+        "total_p95_ms": 76.230547
+      }
+    },
+    {
+      "concurrency": 8,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.067s",
+      "cycles_per_sec": 58.04850077237303,
+      "parallel_efficiency": 0.18598560459002497,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 67.379608,
+        "create_p95_ms": 80.260422,
+        "key_mean_ms": 0.166519,
+        "remove_mean_ms": 68.183826,
+        "remove_p95_ms": 76.052297,
+        "total_mean_ms": 135.729954,
+        "total_p95_ms": 149.167782
+      }
+    },
+    {
+      "concurrency": 16,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.176s",
+      "cycles_per_sec": 55.151480928071436,
+      "parallel_efficiency": 0.08835182121813198,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 137.622912,
+        "create_p95_ms": 158.964348,
+        "key_mean_ms": 0.158808,
+        "remove_mean_ms": 138.79546,
+        "remove_p95_ms": 159.818452,
+        "total_mean_ms": 276.577181,
+        "total_p95_ms": 307.028924
+      }
+    },
+    {
+      "concurrency": 32,
+      "cycles": 120,
+      "failures": 0,
+      "elapsed": "2.142s",
+      "cycles_per_sec": 56.015534246629116,
+      "parallel_efficiency": 0.044868010649169225,
+      "cost": {
+        "samples": 120,
+        "create_mean_ms": 244.558984,
+        "create_p95_ms": 294.683549,
+        "key_mean_ms": 0.174945,
+        "remove_mean_ms": 264.709743,
+        "remove_p95_ms": 290.939273,
+        "total_mean_ms": 509.443673,
+        "total_p95_ms": 575.673618
+      }
+    }
+  ],
+  "ceiling_cycles_per_sec": 58.04850077237303,
+  "ceiling_at_concurrency": 8,
+  "saturated": "the target's account-database lock. Throughput plateaus at ~58.0 cycles/s from concurrency 2 and has not moved by 32, while mean cycle latency rises 26ms → 509ms — flat throughput with latency linear in concurrency is a queue in front of a lock, not a resource that more of would relieve. Only 1.49x of the serial rate (39.0/s) is recoverable by adding provisioners"
+}

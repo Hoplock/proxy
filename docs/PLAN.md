@@ -486,6 +486,28 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   seconds. Phase 0020 exists to replace the arithmetic with measurement, and it
   runs first for that reason.
 
+  **Measured (phase 0020, §9.1) — the premise does not survive in this form.**
+  A connection costs this proxy ~2.6 ms of CPU and a live one ~118 KiB, so
+  5,800 connections per second is a **single-digit number of proxies**: a
+  deployment, not an architecture, and one that needs no change to the
+  connection model. Per-check provisioning is not the wall the paragraph above
+  calls it either — the constraint is per *target*, and one target sustains 58
+  account cycles per second against the 0.017/s a 60-second poll of it asks for
+  (§5.1). What measurement *did* find is a different problem in the same place:
+  the proxy's decision cache stops working above a fixed 4,096-entry bound, so
+  the Hoplock Control request rate — the largest number in the chain — does not
+  amortise across a fleet at all (phase **0031**).
+
+  The assumption under all of it was **asked rather than measured around**, and
+  answered: the health checking is over SSH, at a **five-minute** interval, with
+  sixty seconds kept as a worst case. At five minutes the estate is 1,167
+  connections per second — **one to two proxies** — so the connection-volume
+  argument for this decision does not survive at the real interval either.
+
+  So **0021 must be argued from the audit-granularity question and from Control
+  load, not from the connection arithmetic above**, and its author should read
+  §9.1 before deciding it is needed at all.
+
 ---
 
 ## 3. Architecture & repository layout
@@ -494,7 +516,8 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 hoplock/
 ├── cmd/
 │   ├── proxy/            # the proxy daemon (main)
-│   └── mock-control/    # reference/mock Control API for dev + CI
+│   ├── mock-control/    # reference/mock Control API for dev + CI
+│   └── loadgen/          # the scale harness (§9.1); not in any gating job
 ├── internal/
 │   ├── config/             # YAML bootstrap config loader
 │   ├── identity/           # identity + claims model (AD/Okta/OIDC-ready)
@@ -512,7 +535,9 @@ hoplock/
 │   └── sshtest/            # test support: in-process SSH target + key helpers
 ├── api/                    # API contract (OpenAPI/JSON Schema) — source of truth
 ├── deploy/                 # docker-compose e2e topology + fixtures
-├── .github/workflows/      # CI (build, vet, test, lint, e2e, test-sshd)
+├── load/                   # load scenarios + the measurements behind §9.1
+├── .github/workflows/      # CI (build, vet, test, lint, e2e, test-sshd) +
+│                           #   load (manual only — it gates nothing)
 ├── docs/
 │   ├── PLAN.md             # this file
 │   ├── PROTOCOL.md         # session workflow (read before any work)
@@ -830,8 +855,15 @@ reasons that actually carry the decision are these, in order:
 
 **What it costs, recorded rather than glossed.** `useradd` and `userdel` run per
 session and serialise on the target's account-database lock, so a busy proxy has
-a **per-target provisioning ceiling that no amount of proxy capacity moves**. It
-has not been measured; phase 0020 owns measuring it. Account churn also means
+a **per-target provisioning ceiling that no amount of proxy capacity moves**.
+Phase 0020 measured it (§9.1): **58 provision/teardown cycles per second**
+against one target on flat-file NSS, flat from **two** concurrent provisioners
+onward while cycle latency rises linearly — the account-database lock, and not
+the filesystem, which accounts for under 2 ms of a 25.6 ms cycle. A
+directory-backed NSS must be measured on its own, and the harness records which
+backend a figure came from. For scale: a 60-second poll of one target asks it
+for 0.017 cycles/s, so this ceiling binds bursts and reprovisioning storms
+rather than routine polling. Account churn also means
 UID churn, and a reused UID inherits ownership of anything a deleted account
 left behind — which today it does *immediately*, because provisioning takes
 whatever uid the target's allocator offers and that is the lowest free one.
@@ -1505,6 +1537,11 @@ path talks to Hoplock Control.
 
 Setup, however, is not amortised: each connection costs ~3 sequential round
 trips (authenticate, authorize, host-key report), paid again per hop on a chain.
+Phase 0020 measured that as **3.17 Control calls per connection** uncached and
+**2.17** on a cache hit — a hint removes the authorize call and nothing else —
+and found that the client-side cache stops working above a fixed 4,096-entry
+bound, which is why UC2's fan-out gets almost no benefit from it (§9.1, and
+phase 0031 for the change that proposes).
 Two mechanisms address that, and they only make sense together:
 
 - **Server-authorised caching.** The server may attach a cache hint (an opaque
@@ -1944,6 +1981,13 @@ Still out of scope: tamper-evident/append-only storage at the destination
   `api/control.yaml`), `license` (per-file headers), `e2e` (Section 9),
   `test-sshd`, and `govulncheck`. See D9.
 
+  An **eighth** workflow, `load`, exists and deliberately gates nothing: it is
+  `workflow_dispatch` only. A load run (§9.1) is neither fast nor
+  deterministic, and a hosted runner's throughput varies enough between runs
+  that gating a pull request on it would report the runner rather than the
+  proxy. It is in the repository so a run is reproducible by anyone, not so it
+  can fail somebody's PR.
+
   **`test-sshd` runs the tests that only a real sshd and a real kernel can
   answer**, against the `deploy/target/` container with **no proxy in the
   path**: whether sshd honours the `authorized_keys` options an enforcement
@@ -2013,7 +2057,255 @@ telemetry pipeline including outage buffering and drain (D8).
 
 Real geo/anycast/scale testing needs real infrastructure and is **out of scope**
 for the prototype; the compose topology validates behavior, not distribution.
-Phase 0020 takes up sizing with a synthetic harness.
+Sizing is §9.1, measured by a synthetic harness that is deliberately not this
+topology.
+
+---
+
+### 9.1 Measured scale and sizing (phase 0020)
+
+D17's numbers are arithmetic. These are not. `cmd/loadgen` (see
+`load/README.md`) drives real SSH connections through the real proxy binary,
+run as a child process, against an instrumented Hoplock Control and a cheap
+in-process target, and samples the proxy from `/proc`. Raw output is in
+`load/results/`, reproducible from the scenario files in `load/scenarios/`.
+
+**Every figure below is labelled measured or derived, and a derived one carries
+its arithmetic.** That distinction is the point of the phase: what this section
+replaced read like measurement and was not.
+
+**Hardware.** One Intel Xeon @ 2.10GHz, **4 logical cores**, 16 GiB RAM, Linux,
+Go 1.26. The load generator, the stand-in target and the proxy share those four
+cores — which bounds what these numbers can claim; see "What these numbers
+cannot say".
+
+**Load shape.** One SSH connection, one `exec`, one close: the UC2 health-check
+shape D17 argues about. The credential is `static-key`, which provisions
+nothing, so establishment cost is not confounded by a credential method.
+Provisioning is measured separately below, because it saturates a *target*
+rather than a proxy.
+
+#### What a connection costs a proxy
+
+| Figure | Value | |
+| --- | --- | --- |
+| Connect latency (TCP + SSH handshake + auth), p50 / p99 at 100 conn/s | 2.6 / 3.6 ms | measured |
+| Connect latency, p50 / p99 at 600 conn/s | 6.3 / 16.2 ms | measured |
+| Proxy CPU per connection, at 600–900 conn/s | **2.6–2.9 ms** | measured |
+| Establishment rate sustained | **716 conn/s** | measured — a **floor** |
+| Establishment rate, CPU-bound | ~1,500 conn/s per proxy on 4 cores | derived: cores ÷ CPU-seconds per connection |
+
+**What saturated: CPU.** At 900 conn/s offered, 716 were achieved and p99
+connect latency reached 49 ms. Nothing else was near a limit — the proxy held
+**121 descriptors** of a 20,000 soft limit and 12 OS threads, and this run's
+Control answered in tens of microseconds. Descriptors, Control latency and CPU
+are reported separately in every run because the three have different fixes.
+
+Per-connection CPU *falls* as offered rate rises (5.9 ms at 100 conn/s, 2.6 ms
+at 900) because the proxy's fixed costs — the revocation subscription, log
+shipping, GC — amortise. Size on the busiest step; the idle-proxy figure
+describes nothing.
+
+#### What a live connection costs
+
+| Figure | Value | |
+| --- | --- | --- |
+| RSS per live connection | **118 KiB** | measured: 2,000 held connections, 186 plateau samples |
+| Descriptors per live connection | **2** | measured: 4,011 for 2,000 connections |
+| Proxy baseline RSS, idle | 11.7 MiB | measured |
+| Concurrent connections at a 1 GiB budget | ~8,800 | derived: (budget − baseline) ÷ RSS per connection |
+| Concurrent connections at a 4 GiB budget | ~35,400 | derived |
+| Concurrent connections at a 16 GiB budget | ~141,800 | derived |
+
+#### What a connection costs Hoplock Control
+
+This is the number the sibling repository is sized by.
+
+| Figure | Value | |
+| --- | --- | --- |
+| Control calls per connection, **uncached** | **3.17** | measured |
+| — `POST /v1/auth/cert` | 1.00 | measured |
+| — `POST /v1/authorize` | 1.00 | measured |
+| — `POST /v1/hostkeys/report` | 1.00 | measured |
+| — `POST /v1/logs/batch` | 0.17 | measured, at `batch_size: 64` |
+| Control calls per connection, **cache hit** | **2.17** | measured |
+
+§6.4's "~3 sequential round trips" is confirmed exactly. What is worth noticing
+is the other two. A cache hint removes the authorize call and **nothing else**.
+Authentication is never cached by design, but the host-key report is neither a
+decision nor cached: a proxy reconnecting to a target it has seen ten thousand
+times reports the same host key ten thousand times. At **46% of the residual
+2.17 calls** it is the largest remaining item rather than a rounding error, and
+phase **0032** proposes the fix.
+
+Log shipping scales with `logging.batch_size`, so 0.17 is a configuration
+rather than a property: roughly 11 records per session at 64 records per batch.
+
+#### The decision cache under fan-out (UC2)
+
+One subject, a working set of distinct targets, a fixed 250 conn/s, and a
+warmup long enough to sweep the whole set before measuring — so a miss means a
+miss and not a first visit. Two runs: the server issuing a key per
+(subject, target), and the server issuing **one** key covering every target the
+subject may reach, which is the widest sharing §6.4 permits.
+
+| Distinct targets | Hit rate, key per target | Hit rate, one shared key | |
+| --- | --- | --- | --- |
+| 512 | 100% | 100% | measured |
+| 2,048 | 100% | 100% | measured |
+| 4,096 | 100% | 100% | measured |
+| 8,192 | 59% | 59% | measured |
+
+At 8,192 targets both runs made **exactly 4,096 authorize calls**:
+`internal/control`'s `DefaultMaxEntries`, to the entry. The cache holds the
+first 4,096 request shapes it sees and then refuses every further decision —
+`store` drops a new entry when the table is full rather than evicting an old
+one, so there is no eviction policy at all. Over a full sweep the hit rate is
+therefore `MaxEntries / N`.
+
+| Derived from that relationship | Value | |
+| --- | --- | --- |
+| Hit rate at UC2's 300,000-target estate | **~1.4%** | derived: 4,096 ÷ 300,000 |
+| Control calls per connection at that hit rate | ~3.16 | derived: caching removes ~1.4% of one call |
+
+**The two runs being identical is the finding.** A server sharing one key across
+every target buys nothing, because the proxy's *shape* map — the
+(subject, login, target, port, method, hop trail) lookup that finds the key — is
+bounded by the same constant as the entry table. No server-side key choice can
+reach this; the limit is in the proxy. The bound is also not settable from
+`config.yaml`. Phase **0031** carries the proposed change; this phase measures
+and does not fix.
+
+#### What `ephemeral-user` costs a target (§5.1)
+
+This is the one measurement here that is not per proxy. `useradd` and `userdel`
+take the target's account-database lock, so however many proxies front a host,
+the host's account churn rate is what it is.
+
+Measured on flat-file NSS (`passwd: files`), run locally with no SSH leg: the
+management logins are a *proxy* cost and are counted above; what this isolates
+is the target-side serialisation.
+
+| Figure | Home + key | Account DB only | |
+| --- | --- | --- | --- |
+| `useradd` | 12.0 ms | 11.0 ms | measured |
+| `authorized_keys` write | 0.1 ms | — | measured |
+| `userdel` | 13.5 ms | 12.7 ms | measured |
+| **One serial cycle** | **25.6 ms** | **23.7 ms** | measured |
+| **Per-target ceiling** | **58 cycles/s** | **62 cycles/s** | measured |
+| Concurrency at which throughput plateaus | 2 | 2 | measured |
+| Mean cycle latency at 32 concurrent | 509 ms | 494 ms | measured |
+
+**What saturates: the target's account-database lock, not the filesystem and
+not the NSS backend.** Dropping the home directory and the key write changes the
+serial cycle by 1.9 ms and the ceiling by four cycles per second — the account
+operations themselves are essentially the whole cost. Throughput is flat from
+**two** concurrent provisioners through thirty-two while mean cycle latency
+rises 26 ms → 509 ms, roughly linearly: a queue in front of a lock, not a
+resource that more of would relieve.
+
+**A directory-backed NSS will not behave like this.** These figures are for flat
+files. A fleet on LDAP or SSSD must re-run
+`load/scenarios/06-provisioning-ceiling.yaml` on such a host before quoting a
+ceiling, and the harness records the backend in every result for that reason.
+
+**What that means for D17.** A 60-second poll of one target asks that target for
+**0.017 cycles/s** against a measured ceiling of 58. Per-check provisioning is
+not the per-target wall D17 describes. What it does cost is ~26 ms of
+target-side latency plus the management SSH legs on *every* check — a real
+per-connection cost, and a good argument for `brokered-key` or a longer-lived
+credential on machine routes, but not the impossibility claimed.
+
+#### What it implies for a 350,000-target estate
+
+Derived throughout, from the measured figures above, on the hardware named
+above. Each row assumes one connection per check and no concurrent checks
+against one target.
+
+| Poll interval | Connections/sec | Proxies at the measured floor (716/s) | Proxies at the derived ceiling (~1,500/s) | Control req/sec, uncached |
+| --- | --- | --- | --- | --- |
+| 60 s — *worst case* | 5,833 | 9 | 4 | 18,500 |
+| **5 min — the real interval** | **1,167** | **2** | **1** | **3,700** |
+| 15 min | 389 | 1 | 1 | 1,230 |
+
+The five-minute row is the one to size against; see "The assumption, now
+answered" below for why, and why the sixty-second row is kept anyway.
+
+Per 1,000 targets at a 60-second poll: **16.7 conn/s** and **53 Control
+requests/sec** uncached — 36 with a cache that worked, which today it does not
+at this fan-out.
+
+**The conclusion D17 draws does not follow from these numbers.** A single-digit
+proxy fleet is a deployment, not an architecture: it needs no change to the
+connection model, no standing authorization, and no new audit granularity. The
+Control request rate is the larger number and the one to design against — and it
+is exactly where the cache finding bites, because at a 1.4% hit rate it does not
+amortise at all.
+
+#### What these numbers cannot say
+
+- **The generator, the target and the proxy share four cores.** Every achieved
+  rate here is a **floor** on what the proxy can do. The ceiling is derived from
+  the proxy process's own CPU-seconds per connection and assumes perfect core
+  scaling, which is why it is labelled derived and is roughly twice the floor.
+- **One in-process target answers for the whole fleet.** The fleet is the
+  distinct target *names*, because that is what the cache keys on. Nothing here
+  says what a connection costs a real target — except the provisioning
+  measurement, which is about targets and says so.
+- **Hoplock Control was on loopback** and answered in tens of microseconds. A
+  real PDP is a network hop and a database away. `control.latency` in a scenario
+  injects a stated delay for the run that asks that question; these runs did
+  not.
+- **This is one machine.** Re-run the scenarios on the hardware you intend to
+  deploy before quoting any of this as a capacity plan.
+
+#### The assumption, now answered
+
+Everything above sizes the model D17 assumes: connection per check, over SSH,
+every sixty seconds. Whether that describes a real estate is a question for the
+customer rather than for a benchmark, so phase 0020 asked it rather than
+measuring around it.
+
+**Answer: the health checking is over SSH, at a five-minute interval.** The
+sixty-second figure is retained as a **worst case**, not as the design target.
+
+That makes the **5-minute row the one to size against**: 1,167 conn/s,
+**one to two proxies**, and ~3,700 Hoplock Control requests per second — a
+single deployment on hardware no larger than the box these numbers were taken
+on. The 60-second row stays in the table because a worst case worth naming is
+worth sizing, and because a poll interval is the kind of thing that changes
+without anyone re-reading this section.
+
+Two consequences follow, and 0021's author should start from them:
+
+- **The connection volume argument for D17 is gone at the real interval.** One
+  to two proxies is not a reason to change the connection model, and at the
+  worst case it is still single digits.
+- **The Control request rate is what is left.** 3,700 req/s at the real
+  interval, and it is the number that does *not* amortise, because the decision
+  cache does not work at this fan-out (see above, and phase 0031).
+
+#### Other findings from the harness
+
+None of these were fixed here — this phase changes no behaviour.
+
+- **The host-key report is per connection and never cached** (see the call
+  table above). A proxy reconnecting to a known target re-reports the same key
+  every time, so it is a third of the residual Control load after caching. It is
+  a *report* rather than a decision, so §6.4's caching rules do not cover it and
+  a change would be a contract question.
+- **A few connections fail with an EOF during `exec` under overload — and the
+  evidence says that is the harness, not the proxy.** Reproduced across
+  ~118,000 connections at 900 conn/s offered with the proxy's full log
+  captured: for a failing connection the proxy logs **nothing** unusual, every
+  session it starts has a matching end bar those in flight when it is stopped,
+  and the only proxy-side error in 397,673 log lines is `handshake failed: EOF`
+  — the proxy watching a *client* vanish before the handshake completes. The
+  generator, the in-process target and the proxy share four cores at that
+  offered rate, so a client losing a connection is the expected cost of
+  measuring past saturation. Recorded because the absence of a proxy-side error
+  is evidence rather than proof: a run that sees this **below** saturation, or
+  one where the proxy logs a dropped session, has something real.
 
 ---
 
@@ -2042,7 +2334,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
 | 0018 | Enforcement points — contract v4         | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account — an `authorized_keys` `command=` dispatcher over the route's own `restricted_exec` list, a curated `PATH`, a `noexec,nosuid,nodev` home, `setpriv --no-new-privs`, and a per-uid packet filter on both address families — and onto a device account through the platform's own authorizer under `enforcement.platform_role`. Plus the capability probe and `POST /v1/capabilities/report`, the teardown ordering the uid hazard requires, the reaper's residue sweep, the four audit fields, and the e2e scenarios. The mechanism table is §6.5, "What this proxy actually renders" |
-| 0020 | Scale harness & sizing evidence         | synthetic load harness outside the compose topology; measured per-proxy ceilings and Control request rates; validates or refutes D17's arithmetic |
+| 0020 | Scale harness & sizing evidence         | `cmd/loadgen` + `load/`: a synthetic load harness outside the compose topology, and the measured per-proxy ceilings, Control request rates, cache behaviour under fan-out and per-target provisioning ceiling it produced. **Results and sizing guidance: §9.1.** It refutes D17's arithmetic and finds a different problem — the cache's entry bound, queued as 0031 |
 | 0021 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
 | 0022 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
 | 0023 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
@@ -2052,6 +2344,9 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0027 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
 | 0028 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 | 0029 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract |
+| 0030 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0025's). The row this table was missing; the prompt has been queued since phase 0019 |
+| 0031 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache holds a fixed 4,096 entries with **no eviction**, so a working set larger than that caches the first 4,096 shapes and refuses the rest. Give it LRU eviction, make the bound configurable, and re-derive the default from §9.1's measured per-entry cost. No contract change |
+| 0032 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` is 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. Let the server attach a cache hint to the host-key decision, keyed on a shape that **includes the fingerprint** so a changed key still reports (D7). Contract change — carries a cross-repo obligation |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
@@ -2280,8 +2575,15 @@ from the credential.
 Served by: existing D5a/D12 vocabulary, sharpened by 0018's rungs — this is the
 use case `no-interactive-shell` beside `restricted_exec` was written for, and
 the one whose concurrency caps (§6.5, "Session bounds") bound an automation
-fleet — plus D17 and phases 0020–0021 once the estate is large enough for
+fleet — plus D17 and phase 0021 once the estate is large enough for
 connection-per-check to stop being viable.
+
+Phase 0020 measured what "large enough" is (§9.1), and the answer is larger than
+D17 assumed: connection-per-check stays viable well past the estate size that
+motivated D17. What does **not** scale to this access pattern is the decision
+cache — one subject against very many targets gets a hit rate of `4,096 / N`,
+because the cache is bounded there and never evicts. This is the use case that
+finding is about, and phase **0031** is the fix.
 
 ### UC3 — Scanners and ticket-scoped access
 

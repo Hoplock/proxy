@@ -1,0 +1,32 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# The same load as 01, with the server authorising reuse. The difference between
+# the two runs' control-calls-per-connection is exactly what caching buys, and
+# it is the number the sibling repository is being sized by.
+
+name: 02-cached-decisions
+kind: connection
+description: >
+  Control request rate per connection WITH a cache hint, against a working set
+  small enough to fit the cache. Compare with 01-establishment.
+
+run:
+  mode: rate
+  rate_steps: [100, 300, 600]
+  duration: 20s
+  warmup: 10s
+  session: exec
+  command: "show version"
+
+workload:
+  subjects: 1
+  targets: 32
+  order: cycle
+
+control:
+  cache_hint: true
+  # Long enough that nothing expires inside the run: this scenario measures what
+  # the cache saves, not how long the server let it save it for.
+  cache_ttl: 1800s
+  cache_scope: per-target

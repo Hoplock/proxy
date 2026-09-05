@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# 04 with the server sharing as widely as the contract permits: ONE cache key
+# covering every target the subject may reach.
+#
+# The key is the server's and defines the sharing scope (PLAN §6.4), so if a
+# fan-out cache can be fixed by the server choosing a better key, this run is
+# where that shows up. If it cannot — if the proxy still asks once per target
+# however widely the server shares — then the limit is in the proxy's lookup
+# and no server-side key can reach it. That is a finding about the proxy, and
+# the difference between this run and 04 is what establishes it.
+
+name: 05-uc2-fanout-shared-key
+kind: connection
+description: >
+  The same fan-out as 04, with the server issuing ONE cache key per subject
+  instead of one per (subject, target).
+
+run:
+  mode: rate
+  rate: 250
+  duration: 40s
+  warmup: 40s
+  restart_between_steps: true
+  session: exec
+  command: "show version"
+
+workload:
+  subjects: 1
+  target_steps: [512, 2048, 4096, 8192]
+  order: cycle
+
+control:
+  cache_hint: true
+  cache_ttl: 3600s
+  cache_scope: per-subject
