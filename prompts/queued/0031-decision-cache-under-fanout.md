@@ -4,6 +4,13 @@
 > cache against UC2's access pattern — one subject, very many targets — and
 > found that it stops working at a fixed, undocumented, unconfigurable size.
 > This phase is the change 0020 proposed and deliberately did not make.
+>
+> **It carries more weight than it did when it was queued.** Phase 0021 was
+> withdrawn on the strength of this phase and 0032 being the cheaper answer to
+> UC2's Hoplock Control load (`docs/PLAN.md` D17 and §9.1, "What the Control
+> rate becomes after 0031 and 0032"). This phase is now the larger half of that
+> answer rather than a tidy-up, and it changes no contract, so there is nothing
+> holding it back.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -78,7 +85,10 @@ decision's lifetime, which is still the server (§6.4).
 - The revocation stream, and anything about `InvalidateSubject` /
   `InvalidateAll` semantics.
 - The connection model. Whether a machine identity should hold a connection at
-  all is 0021; this phase makes the *existing* model behave as documented.
+  all was phase **0021**, now **withdrawn**
+  (`docs/learnings/0021-machine-identity-connection-model-learnings.md`) — in
+  part because this phase is the cheaper answer to the load that motivated it.
+  This phase makes the *existing* model behave as documented.
 - Any change to what is cached. Authentication is still never cached.
 
 ## Acceptance criteria

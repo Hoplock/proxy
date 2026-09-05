@@ -36,6 +36,14 @@
   connection-volume argument for D17 does not survive at the real interval
   either. §9.1 sizes both rows.
 
+> **Pointer, added by phase 0021 (this file is otherwise unchanged).** 0021 read
+> this file, agreed with it, and was **withdrawn**: the Control load it was left
+> to argue from has a cheaper answer in 0031 + 0032, and the bounded-snapshot
+> mechanism it proposed already exists as §6.4's `CacheHint` TTL plus 0018's
+> `SessionDeadline`. See `docs/learnings/0021-machine-identity-connection-model-learnings.md`
+> and `docs/PLAN.md` D17. Where this file says "0021 must be argued from …",
+> read: it was, and the argument did not carry.
+
 ## Details
 
 ### The headline numbers

@@ -85,7 +85,7 @@ Today a user discovers the lifecycle rules when their job dies. Add to
   `tmux`, a backgrounded job — dies with the session**. That is deliberate: no
   residue is the design;
 - so work that must outlive a human's session is **not a human's session**. It
-  is a machine identity (UC2, D17, 0021) or a job handed to something on the
+  is a machine identity (UC2) or a job handed to something on the
   target that owns its own lifecycle — a systemd unit, a batch scheduler —
   started by an approved argv under restricted exec;
 - and this is the same trade-off as reattachability, from the other side: the
@@ -131,7 +131,13 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 - Session *extension*, renewal, or "just five more minutes". If it is worth
   having it is a contract change and a Control feature, and it belongs in a
   prompt of its own — note it in the learnings rather than building a hook.
-- Machine-identity connection lifetimes — 0021.
+- Persistent machine-identity connections. Phase **0021** proposed them and
+  was **withdrawn** (`docs/learnings/0021-machine-identity-connection-model-learnings.md`,
+  and D17): D2's one-decision-per-connection model stands. Note what that makes
+  this phase, but do not build anything extra for it — the deadline you are
+  already enforcing is what bounds how long *any* connection may hold its
+  snapshot, a client multiplexing over `ControlMaster` included, and it needs no
+  machine-specific case to do that.
 
 ## Acceptance criteria
 

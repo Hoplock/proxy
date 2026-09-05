@@ -460,8 +460,9 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   grant context does, and the proxy treats it as opaque: logged, never parsed,
   and never the basis of a decision the proxy makes itself.
 
-- **D17 — Machine identities need a different connection model (amends D2, new,
-  phase 0021).** D2's "one decision per connection" is safe because connections
+- **D17 — Machine identities need a different connection model (proposed as
+  phase 0021 — WITHDRAWN; D2 is *not* amended. The verdict is at the end of
+  this entry; read it before the argument.)** D2's "one decision per connection" is safe because connections
   are short: a snapshot enforced for the life of a ten-minute session is not
   standing authorization. Machine-to-machine health checking breaks that
   assumption from both ends. An estate of 350,000 targets polled every minute is
@@ -504,9 +505,44 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   connections per second — **one to two proxies** — so the connection-volume
   argument for this decision does not survive at the real interval either.
 
-  So **0021 must be argued from the audit-granularity question and from Control
-  load, not from the connection arithmetic above**, and its author should read
-  §9.1 before deciding it is needed at all.
+  **Withdrawn — phase 0021 evaluated this decision and did not build it.** The
+  full argument is in
+  `docs/learnings/0021-machine-identity-connection-model-learnings.md`; the
+  three legs are:
+
+  - **The connection arithmetic is gone** (above), and per-check provisioning
+    was never the per-target wall this decision called it.
+  - **The Control load that is left has a cheaper answer.** Phases **0031**
+    (cache eviction) and **0032** (host-key report reuse) take 3.17 Control
+    calls per connection to **~1.17** (§9.1, "What the Control rate becomes
+    after 0031 and 0032") without amending D2, and for every route rather than
+    only machine ones. What survives them is one `POST /v1/auth/cert` per
+    check — and a persistent connection removes *that* only by not
+    authenticating each check, which is §6.4's "authentication is never cached"
+    rule under another name. That is a change to the security model, not an
+    optimisation of it, and whoever wants it must argue it as one.
+  - **The mechanism this decision proposes already exists, twice.** A
+    server-owned lifetime on a policy snapshot is §6.4's `CacheHint` TTL —
+    clampable down only, never up, never invented, revocation-aware and
+    fail-closed — and it amortises one decision across many short connections. A
+    bound on how long a single connection may hold a snapshot is 0018's
+    `SessionDeadline`, enforced locally by phase **0025**, which applies to a
+    multiplexed client connection exactly as it does to a human's. Together they
+    are "bound the snapshot, not the connection", already contracted, with no
+    standing authorization and no amendment to D2.
+
+  So **D2 is not amended**: one decision per connection stands, and the
+  connection stays short. The unit of audit stays the connection, because the
+  per-channel record was a cost this change would have incurred rather than a
+  requirement standing on its own.
+
+  **What would revive it.** Not a larger estate — that arithmetic scales with
+  proxies. It returns if the *authentication* rate becomes the binding
+  constraint: an estate and poll interval whose one-auth-per-check floor exceeds
+  what a real Hoplock Control can serve, **and** a customer willing to accept
+  certificate revocation being enforced only by the revocation stream between
+  snapshot renewals. That is a product decision, not a capacity one. The number
+  **0021 is retired and must never be reused** (`docs/PROTOCOL.md` §6).
 
 ---
 
@@ -2242,6 +2278,30 @@ Control request rate is the larger number and the one to design against — and 
 is exactly where the cache finding bites, because at a 1.4% hit rate it does not
 amortise at all.
 
+#### What the Control rate becomes after 0031 and 0032
+
+Derived from the measured call table above, at the five-minute row's 1,167
+connections per second. Neither phase is built; this is what the measurement
+says they are worth, and it is the comparison phase **0021** was weighed against
+before being withdrawn (D17).
+
+| Model | Control calls per check | Control req/s at 1,167 checks/s | |
+| --- | --- | --- | --- |
+| Today, at UC2's fan-out (hit rate ~1.4%) | ~3.16 | ~3,690 | derived |
+| With **0031** — the cache works at fan-out | 2.17 | ~2,530 | derived from the measured cache-hit figure |
+| With **0031 + 0032** — host-key decision reused too | **~1.17** | **~1,365** | derived |
+
+What is left at 1.17 is `POST /v1/auth/cert` at 1.00 and `POST /v1/logs/batch`
+at 0.17. The second is a configuration (`logging.batch_size`), not a property.
+The first is authentication, which §6.4 never caches by design, because an MFA
+approval is a per-session assertion and certificate validation is where
+revocation is enforced.
+
+**So after 0031 and 0032 the Control load for UC2 is one authentication per
+check** — which is what a system whose security claim is "every access is
+authenticated against the PDP" ought to cost. Driving it lower means
+authenticating less often, which is a security argument and not a capacity one.
+
 #### What these numbers cannot say
 
 - **The generator, the target and the proxy share four cores.** Every achieved
@@ -2276,7 +2336,8 @@ on. The 60-second row stays in the table because a worst case worth naming is
 worth sizing, and because a poll interval is the kind of thing that changes
 without anyone re-reading this section.
 
-Two consequences follow, and 0021's author should start from them:
+Two consequences follow. 0021's author started from them, and they are why that
+phase was withdrawn rather than built (D17):
 
 - **The connection volume argument for D17 is gone at the real interval.** One
   to two proxies is not a reason to change the connection model, and at the
@@ -2335,7 +2396,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0018 | Enforcement points — contract v4         | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account — an `authorized_keys` `command=` dispatcher over the route's own `restricted_exec` list, a curated `PATH`, a `noexec,nosuid,nodev` home, `setpriv --no-new-privs`, and a per-uid packet filter on both address families — and onto a device account through the platform's own authorizer under `enforcement.platform_role`. Plus the capability probe and `POST /v1/capabilities/report`, the teardown ordering the uid hazard requires, the reaper's residue sweep, the four audit fields, and the e2e scenarios. The mechanism table is §6.5, "What this proxy actually renders" |
 | 0020 | Scale harness & sizing evidence         | `cmd/loadgen` + `load/`: a synthetic load harness outside the compose topology, and the measured per-proxy ceilings, Control request rates, cache behaviour under fan-out and per-target provisioning ceiling it produced. **Results and sizing guidance: §9.1.** It refutes D17's arithmetic and finds a different problem — the cache's entry bound, queued as 0031 |
-| 0021 | Machine-identity connection model       | persistent M2M connections with a bounded snapshot age and per-channel audit (D17, amends D2) |
+| 0021 | Machine-identity connection model       | **Withdrawn — evaluated, not built.** 0020's measurements removed the connection-volume and provisioning arguments, and the Control load that was left has a cheaper answer in 0031 + 0032 (3.17 → ~1.17 calls per connection, no amendment to D2). D2 stands; the number **0021 is retired and must never be reused**. Reasoning: `docs/learnings/0021-machine-identity-connection-model-learnings.md`, and D17 |
 | 0022 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
 | 0023 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
 | 0024 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
@@ -2575,15 +2636,23 @@ from the credential.
 Served by: existing D5a/D12 vocabulary, sharpened by 0018's rungs — this is the
 use case `no-interactive-shell` beside `restricted_exec` was written for, and
 the one whose concurrency caps (§6.5, "Session bounds") bound an automation
-fleet — plus D17 and phase 0021 once the estate is large enough for
-connection-per-check to stop being viable.
+fleet.
 
-Phase 0020 measured what "large enough" is (§9.1), and the answer is larger than
-D17 assumed: connection-per-check stays viable well past the estate size that
-motivated D17. What does **not** scale to this access pattern is the decision
+Phase 0020 measured how large an estate connection-per-check survives (§9.1),
+and the answer is larger than D17 assumed: it stays viable well past the estate
+size that motivated D17, which is why **D17 is withdrawn and phase 0021 was
+never built**. What does **not** scale to this access pattern is the decision
 cache — one subject against very many targets gets a hit rate of `4,096 / N`,
 because the cache is bounded there and never evicts. This is the use case that
-finding is about, and phase **0031** is the fix.
+finding is about, and phase **0031** is the fix, with **0032** taking the
+host-key report out of the residue. After both, this use case costs Hoplock
+Control one authentication per check and nothing else that is not a
+configuration (§9.1).
+
+The bound on how long any one connection may hold its snapshot — including a
+client multiplexing checks over `ControlMaster` — is 0018's `SessionDeadline`,
+enforced locally by phase **0025**, plus §6.4's revocation stream. That is the
+guarantee D17 wanted, and it is already contracted.
 
 ### UC3 — Scanners and ticket-scoped access
 

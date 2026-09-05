@@ -4,6 +4,15 @@
 > the host-key report is **46% of the remaining Hoplock Control calls** — a
 > proxy reconnecting to a target it has seen ten thousand times reports the same
 > key ten thousand times, and asks for the same answer every time.
+>
+> **It carries more weight than it did when it was queued.** Phase 0021 was
+> withdrawn on the strength of this phase and 0031 being the cheaper answer to
+> UC2's Hoplock Control load (`docs/PLAN.md` D17 and §9.1, "What the Control
+> rate becomes after 0031 and 0032"). Land 0031 first — this phase's 46% is of
+> the residue *that* one leaves.
+>
+> It is also, with 0021 gone, the **last queued phase that revises the
+> contract**, which is what phase 0029 waits on.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
