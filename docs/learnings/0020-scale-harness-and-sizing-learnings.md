@@ -160,6 +160,20 @@ has to stand on those two or not at all.
   heap carry across steps; without a restart (and the disjoint target names the
   harness assigns per step) a later step measures an entry table an earlier one
   filled. The scenario loader refuses the combination.
+- **`make lint` may not run in your sandbox, and `gofmt` is not a substitute.**
+  golangci-lint refuses a module whose `go` directive is newer than the Go it
+  was built with ("the Go language version (go1.25) used to build golangci-lint
+  is lower than the targeted Go version (1.26.0)"), so a sandbox with an older
+  binary silently skips the whole lint gate. `gofmt` does **not** cover it:
+  goimports with `local-prefixes` wants third-party and local imports in
+  separate groups, and gofmt only sorts within a block, so a misgrouped import
+  passes gofmt and fails CI. This cost a cycle. The check that does run
+  anywhere:
+
+  ```sh
+  go run golang.org/x/tools/cmd/goimports@latest -local github.com/hoplock/proxy -l ./cmd/ ./internal/ ./test/
+  ```
+
 - **Memory per live connection is a hold-mode measurement only.** Rate-mode
   connections do not overlap long enough to form a plateau; the harness now
   refuses to emit the figure at all outside hold mode rather than emitting noise
