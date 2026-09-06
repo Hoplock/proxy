@@ -2374,6 +2374,16 @@ None of these were fixed here — this phase changes no behaviour.
 
 One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 
+> **What runs next: 0031 → 0032 → 0025**, then the remaining queued prompts by
+> number, with **0033** last. The numbers below 0031 are *arrival* order, not
+> priority: nothing in the queue depends on those three running late, so they
+> were not renumbered — `docs/PROTOCOL.md` §6 asks for a renumber only when an
+> ordering **violation** exists, and prefers naming a prompt at kickoff
+> otherwise. 0031 and 0032 are the answer that replaced the withdrawn 0021
+> (D17), and 0025 enforces the `SessionDeadline` that same withdrawal leans on,
+> so all three make an argument in this plan true rather than merely written
+> down. Name the prompt when you start a session; do not re-derive this.
+
 | #    | Phase                                   | Delivers                                                            |
 | ---- | --------------------------------------- | ------------------------------------------------------------------ |
 | 0001 | Project scaffold & conventions          | module, layout, license+headers, Makefile, CI skeleton, config stub |

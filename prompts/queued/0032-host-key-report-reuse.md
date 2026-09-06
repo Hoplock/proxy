@@ -13,7 +13,15 @@
 >
 > It is also, with 0021 gone, the **last queued phase that revises the
 > contract**, which is what phase **0033** waits on (the collapse prompt, queued
-> as 0029 and renumbered so its number matches its position).
+> as 0029 and renumbered so its number matches its position).>
+> **▶ Run order: this is #2 of the three prompts that run next.** The queue's
+> numbers are arrival order, not priority — nothing here *depends* on the
+> prompts numbered below it, so they were not renumbered (`docs/PROTOCOL.md` §6:
+> prefer naming a prompt over renumbering). The intended order from here is
+> **0031 → 0032 → 0025**, then the remaining prompts by number, with 0033 last.
+> It follows 0031 because its share is measured against the residue 0031
+> leaves, and it carries a cross-repo obligation that 0031 does not.
+
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.

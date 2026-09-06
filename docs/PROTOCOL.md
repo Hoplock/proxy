@@ -158,13 +158,24 @@ prefix indicating implementation order.
 - **Uniqueness:** no number may repeat across `queued/` **or** `implemented/`.
   Every prompt is uniquely identified for all time.
 - **Implemented names are frozen:** never rename a file in `prompts/implemented/`.
-- **A number leaves circulation for good.** A queued prompt that is withdrawn,
-  or renumbered, gives up its number permanently — never reuse it, even though
-  nothing occupies it. It still names that work in commit messages, learnings
-  files and PR history, and a reused number makes every one of those references
-  ambiguous. Two are out of circulation today: **0021** (withdrawn, see
-  `docs/learnings/0021-…`) and **0029** (renumbered to 0033). Gaps in the
-  sequence are expected and are not a defect to tidy up.
+- **A number that stops naming its prompt is recorded, never silently
+  reassigned.** A **withdrawn** prompt's number is retired permanently — never
+  reuse it (**0021** today, see `docs/learnings/0021-…`). A number **vacated by
+  a renumber** stays vacant unless that same renumber reassigns it (**0029**
+  today, moved to 0033), and every renumber records its mapping in
+  `docs/PLAN.md` §11 so older references stay resolvable. Gaps in the sequence
+  are expected and are not a defect to tidy up.
+- **Renumbering is not how you change what runs next — prefer naming the
+  prompt.** §0 already lets the user name a specific prompt instead of the
+  lowest-numbered one, which costs nothing. Renumbering exists for a genuine
+  **ordering violation** — a prompt that *must* run before or after another and
+  whose number says otherwise — not for preference. It is expensive and
+  error-prone: §3 makes chasing every stale citation mandatory, this
+  repository's queued numbers have already been revised three times (see the
+  mapping notes in `docs/PLAN.md` §11, now three revisions deep), and phase
+  0026's prompt priced one such move at "roughly seventy" citations and
+  declined it on those grounds. Record the intended run order in the prompt
+  headers and the §10 table instead.
 - **When you add new prompts:** if your PR introduces new prompts into
   `queued/`, verify ordering still makes sense. If a new prompt must run before
   existing queued prompts, **renumber the queued prompts** (only queued ones) so

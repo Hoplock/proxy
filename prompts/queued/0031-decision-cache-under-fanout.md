@@ -10,7 +10,15 @@
 > UC2's Hoplock Control load (`docs/PLAN.md` D17 and §9.1, "What the Control
 > rate becomes after 0031 and 0032"). This phase is now the larger half of that
 > answer rather than a tidy-up, and it changes no contract, so there is nothing
-> holding it back.
+> holding it back.>
+> **▶ Run order: this is #1 of the three prompts that run next.** The queue's
+> numbers are arrival order, not priority — nothing here *depends* on the
+> prompts numbered below it, so they were not renumbered (`docs/PROTOCOL.md` §6:
+> prefer naming a prompt over renumbering). The intended order from here is
+> **0031 → 0032 → 0025**, then the remaining prompts by number, with 0033 last.
+> It is first because it is a measured defect in shipped behaviour, it changes
+> no contract, and 0032's remaining 46% is of the residue it leaves.
+
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.

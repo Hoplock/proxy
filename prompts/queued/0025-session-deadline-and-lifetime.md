@@ -5,7 +5,17 @@
 > Queue it if no phase covers it."* No phase covered it. This is that prompt.
 >
 > **It cannot start before 0018 has merged** — the contract field it enforces
-> does not exist until then. Everything else here is proxy-local.
+> does not exist until then. Everything else here is proxy-local.>
+> **▶ Run order: this is #3 of the three prompts that run next.** The queue's
+> numbers are arrival order, not priority — nothing here *depends* on the
+> prompts numbered below it, so they were not renumbered (`docs/PROTOCOL.md` §6:
+> prefer naming a prompt over renumbering). The intended order from here is
+> **0031 → 0032 → 0025**, then the remaining prompts by number, with 0033 last.
+> It joins them because phase 0021 was withdrawn partly on the grounds that
+> 0018's `SessionDeadline`, which **this** phase enforces, already bounds how
+> long a connection may hold a policy snapshot — an argument that is only true
+> once this has shipped (`docs/learnings/0021-…`).
+
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
