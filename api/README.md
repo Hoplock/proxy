@@ -215,7 +215,7 @@ Nothing below is enforced yet; each field names the phase that consumes it.
 | `enforcement.platform_role` | — (**required** for `platform-authorized`, forbidden otherwise) | the device role the ephemeral account is scoped to | 0019 |
 | `enforcement.permitted_destinations` | — (**required** for `account-egress-restricted`, forbidden otherwise) | destinations the session's own processes may open | 0019 |
 | `enforcement.attestation` | — (**required** for `platform-attested`, forbidden otherwise) | who asserts the target's own enforcement, and where that is written down | 0019 |
-| `session_deadline` | **no deadline** (v3) | an absolute instant the proxy enforces locally | 0025 |
+| `session_deadline` | **no deadline** (v3) | an absolute instant the proxy enforces locally | 0024 |
 | `require_session_capture` | `false` — capture happens if configured, and its absence stops nothing (v3) | a proxy with no recording path at all refuses the session (**outage**) | 0019 |
 | `grant_context` | **no external grant context** (v3) | opaque context copied to every log record; never parsed, never matched, never a decision | 0019 |
 | `concurrency` | **uncapped** (v3) | a per-subject and/or per-target ceiling; exceeding it is a **policy denial**, not an outage | 0019 |
@@ -597,7 +597,7 @@ not, what the target must already provide, and how it fails — is
 `docs/PLAN.md` §6.5. This section is the wire half.
 
 Nothing below is enforced yet. Phase 0019 renders a rung onto an account; phase
-0025 closes a session at its deadline.
+0024 closes a session at its deadline.
 
 ### Enforcement points (`enforcement`, D12 as amended, phase 0019)
 
@@ -730,7 +730,7 @@ response, and the proxy re-checks the rung against the live target when it
 provisions. So the worst a stale record can cause is a refused session — never a
 session running below the rung its own audit record claims.
 
-### Session bounds (D16, phase 0019/0025)
+### Session bounds (D16, phase 0019/0024)
 
 Four fields that bound how long and on what grounds a session exists. They are
 not enforcement points; they ride this revision because they are fields on the
@@ -738,7 +738,7 @@ same object.
 
 | Field | What it does |
 | --- | --- |
-| `session_deadline` | An **absolute instant** the **proxy enforces locally**, so it holds when the revocation stream is down — which is exactly when an immortal root session is least acceptable. An instant rather than a duration because a duration re-anchors on every hop of a chained route. Reaching it is neither a denial nor an outage: the close is explained (§4.3). Phase 0025 owns what the user is told and whether a warning precedes it |
+| `session_deadline` | An **absolute instant** the **proxy enforces locally**, so it holds when the revocation stream is down — which is exactly when an immortal root session is least acceptable. An instant rather than a duration because a duration re-anchors on every hop of a chained route. Reaching it is neither a denial nor an outage: the close is explained (§4.3). Phase 0024 owns what the user is told and whether a warning precedes it |
 | `require_session_capture` | The route runs only if the session is recorded, checked **before the target leg is dialled**. **Buffering to local disk counts** — the 0011 disk buffer is a resilience path, not a degraded mode — so the refusal (outage-class) triggers only when there is no path at all. It is the compensating control that makes D16's unbounded-privilege grant defensible: root can disable a target's auditing and scrub its traces; it cannot touch a session captured in the proxy |
 | `grant_context` | Why access was granted: the external `system`, its `reference`, the window it asserted, and `additional_context` (a string **or** an object). **The proxy treats all of it as opaque** — copied to every log record, never parsed, never matched against, never the basis of a proxy-side decision (D2), and never shown to the user. `window_start`/`window_end` are **recorded, not enforced**; `session_deadline` is the bound |
 | `concurrency` | `max_sessions_per_subject` and/or `max_sessions_per_target`. Enforced by the proxy against its own session registry, because the live session count is knowable only there. Exceeding a cap is a **policy denial** (vague, §4.3), not an outage. Both optional and independent; absent means uncapped |

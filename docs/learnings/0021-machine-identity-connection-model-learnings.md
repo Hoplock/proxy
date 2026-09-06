@@ -39,6 +39,16 @@
   tidy-ups: they are the answer that replaced this phase, and 0032 is the last
   queued phase that revises the contract, which is what 0029 waits on.
 
+> **Pointer (this file is otherwise unchanged, and its numbers are the old
+> ones).** The queue was renumbered after this phase so that a number states run
+> order (`docs/PROTOCOL.md` §6; full mapping in the run-order note at the end of
+> `docs/PLAN.md` §10). Read this file through it: the decision cache called
+> **0031** here is now **0022**, host-key report reuse called **0032** is now
+> **0023**, the session deadline called **0025** is now **0024**, and the
+> contract collapse called **0029** is now **0032**. Those first three were
+> promoted to run next precisely because this phase's argument leans on them.
+> **0021 itself stays retired and is never reused.**
+
 ## Details
 
 ### What the prompt asked, and why the answer is "don't"

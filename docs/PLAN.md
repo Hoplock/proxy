@@ -497,7 +497,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   (§5.1). What measurement *did* find is a different problem in the same place:
   the proxy's decision cache stops working above a fixed 4,096-entry bound, so
   the Hoplock Control request rate — the largest number in the chain — does not
-  amortise across a fleet at all (phase **0031**).
+  amortise across a fleet at all (phase **0022**).
 
   The assumption under all of it was **asked rather than measured around**, and
   answered: the health checking is over SSH, at a **five-minute** interval, with
@@ -512,10 +512,10 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
 
   - **The connection arithmetic is gone** (above), and per-check provisioning
     was never the per-target wall this decision called it.
-  - **The Control load that is left has a cheaper answer.** Phases **0031**
-    (cache eviction) and **0032** (host-key report reuse) take 3.17 Control
+  - **The Control load that is left has a cheaper answer.** Phases **0022**
+    (cache eviction) and **0023** (host-key report reuse) take 3.17 Control
     calls per connection to **~1.17** (§9.1, "What the Control rate becomes
-    after 0031 and 0032") without amending D2, and for every route rather than
+    after 0022 and 0023") without amending D2, and for every route rather than
     only machine ones. What survives them is one `POST /v1/auth/cert` per
     check — and a persistent connection removes *that* only by not
     authenticating each check, which is §6.4's "authentication is never cached"
@@ -526,7 +526,7 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
     clampable down only, never up, never invented, revocation-aware and
     fail-closed — and it amortises one decision across many short connections. A
     bound on how long a single connection may hold a snapshot is 0018's
-    `SessionDeadline`, enforced locally by phase **0025**, which applies to a
+    `SessionDeadline`, enforced locally by phase **0024**, which applies to a
     multiplexed client connection exactly as it does to a human's. Together they
     are "bound the snapshot, not the connection", already contracted, with no
     standing authorization and no amendment to D2.
@@ -705,7 +705,7 @@ learnings rather than closed there.
 **As extended (contract v3.1, phase 0016).** `ephemeral-account` params carry an
 open namespace of platform-specific fields, `device_field.<name>`, for devices
 that are one unit partitioned into many — a FortiGate running virtual domains
-today, a FortiLink-managed switch behind its FortiGate in 0027. The contract
+today, a FortiLink-managed switch behind its FortiGate in 0029. The contract
 checks their shape and nothing else; which fields exist is the driver's to
 declare, exactly as the set of platforms is. A field the driver does not declare
 is a skipped rung (D14) and never a field dropped, which is both the safety
@@ -816,7 +816,7 @@ part of the guarantee rather than an implementation detail:
   BEFORE the account**, then the mount, then the account and its home, then the
   confinement directory — and it **verifies every one of them**. `useradd` reuses
   freed uids, so a uid-keyed rule that outlives its account silently attaches to
-  whoever gets that uid next; phase **0024**'s non-reusing range is the other
+  whoever gets that uid next; phase **0027**'s non-reusing range is the other
   half of the same problem;
 - the orphan reaper looks for those artefacts by name — every rule carries a
   comment naming the account — so a rule, a mount, or a dispatcher whose account
@@ -903,10 +903,10 @@ rather than routine polling. Account churn also means
 UID churn, and a reused UID inherits ownership of anything a deleted account
 left behind — which today it does *immediately*, because provisioning takes
 whatever uid the target's allocator offers and that is the lowest free one.
-Phase **0024** makes allocation non-reusing and fails closed where it cannot;
+Phase **0027** makes allocation non-reusing and fails closed where it cannot;
 phase **0019**'s filesystem confinement is the other half, leaving nothing
 outside the home to inherit. Teardown deliberately does not sweep the
-filesystem for a departing uid: see 0024 for why that is the wrong fix.
+filesystem for a departing uid: see 0027 for why that is the wrong fix.
 
 The trade-off a user actually feels is different, and is accepted deliberately:
 **one person in two windows cannot see their own work, and cannot reattach to
@@ -1074,7 +1074,7 @@ not only what the driver types.
    unsupported configuration is an **outage-class denial**, never a best-effort
    attempt — and never a skipped rung either, because skipping would answer the
    shape of one unit with a credential the server ranked lower. Support is
-   phase **0016**, and it owns the question phase 0027 asks again for a
+   phase **0016**, and it owns the question phase 0029 asks again for a
    FortiLink-managed switch and phase 0018's contract has to be able to express:
    **what a target is when one device holds many.** 0016 answers it first, once,
    and the others build on that answer — which is why it was renumbered to the
@@ -1130,10 +1130,10 @@ the user, and the first is binding beyond this driver.
    unit would look like several hosts that do not exist; proxy-local
    configuration contradicts §4.2's rule that the method and its parameters are
    Control's per-route decision; and a FortiOS-specific `vdom` parameter would
-   have made 0027 author a second answer to the same question, which is the
+   have made 0029 author a second answer to the same question, which is the
    outcome the three phases were sequenced to avoid.
 
-   **This answer is binding on 0018 and 0027.** 0027's FortiLink-managed switch
+   **This answer is binding on 0018 and 0029.** 0029's FortiLink-managed switch
    is the same shape one level further out — the endpoint is the managing
    FortiGate, and a field names the switch behind it — and 0018's contract
    describes the namespace rather than inventing a second way to say the same
@@ -1147,7 +1147,7 @@ the user, and the first is binding beyond this driver.
    What did NOT move is the reaper: it sweeps a device it reaches from an
    endpoint, and on a FortiGate every administrator lives in one global table
    whatever VDOM it is scoped to. The fields ride on creation only. A platform
-   where a field selects a genuinely different managed device — 0027's switch —
+   where a field selects a genuinely different managed device — 0029's switch —
    is the phase that carries them onto the other operations, on the reaper's
    terms.
 
@@ -1227,7 +1227,7 @@ the user.
    device holds the deadline — so an audit record that says `target-enforced`
    also says what that bought. Whether an already-established session survives
    its window closing is undocumented and is stated as undocumented; ending the
-   SESSION at its deadline is 0025's, and was deliberately not conflated with
+   SESSION at its deadline is 0024's, and was deliberately not conflated with
    ending the account's usefulness here.
 
 3. **The schedule takes the administrator's own name, and teardown removes both
@@ -1577,7 +1577,7 @@ Phase 0020 measured that as **3.17 Control calls per connection** uncached and
 **2.17** on a cache hit — a hint removes the authorize call and nothing else —
 and found that the client-side cache stops working above a fixed 4,096-entry
 bound, which is why UC2's fan-out gets almost no benefit from it (§9.1, and
-phase 0031 for the change that proposes).
+phase 0022 for the change that proposes).
 Two mechanisms address that, and they only make sense together:
 
 - **Server-authorised caching.** The server may attach a cache hint (an opaque
@@ -1695,7 +1695,7 @@ to whoever gets that uid next — a rule written for an automation becomes a rul
 governing a person. Any rung keyed on uid is therefore removed by the same
 teardown that removes the account, and is part of what the orphan reaper looks
 for, with the same guarantee as the account itself, or it is not a rung. Phase
-**0024**'s non-reusing uid range is the other half of the same problem, and
+**0027**'s non-reusing uid range is the other half of the same problem, and
 0019 owns the teardown half.
 
 **Some rungs are attested rather than applied, and that is what makes appliances
@@ -1918,7 +1918,7 @@ would have cost Control a third sync for no gain.
 
 Reaching the deadline is **neither a denial nor an outage**: the session is
 closed and the close is explained (§4.3). Two questions are deliberately left
-to phase **0025**, which enforces it: what the user is told at expiry, and
+to phase **0024**, which enforces it: what the user is told at expiry, and
 whether a warning precedes it.
 
 ## 7. Logging & telemetry (`internal/logging`, D8)
@@ -2172,7 +2172,7 @@ Authentication is never cached by design, but the host-key report is neither a
 decision nor cached: a proxy reconnecting to a target it has seen ten thousand
 times reports the same host key ten thousand times. At **46% of the residual
 2.17 calls** it is the largest remaining item rather than a rounding error, and
-phase **0032** proposes the fix.
+phase **0023** proposes the fix.
 
 Log shipping scales with `logging.batch_size`, so 0.17 is a configuration
 rather than a property: roughly 11 records per session at 64 records per batch.
@@ -2209,7 +2209,7 @@ every target buys nothing, because the proxy's *shape* map — the
 (subject, login, target, port, method, hop trail) lookup that finds the key — is
 bounded by the same constant as the entry table. No server-side key choice can
 reach this; the limit is in the proxy. The bound is also not settable from
-`config.yaml`. Phase **0031** carries the proposed change; this phase measures
+`config.yaml`. Phase **0022** carries the proposed change; this phase measures
 and does not fix.
 
 #### What `ephemeral-user` costs a target (§5.1)
@@ -2278,7 +2278,7 @@ Control request rate is the larger number and the one to design against — and 
 is exactly where the cache finding bites, because at a 1.4% hit rate it does not
 amortise at all.
 
-#### What the Control rate becomes after 0031 and 0032
+#### What the Control rate becomes after 0022 and 0023
 
 Derived from the measured call table above, at the five-minute row's 1,167
 connections per second. Neither phase is built; this is what the measurement
@@ -2288,8 +2288,8 @@ before being withdrawn (D17).
 | Model | Control calls per check | Control req/s at 1,167 checks/s | |
 | --- | --- | --- | --- |
 | Today, at UC2's fan-out (hit rate ~1.4%) | ~3.16 | ~3,690 | derived |
-| With **0031** — the cache works at fan-out | 2.17 | ~2,530 | derived from the measured cache-hit figure |
-| With **0031 + 0032** — host-key decision reused too | **~1.17** | **~1,365** | derived |
+| With **0022** — the cache works at fan-out | 2.17 | ~2,530 | derived from the measured cache-hit figure |
+| With **0022 + 0023** — host-key decision reused too | **~1.17** | **~1,365** | derived |
 
 What is left at 1.17 is `POST /v1/auth/cert` at 1.00 and `POST /v1/logs/batch`
 at 0.17. The second is a configuration (`logging.batch_size`), not a property.
@@ -2297,7 +2297,7 @@ The first is authentication, which §6.4 never caches by design, because an MFA
 approval is a per-session assertion and certificate validation is where
 revocation is enforced.
 
-**So after 0031 and 0032 the Control load for UC2 is one authentication per
+**So after 0022 and 0023 the Control load for UC2 is one authentication per
 check** — which is what a system whose security claim is "every access is
 authenticated against the PDP" ought to cost. Driving it lower means
 authenticating less often, which is a security argument and not a capacity one.
@@ -2344,7 +2344,7 @@ phase was withdrawn rather than built (D17):
   worst case it is still single digits.
 - **The Control request rate is what is left.** 3,700 req/s at the real
   interval, and it is the number that does *not* amortise, because the decision
-  cache does not work at this fan-out (see above, and phase 0031).
+  cache does not work at this fan-out (see above, and phase 0022).
 
 #### Other findings from the harness
 
@@ -2374,6 +2374,19 @@ None of these were fixed here — this phase changes no behaviour.
 
 One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 
+> **The number is the run order.** Take the lowest-numbered prompt in
+> `prompts/queued/` and you are taking the right one — the queued block is kept
+> contiguous and in intended order immediately above the frozen implemented
+> block, so no session has to be told which prompt to start (`docs/PROTOCOL.md`
+> §6). The queue was renumbered for that in the run-order revision below.
+>
+> So: **0022** (the decision cache) → **0023** (host-key report reuse) →
+> **0024** (the session deadline), then the rest by number, with **0032**, the
+> contract collapse, last. The first three are promoted because they make an
+> argument this plan already relies on *true* rather than merely written down:
+> 0022 and 0023 are the cheaper answer that replaced the withdrawn 0021 (D17),
+> and 0024 enforces the `SessionDeadline` that the same withdrawal leans on.
+
 | #    | Phase                                   | Delivers                                                            |
 | ---- | --------------------------------------- | ------------------------------------------------------------------ |
 | 0001 | Project scaffold & conventions          | module, layout, license+headers, Makefile, CI skeleton, config stub |
@@ -2389,30 +2402,54 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 | 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
-| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0027/0028 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016 |
+| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0029/0030 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016 |
 | 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
-| 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0027's switch driver both build on rather than re-answer (deferred from 0015) |
+| 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0029's switch driver both build on rather than re-answer (deferred from 0015) |
 | 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
 | 0018 | Enforcement points — contract v4         | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account — an `authorized_keys` `command=` dispatcher over the route's own `restricted_exec` list, a curated `PATH`, a `noexec,nosuid,nodev` home, `setpriv --no-new-privs`, and a per-uid packet filter on both address families — and onto a device account through the platform's own authorizer under `enforcement.platform_role`. Plus the capability probe and `POST /v1/capabilities/report`, the teardown ordering the uid hazard requires, the reaper's residue sweep, the four audit fields, and the e2e scenarios. The mechanism table is §6.5, "What this proxy actually renders" |
-| 0020 | Scale harness & sizing evidence         | `cmd/loadgen` + `load/`: a synthetic load harness outside the compose topology, and the measured per-proxy ceilings, Control request rates, cache behaviour under fan-out and per-target provisioning ceiling it produced. **Results and sizing guidance: §9.1.** It refutes D17's arithmetic and finds a different problem — the cache's entry bound, queued as 0031 |
-| 0021 | Machine-identity connection model       | **Withdrawn — evaluated, not built.** 0020's measurements removed the connection-volume and provisioning arguments, and the Control load that was left has a cheaper answer in 0031 + 0032 (3.17 → ~1.17 calls per connection, no amendment to D2). D2 stands; the number **0021 is retired and must never be reused**. Reasoning: `docs/learnings/0021-machine-identity-connection-model-learnings.md`, and D17 |
-| 0022 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
-| 0023 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
-| 0024 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
-| 0025 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
-| 0026 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
-| 0027 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
-| 0028 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
-| 0029 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract |
-| 0030 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0025's). The row this table was missing; the prompt has been queued since phase 0019 |
-| 0031 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache holds a fixed 4,096 entries with **no eviction**, so a working set larger than that caches the first 4,096 shapes and refuses the rest. Give it LRU eviction, make the bound configurable, and re-derive the default from §9.1's measured per-entry cost. No contract change |
-| 0032 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` is 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. Let the server attach a cache hint to the host-key decision, keyed on a shape that **includes the fingerprint** so a changed key still reports (D7). Contract change — carries a cross-repo obligation |
+| 0020 | Scale harness & sizing evidence         | `cmd/loadgen` + `load/`: a synthetic load harness outside the compose topology, and the measured per-proxy ceilings, Control request rates, cache behaviour under fan-out and per-target provisioning ceiling it produced. **Results and sizing guidance: §9.1.** It refutes D17's arithmetic and finds a different problem — the cache's entry bound, queued as 0022 |
+| 0021 | Machine-identity connection model       | **Withdrawn — evaluated, not built.** 0020's measurements removed the connection-volume and provisioning arguments, and the Control load that was left has a cheaper answer in 0022 + 0023 (3.17 → ~1.17 calls per connection, no amendment to D2). D2 stands; the number **0021 is retired and must never be reused**. Reasoning: `docs/learnings/0021-machine-identity-connection-model-learnings.md`, and D17 |
+| 0022 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache holds a fixed 4,096 entries with **no eviction**, so a working set larger than that caches the first 4,096 shapes and refuses the rest. Give it LRU eviction, make the bound configurable, and re-derive the default from §9.1's measured per-entry cost. No contract change |
+| 0023 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` is 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. Let the server attach a cache hint to the host-key decision, keyed on a shape that **includes the fingerprint** so a changed key still reports (D7). Contract change — carries a cross-repo obligation |
+| 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
+| 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
+| 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
+| 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
+| 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
+| 0029 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
+| 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
+| 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |
+| 0032 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the run-order revision below moved it from 0029 |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
-> **Renumbering note (device-completion revision).** Phase 0015 deferred two
+> **Renumbering note (run-order revision).** The queued block was renumbered so
+> that a number states **position**, not arrival: the frozen implemented prompts
+> keep the lowest numbers (0001–0020), and the queue runs contiguously above
+> them (0022–0032) in the order it is meant to be worked. Phases **0031**
+> (the decision cache) and **0032** (host-key report reuse) were promoted to
+> **0022** and **0023** because they are the cheaper answer that replaced the
+> withdrawn 0021 (D17), and **0025** (the session deadline) to **0024** because
+> the same withdrawal leans on the `SessionDeadline` it enforces. The full
+> mapping is — **0031→0022, 0032→0023, 0025→0024, 0022→0025, 0023→0026,
+> 0024→0027, 0026→0028, 0027→0029, 0028→0030, 0030→0031, 0033→0032** — while
+> implemented prompts 0001–0020 keep their frozen names. **0021 stays retired**
+> (withdrawn, never reused; see `docs/learnings/0021-…`), which is why the queue
+> starts at 0022 rather than closing that gap. Live references were updated in
+> place (`docs/PLAN.md`, the queued prompts, `docs/PROTOCOL.md`, `api/`,
+> `deploy/README.md`, and the Go comments that hand work forward).
+> **`docs/learnings/` and `prompts/implemented/` were not rewritten:** anything
+> written before this revision refers to phases by their **old** numbers — most
+> importantly **0020's learnings** and **0021's**, which call the decision cache
+> "0031" (now **0022**) and the host-key report "0032" (now **0023**), and 0021's
+> which calls the session deadline "0025" (now **0024**) and the contract
+> collapse "0033"/"0029" (now **0032**). Resolve them through this mapping, and
+> compose it with the frozen notes below, which record *earlier* revisions of the
+> same numbers.
+>
+> > **Renumbering note (device-completion revision).** Phase 0015 deferred two
 > capabilities it deliberately declined — multi-VDOM support and target-enforced
 > expiry — and queued them at the **end**, after the FortiSwitch drivers. That was
 > the convenient placement, not the correct one, and it has been fixed: they are
@@ -2644,14 +2681,14 @@ size that motivated D17, which is why **D17 is withdrawn and phase 0021 was
 never built**. What does **not** scale to this access pattern is the decision
 cache — one subject against very many targets gets a hit rate of `4,096 / N`,
 because the cache is bounded there and never evicts. This is the use case that
-finding is about, and phase **0031** is the fix, with **0032** taking the
+finding is about, and phase **0022** is the fix, with **0023** taking the
 host-key report out of the residue. After both, this use case costs Hoplock
 Control one authentication per check and nothing else that is not a
 configuration (§9.1).
 
 The bound on how long any one connection may hold its snapshot — including a
 client multiplexing checks over `ControlMaster` — is 0018's `SessionDeadline`,
-enforced locally by phase **0025**, plus §6.4's revocation stream. That is the
+enforced locally by phase **0024**, plus §6.4's revocation stream. That is the
 guarantee D17 wanted, and it is already contracted.
 
 ### UC3 — Scanners and ticket-scoped access
@@ -2668,4 +2705,4 @@ never *filtered*. Marketing, docs, and the audit record use those words.
 Served by: D15 (where the integrations live — not here), D16 (deadline, grant
 context, required capture), D6/D13 for the credential, §6.4's revocation stream
 for the stop path, and phase **0018** for the contract — which landed the four
-fields (§6.5, "Session bounds"). Phase 0025 enforces the deadline.
+fields (§6.5, "Session bounds"). Phase 0024 enforces the deadline.

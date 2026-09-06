@@ -1,4 +1,4 @@
-# 0027 — FortiLink FortiSwitch: a target administered through another device
+# 0029 — FortiLink FortiSwitch: a target administered through another device
 
 > Deferred from phase 0014. That prompt asked its session to settle the
 > FortiSwitch management-mode fork before designing a switch driver, and the
@@ -118,7 +118,7 @@ the phase becomes the contract work plus a route that falls through to
 - A scenario in `test/e2e`, per the topology obligation below.
 
 ## Out of scope
-- The standalone (directly-managed) FortiSwitch driver: that is **0028**, and it
+- The standalone (directly-managed) FortiSwitch driver: that is **0030**, and it
   is nearly the FortiGate driver under another platform name.
 - Any enforcement rung. Which access profile a route gets is 0018's vocabulary
   and 0019's application.
@@ -148,7 +148,7 @@ per-scenario options instead.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0027-fortilink-fortiswitch-driver-learnings.md`. The summary
+`docs/learnings/0029-fortilink-fortiswitch-driver-learnings.md`. The summary
 block MUST carry: the target-identity decision and why, the verified FortiLink
 facts and their sources, the declared `Capabilities` for the switch platform,
-and whether 0028 can reuse any of this.
+and whether 0030 can reuse any of this.

@@ -1,4 +1,4 @@
-# 0032 — Stop re-reporting a host key the server already ruled on
+# 0023 — Stop re-reporting a host key the server already ruled on
 
 > **Finding from phase 0020, not a new idea.** With decision caching working,
 > the host-key report is **46% of the remaining Hoplock Control calls** — a
@@ -6,13 +6,22 @@
 > key ten thousand times, and asks for the same answer every time.
 >
 > **It carries more weight than it did when it was queued.** Phase 0021 was
-> withdrawn on the strength of this phase and 0031 being the cheaper answer to
+> withdrawn on the strength of this phase and 0022 being the cheaper answer to
 > UC2's Hoplock Control load (`docs/PLAN.md` D17 and §9.1, "What the Control
-> rate becomes after 0031 and 0032"). Land 0031 first — this phase's 46% is of
+> rate becomes after 0022 and 0023"). Land 0022 first — this phase's 46% is of
 > the residue *that* one leaves.
 >
 > It is also, with 0021 gone, the **last queued phase that revises the
-> contract**, which is what phase 0029 waits on.
+> contract**, which is what phase **0032** waits on (the collapse prompt, queued
+> as 0029 and renumbered so its number matches its position).>
+> **▶ Run order: this is #2 of three, and the number says so.** The queued
+> block is contiguous and in run order above the frozen implemented prompts, so
+> the lowest-numbered queued prompt is always the right one to start
+> (`docs/PROTOCOL.md` §6). This prompt was **0032** before the run-order
+> revision; see the note at the end of `docs/PLAN.md` §10 for the full mapping.
+> It follows 0022 because its share is measured against the residue 0022
+> leaves, and it carries a cross-repo obligation that 0022 does not.
+
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -87,8 +96,8 @@ means report every time, exactly as today.
 
 ## Out of scope
 - Caching authentication. Never (§6.4).
-- The 4,096-entry bound and its missing eviction policy — that is **0031**, and
-  this phase inherits whatever bound it leaves. If 0031 has not landed, say so
+- The 4,096-entry bound and its missing eviction policy — that is **0022**, and
+  this phase inherits whatever bound it leaves. If 0022 has not landed, say so
   in the learnings: host-key entries share the table and make the bound bite
   sooner.
 - Any change to what the proxy does with a `reject`, or to TOFU itself.
@@ -113,7 +122,7 @@ means report every time, exactly as today.
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`, **plus `docs/CROSS-REPO-PROTOCOL.md`** — upstream merges
 first. Move to `implemented/`; add
-`docs/learnings/0032-host-key-report-reuse-learnings.md`. The summary block must
+`docs/learnings/0023-host-key-report-reuse-learnings.md`. The summary block must
 carry the before/after calls per connection, the shape the reuse is keyed on,
 and confirmation that a changed key still reports — the next session sizing
 Hoplock Control reads the first, and anyone auditing D7 reads the last.

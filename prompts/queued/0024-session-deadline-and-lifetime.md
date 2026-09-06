@@ -1,11 +1,21 @@
-# 0025 — The session deadline: enforce it, and tell the user before it bites
+# 0024 — The session deadline: enforce it, and tell the user before it bites
 
 > New prompt. Phase **0018** adds the deadline *field* and explicitly defers the
 > rest: *"the timer that closes a live session belongs to the proxy engine.
 > Queue it if no phase covers it."* No phase covered it. This is that prompt.
 >
 > **It cannot start before 0018 has merged** — the contract field it enforces
-> does not exist until then. Everything else here is proxy-local.
+> does not exist until then. Everything else here is proxy-local.>
+> **▶ Run order: this is #3 of three, and the number says so.** The queued
+> block is contiguous and in run order above the frozen implemented prompts, so
+> the lowest-numbered queued prompt is always the right one to start
+> (`docs/PROTOCOL.md` §6). This prompt was **0025** before the run-order
+> revision; see the note at the end of `docs/PLAN.md` §10 for the full mapping.
+> It joins them because phase 0021 was withdrawn partly on the grounds that
+> 0018's `SessionDeadline`, which **this** phase enforces, already bounds how
+> long a connection may hold a policy snapshot — an argument that is only true
+> once this has shipped (`docs/learnings/0021-…`).
+
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -154,7 +164,7 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0025-session-deadline-and-lifetime-learnings.md`. The summary
+`docs/learnings/0024-session-deadline-and-lifetime-learnings.md`. The summary
 block MUST record: the warning lead time and why; the exact wording of both
 messages and where each is written; the tolerance the timer guarantees and what
 it depends on; the chain-shortening rule and its test; and the telemetry

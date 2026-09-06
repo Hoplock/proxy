@@ -1,4 +1,4 @@
-# 0026 — Close the `identity.Login` fallback: an account name is never client-typed
+# 0028 — Close the `identity.Login` fallback: an account name is never client-typed
 
 > New prompt, queued last on purpose. It closes the **final** path by which a
 > string the user typed at their SSH client can become the account the proxy
@@ -33,15 +33,15 @@ rather than take on trust.
 exactly one account-naming path — `newPrincipal(prefix, login)` in
 `internal/auth/target/principal.go`, fed from `ephemeral.go`. 0014 *shares* that
 function rather than forking it (its prompt says to generalise it "without
-changing what it produces on Linux"), and 0019 and 0024 operate on an account
+changing what it produces on Linux"), and 0019 and 0027 operate on an account
 that is already named. So no phase ahead invents a second answer, and fixing the
 source once fixes every consumer whenever it happens. An earlier draft of this
-prompt claimed the opposite — that closing the fallback under 0014–0024 would be
+prompt claimed the opposite — that closing the fallback under 0014–0027 would be
 "closing a moving target" — and that was wrong; it is corrected here rather than
 quietly deleted, because it is the kind of reasoning that gets re-derived.
 
 **What actually keeps it late is the cost of moving it.** Inserting before 0014
-renumbers nine queued prompts, and `0014`–`0025` are cited roughly seventy times
+renumbers nine queued prompts, and `0014`–`0027` are cited roughly seventy times
 across `docs/PLAN.md`, the other queued prompts, and `docs/learnings/`. PROTOCOL
 §3 makes chasing every one of those references mandatory, and a queued prompt
 pointing at a number that no longer exists is the exact failure that section was
@@ -225,7 +225,7 @@ next session cannot reintroduce the fallback and get a green suite:
 - `cmd/mock-control/fixtures.example.yaml` and
   `deploy/control/fixtures.template.yaml` — every `brokered-key` route in both
   already carries a `username` as of 0013. **Verify that rather than assuming
-  it**, and check the same for any route added by 0014–0025.
+  it**, and check the same for any route added by 0014–0027.
 - `config.example.yaml` and `deploy/proxy/*.yaml` — the three deploy configs
   already set `auth.target.brokered_key.username: netadmin` for the local
   fallback method. Again: verify, do not assume. If the ephemeral path now needs
@@ -235,7 +235,7 @@ next session cannot reintroduce the fallback and get a green suite:
 - Anything about `Login` outside account naming. It stays in logs, prompts, the
   D1 username split, and the authorize request. Do not "clean it up".
 - The credential ladder's walk, device drivers, enforcement rungs, UID
-  allocation, session deadlines — 0014–0025 own those. If one of them added a
+  allocation, session deadlines — 0014–0027 own those. If one of them added a
   fourth path from `Login` to an account name, closing it **is** in scope; the
   grep below is what finds it.
 - Any change to `Identity` itself beyond the one comment. Adding a field, or
@@ -294,7 +294,7 @@ response shape without a `username`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`, plus the Cross-repo impact section. Move to
-`implemented/`; add `docs/learnings/0026-close-the-login-fallback-learnings.md`.
+`implemented/`; add `docs/learnings/0028-close-the-login-fallback-learnings.md`.
 The summary block MUST carry: the final resolution order for each of the three
 methods verbatim, the multi-principal rule you chose and why, whether the policy
 version moved and why, and the exact grep that proves no path remains — a future

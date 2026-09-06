@@ -1,4 +1,4 @@
-# 0031 — The decision cache under fan-out
+# 0022 — The decision cache under fan-out
 
 > **Finding from phase 0020, not a new idea.** 0020 measured the authorize
 > cache against UC2's access pattern — one subject, very many targets — and
@@ -6,11 +6,19 @@
 > This phase is the change 0020 proposed and deliberately did not make.
 >
 > **It carries more weight than it did when it was queued.** Phase 0021 was
-> withdrawn on the strength of this phase and 0032 being the cheaper answer to
+> withdrawn on the strength of this phase and 0023 being the cheaper answer to
 > UC2's Hoplock Control load (`docs/PLAN.md` D17 and §9.1, "What the Control
-> rate becomes after 0031 and 0032"). This phase is now the larger half of that
+> rate becomes after 0022 and 0023"). This phase is now the larger half of that
 > answer rather than a tidy-up, and it changes no contract, so there is nothing
-> holding it back.
+> holding it back.>
+> **▶ Run order: this is #1 of three, and the number says so.** The queued
+> block is contiguous and in run order above the frozen implemented prompts, so
+> the lowest-numbered queued prompt is always the right one to start
+> (`docs/PROTOCOL.md` §6). This prompt was **0031** before the run-order
+> revision; see the note at the end of `docs/PLAN.md` §10 for the full mapping.
+> It is first because it is a measured defect in shipped behaviour, it changes
+> no contract, and 0023's remaining 46% is of the residue it leaves.
+
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
@@ -107,7 +115,7 @@ decision's lifetime, which is still the server (§6.4).
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0031-decision-cache-under-fanout-learnings.md`. The summary
+`docs/learnings/0022-decision-cache-under-fanout-learnings.md`. The summary
 block must carry the before/after hit rates at each working-set size, the new
 default and what it was derived from, and whether the eviction policy changed
 any figure in `docs/PLAN.md` §10.1 — the next session sizing a fleet reads that

@@ -1,11 +1,11 @@
-# 0023 — Two e2e coverage holes: password+MFA, and concurrent provisioning
+# 0026 — Two e2e coverage holes: password+MFA, and concurrent provisioning
 
 > New prompt, added after 0012. It closes the only two gaps in that phase's
 > "known gaps" list that are **not** deliberate prototype deferrals: everything
 > else on that list is `docs/PLAN.md` §12 out-of-scope (host-key pinning policy,
-> geo/anycast, AD/Okta/OIDC, tamper-evident storage) or already queued as 0022.
+> geo/anycast, AD/Okta/OIDC, tamper-evident storage) or already queued as 0025.
 >
-> Appended rather than inserted. It depends on nothing 0013–0022 change, and
+> Appended rather than inserted. It depends on nothing 0013–0025 change, and
 > nothing they do depends on it — but it is small, and it is the cheapest
 > remaining increase in confidence in the prototype, so it is a reasonable one
 > to pull forward if the queue stalls.
@@ -155,7 +155,7 @@ the next person does not "tidy" them into alphabetical order.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0023-e2e-coverage-mfa-and-concurrency-learnings.md`. The summary
+`docs/learnings/0026-e2e-coverage-mfa-and-concurrency-learnings.md`. The summary
 block MUST record: **which client mechanism actually drove keyboard-interactive
 and which were tried and failed**; the fixture shape for an approving and a
 denying MFA user; how overlap was demonstrated rather than assumed; and any

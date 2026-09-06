@@ -100,10 +100,10 @@ rule rather than to a search.
 
   Turning it off is right for a target reachable only through a proxy: the
   defence has no distinct sources left to distinguish. It also keeps this suite
-  honest — prompt 0022's containment scenarios have to be proven by the proxy's
+  honest — prompt 0025's containment scenarios have to be proven by the proxy's
   own behaviour, not by the target giving up on it. The entrypoint applies each
   directive only if this `sshd` understands it. **A real fleet has to make the
-  same decision deliberately**; `prompts/queued/0022-*` is the proxy-side half.
+  same decision deliberately**; `prompts/queued/0025-*` is the proxy-side half.
 
 - **`NET_ADMIN` and `SYS_ADMIN` on the target service.** They are what phase
   0019's enforcement rungs (docs/PLAN.md §6.5) are actually made of:

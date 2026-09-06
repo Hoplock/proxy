@@ -317,7 +317,7 @@ type AuthorizeResponse struct {
 	// than a session that does not run.
 	Enforcement *EnforcementPolicy `json:"enforcement,omitempty"`
 	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
-	// (contract v4, D16; enforced locally by phase 0025). Nil means no deadline,
+	// (contract v4, D16; enforced locally by phase 0024). Nil means no deadline,
 	// which is today's behaviour.
 	//
 	// It is enforced by the PROXY, locally, so it holds when the revocation

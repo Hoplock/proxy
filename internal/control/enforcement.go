@@ -15,7 +15,7 @@ import (
 // a session exists under (D16, PLAN §13 UC3).
 //
 // Nothing here is enforced by this package. Phase 0019 renders an enforcement
-// rung onto an account; phase 0025 closes a session at its deadline. Each type
+// rung onto an account; phase 0024 closes a session at its deadline. Each type
 // names the phase that consumes it, and the absent-value default of every field
 // is stated on the field — a policy field whose default is unwritten is a
 // policy field that will eventually be guessed at.

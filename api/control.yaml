@@ -866,7 +866,7 @@ components:
           format: date-time
           description: |
             When this session must end, as an **absolute instant** (contract
-            v4, D16; enforced locally by phase 0025). **Absent ⇒ no deadline**,
+            v4, D16; enforced locally by phase 0024). **Absent ⇒ no deadline**,
             which is today's behaviour.
 
             The proxy enforces it **locally**, so it holds when the revocation
@@ -882,7 +882,7 @@ components:
 
             Reaching it is **neither a denial nor an outage**: the session is
             closed and the close is explained (PLAN §4.3). What the user is
-            told, and whether a warning precedes it, belong to phase 0025.
+            told, and whether a warning precedes it, belong to phase 0024.
           example: '2026-09-04T17:30:00Z'
         require_session_capture:
           type: boolean
