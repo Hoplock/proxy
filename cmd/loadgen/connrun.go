@@ -48,6 +48,11 @@ type StepResult struct {
 	CacheHint   bool    `json:"cache_hint"`
 	CacheScope  string  `json:"cache_scope,omitempty"`
 	CacheTTL    string  `json:"cache_ttl,omitempty"`
+	// CacheMaxEntries is the proxy's control.cache.max_entries for this run.
+	// Zero means the run took the proxy's own default, which is what every
+	// scenario did before phase 0022 made the bound settable — so a result
+	// without it is a result measured at whatever the binary's default was.
+	CacheMaxEntries int `json:"proxy_cache_max_entries,omitempty"`
 
 	Attempted uint64 `json:"attempted"`
 	Succeeded uint64 `json:"succeeded"`
@@ -375,6 +380,8 @@ func buildStepResult(
 		Targets:     drv.plan.Targets,
 		Order:       sc.Workload.Order,
 		CacheHint:   sc.Control.CacheHint,
+
+		CacheMaxEntries: sc.Proxy.CacheMaxEntries,
 
 		Attempted: drv.started.Load(),
 		Succeeded: succeeded,

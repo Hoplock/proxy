@@ -116,6 +116,14 @@ type Cache struct {
 	// cache stops serving and storing decisions. Zero means the package
 	// default.
 	StaleAfter time.Duration `yaml:"stale_after"`
+	// MaxEntries bounds how many cached lookup paths — one per (subject,
+	// login, target, port, method, hop trail) the proxy serves — this proxy
+	// holds. It is the working set, and it is what an estate larger than the
+	// default has to raise: past the bound the least recently used entry is
+	// evicted, so the hit rate follows the working set rather than freezing on
+	// whatever the proxy saw first (PLAN §9.1, phase 0022). Zero means the
+	// package default. Each entry costs about 1 KiB of heap.
+	MaxEntries int `yaml:"max_entries"`
 }
 
 // Dial tunes the outbound leg to the target. None of it decides anything; it
@@ -636,6 +644,10 @@ func (c *Config) Validate() error {
 		if d.value < 0 {
 			v.add(d.field, ErrInvalid, "must not be negative")
 		}
+	}
+
+	if c.Control.Cache.MaxEntries < 0 {
+		v.add("control.cache.max_entries", ErrInvalid, "must not be negative")
 	}
 
 	if p := c.Dial.DefaultTargetPort; p < 0 || p > 65535 {

@@ -36,6 +36,16 @@
   connection-volume argument for D17 does not survive at the real interval
   either. §9.1 sizes both rows.
 
+> **Pointer, added by phase 0022 (this file is otherwise unchanged).** The
+> cache finding this file reports — a fixed 4,096-entry bound with no eviction —
+> was **fixed** in phase 0022 (which this file calls "0031"; see the renumbering
+> note in `docs/PLAN.md` §10). The bound is now `control.cache.max_entries`,
+> defaults to 32,768, and evicts the least recently used entry when full. The
+> measured before/after hit rates, and what an undersized cache does under a
+> strict cyclic sweep, are in
+> `docs/learnings/0022-decision-cache-under-fanout-learnings.md` and
+> `docs/PLAN.md` §9.1.
+
 > **Pointer, added by phase 0021 (this file is otherwise unchanged).** 0021 read
 > this file, agreed with it, and was **withdrawn**: the Control load it was left
 > to argue from has a cheaper answer in 0031 + 0032, and the bounded-snapshot

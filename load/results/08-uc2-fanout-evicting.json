@@ -1,0 +1,147 @@
+{
+  "scenario": "08-uc2-fanout-evicting",
+  "description": "The 04 fan-out with the cache pinned to the pre-0022 bound of 4096 entries, isolating what the eviction policy does at a working set larger than the cache.\n",
+  "kind": "connection",
+  "started_at": "2026-09-06T18:45:54.760910233Z",
+  "host": {
+    "os": "linux",
+    "arch": "amd64",
+    "num_cpu": 4,
+    "go_version": "go1.26.0",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "total_memory_mib": 16075
+  },
+  "steps": [
+    {
+      "mode": "rate",
+      "measured_duration": "40.002s",
+      "warmup": "40s",
+      "offered_rate_per_sec": 250,
+      "subjects": 1,
+      "targets": 4096,
+      "target_order": "cycle",
+      "cache_hint": true,
+      "cache_scope": "per-target",
+      "cache_ttl": "1h0m0s",
+      "proxy_cache_max_entries": 4096,
+      "attempted": 9999,
+      "succeeded": 9999,
+      "failed": 0,
+      "achieved_rate_per_sec": 249.96009769142577,
+      "peak_live_connections": 2,
+      "connect_mean_ms": 2.363638,
+      "connect_p50_ms": 2.259855,
+      "connect_p95_ms": 3.202496,
+      "connect_p99_ms": 4.059272,
+      "session_mean_ms": 3.20188,
+      "session_p95_ms": 4.136136,
+      "baseline_rss_kib": 11572,
+      "plateau_rss_kib": 0,
+      "plateau_live_connections": 0,
+      "plateau_samples": 0,
+      "rss_per_live_connection_kib": 0,
+      "peak_rss_kib": 26156,
+      "peak_fds": 15,
+      "fd_limit": 20000,
+      "peak_threads": 11,
+      "proxy_cpu_seconds": 43.35,
+      "proxy_cpu_ms_per_connection": 4.335433543354336,
+      "proxy_cpu_cores_used": 1.083685392031534,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 9999,
+          "per_connection": 1,
+          "mean_handling_micros": 39.503418341834184,
+          "max_handling_micros": 676.81
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 9999,
+          "per_connection": 1,
+          "mean_handling_micros": 40.71390099009901,
+          "max_handling_micros": 467.734
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 1722,
+          "per_connection": 0.17221722172217221,
+          "mean_handling_micros": 559.7747421602787,
+          "max_handling_micros": 3467.877
+        }
+      ],
+      "control_calls_per_connection": 2.172217221722172,
+      "authorize_calls": 0,
+      "authorize_cache_hit_rate_pct": 100
+    },
+    {
+      "mode": "rate",
+      "measured_duration": "40.001s",
+      "warmup": "40s",
+      "offered_rate_per_sec": 250,
+      "subjects": 1,
+      "targets": 8192,
+      "target_order": "cycle",
+      "cache_hint": true,
+      "cache_scope": "per-target",
+      "cache_ttl": "1h0m0s",
+      "proxy_cache_max_entries": 4096,
+      "attempted": 9999,
+      "succeeded": 9999,
+      "failed": 0,
+      "achieved_rate_per_sec": 249.96609841352534,
+      "peak_live_connections": 2,
+      "connect_mean_ms": 2.401107,
+      "connect_p50_ms": 2.291684,
+      "connect_p95_ms": 3.210833,
+      "connect_p99_ms": 4.353917,
+      "session_mean_ms": 3.598638,
+      "session_p95_ms": 4.621255,
+      "baseline_rss_kib": 11688,
+      "plateau_rss_kib": 0,
+      "plateau_live_connections": 0,
+      "plateau_samples": 0,
+      "rss_per_live_connection_kib": 0,
+      "peak_rss_kib": 26084,
+      "peak_fds": 15,
+      "fd_limit": 20000,
+      "peak_threads": 11,
+      "proxy_cpu_seconds": 45.809999999999995,
+      "proxy_cpu_ms_per_connection": 4.58145814581458,
+      "proxy_cpu_cores_used": 1.1452092177541349,
+      "control_calls": [
+        {
+          "path": "/v1/auth/cert",
+          "count": 9999,
+          "per_connection": 1,
+          "mean_handling_micros": 38.35299079907991,
+          "max_handling_micros": 819.201
+        },
+        {
+          "path": "/v1/authorize",
+          "count": 9999,
+          "per_connection": 1,
+          "mean_handling_micros": 49.18063186318632,
+          "max_handling_micros": 2095.228
+        },
+        {
+          "path": "/v1/hostkeys/report",
+          "count": 9999,
+          "per_connection": 1,
+          "mean_handling_micros": 41.16612281228123,
+          "max_handling_micros": 456.338
+        },
+        {
+          "path": "/v1/logs/batch",
+          "count": 1727,
+          "per_connection": 0.17271727172717272,
+          "mean_handling_micros": 505.62095367689636,
+          "max_handling_micros": 4522.242
+        }
+      ],
+      "control_calls_per_connection": 3.1727172717271728,
+      "authorize_calls": 9999,
+      "authorize_cache_hit_rate_pct": 0
+    }
+  ]
+}

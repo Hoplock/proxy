@@ -4,6 +4,7 @@
 package control
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"log"
@@ -22,7 +23,35 @@ const (
 	DefaultStaleAfter = 30 * time.Second
 	// DefaultMaxEntries bounds the cache so a busy proxy cannot grow it
 	// without limit. Reaching it costs cache hits, never correctness.
-	DefaultMaxEntries = 4096
+	//
+	// DERIVED, and here is the arithmetic, in the terms PLAN §9.1 uses. One
+	// cached lookup path — the shape string, its map entry, its place in the
+	// recency list, and the decision it names — measures **1.0 KiB** on a
+	// realistic policy (measured: BenchmarkCachedEntryFootprint, key per
+	// (subject, target), 1,022–1,039 bytes across working sets from 20,000 to
+	// 100,000). A server sharing one key across a subject's whole estate pays
+	// 0.2 KiB instead, because the decision is stored once.
+	//
+	// So this bound costs about **32 MiB** of live heap when it is full, and
+	// roughly **55 MiB of RSS** with the default GC pacing — the fan-out runs
+	// measured the proxy process growing ~1.7 KiB per cached entry against the
+	// 1.0 KiB it holds, the difference being GC headroom. That is the RSS of
+	// ~470 live connections at §9.1's measured 118 KiB each, or 5% of a 1 GiB
+	// proxy against the ~8,800 concurrent connections §9.1 derives for that
+	// budget — and it is only paid by a proxy that has actually seen 32,000
+	// distinct pairs. A proxy sized to serve sessions at all can afford that
+	// without an operator being asked first, which is what a default has to be.
+	//
+	// What it assumes: a working set of at most ~32,000 distinct
+	// (subject, login, target, port, method, hop trail) shapes between
+	// restarts. UC2's fan-out is an order of magnitude past that — one
+	// automation against 300,000 targets (§13 UC2) — and an estate like that
+	// sets control.cache.max_entries to its own working set and pays ~1 KiB
+	// per entry for it deliberately. What the default must NOT be is the old
+	// 4,096: chosen in phase 0003 as a guard against unbounded growth, with no
+	// fan-out figure in existence, and measured in 0020 to be smaller than the
+	// working set of the use case the cache matters most for.
+	DefaultMaxEntries = 32768
 )
 
 // CacheOptions configures a CachingClient.
@@ -42,8 +71,20 @@ type CacheOptions struct {
 	// StaleAfter is how long the revocation stream may go unheard before cached
 	// decisions stop being served. Zero means DefaultStaleAfter.
 	StaleAfter time.Duration
-	// MaxEntries bounds the number of cached decisions. Zero means
-	// DefaultMaxEntries.
+	// MaxEntries bounds the number of cached LOOKUP PATHS — request shapes —
+	// which is the number an operator can size from, because it is the working
+	// set: one per (subject, login, target, port, method, hop trail) the proxy
+	// serves. Decisions are bounded by it too and are never the larger number,
+	// since a decision is held only while some shape still points at it: a
+	// server sharing one key across a thousand targets stores one decision and
+	// a thousand shapes, and it is the thousand that has to fit.
+	//
+	// Reaching the bound evicts the least recently used shape rather than
+	// refusing the new decision (counted in CacheStats.Evicted), so the hit
+	// rate degrades with the working set instead of freezing on whatever the
+	// proxy happened to see first.
+	//
+	// Zero means DefaultMaxEntries.
 	MaxEntries int
 	// Now overrides the clock, so expiry is testable without sleeping.
 	Now func() time.Time
@@ -61,6 +102,14 @@ type CacheStats struct {
 	Misses uint64
 	// Expired counts entries dropped because their TTL had passed.
 	Expired uint64
+	// Evicted counts lookup paths dropped to make room for a newer decision
+	// because the cache was full. Anything but zero means the working set is
+	// larger than MaxEntries, and that is a DIFFERENT fix from a large
+	// Expired: evictions say the cache is too small for the estate, expiries
+	// say the server's TTLs are shorter than the interval at which this proxy
+	// comes back to the same target. Both look like a miss from outside, which
+	// is why they are counted apart.
+	Evicted uint64
 	// Stored counts decisions the server let us cache.
 	Stored uint64
 	// Invalidated counts entries dropped by a revocation event.
@@ -75,8 +124,14 @@ type CacheStats struct {
 	// clamp. It is the number to look at before blaming the server or the
 	// network for a proxy that re-authorizes "too often".
 	Clamped uint64
-	// Entries is the number of decisions held right now.
+	// Entries is the number of decisions held right now. Under a server that
+	// shares one key widely it is far smaller than Shapes, and it is NOT the
+	// number MaxEntries bounds.
 	Entries int
+	// Shapes is the number of cached lookup paths held right now — the
+	// quantity MaxEntries bounds. It is the one to compare against the setting
+	// when deciding whether a proxy needs a larger cache.
+	Shapes int
 }
 
 // CacheController is the part of a CachingClient that the revocation stream
@@ -103,6 +158,21 @@ type cacheEntry struct {
 	subject   string
 	expiresAt time.Time
 	resp      *AuthorizeResponse
+	// refs is how many shape mappings point at this decision. A decision the
+	// server shared across many targets has many; one that reaches zero is
+	// unreachable and goes with the last shape that named it, which is what
+	// keeps the two tables bounded by one number instead of two.
+	refs int
+}
+
+// shapeMapping is one lookup path: a request shape, the server key its
+// decision was returned under, and its place in the recency list.
+type shapeMapping struct {
+	key string
+	// elem is this shape's element in CachingClient.lru, so a hit is a
+	// constant-time move to the front and an eviction is a constant-time read
+	// of the back.
+	elem *list.Element
 }
 
 // CachingClient decorates a Client with the server-authorised reuse of
@@ -141,7 +211,11 @@ type CachingClient struct {
 	// answers two different requests with one key, both shapes point at one
 	// entry and one invalidation drops both. The proxy never derives a key
 	// itself, so it can never share a decision the server did not share.
-	shapes map[string]string
+	shapes map[string]*shapeMapping
+	// lru orders the shapes by last use, most recent at the front. Its values
+	// are shape strings. It is the eviction order: a full cache drops from the
+	// back rather than refusing what it was just told.
+	lru *list.List
 	// entries holds the decisions, keyed by the server's cache key.
 	entries   map[string]*cacheEntry
 	lastAlive time.Time
@@ -163,7 +237,8 @@ func NewCachingClient(inner Client, opts CacheOptions) *CachingClient {
 		maxEntries: opts.MaxEntries,
 		now:        opts.Now,
 		logger:     opts.Logger,
-		shapes:     make(map[string]string),
+		shapes:     make(map[string]*shapeMapping),
+		lru:        list.New(),
 		entries:    make(map[string]*cacheEntry),
 	}
 	if c.staleAfter <= 0 {
@@ -300,7 +375,8 @@ func (c *CachingClient) InvalidateAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.stats.Invalidated += uint64(len(c.entries))
-	c.shapes = make(map[string]string)
+	c.shapes = make(map[string]*shapeMapping)
+	c.lru = list.New()
 	c.entries = make(map[string]*cacheEntry)
 }
 
@@ -310,6 +386,7 @@ func (c *CachingClient) Stats() CacheStats {
 	defer c.mu.Unlock()
 	out := c.stats
 	out.Entries = len(c.entries)
+	out.Shapes = len(c.shapes)
 	return out
 }
 
@@ -327,15 +404,15 @@ func (c *CachingClient) lookup(shape, subject string) (*AuthorizeResponse, bool)
 		return nil, false
 	}
 
-	key, ok := c.shapes[shape]
+	mapping, ok := c.shapes[shape]
 	if !ok {
 		c.stats.Misses++
 		return nil, false
 	}
-	entry, ok := c.entries[key]
+	entry, ok := c.entries[mapping.key]
 	if !ok {
 		// The entry was invalidated; the mapping is stale, so drop it.
-		delete(c.shapes, shape)
+		c.dropShapeLocked(shape)
 		c.stats.Misses++
 		return nil, false
 	}
@@ -347,11 +424,15 @@ func (c *CachingClient) lookup(shape, subject string) (*AuthorizeResponse, bool)
 	if entry.subject != subject {
 		// The server must never share a key across identities. If one did, we
 		// re-ask rather than hand one user another user's policy.
-		delete(c.shapes, shape)
+		c.dropShapeLocked(shape)
 		c.stats.Misses++
 		return nil, false
 	}
 
+	// A hit is a use: it moves this shape to the front of the recency order,
+	// which is what makes a working set smaller than the bound survive a long
+	// tail of one-off targets sweeping past it.
+	c.lru.MoveToFront(mapping.elem)
 	c.stats.Hits++
 	return entry.resp.Clone(), true
 }
@@ -381,23 +462,50 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 		return
 	}
 	now := c.now()
-	if _, replacing := c.entries[hint.Key]; !replacing && len(c.entries) >= c.maxEntries {
-		c.pruneExpiredLocked(now)
-		if len(c.entries) >= c.maxEntries {
-			return // bounded memory wins; the cost is a cache miss
-		}
-	}
-	if _, mapped := c.shapes[shape]; !mapped && len(c.shapes) >= c.maxEntries {
-		return
+
+	// A shape already pointing at a DIFFERENT key is a key the server rotated;
+	// the old decision loses this reference and goes if it was the last one.
+	if mapping, mapped := c.shapes[shape]; mapped && mapping.key != hint.Key {
+		c.dropShapeLocked(shape)
 	}
 
-	c.entries[hint.Key] = &cacheEntry{
-		key:       hint.Key,
-		subject:   subject,
-		expiresAt: now.Add(ttl),
-		resp:      resp.Clone(),
+	if _, mapped := c.shapes[shape]; !mapped {
+		// Room is made for the new lookup path, not refused to it. Expired
+		// entries go first — they are free and nobody wanted them — and only
+		// then does the least recently used shape give way. A full cache that
+		// dropped the new decision instead would make the hit rate a function
+		// of which targets this proxy happened to see first, and no amount of
+		// server-side key sharing could reach it (PLAN §9.1).
+		if len(c.shapes) >= c.maxEntries {
+			c.pruneExpiredLocked(now)
+		}
+		for len(c.shapes) >= c.maxEntries && c.lru.Len() > 0 {
+			c.evictOldestLocked()
+		}
 	}
-	c.shapes[shape] = hint.Key
+
+	entry, held := c.entries[hint.Key]
+	if held {
+		// The server answered under a key we already hold: refresh it in place
+		// so the shapes already pointing at it keep pointing at it.
+		entry.subject = subject
+		entry.expiresAt = now.Add(ttl)
+		entry.resp = resp.Clone()
+	} else {
+		entry = &cacheEntry{
+			key:       hint.Key,
+			subject:   subject,
+			expiresAt: now.Add(ttl),
+			resp:      resp.Clone(),
+		}
+		c.entries[hint.Key] = entry
+	}
+	if mapping, mapped := c.shapes[shape]; mapped {
+		c.lru.MoveToFront(mapping.elem)
+	} else {
+		c.shapes[shape] = &shapeMapping{key: hint.Key, elem: c.lru.PushFront(shape)}
+		entry.refs++
+	}
 	c.stats.Stored++
 	if clamped {
 		// Counted and said out loud only when the entry was actually stored, so
@@ -432,12 +540,44 @@ func (c *CachingClient) removeLocked(match func(*cacheEntry) bool) int {
 	if len(dropped) == 0 {
 		return 0
 	}
-	for shape, key := range c.shapes {
-		if dropped[key] {
+	for shape, mapping := range c.shapes {
+		if dropped[mapping.key] {
 			delete(c.shapes, shape)
+			c.lru.Remove(mapping.elem)
 		}
 	}
 	return len(dropped)
+}
+
+// dropShapeLocked removes one lookup path, and with it the decision it named
+// if no other shape still points at that decision. It touches no counter: the
+// caller knows why the shape was dropped. The caller holds c.mu.
+func (c *CachingClient) dropShapeLocked(shape string) {
+	mapping, ok := c.shapes[shape]
+	if !ok {
+		return
+	}
+	delete(c.shapes, shape)
+	c.lru.Remove(mapping.elem)
+	entry, held := c.entries[mapping.key]
+	if !held {
+		return
+	}
+	entry.refs--
+	if entry.refs <= 0 {
+		delete(c.entries, mapping.key)
+	}
+}
+
+// evictOldestLocked drops the least recently used lookup path to make room.
+// The caller holds c.mu and has checked that the list is not empty.
+func (c *CachingClient) evictOldestLocked() {
+	oldest := c.lru.Back()
+	if oldest == nil {
+		return
+	}
+	c.dropShapeLocked(oldest.Value.(string))
+	c.stats.Evicted++
 }
 
 // pruneExpiredLocked drops entries whose TTL has passed. The caller holds c.mu.

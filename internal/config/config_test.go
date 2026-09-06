@@ -697,6 +697,18 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 			wantCause: ErrInvalid,
 		},
 		{
+			name:      "negative cache size",
+			mutate:    func(c *Config) { c.Control.Cache.MaxEntries = -1 },
+			wantField: "control.cache.max_entries",
+			wantCause: ErrInvalid,
+		},
+		{
+			// Zero is how an operator says "the package default", so it is not
+			// a validation failure.
+			name:   "unset cache size",
+			mutate: func(c *Config) { c.Control.Cache.MaxEntries = 0 },
+		},
+		{
 			// A proxy may run without a bearer token (development topologies
 			// do), and the default cache settings mean "honour the server".
 			name:   "token and cache are optional",
@@ -735,6 +747,36 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 
 // TestParseAppliesTargetAuthDefault checks the placeholder is what an operator
 // gets by omission, and that it is still validated.
+// TestParseCacheSize is the round trip the operator-facing setting owes:
+// control.cache.max_entries is decoded from YAML, survives validation, and is
+// the number cmd/proxy hands to control.CacheOptions (phase 0022).
+func TestParseCacheSize(t *testing.T) {
+	const withCacheSize = `
+proxy:
+  id: "proxy-1"
+  listen_addr: "0.0.0.0:2222"
+  host_key_path: "/etc/hoplock/host_key"
+control:
+  base_url: "https://control.example.com"
+  cache:
+    max_entries: 300000
+auth:
+  target:
+    static_key:
+      key_path: "/etc/hoplock/target_key"
+`
+	cfg, err := Parse(strings.NewReader(withCacheSize))
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if got, want := cfg.Control.Cache.MaxEntries, 300000; got != want {
+		t.Errorf("Control.Cache.MaxEntries = %d, want %d", got, want)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
 func TestParseAppliesTargetAuthDefault(t *testing.T) {
 	cfg, err := Parse(strings.NewReader(minimalConfig))
 	if err != nil {
@@ -767,6 +809,12 @@ func TestExampleConfigCarriesTheProxySettings(t *testing.T) {
 	}
 	if got, want := cfg.Control.Cache.StaleAfter, 30*time.Second; got != want {
 		t.Errorf("Control.Cache.StaleAfter = %v, want %v", got, want)
+	}
+	// Shipped as 0 — "use the package default" — but it must be PRESENT, or a
+	// config copied from the example and given a size would be refused by the
+	// strict decoder.
+	if got := cfg.Control.Cache.MaxEntries; got != 0 {
+		t.Errorf("Control.Cache.MaxEntries = %d, want 0 (the package default)", got)
 	}
 	if got, want := cfg.Auth.Target.Method, TargetAuthMethodStaticKey; got != want {
 		t.Errorf("Auth.Target.Method = %q, want %q", got, want)

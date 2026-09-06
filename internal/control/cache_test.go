@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -649,6 +650,168 @@ func TestCachingClientBoundsItsSize(t *testing.T) {
 	}
 	if got := c.Stats().Entries; got != 2 {
 		t.Errorf("cache holds %d entries, want at most 2", got)
+	}
+}
+
+// TestCachingClientEvictsTheLeastRecentlyUsed pins the policy: a full cache
+// makes room by dropping what has gone longest unused, and says it did.
+func TestCachingClientEvictsTheLeastRecentlyUsed(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{MaxEntries: 2})
+	inner.authorize = func(req *AuthorizeRequest) (*AuthorizeResponse, error) {
+		return testAuthorizeResponse("authz:"+req.Target, 600), nil
+	}
+	authorize := func(target string) {
+		t.Helper()
+		if _, err := c.Authorize(context.Background(), testAuthorizeRequest("alice@example.com", target)); err != nil {
+			t.Fatalf("Authorize %s: %v", target, err)
+		}
+	}
+
+	authorize("host-a")
+	authorize("host-b")
+	// Using host-a again makes host-b the least recently used, so the third
+	// target must displace host-b and not host-a. Insertion order alone would
+	// pick the other one, which is the difference this asserts.
+	authorize("host-a")
+	authorize("host-c")
+
+	if got, want := c.Stats().Evicted, uint64(1); got != want {
+		t.Errorf("Evicted = %d, want %d", got, want)
+	}
+	before := inner.calledFor("Authorize")
+	authorize("host-a")
+	if got := inner.calledFor("Authorize"); got != before {
+		t.Error("host-a was evicted; the least recently used entry was host-b")
+	}
+	authorize("host-b")
+	if got, want := inner.calledFor("Authorize"), before+1; got != want {
+		t.Errorf("Authorize calls = %d, want %d — host-b should have been evicted", got, want)
+	}
+}
+
+// TestCachingClientCachesAWorkingSetItMeetsAfterFilling is the regression test
+// for the finding phase 0020 measured (PLAN §9.1): the cache used to hold the
+// first MaxEntries shapes it ever saw and refuse every later decision, so a
+// working set that turned up after a long cold sweep was never cached at all —
+// a permanent 0% for the traffic that repeats. With eviction, the sweep is
+// forgotten and the repeating set is served.
+func TestCachingClientCachesAWorkingSetItMeetsAfterFilling(t *testing.T) {
+	const bound = 64
+	c, inner, _ := newTestCache(CacheOptions{MaxEntries: bound})
+	inner.authorize = func(req *AuthorizeRequest) (*AuthorizeResponse, error) {
+		return testAuthorizeResponse("authz:"+req.Target, 3600), nil
+	}
+	authorize := func(target string) {
+		t.Helper()
+		if _, err := c.Authorize(context.Background(), testAuthorizeRequest("svc@example.com", target)); err != nil {
+			t.Fatalf("Authorize %s: %v", target, err)
+		}
+	}
+
+	// A cold sweep four times the bound: every one of these is seen once and
+	// never again, and together they more than fill the cache.
+	for i := 0; i < bound*4; i++ {
+		authorize(fmt.Sprintf("swept-%d.example.com", i))
+	}
+	if got := c.Stats().Evicted; got == 0 {
+		t.Fatal("a sweep of four times the bound evicted nothing")
+	}
+
+	// Now the working set: eight targets, visited repeatedly, all of which fit.
+	const working, rounds = 8, 10
+	callsBefore := inner.calledFor("Authorize")
+	for round := 0; round < rounds; round++ {
+		for i := 0; i < working; i++ {
+			authorize(fmt.Sprintf("polled-%d.example.com", i))
+		}
+	}
+	// One miss each on the first round; every later visit is a hit.
+	if got, want := inner.calledFor("Authorize")-callsBefore, working; got != want {
+		t.Errorf("%d authorize calls for a working set of %d over %d rounds, want %d",
+			got, working, rounds, want)
+	}
+	hits, total := c.Stats().Hits, working*rounds
+	if wantHits := uint64(total - working); hits < wantHits {
+		t.Errorf("Hits = %d, want at least %d (hit rate %.0f%%, want %.0f%%)",
+			hits, wantHits, 100*float64(hits)/float64(total), 100*float64(wantHits)/float64(total))
+	}
+	if got := c.Stats().Shapes; got > bound {
+		t.Errorf("cache holds %d shapes, want at most %d", got, bound)
+	}
+}
+
+// TestCachingClientBoundsSharedShapes covers the other half of the bound. A
+// server may answer every target of a subject with ONE key (PLAN §6.4), which
+// stores one decision and one lookup path per target: it is the lookup paths
+// that have to be bounded, and phase 0020 measured that a separate bound on
+// them is what made the widest possible key sharing worth nothing.
+func TestCachingClientBoundsSharedShapes(t *testing.T) {
+	const bound = 16
+	c, inner, _ := newTestCache(CacheOptions{MaxEntries: bound})
+	inner.authorize = func(*AuthorizeRequest) (*AuthorizeResponse, error) {
+		return testAuthorizeResponse("authz:one-key-for-everything", 3600), nil
+	}
+	for i := 0; i < bound*3; i++ {
+		target := fmt.Sprintf("host-%d.example.com", i)
+		if _, err := c.Authorize(context.Background(), testAuthorizeRequest("svc@example.com", target)); err != nil {
+			t.Fatalf("Authorize %s: %v", target, err)
+		}
+	}
+
+	stats := c.Stats()
+	if stats.Shapes > bound {
+		t.Errorf("cache holds %d shapes, want at most %d", stats.Shapes, bound)
+	}
+	// One key, so one decision — and it must still be there. An entry table
+	// that filled with copies, or one wedged shut by the shape table, would
+	// show up here.
+	if stats.Entries != 1 {
+		t.Errorf("cache holds %d decisions, want 1 (the server shared one key)", stats.Entries)
+	}
+	if stats.Evicted == 0 {
+		t.Error("Evicted = 0 after three times the bound of distinct shapes")
+	}
+}
+
+// TestCachingClientDropsADecisionWithItsLastShape checks the bookkeeping that
+// keeps the two tables bounded by one number: a shared decision survives the
+// eviction of one of the shapes naming it and goes when the last one does,
+// rather than lingering unreachable.
+func TestCachingClientDropsADecisionWithItsLastShape(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{MaxEntries: 2})
+	inner.authorize = func(req *AuthorizeRequest) (*AuthorizeResponse, error) {
+		key := "authz:shared"
+		if strings.HasPrefix(req.Target, "own-") {
+			key = "authz:" + req.Target
+		}
+		return testAuthorizeResponse(key, 3600), nil
+	}
+	authorize := func(target string) {
+		t.Helper()
+		if _, err := c.Authorize(context.Background(), testAuthorizeRequest("svc@example.com", target)); err != nil {
+			t.Fatalf("Authorize %s: %v", target, err)
+		}
+	}
+
+	authorize("shared-a")
+	authorize("shared-b")
+	if got := c.Stats().Entries; got != 1 {
+		t.Fatalf("two shapes under one key hold %d decisions, want 1", got)
+	}
+
+	// Evicts shared-a's shape; the decision stays, because shared-b names it.
+	authorize("own-1")
+	if got := c.Stats().Entries; got != 2 {
+		t.Errorf("cache holds %d decisions, want 2 (the shared one and own-1)", got)
+	}
+	// Evicts shared-b's shape: the last one, so the shared decision goes too.
+	authorize("own-2")
+	stats := c.Stats()
+	if stats.Entries != 2 {
+		t.Errorf("cache holds %d decisions, want 2 (own-1 and own-2)", stats.Entries)
+	}
+	if stats.Shapes != 2 {
+		t.Errorf("cache holds %d shapes, want 2", stats.Shapes)
 	}
 }
 

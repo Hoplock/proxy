@@ -1,0 +1,51 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# 04 with the cache pinned to the bound it had before phase 0022, so the two
+# runs differ ONLY in the eviction policy.
+#
+# 04 and 05 now run against a default of 32,768 entries, which is larger than
+# their largest step: they show that the working set fits, which is the fix an
+# operator gets, but they cannot show what happens past the bound because they
+# never reach it. This scenario reaches it deliberately at max_entries: 4096 —
+# 0020's measurement point — and is the like-for-like comparison against the
+# figures in docs/PLAN.md §9.1 for a proxy that dropped new decisions instead
+# of evicting old ones.
+#
+# What it is expected to show is not flattering and is the point of committing
+# it: under a strict cycle over a working set larger than the cache, LRU is the
+# worst order there is — every entry is evicted exactly one visit before it is
+# wanted — where refusing to store held on to whichever 4,096 shapes arrived
+# first. The eviction policy is worth having for a working set that CHANGES
+# (see TestCachingClientCachesAWorkingSetItMeetsAfterFilling); it does not make
+# an undersized cache adequate, and this run is the evidence that sizing
+# max_entries to the estate is the actual fix.
+
+name: 08-uc2-fanout-evicting
+kind: connection
+description: >
+  The 04 fan-out with the cache pinned to the pre-0022 bound of 4096 entries,
+  isolating what the eviction policy does at a working set larger than the
+  cache.
+
+run:
+  mode: rate
+  rate: 250
+  duration: 40s
+  warmup: 40s
+  restart_between_steps: true
+  session: exec
+  command: "show version"
+
+workload:
+  subjects: 1
+  target_steps: [4096, 8192]
+  order: cycle
+
+control:
+  cache_hint: true
+  cache_ttl: 3600s
+  cache_scope: per-target
+
+proxy:
+  cache_max_entries: 4096
