@@ -379,6 +379,16 @@ func testTargetCredentials(t *testing.T) {
 	t.Run("brokered-key logs in without modifying the target", func(t *testing.T) {
 		const snapshot = "cat /etc/passwd; cat /home/netadmin/.ssh/authorized_keys; ls -la /home/netadmin /home/netadmin/.ssh"
 
+		// The subtest above leaves an ephemeral account whose teardown runs as
+		// its session closes, asynchronously — the same reason the device
+		// scenarios poll for a removed administrator. Left unwaited it can
+		// land BETWEEN the two snapshots below, and an account disappearing
+		// reads as "brokered-key modified the target". Wait for the target to
+		// be quiet, so the comparison is about this session and nothing else.
+		waitFor(t, "the previous session's ephemeral account to be removed", func() bool {
+			return !strings.Contains(execIn(t, nodeTarget, "getent", "passwd").stdout, "hl-")
+		})
+
 		before := execIn(t, nodeTarget, "sh", "-c", snapshot)
 		if before.code != 0 {
 			t.Fatalf("snapshot the target: %v", before)
