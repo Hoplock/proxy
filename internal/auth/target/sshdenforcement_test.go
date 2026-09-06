@@ -248,7 +248,7 @@ func TestSSHDTeardownRemovesEveryRungArtefact(t *testing.T) {
 }
 
 // TestSSHDUIDReuseInheritsNothing is the one failure here that is silent in
-// every other test (PLAN §6.5, and phase 0024's other half).
+// every other test (PLAN §6.5, and phase 0027's other half).
 func TestSSHDUIDReuseInheritsNothing(t *testing.T) {
 	sshd := requireSSHD(t)
 	ctx := context.Background()

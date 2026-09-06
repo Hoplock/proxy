@@ -158,24 +158,25 @@ prefix indicating implementation order.
 - **Uniqueness:** no number may repeat across `queued/` **or** `implemented/`.
   Every prompt is uniquely identified for all time.
 - **Implemented names are frozen:** never rename a file in `prompts/implemented/`.
-- **A number that stops naming its prompt is recorded, never silently
-  reassigned.** A **withdrawn** prompt's number is retired permanently — never
-  reuse it (**0021** today, see `docs/learnings/0021-…`). A number **vacated by
-  a renumber** stays vacant unless that same renumber reassigns it (**0029**
-  today, moved to 0033), and every renumber records its mapping in
-  `docs/PLAN.md` §11 so older references stay resolvable. Gaps in the sequence
-  are expected and are not a defect to tidy up.
-- **Renumbering is not how you change what runs next — prefer naming the
-  prompt.** §0 already lets the user name a specific prompt instead of the
-  lowest-numbered one, which costs nothing. Renumbering exists for a genuine
-  **ordering violation** — a prompt that *must* run before or after another and
-  whose number says otherwise — not for preference. It is expensive and
-  error-prone: §3 makes chasing every stale citation mandatory, this
-  repository's queued numbers have already been revised three times (see the
-  mapping notes in `docs/PLAN.md` §11, now three revisions deep), and phase
-  0026's prompt priced one such move at "roughly seventy" citations and
-  declined it on those grounds. Record the intended run order in the prompt
-  headers and the §10 table instead.
+- **The queue is contiguous, and a number states position.** Implemented prompts
+  are frozen and therefore always hold the **lowest** numbers; the queued block
+  runs contiguously above them, in the order the prompts are meant to be worked.
+  So **whenever the intended run order changes, renumber the queued prompts to
+  match** — to promote work that merely *should* go first, not only to fix a
+  prompt that *must*. The payoff is that §0's rule needs no exception: the
+  lowest-numbered queued prompt is always the right one to start.
+- **A renumber is only done with its mapping written down.** Renumbering is
+  expensive — §3 makes chasing every stale citation mandatory, and these numbers
+  are cited from the other prompts, `docs/PLAN.md`, `api/`, `deploy/` and Go
+  comments — so every revision records its old→new mapping as a **Renumbering
+  note** at the end of `docs/PLAN.md` §10, says which live references it updated,
+  and states that `docs/learnings/` and `prompts/implemented/` were **not**
+  rewritten and must be read through the mapping. The notes stack, newest first;
+  compose them when resolving an old reference.
+- **A withdrawn number is retired for good** — never reused, even though nothing
+  occupies it (**0021** today; see `docs/learnings/0021-…`). That is the one gap
+  the contiguity rule above does not close, and it is deliberate: 0021 names the
+  withdrawn phase everywhere in the history.
 - **When you add new prompts:** if your PR introduces new prompts into
   `queued/`, verify ordering still makes sense. If a new prompt must run before
   existing queued prompts, **renumber the queued prompts** (only queued ones) so

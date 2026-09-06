@@ -1,14 +1,14 @@
-# 0030 — The other three session bounds: capture, concurrency, grant context
+# 0031 — The other three session bounds: capture, concurrency, grant context
 
 > **New prompt, added by phase 0019.** Phase 0018 defined **four** session bounds
 > (D16) and its learnings assigned the remaining three to 0019. Prompt 0019's own
 > scope does not name them — it is the target-side enforcement phase, and
 > `docs/PROTOCOL.md` §3 says a phase implements exactly what its prompt
 > specifies — so they were left, and this is the prompt that owns them. The
-> fourth, `session_deadline`, is phase **0025**'s and is not touched here.
+> fourth, `session_deadline`, is phase **0024**'s and is not touched here.
 >
-> **Appended rather than inserted.** It depends on nothing 0020–0029 change and
-> nothing they do depends on it, so it can run any time after 0018. Phase 0023's
+> **Appended rather than inserted.** It depends on nothing 0020–0030 change and
+> nothing they do depends on it, so it can run any time after 0018. Phase 0026's
 > e2e work is named "concurrency" but is about two sessions *provisioning at
 > once*, not about the caps here; the two do not collide.
 
@@ -81,7 +81,7 @@ The fixture keys already exist (0018): `require_session_capture`,
 response that cannot exist and fails at startup).
 
 ## Out of scope
-- **`session_deadline`.** Phase 0025 owns it. Do not enforce it here, and do not
+- **`session_deadline`.** Phase 0024 owns it. Do not enforce it here, and do not
   reshape the field.
 - Making the grant context readable by any decision path, in any form, however
   convenient. That is the one thing this prompt exists to prevent.
@@ -105,7 +105,7 @@ response that cannot exist and fails at startup).
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0030-session-bounds-enforcement-learnings.md`. The summary block
+`docs/learnings/0031-session-bounds-enforcement-learnings.md`. The summary block
 must state, for each of the three bounds: where it is enforced, its class under
 §4.3 (denial or outage), what its absent value means, and — for the caps —
 exactly what they do and do not bound on a chained route.

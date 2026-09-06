@@ -380,7 +380,7 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth, e *Enforc
 		// There is deliberately NO fallback to identity.Login here. Login is
 		// what the user typed at their SSH client, and internal/identity says
 		// it must never be the basis of an authorization decision — choosing
-		// an account name is one. Prompt 0026 closes that fallback everywhere
+		// an account name is one. Prompt 0028 closes that fallback everywhere
 		// it still exists; this method never opened one.
 		return nil, fmt.Errorf("%w: %s is required", ErrInvalidParam, ParamUsername)
 	case r.platform == "":
@@ -834,7 +834,7 @@ func (a *DeviceAccountAuthenticator) removeQuietly(ctx context.Context, r *devic
 // that says this proxy holds the deadline (D13).
 //
 // It removes the ACCOUNT, which is this phase's whole subject. Ending the
-// SESSION at the same moment is prompt 0025's, and the two are deliberately not
+// SESSION at the same moment is prompt 0024's, and the two are deliberately not
 // conflated here: the credential is what this method provisioned and the
 // credential is what it takes back.
 func (a *DeviceAccountAuthenticator) enforceExpiry(r *deviceRoute, ep device.Endpoint, name string, lifetime time.Duration) {

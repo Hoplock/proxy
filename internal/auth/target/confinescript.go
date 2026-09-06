@@ -458,7 +458,7 @@ func (r egressRule) render() (string, error) {
 //     gets that uid next — an egress boundary quietly transplanted onto an
 //     unrelated session, or an allow-list transplanted onto one that was
 //     supposed to have none. This ordering is the whole of that fix on this
-//     side; phase 0024's non-reusing range is the other half;
+//     side; phase 0027's non-reusing range is the other half;
 //  4. the mount goes before the home is removed, because rm -rf on a mount
 //     point empties the mounted filesystem and leaves the directory;
 //  5. everything is VERIFIED, and a verification failure is loud. A teardown

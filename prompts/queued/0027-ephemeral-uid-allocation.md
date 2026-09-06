@@ -1,4 +1,4 @@
-# 0024 — UID allocation: stop a fresh account inheriting a dead one's files
+# 0027 — UID allocation: stop a fresh account inheriting a dead one's files
 
 > New prompt. It closes a **cross-user information flow** that exists today, is
 > not theoretical, and is not covered by anything else in the queue.
@@ -95,7 +95,7 @@ one, and when it cannot be guaranteed, the session is refused rather than served
 A route asking for `ephemeral-user` on a target where a non-reusing UID cannot be
 allocated is **refused as an outage** (§4.3), never served with a recycled uid.
 It is not a denial: the user cannot fix it with different credentials. Reuse
-0022's stage/classification seam if it has landed; if it has not, add the stage
+0025's stage/classification seam if it has landed; if it has not, add the stage
 the same way and say so.
 
 ### 3. Record it
@@ -146,7 +146,7 @@ before the outage scenario — and do not touch the shared `sshBaseArgs`.
 
 ## Definition of Done & hand-off
 Per `docs/PROTOCOL.md`. Move to `implemented/`; add
-`docs/learnings/0024-ephemeral-uid-allocation-learnings.md`. The summary block
+`docs/learnings/0027-ephemeral-uid-allocation-learnings.md`. The summary block
 MUST record: the range defaults and why those numbers; the allocation rule; the
 wrap-around decision and its justification; which `useradd` flags the targets you
 tested actually accept; and — explicitly — what is still inheritable until
