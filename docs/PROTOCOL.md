@@ -25,7 +25,8 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 7. Move the prompt file from `prompts/queued/` to `prompts/implemented/`
    (unchanged name) **in the same PR**.
 8. Write a learnings file to `docs/learnings/`.
-9. Open a PR. Iterate with the user until they are happy.
+9. Open a PR. Iterate with the user until they are happy — and once it is green
+   and mergeable, **go idle and wait** rather than polling it (§8).
 10. **The session ends when the PR is merged.**
 
 ---
@@ -215,6 +216,32 @@ no prior context. It must:
   prompt in the same session.
 - Do not create a PR for work the user hasn't asked to be turned into a PR; the
   normal implementation flow above does open one.
+
+### Waiting for review is waiting, not polling
+
+Once the PR is open, **green and mergeable**, the session's remaining job is to
+wait. Hand it over in one line — "green, mergeable, waiting on your review" —
+and then **go idle**.
+
+- **Do not schedule recurring check-ins** on the PR, and cancel any you already
+  scheduled once it goes green. No timers, no hourly re-reads, no "still green"
+  status messages.
+- A healthy PR only changes when a human acts on it or CI reports something, and
+  **both of those arrive as events** that wake the session on their own. Polling
+  for them discovers nothing a wake-up would not have delivered.
+- Every unnecessary wake costs the user real money and tells them nothing. Ten
+  check-ins reporting "no change" are ten times the cost of zero.
+
+Two exceptions, and only two:
+
+- **CI is red, or the branch has a merge conflict.** That is work, not waiting:
+  diagnose it, fix it, push. Only a *green, mergeable* head waits for a human —
+  a broken one is never "waiting on review".
+- **The user asked for a specific check** ("tell me when CI finishes"). Do that
+  one check, report it, and go idle again.
+
+The next thing the user hears from a waiting session should be a reply to
+something they said — not a heartbeat.
 
 ---
 
