@@ -39,6 +39,13 @@
   tidy-ups: they are the answer that replaced this phase, and 0032 is the last
   queued phase that revises the contract, which is what 0029 waits on.
 
+> **Pointer (this file is otherwise unchanged).** The collapse prompt this file
+> calls `prompts/queued/0029` is now `prompts/queued/0033-collapse-contract-to-one-version.md`.
+> Making it wait on 0032 exposed an ordering violation older than this phase —
+> 0020 queued 0031 and 0032 after it without renumbering — so it was renumbered
+> to sit last, per `docs/PROTOCOL.md` §6. **0029 is vacated and must not be
+> reused**, exactly as 0021 is retired.
+
 ## Details
 
 ### What the prompt asked, and why the answer is "don't"

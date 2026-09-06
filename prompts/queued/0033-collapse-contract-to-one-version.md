@@ -1,4 +1,4 @@
-# 0029 — Drop the superseded contract vocabularies
+# 0033 — Drop the superseded contract vocabularies
 
 > **New prompt, and it must run LAST.** Every phase that revises the contract
 > adds a vocabulary generation and, with it, code and prose that keep the
@@ -16,11 +16,17 @@
 >
 > **This prompt must be the highest-numbered queued prompt when it runs.** If a
 > later session queues work after it, renumber under `docs/PROTOCOL.md` §6 so
-> this stays last. In particular it **cannot start before 0018 (contract v4) has
-> merged**, and before **0032**'s host-key cache hint — with phase 0021
-> withdrawn (`docs/learnings/0021-machine-identity-connection-model-learnings.md`),
-> 0032 is the last queued phase that revises the contract, and collapsing before
-> the last revising phase just means doing it twice.
+> this stays last. **It was 0029 and is now 0033** for exactly that reason:
+> phase 0020 queued 0031 and 0032 after it without renumbering, so its number
+> stopped describing its position. The number **0029 is vacated and must not be
+> reused** — it names this prompt everywhere in the history, including
+> `docs/learnings/0021-…`.
+>
+> In particular it **cannot start before 0018 (contract v4) has merged**, and
+> before **0032**'s host-key cache hint — with phase 0021 withdrawn
+> (`docs/learnings/0021-machine-identity-connection-model-learnings.md`), 0032 is
+> the last queued phase that revises the contract, and collapsing before the last
+> revising phase just means doing it twice.
 
 ## What this phase removes, and what it must keep
 
@@ -236,7 +242,7 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 (`docs/PROTOCOL.md` §3). 0006, 0013 and 0016's learnings describe contracts that
 really did exist here, and they stay true to what their phase shipped. Give the
 affected learnings files a **one-line pointer** — "the superseded vocabularies
-described here were removed in 0029; the versioning mechanism was kept" — and
+described here were removed in 0033; the versioning mechanism was kept" — and
 change nothing else. Do not rename a file in `prompts/implemented/`.
 
 ## Out of scope
@@ -344,9 +350,9 @@ that repository checked out. Upstream merges first: this PR, then the sync.
    with the versioning mechanism intact and tested.
 2. `docs/PLAN.md` updated, including the note recording the collapse and its
    boundary.
-3. `prompts/queued/0029-collapse-contract-to-one-version.md` moved to
+3. `prompts/queued/0033-collapse-contract-to-one-version.md` moved to
    `prompts/implemented/` (same filename) in this PR.
-4. `docs/learnings/0029-collapse-contract-to-one-version-learnings.md`, with the
+4. `docs/learnings/0033-collapse-contract-to-one-version-learnings.md`, with the
    summary block `docs/PROTOCOL.md` §5 requires. It must state, for the next
    session: **one live vocabulary from here on, and the next revision bumps
    `PolicyVersion` rather than keeping this one alive beside it.**

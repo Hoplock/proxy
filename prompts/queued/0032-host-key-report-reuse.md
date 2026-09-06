@@ -12,7 +12,8 @@
 > the residue *that* one leaves.
 >
 > It is also, with 0021 gone, the **last queued phase that revises the
-> contract**, which is what phase 0029 waits on.
+> contract**, which is what phase **0033** waits on (the collapse prompt, queued
+> as 0029 and renumbered so its number matches its position).
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.

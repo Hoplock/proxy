@@ -158,6 +158,13 @@ prefix indicating implementation order.
 - **Uniqueness:** no number may repeat across `queued/` **or** `implemented/`.
   Every prompt is uniquely identified for all time.
 - **Implemented names are frozen:** never rename a file in `prompts/implemented/`.
+- **A number leaves circulation for good.** A queued prompt that is withdrawn,
+  or renumbered, gives up its number permanently — never reuse it, even though
+  nothing occupies it. It still names that work in commit messages, learnings
+  files and PR history, and a reused number makes every one of those references
+  ambiguous. Two are out of circulation today: **0021** (withdrawn, see
+  `docs/learnings/0021-…`) and **0029** (renumbered to 0033). Gaps in the
+  sequence are expected and are not a defect to tidy up.
 - **When you add new prompts:** if your PR introduces new prompts into
   `queued/`, verify ordering still makes sense. If a new prompt must run before
   existing queued prompts, **renumber the queued prompts** (only queued ones) so
