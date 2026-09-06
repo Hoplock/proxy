@@ -17,8 +17,10 @@
 > **This prompt must be the highest-numbered queued prompt when it runs.** If a
 > later session queues work after it, renumber under `docs/PROTOCOL.md` §6 so
 > this stays last. In particular it **cannot start before 0018 (contract v4) has
-> merged**, and before any contract revision 0021 turns out to need — collapsing
-> before the last revising phase just means doing it twice.
+> merged**, and before **0032**'s host-key cache hint — with phase 0021
+> withdrawn (`docs/learnings/0021-machine-identity-connection-model-learnings.md`),
+> 0032 is the last queued phase that revises the contract, and collapsing before
+> the last revising phase just means doing it twice.
 
 ## What this phase removes, and what it must keep
 
