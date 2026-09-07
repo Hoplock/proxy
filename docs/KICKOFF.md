@@ -54,15 +54,23 @@ have, that is §3.2 — stop and tell me rather than approximating it.
 The obligations to land are in the upstream PR's "## Cross-repo impact"
 section: <the obligations, or "see the PR">.
 
-Branch claude/sync-<short-description>, commit with the `sync` scope, and open
-one PR whose body names the upstream PR, confirms it is merged, and says how
-you searched for stale references — the actual grep, not "I looked carefully".
+Work on the branch this session was given, whatever it is named — if the name
+is yours to choose, claude/sync-<short-description>. Commit with the `sync`
+scope, and open one PR whose body names the upstream PR, confirms it is merged,
+and says how you searched for stale references — the actual grep, not "I looked
+carefully".
 ```
 
-Fill in `<upstream PR URL>`, the obligations, and `<short-description>`. Leave
-everything else alone: each remaining line is a Definition-of-Done item from
+Fill in `<upstream PR URL>` and the obligations. Leave everything else alone:
+each remaining line is a Definition-of-Done item from
 `docs/CROSS-REPO-PROTOCOL.md` §5, and dropping one is how a sync quietly turns
 into an unreviewable feature PR.
+
+The branch line no longer has a blank to fill: a sync session is normally
+started with a branch already assigned, and renaming it is neither possible nor
+worth a paragraph in the PR (`docs/CROSS-REPO-PROTOCOL.md` §5,
+`docs/PROTOCOL.md` §2). What identifies the sync is the PR body naming the
+upstream change.
 
 ## Rules of thumb
 
