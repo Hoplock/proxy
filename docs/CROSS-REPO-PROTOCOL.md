@@ -1,9 +1,20 @@
 # Hoplock — Cross-Repository Protocol
 
 > **This file is identical in all three Hoplock repositories.** `hoplock/proxy`
-> owns it; `hoplock/control` and `hoplock/enterprise` carry copies. A change is
-> made in the proxy first and mirrored into the other two in the same
-> change-set, so the three can never disagree about how they talk to each other.
+> owns it; `hoplock/control` and `hoplock/enterprise` carry copies. It is a
+> shared surface like any other (Section 1), so a change to it takes the same
+> route: made in the proxy, **merged there first** (Section 2), then mirrored
+> verbatim into the other two by **one dedicated sync session per repository**
+> (Section 3.1).
+>
+> Between that merge and those syncs the copies lag, and pretending otherwise is
+> what an earlier version of this line did — it claimed the mirror happened "in
+> the same change-set", which no session can do, because a session is checked
+> out against one repository at a time. The window is real and is made visible
+> instead: the upstream PR names **both** consuming repositories under
+> `## Cross-repo impact` and hands over a ready-to-run kickoff for each
+> (Section 4), so the lag is a tracked obligation rather than a silent
+> divergence.
 
 Read this **only when your change touches a shared surface** (Section 1). If it
 does not, your repository's own `docs/PROTOCOL.md` is the whole process, and
@@ -35,7 +46,7 @@ This file is the missing definition.
 | --- | --- | --- | --- |
 | `api/control.yaml`, `api/README.md` — the PEP↔PDP wire contract | proxy (D3) | control | vendored read-only into `contract/` and re-synced (control M1) |
 | `ext/` — Control's extension interfaces | control (M15) | enterprise | a pinned, released module version (enterprise E1, E3) |
-| `docs/CROSS-REPO-PROTOCOL.md` — this file | proxy | control, enterprise | mirrored copy |
+| `docs/CROSS-REPO-PROTOCOL.md` — this file | proxy | control, enterprise | one sync PR per repository, mirroring it verbatim |
 | Decision ids — `D*` proxy, `M*` control, `E*` enterprise | each repository owns its own | cited by the others | cited by id, never restated |
 
 **If your change touches none of these, stop reading.** A change to one
@@ -67,6 +78,12 @@ lands wrong and nothing catches it.
 
 There is no such thing as a matched pair merged together. Merge upstream, then
 open downstream.
+
+**Nothing is an exception, this file included.** `docs/CROSS-REPO-PROTOCOL.md`
+is owned by the proxy and mirrored downstream, and it travels exactly this
+route — merged here, then one sync session per consuming repository
+(Section 6). It is the one that most invites a "just copy it everywhere at
+once", which is why it is named here.
 
 The reverse direction is never a dependency: Control does not import Enterprise
 (M15), and the proxy depends on neither. When a downstream repository needs
@@ -226,6 +243,14 @@ prompt there is no number, and the defaults quietly stop applying.
 - **Do not fold a cross-repo sync into a feature PR.** It is separately
   reviewable and separately revertible, and it is the half most likely to need a
   second pass.
-- **Changing this file:** change it in `hoplock/proxy` first, mirror it verbatim
-  into the other two in the same change-set, and say in each PR which repository
-  the change originated in.
+- **Changing this file:** it is a shared surface (Section 1) and gets no special
+  flow. Change it in `hoplock/proxy`, **merge there first** (Section 2), then
+  mirror it verbatim into the other two through **one dedicated sync session per
+  repository** (Section 3.1) — never a hand-copy folded into some other change.
+  Say in each PR which repository the change originated in.
+
+  This bullet used to say "in the same change-set". That contradicted Sections 2
+  and 3.1 outright and was not compliable: a session is checked out against one
+  repository at a time, so the instruction could only ever be reported as a
+  deviation. Where the two readings differ, the direction rule wins — upstream
+  merges first, always.
