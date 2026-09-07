@@ -95,11 +95,24 @@ type CacheOptions struct {
 }
 
 // CacheStats counts what the cache did, for metrics and tests.
+//
+// Reuse is counted PER KIND OF DECISION, because "which call is my Hoplock
+// Control load?" is the question these numbers exist to answer and one figure
+// mixing authorize with host-key reuse cannot answer it (PLAN §9.1). The
+// table-wide counters below — Expired, Evicted, Invalidated, StaleSkips,
+// Clamped, Entries, Shapes — span both kinds, since one table holds both and an
+// operator sizing it is sizing it for the total.
 type CacheStats struct {
 	// Hits are Authorize calls answered from cache.
 	Hits uint64
 	// Misses are Authorize calls that reached the server.
 	Misses uint64
+	// HostKeyHits are ReportHostKey calls answered from cache (phase 0023).
+	HostKeyHits uint64
+	// HostKeyMisses are ReportHostKey calls that reached the server. A report
+	// of a key this proxy has not seen on this target is always one of these,
+	// which is the property D7 rests on.
+	HostKeyMisses uint64
 	// Expired counts entries dropped because their TTL had passed.
 	Expired uint64
 	// Evicted counts lookup paths dropped to make room for a newer decision
@@ -110,8 +123,10 @@ type CacheStats struct {
 	// comes back to the same target. Both look like a miss from outside, which
 	// is why they are counted apart.
 	Evicted uint64
-	// Stored counts decisions the server let us cache.
+	// Stored counts authorize decisions the server let us cache.
 	Stored uint64
+	// HostKeyStored counts host-key decisions the server let us cache.
+	HostKeyStored uint64
 	// Invalidated counts entries dropped by a revocation event.
 	Invalidated uint64
 	// StaleSkips counts lookups refused because the revocation stream was
@@ -124,14 +139,44 @@ type CacheStats struct {
 	// clamp. It is the number to look at before blaming the server or the
 	// network for a proxy that re-authorizes "too often".
 	Clamped uint64
-	// Entries is the number of decisions held right now. Under a server that
-	// shares one key widely it is far smaller than Shapes, and it is NOT the
-	// number MaxEntries bounds.
+	// Entries is the number of decisions held right now, of both kinds. Under a
+	// server that shares one key widely it is far smaller than Shapes, and it
+	// is NOT the number MaxEntries bounds.
 	Entries int
 	// Shapes is the number of cached lookup paths held right now — the
 	// quantity MaxEntries bounds. It is the one to compare against the setting
-	// when deciding whether a proxy needs a larger cache.
+	// when deciding whether a proxy needs a larger cache, and since phase 0023
+	// a proxy caching both kinds holds up to TWO shapes per connection: one
+	// authorize path and one host-key path. An estate sizing
+	// control.cache.max_entries to its target count under a server that hints
+	// both must therefore double it, and the setting's name does not say so.
 	Shapes int
+}
+
+// hit and miss route a lookup outcome to the counter for its kind, so the
+// per-kind pairs stay coherent (hits + misses == calls of that kind).
+func (s *CacheStats) hit(kind entryKind) {
+	if kind == kindHostKey {
+		s.HostKeyHits++
+		return
+	}
+	s.Hits++
+}
+
+func (s *CacheStats) miss(kind entryKind) {
+	if kind == kindHostKey {
+		s.HostKeyMisses++
+		return
+	}
+	s.Misses++
+}
+
+func (s *CacheStats) stored(kind entryKind) {
+	if kind == kindHostKey {
+		s.HostKeyStored++
+		return
+	}
+	s.Stored++
 }
 
 // CacheController is the part of a CachingClient that the revocation stream
@@ -149,15 +194,43 @@ type CacheController interface {
 	StreamAlive(t time.Time)
 }
 
-// cacheEntry is one cached authorize decision.
+// entryKind names which decision an entry holds (phase 0023).
+//
+// It namespaces the entries map, so a server that happened to issue the same
+// opaque key string for an authorize decision and a host-key decision can never
+// have one served in answer to the other. An Invalidate naming that key still
+// drops both, which is the safe direction for the ambiguity to fall.
+type entryKind string
+
+const (
+	kindAuthorize entryKind = "authorize"
+	kindHostKey   entryKind = "hostkey"
+)
+
+// entryKey namespaces the server's opaque key by the kind of decision it came
+// attached to. The unnamespaced key stays on the entry, because that is the
+// form a cache_invalidate event carries.
+func entryKey(kind entryKind, key string) string {
+	return string(kind) + "\x00" + key
+}
+
+// cacheEntry is one cached decision. Exactly one of authorize and hostKey is
+// set, and which one is fixed by kind.
 type cacheEntry struct {
+	kind entryKind
 	// key is the server's opaque CacheHint.Key, the unit of invalidation.
 	key string
 	// subject is the identity the decision was made for. A decision is never
 	// served to another subject, even if a server reused a key across them.
+	//
+	// It is EMPTY for a host-key decision, which is not made for an identity at
+	// all: the server was asked whether a target presenting a given key may be
+	// reached, and nothing in that answer depends on who is connecting. See
+	// InvalidateSubject for what that means when a subject's access is revoked.
 	subject   string
 	expiresAt time.Time
-	resp      *AuthorizeResponse
+	authorize *AuthorizeResponse
+	hostKey   *HostKeyReportResponse
 	// refs is how many shape mappings point at this decision. A decision the
 	// server shared across many targets has many; one that reaches zero is
 	// unreachable and goes with the last shape that named it, which is what
@@ -165,9 +238,11 @@ type cacheEntry struct {
 	refs int
 }
 
-// shapeMapping is one lookup path: a request shape, the server key its
+// shapeMapping is one lookup path: a request shape, the entries-map key its
 // decision was returned under, and its place in the recency list.
 type shapeMapping struct {
+	// key is the entries-map key — entryKey(kind, the server's key) — not the
+	// server's key on its own.
 	key string
 	// elem is this shape's element in CachingClient.lru, so a hit is a
 	// constant-time move to the front and an eviction is a constant-time read
@@ -176,13 +251,19 @@ type shapeMapping struct {
 }
 
 // CachingClient decorates a Client with the server-authorised reuse of
-// authorize decisions (PLAN §6.4, D2).
+// decisions (PLAN §6.4, D2).
 //
-// ONLY Authorize is cached. Authentication is deliberately never cached: an MFA
-// approval is a per-session assertion, and certificate validation is where
-// revocation bites — skipping either would defeat the second factor or keep a
-// revoked credential alive. Every other method passes straight through, and
-// this is not an oversight to be "fixed" later.
+// TWO calls are cached, both on the one mechanism §6.4 defines — an opaque
+// server key, a server-set lifetime, and the revocation stream that bounds
+// both: Authorize (phase 0003) and ReportHostKey (phase 0023). They share one
+// table, one bound and one fail-closed rule; what differs is only the lookup
+// shape, and each method documents its own.
+//
+// AUTHENTICATION IS NEVER CACHED, and never will be: an MFA approval is a
+// per-session assertion, and certificate validation is where revocation bites —
+// skipping either would defeat the second factor or keep a revoked credential
+// alive. Every other method passes straight through, and that is not an
+// oversight to be "fixed" later.
 //
 // Two rules make a cached allow safe to hold, and they only work together:
 //
@@ -206,17 +287,21 @@ type CachingClient struct {
 	logger     *log.Logger
 
 	mu sync.Mutex
-	// shapes maps a request shape to the server key its decision was returned
-	// under. It is what lets the SERVER choose the sharing scope: if the server
-	// answers two different requests with one key, both shapes point at one
-	// entry and one invalidation drops both. The proxy never derives a key
-	// itself, so it can never share a decision the server did not share.
+	// shapes maps a request shape to the entries-map key its decision was
+	// returned under. It is what lets the SERVER choose the sharing scope: if
+	// the server answers two different requests with one key, both shapes point
+	// at one entry and one invalidation drops both. The proxy never derives a
+	// key itself, so it can never share a decision the server did not share.
+	//
+	// Both kinds of decision share this map — a shape is prefixed by its kind
+	// and can never be confused with the other's — so CacheOptions.MaxEntries
+	// bounds the two together (see CacheStats.Shapes).
 	shapes map[string]*shapeMapping
 	// lru orders the shapes by last use, most recent at the front. Its values
 	// are shape strings. It is the eviction order: a full cache drops from the
 	// back rather than refusing what it was just told.
 	lru *list.List
-	// entries holds the decisions, keyed by the server's cache key.
+	// entries holds the decisions, keyed by entryKey(kind, the server's key).
 	entries   map[string]*cacheEntry
 	lastAlive time.Time
 	stats     CacheStats
@@ -258,8 +343,8 @@ func NewCachingClient(inner Client, opts CacheOptions) *CachingClient {
 func (c *CachingClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*AuthorizeResponse, error) {
 	shape, subject, cacheable := authorizeShape(req)
 	if cacheable {
-		if resp, ok := c.lookup(shape, subject); ok {
-			return resp, nil
+		if cached, ok := c.cachedAuthorize(shape, subject); ok {
+			return cached, nil
 		}
 	}
 
@@ -270,7 +355,9 @@ func (c *CachingClient) Authorize(ctx context.Context, req *AuthorizeRequest) (*
 		return nil, err
 	}
 	if cacheable {
-		c.store(shape, subject, resp)
+		c.store(shape, kindAuthorize, subject, resp.Cache, func(e *cacheEntry) {
+			e.authorize = resp.Clone()
+		})
 	}
 	return resp, nil
 }
@@ -290,9 +377,47 @@ func (c *CachingClient) PollMFA(ctx context.Context, req *MFAPollRequest) (*Auth
 	return c.inner.PollMFA(ctx, req)
 }
 
-// ReportHostKey implements Client; it passes through.
+// ReportHostKey returns a cached trust decision when the server authorised
+// reuse of one for this exact (target, port, host key), and otherwise reports
+// (phase 0023).
+//
+// The lookup shape INCLUDES THE KEY'S FINGERPRINT, and that clause is the whole
+// security argument. A target presenting a key this proxy has not already had
+// ruled on is a different shape, misses, and is reported — so the
+// man-in-the-middle, the rotated key and the rebuilt host all still reach
+// Hoplock Control on the first connection that sees the new key, which is the
+// case D7 exists for.
+//
+// Two answers are deliberately never cached, however the server hints them:
+//
+//   - a REJECT. It is as revocable as an accept and the server re-decides it
+//     for free, exactly as with an authorize deny; and a rejected host key is a
+//     security event the server must keep seeing rather than one this proxy
+//     silently stops reporting.
+//   - a FIRST SIGHTING (known == false). The server's own answer to the same
+//     question has already changed by recording the key, so reusing this one
+//     would replay "trusted on first use" — into the audit log, not just a
+//     console line — for every later connection. The first sighting is the one
+//     report D7 is actually about; the connection after it establishes the
+//     steady state that this phase makes free.
 func (c *CachingClient) ReportHostKey(ctx context.Context, req *HostKeyReportRequest) (*HostKeyReportResponse, error) {
-	return c.inner.ReportHostKey(ctx, req)
+	shape, cacheable := hostKeyShape(req)
+	if cacheable {
+		if cached, ok := c.cachedHostKey(shape); ok {
+			return cached, nil
+		}
+	}
+
+	resp, err := c.inner.ReportHostKey(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if cacheable && resp.Decision == HostKeyAccept && resp.Known {
+		c.store(shape, kindHostKey, "", resp.Cache, func(e *cacheEntry) {
+			e.hostKey = resp.Clone()
+		})
+	}
+	return resp, nil
 }
 
 // IngestLogBatch implements Client; it passes through.
@@ -346,7 +471,9 @@ func (c *CachingClient) streamStaleLocked() bool {
 	return c.now().Sub(c.lastAlive) > c.staleAfter
 }
 
-// Invalidate implements CacheController.
+// Invalidate implements CacheController. It matches on the server's key as the
+// server issued it, so one key drops every decision the server attached it to —
+// an authorize decision and a host-key decision alike.
 func (c *CachingClient) Invalidate(keys ...string) {
 	if len(keys) == 0 {
 		return
@@ -361,13 +488,28 @@ func (c *CachingClient) Invalidate(keys ...string) {
 }
 
 // InvalidateSubject implements CacheController.
+//
+// It drops AUTHORIZE decisions only, and that is deliberate rather than an
+// oversight of phase 0023. A host-key decision is not made for a subject: the
+// server was asked whether a target presenting a given key may be reached, and
+// the answer is the same for everyone. Dropping it when one user's access is
+// withdrawn would neither withdraw anything nor protect anyone — it would only
+// make the next connection by an unaffected user report a key the server has
+// already ruled on.
+//
+// A server that wants to withdraw HOST-KEY trust says so with the key, via
+// Invalidate (cache_invalidate), or clears everything with a resync. Those are
+// the two mechanisms that mean "stop trusting what I told you", and this one
+// means "this person's access changed".
 func (c *CachingClient) InvalidateSubject(subject string) {
 	if subject == "" {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.stats.Invalidated += uint64(c.removeLocked(func(e *cacheEntry) bool { return e.subject == subject }))
+	c.stats.Invalidated += uint64(c.removeLocked(func(e *cacheEntry) bool {
+		return e.kind == kindAuthorize && e.subject == subject
+	}))
 }
 
 // InvalidateAll implements CacheController.
@@ -390,42 +532,74 @@ func (c *CachingClient) Stats() CacheStats {
 	return out
 }
 
-// lookup returns a cached decision for shape, if one may be served.
-func (c *CachingClient) lookup(shape, subject string) (*AuthorizeResponse, bool) {
+// cachedAuthorize and cachedHostKey are the two ways in. Each takes the lock,
+// looks the shape up, and CLONES UNDER THE LOCK: a stored decision is refreshed
+// in place when the server answers again under the same key, so a copy taken
+// outside the lock would race with that write. Nothing outside this file ever
+// holds a pointer into the cache.
+func (c *CachingClient) cachedAuthorize(shape, subject string) (*AuthorizeResponse, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	entry, ok := c.lookupLocked(shape, kindAuthorize, subject)
+	if !ok {
+		return nil, false
+	}
+	return entry.authorize.Clone(), true
+}
 
+func (c *CachingClient) cachedHostKey(shape string) (*HostKeyReportResponse, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// A host-key decision is not made for an identity, so there is no subject
+	// to match: "" is what store put on the entry.
+	entry, ok := c.lookupLocked(shape, kindHostKey, "")
+	if !ok {
+		return nil, false
+	}
+	return entry.hostKey.Clone(), true
+}
+
+// lookupLocked returns the cached entry for shape, if one may be served.
+//
+// subject is the identity the answer is for, and is "" for a kind that is not
+// made for an identity. It must match what was stored either way, so a decision
+// made for one subject can never be served to another.
+//
+// The caller holds c.mu.
+func (c *CachingClient) lookupLocked(shape string, kind entryKind, subject string) (*cacheEntry, bool) {
 	if c.streamStaleLocked() {
 		// Fail closed: we cannot hear revocations, so we do not trust what we
-		// were told earlier. The entries stay put — the stream may recover, and
-		// a resync will clear them if the server says so.
+		// were told earlier. That covers host-key decisions too — an accept we
+		// could not be told to withdraw is exactly what a compromised target
+		// would want us to keep. The entries stay put: the stream may recover,
+		// and a resync will clear them if the server says so.
 		c.stats.StaleSkips++
-		c.stats.Misses++
+		c.stats.miss(kind)
 		return nil, false
 	}
 
 	mapping, ok := c.shapes[shape]
 	if !ok {
-		c.stats.Misses++
+		c.stats.miss(kind)
 		return nil, false
 	}
 	entry, ok := c.entries[mapping.key]
 	if !ok {
 		// The entry was invalidated; the mapping is stale, so drop it.
 		c.dropShapeLocked(shape)
-		c.stats.Misses++
+		c.stats.miss(kind)
 		return nil, false
 	}
 	if !c.now().Before(entry.expiresAt) {
 		c.stats.Expired += uint64(c.removeLocked(func(e *cacheEntry) bool { return e == entry }))
-		c.stats.Misses++
+		c.stats.miss(kind)
 		return nil, false
 	}
 	if entry.subject != subject {
 		// The server must never share a key across identities. If one did, we
 		// re-ask rather than hand one user another user's policy.
 		c.dropShapeLocked(shape)
-		c.stats.Misses++
+		c.stats.miss(kind)
 		return nil, false
 	}
 
@@ -433,18 +607,19 @@ func (c *CachingClient) lookup(shape, subject string) (*AuthorizeResponse, bool)
 	// which is what makes a working set smaller than the bound survive a long
 	// tail of one-off targets sweeping past it.
 	c.lru.MoveToFront(mapping.elem)
-	c.stats.Hits++
-	return entry.resp.Clone(), true
+	c.stats.hit(kind)
+	return entry, true
 }
 
-// store caches resp when the server authorised it.
-func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
-	hint := resp.Cache
+// store caches a decision when the server authorised it. fill sets the field
+// on the entry that this kind holds, from a copy the caller owns.
+func (c *CachingClient) store(shape string, kind entryKind, subject string, hint *CacheHint, fill func(*cacheEntry)) {
 	// No hint, no lifetime, or no key means: do not cache. The proxy never
 	// supplies any of the three itself.
 	if hint == nil || hint.TTLSeconds <= 0 || hint.Key == "" {
 		return
 	}
+	mapKey := entryKey(kind, hint.Key)
 	serverTTL := hint.TTL()
 	ttl := serverTTL
 	clamped := c.maxTTL > 0 && ttl > c.maxTTL
@@ -465,7 +640,7 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 
 	// A shape already pointing at a DIFFERENT key is a key the server rotated;
 	// the old decision loses this reference and goes if it was the last one.
-	if mapping, mapped := c.shapes[shape]; mapped && mapping.key != hint.Key {
+	if mapping, mapped := c.shapes[shape]; mapped && mapping.key != mapKey {
 		c.dropShapeLocked(shape)
 	}
 
@@ -484,29 +659,29 @@ func (c *CachingClient) store(shape, subject string, resp *AuthorizeResponse) {
 		}
 	}
 
-	entry, held := c.entries[hint.Key]
+	entry, held := c.entries[mapKey]
 	if held {
 		// The server answered under a key we already hold: refresh it in place
 		// so the shapes already pointing at it keep pointing at it.
 		entry.subject = subject
 		entry.expiresAt = now.Add(ttl)
-		entry.resp = resp.Clone()
 	} else {
 		entry = &cacheEntry{
+			kind:      kind,
 			key:       hint.Key,
 			subject:   subject,
 			expiresAt: now.Add(ttl),
-			resp:      resp.Clone(),
 		}
-		c.entries[hint.Key] = entry
+		c.entries[mapKey] = entry
 	}
+	fill(entry)
 	if mapping, mapped := c.shapes[shape]; mapped {
 		c.lru.MoveToFront(mapping.elem)
 	} else {
-		c.shapes[shape] = &shapeMapping{key: hint.Key, elem: c.lru.PushFront(shape)}
+		c.shapes[shape] = &shapeMapping{key: mapKey, elem: c.lru.PushFront(shape)}
 		entry.refs++
 	}
-	c.stats.Stored++
+	c.stats.stored(kind)
 	if clamped {
 		// Counted and said out loud only when the entry was actually stored, so
 		// the number matches the decisions this really applied to. This is the
@@ -600,6 +775,7 @@ func authorizeShape(req *AuthorizeRequest) (shape, subject string, cacheable boo
 	}
 	subject = req.Identity.Subject
 	shape = strings.Join([]string{
+		string(kindAuthorize),
 		subject,
 		req.Identity.Login,
 		req.Target,
@@ -608,4 +784,40 @@ func authorizeShape(req *AuthorizeRequest) (shape, subject string, cacheable boo
 		strings.Join(req.Conn.HopTrail, ","),
 	}, "\x00")
 	return shape, subject, true
+}
+
+// hostKeyShape derives the lookup key for a host-key report: the target, the
+// port, and THE KEY ITSELF. Everything that could change the server's answer is
+// in it, and the fingerprint is the part that matters — it is what makes a
+// cache hit mean "the server has ruled on this exact pair" rather than "the
+// server has ruled on this target".
+//
+// A report without a fingerprint is never cacheable. The proxy would then be
+// keying on the target alone, which is precisely the reuse D7 forbids, so the
+// absence fails towards reporting rather than towards a weaker key.
+//
+// The type is included alongside the fingerprint even though a SHA256 of the
+// wire encoding already implies it, and the certificate flag likewise: it costs
+// a few bytes and removes the need for anyone to reason about whether it does.
+//
+// Like authorizeShape this is a proxy-side lookup key only, never the cache
+// key: the server's opaque CacheHint.Key still decides sharing scope and
+// invalidation.
+func hostKeyShape(req *HostKeyReportRequest) (shape string, cacheable bool) {
+	if req == nil || req.Target == "" || req.HostKey.Fingerprint == "" {
+		return "", false
+	}
+	isCert := "key"
+	if req.HostKey.IsCertificate {
+		isCert = "cert"
+	}
+	shape = strings.Join([]string{
+		string(kindHostKey),
+		req.Target,
+		strconv.Itoa(req.TargetPort),
+		req.HostKey.Type,
+		isCert,
+		req.HostKey.Fingerprint,
+	}, "\x00")
+	return shape, true
 }

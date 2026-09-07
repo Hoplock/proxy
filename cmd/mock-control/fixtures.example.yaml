@@ -562,3 +562,14 @@ host_keys:
   known:
     - target: host.company.com
       fingerprint: "SHA256:CCCC3333hostkey3333CCCC3333hostkey3333CCCC"
+  # Authorise the proxy to reuse an accepted host-key decision (contract 4.1,
+  # phase 0023) instead of reporting the same key on every connection. Absent —
+  # or ttl_seconds: 0 — is the old behaviour: report every time.
+  #
+  # The proxy keys the reuse on (target, port, FINGERPRINT), so a target that
+  # presents a different key is reported however long this TTL is. Only a key
+  # this server has already ruled on and accepted is hinted; a first sighting
+  # and a reject are always re-reported.
+  cache:
+    ttl_seconds: 300
+    # key: hostkey:host.company.com   # optional: widen the INVALIDATION scope

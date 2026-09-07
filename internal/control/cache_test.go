@@ -44,6 +44,7 @@ func (c *testClock) Advance(d time.Duration) {
 // tell "the cache answered" from "the server answered".
 type fakeClient struct {
 	authorize func(*AuthorizeRequest) (*AuthorizeResponse, error)
+	hostKey   func(*HostKeyReportRequest) (*HostKeyReportResponse, error)
 
 	mu    sync.Mutex
 	calls map[string]int
@@ -88,8 +89,13 @@ func (f *fakeClient) Authorize(_ context.Context, req *AuthorizeRequest) (*Autho
 	return testAuthorizeResponse("authz:alice:host", 60), nil
 }
 
-func (f *fakeClient) ReportHostKey(context.Context, *HostKeyReportRequest) (*HostKeyReportResponse, error) {
+func (f *fakeClient) ReportHostKey(_ context.Context, req *HostKeyReportRequest) (*HostKeyReportResponse, error) {
 	f.count("ReportHostKey")
+	if f.hostKey != nil {
+		return f.hostKey(req)
+	}
+	// No hint: the default fake is a server that has not opted into reuse, so
+	// every report reaches it. That is also the pre-0023 behaviour.
 	return &HostKeyReportResponse{Decision: HostKeyAccept}, nil
 }
 
@@ -537,11 +543,18 @@ func TestCachingClientNeverCachesAuthentication(t *testing.T) {
 
 	for _, op := range []string{
 		"AuthenticateCert", "AuthenticatePassword", "PollMFA",
-		"ReportHostKey", "IngestLogBatch", "IngestPriorityLog",
+		"IngestLogBatch", "IngestPriorityLog",
 	} {
 		if got := inner.calledFor(op); got != 2 {
-			t.Errorf("%s reached the server %d times, want 2: only Authorize is cached", op, got)
+			t.Errorf("%s reached the server %d times, want 2: authentication and log "+
+				"shipping are never cached, whatever the server says", op, got)
 		}
+	}
+	// ReportHostKey is cacheable since phase 0023, but only on a hint, and this
+	// fake server sends none — so it too reaches the server every time.
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("ReportHostKey reached the server %d times, want 2: "+
+			"no hint means report every connection", got)
 	}
 }
 
@@ -872,5 +885,409 @@ func TestAuthorizeRejectsAnUnusableCacheHint(t *testing.T) {
 				t.Errorf("error = %v, want ErrProtocol", err)
 			}
 		})
+	}
+}
+
+// --- Host-key decision reuse (phase 0023) -----------------------------------
+
+func testHostKeyRequest(target string, port int, fingerprint string) *HostKeyReportRequest {
+	return &HostKeyReportRequest{
+		Target:     target,
+		TargetPort: port,
+		HostKey: PublicKeyMaterial{
+			Type:        "ssh-ed25519",
+			Blob:        []byte(fingerprint),
+			Fingerprint: fingerprint,
+		},
+		Conn: testConn(),
+	}
+}
+
+// hostKeyServer answers like a server that has already ruled on every key it is
+// shown and authorises reuse of the answer, keyed per (target, fingerprint).
+func hostKeyServer(ttlSeconds int) func(*HostKeyReportRequest) (*HostKeyReportResponse, error) {
+	return func(req *HostKeyReportRequest) (*HostKeyReportResponse, error) {
+		return &HostKeyReportResponse{
+			Decision: HostKeyAccept,
+			Known:    true,
+			Cache:    &CacheHint{Key: "hk:" + req.Target + "|" + req.HostKey.Fingerprint, TTLSeconds: ttlSeconds},
+		}, nil
+	}
+}
+
+func TestCachingClientReusesAHostKeyDecision(t *testing.T) {
+	c, inner, clock := newTestCache(CacheOptions{})
+	inner.hostKey = hostKeyServer(300)
+	ctx := context.Background()
+	req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	first, err := c.ReportHostKey(ctx, req)
+	if err != nil {
+		t.Fatalf("first ReportHostKey: %v", err)
+	}
+	clock.Advance(10 * time.Second) // inside StaleAfter: the stream is still healthy
+	second, err := c.ReportHostKey(ctx, req)
+	if err != nil {
+		t.Fatalf("second ReportHostKey: %v", err)
+	}
+
+	if got := inner.calledFor("ReportHostKey"); got != 1 {
+		t.Errorf("server was asked %d times, want 1: the second report must be a cache hit", got)
+	}
+	if second.Decision != first.Decision || !second.Known {
+		t.Errorf("cached decision = %+v, want the first decision back", second)
+	}
+	stats := c.Stats()
+	if stats.HostKeyHits != 1 || stats.HostKeyMisses != 1 || stats.HostKeyStored != 1 {
+		t.Errorf("stats = %+v, want 1 host-key hit, 1 miss, 1 stored", stats)
+	}
+	// The point of counting them apart: authorize reuse must be readable on its
+	// own, or "which call is my Control load?" has no answer (PLAN §9.1).
+	if stats.Hits != 0 || stats.Misses != 0 || stats.Stored != 0 {
+		t.Errorf("stats = %+v, want the authorize counters untouched by a host-key report", stats)
+	}
+}
+
+// TestCachingClientAlwaysReportsAChangedHostKey is the test this phase exists
+// to make pass. A cached host-key decision must never answer for a key the
+// server has not ruled on: that is the man-in-the-middle case, the key-rotation
+// case, and the rebuilt-host case, and all three must reach Hoplock Control on
+// the first connection that sees the new key (D7).
+func TestCachingClientAlwaysReportsAChangedHostKey(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{})
+	inner.hostKey = hostKeyServer(3600)
+	ctx := context.Background()
+
+	original := testHostKeyRequest("host.company.com", 22, "SHA256:ORIGINAL")
+	if _, err := c.ReportHostKey(ctx, original); err != nil {
+		t.Fatalf("report the original key: %v", err)
+	}
+	if _, err := c.ReportHostKey(ctx, original); err != nil {
+		t.Fatalf("re-report the original key: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 1 {
+		t.Fatalf("server was asked %d times for the original key, want 1", got)
+	}
+
+	// Same target, same port, DIFFERENT key.
+	impostor := testHostKeyRequest("host.company.com", 22, "SHA256:IMPOSTOR")
+	if _, err := c.ReportHostKey(ctx, impostor); err != nil {
+		t.Fatalf("report the new key: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("server was asked %d times, want 2: a key the server has not ruled on "+
+			"must be reported, however long the decision for the old key is valid", got)
+	}
+
+	// The same target on a different port is a different endpoint and a
+	// different question, so it is reported too.
+	otherPort := testHostKeyRequest("host.company.com", 2222, "SHA256:ORIGINAL")
+	if _, err := c.ReportHostKey(ctx, otherPort); err != nil {
+		t.Fatalf("report on another port: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 3 {
+		t.Errorf("server was asked %d times, want 3: a different port is a different shape", got)
+	}
+
+	// And the original decision is still held: reporting a new key neither
+	// replaced nor invalidated it.
+	if _, err := c.ReportHostKey(ctx, original); err != nil {
+		t.Fatalf("re-report the original key after the impostor: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 3 {
+		t.Errorf("server was asked %d times, want 3: the original key was still cached", got)
+	}
+}
+
+func TestCachingClientNeverReusesAHostKeyDecisionItMayNot(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *HostKeyReportResponse
+		why  string
+	}{
+		{
+			name: "no hint",
+			resp: &HostKeyReportResponse{Decision: HostKeyAccept, Known: true},
+			why:  "absent cache means report every connection, as every server did before 4.1",
+		},
+		{
+			name: "zero ttl",
+			resp: &HostKeyReportResponse{Decision: HostKeyAccept, Known: true, Cache: &CacheHint{Key: "hk:1"}},
+			why:  "a zero lifetime is the server saying no",
+		},
+		{
+			name: "no key",
+			resp: &HostKeyReportResponse{Decision: HostKeyAccept, Known: true, Cache: &CacheHint{TTLSeconds: 300}},
+			why:  "without a key there is nothing to invalidate, so there is nothing to store",
+		},
+		{
+			name: "reject",
+			resp: &HostKeyReportResponse{Decision: HostKeyReject, Known: true, Cache: &CacheHint{Key: "hk:1", TTLSeconds: 300}},
+			why:  "a rejected host key is a security event the server must keep seeing",
+		},
+		{
+			name: "first sighting",
+			resp: &HostKeyReportResponse{Decision: HostKeyAccept, Known: false, Cache: &CacheHint{Key: "hk:1", TTLSeconds: 300}},
+			why:  "recording the key already changed the server's own answer",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, inner, _ := newTestCache(CacheOptions{})
+			inner.hostKey = func(*HostKeyReportRequest) (*HostKeyReportResponse, error) { return tc.resp, nil }
+			ctx := context.Background()
+			req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+			for i := 0; i < 3; i++ {
+				if _, err := c.ReportHostKey(ctx, req); err != nil {
+					t.Fatalf("ReportHostKey: %v", err)
+				}
+			}
+			if got := inner.calledFor("ReportHostKey"); got != 3 {
+				t.Errorf("server was asked %d times, want 3: %s", got, tc.why)
+			}
+			if stats := c.Stats(); stats.HostKeyStored != 0 || stats.Entries != 0 {
+				t.Errorf("stats = %+v, want nothing stored: %s", stats, tc.why)
+			}
+		})
+	}
+}
+
+// A report the proxy cannot key safely is never cached. Keying on the target
+// alone is precisely the reuse D7 forbids, so a missing fingerprint fails
+// towards reporting rather than towards a weaker key.
+func TestCachingClientNeverCachesAHostKeyReportItCannotKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  *HostKeyReportRequest
+	}{
+		{"no fingerprint", &HostKeyReportRequest{Target: "host.company.com", HostKey: PublicKeyMaterial{Type: "ssh-ed25519"}}},
+		{"no target", &HostKeyReportRequest{HostKey: PublicKeyMaterial{Fingerprint: "SHA256:AAAA"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, inner, _ := newTestCache(CacheOptions{})
+			inner.hostKey = hostKeyServer(300)
+			ctx := context.Background()
+
+			for i := 0; i < 2; i++ {
+				if _, err := c.ReportHostKey(ctx, tc.req); err != nil {
+					t.Fatalf("ReportHostKey: %v", err)
+				}
+			}
+			if got := inner.calledFor("ReportHostKey"); got != 2 {
+				t.Errorf("server was asked %d times, want 2: an unkeyable report is never cached", got)
+			}
+		})
+	}
+}
+
+// cache_invalidate names the server's key, and it drops a host-key decision
+// exactly as it drops an authorize one.
+func TestHostKeyDecisionIsDroppedByCacheInvalidate(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{})
+	inner.hostKey = hostKeyServer(3600)
+	ctx := context.Background()
+	req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+	c.Invalidate("hk:host.company.com|SHA256:AAAA")
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey after invalidate: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("server was asked %d times, want 2: the invalidated decision must not be served", got)
+	}
+	if stats := c.Stats(); stats.Invalidated != 1 {
+		t.Errorf("stats = %+v, want 1 invalidated", stats)
+	}
+}
+
+func TestHostKeyDecisionIsDroppedByInvalidateAll(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{})
+	inner.hostKey = hostKeyServer(3600)
+	ctx := context.Background()
+	req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+	c.InvalidateAll()
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey after resync: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("server was asked %d times, want 2: a resync drops every kind of decision", got)
+	}
+}
+
+// A subject-scoped invalidation means "this person's access changed". A
+// host-key decision is not made for a person, so it is not what changed — see
+// CachingClient.InvalidateSubject for why dropping it would protect nobody.
+func TestInvalidateSubjectLeavesHostKeyDecisionsAlone(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{})
+	inner.hostKey = hostKeyServer(3600)
+	ctx := context.Background()
+	req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	if _, err := c.Authorize(ctx, testAuthorizeRequest("alice@example.com", "host.company.com")); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+
+	c.InvalidateSubject("alice@example.com")
+
+	if _, err := c.Authorize(ctx, testAuthorizeRequest("alice@example.com", "host.company.com")); err != nil {
+		t.Fatalf("Authorize after invalidate: %v", err)
+	}
+	if got := inner.calledFor("Authorize"); got != 2 {
+		t.Errorf("Authorize reached the server %d times, want 2: alice's decision was revoked", got)
+	}
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey after invalidate: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 1 {
+		t.Errorf("ReportHostKey reached the server %d times, want 1: the host key is not "+
+			"alice's, and revoking her access says nothing about the target's identity", got)
+	}
+}
+
+// The fail-closed rule is one rule, not one per call: a proxy that cannot hear
+// revocations must not serve a host-key accept it could no longer be told to
+// withdraw.
+func TestHostKeyDecisionIsNotServedWhileTheStreamIsStale(t *testing.T) {
+	c, inner, clock := newTestCache(CacheOptions{StaleAfter: 30 * time.Second})
+	inner.hostKey = hostKeyServer(3600)
+	ctx := context.Background()
+	req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+	clock.Advance(31 * time.Second)
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey while stale: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("server was asked %d times, want 2: a stale stream stops the cache being served", got)
+	}
+	if stats := c.Stats(); stats.StaleSkips != 1 {
+		t.Errorf("stats = %+v, want 1 stale skip", stats)
+	}
+
+	// And the decision is still there once the stream is heard again: staleness
+	// suspends the cache, it does not empty it.
+	c.StreamAlive(clock.Now())
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey after recovery: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("server was asked %d times after recovery, want 2: the entry was still valid", got)
+	}
+}
+
+func TestHostKeyDecisionExpiresOnTheServersTTL(t *testing.T) {
+	c, inner, clock := newTestCache(CacheOptions{})
+	inner.hostKey = hostKeyServer(60)
+	ctx := context.Background()
+	req := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+	clock.Advance(61 * time.Second)
+	c.StreamAlive(clock.Now())
+	if _, err := c.ReportHostKey(ctx, req); err != nil {
+		t.Fatalf("ReportHostKey after the TTL: %v", err)
+	}
+	if got := inner.calledFor("ReportHostKey"); got != 2 {
+		t.Errorf("server was asked %d times, want 2: the server's lifetime had passed", got)
+	}
+	if stats := c.Stats(); stats.Expired != 1 {
+		t.Errorf("stats = %+v, want 1 expired", stats)
+	}
+}
+
+// A server that issues one key string for both an authorize decision and a
+// host-key decision has made a mistake, and the proxy must never resolve it by
+// serving one in answer to the other. Invalidating that key still drops both,
+// which is the safe direction for the ambiguity to fall.
+func TestOneKeyForTwoKindsIsNeverCrossServed(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{})
+	const shared = "same-key"
+	inner.authorize = func(*AuthorizeRequest) (*AuthorizeResponse, error) {
+		return testAuthorizeResponse(shared, 3600), nil
+	}
+	inner.hostKey = func(*HostKeyReportRequest) (*HostKeyReportResponse, error) {
+		return &HostKeyReportResponse{
+			Decision: HostKeyAccept,
+			Known:    true,
+			Reason:   "already trusted",
+			Cache:    &CacheHint{Key: shared, TTLSeconds: 3600},
+		}, nil
+	}
+	ctx := context.Background()
+	authReq := testAuthorizeRequest("alice@example.com", "host.company.com")
+	hkReq := testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")
+
+	if _, err := c.Authorize(ctx, authReq); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	hk, err := c.ReportHostKey(ctx, hkReq)
+	if err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+	if hk.Reason != "already trusted" {
+		t.Fatalf("host-key response = %+v, want the server's own answer", hk)
+	}
+	authz, err := c.Authorize(ctx, authReq)
+	if err != nil {
+		t.Fatalf("second Authorize: %v", err)
+	}
+	if authz.DecisionID != "decision-1" {
+		t.Fatalf("authorize response = %+v, want the authorize decision", authz)
+	}
+	if stats := c.Stats(); stats.Entries != 2 {
+		t.Errorf("stats = %+v, want 2 entries: one key per kind, never one shared entry", stats)
+	}
+
+	c.Invalidate(shared)
+	if stats := c.Stats(); stats.Entries != 0 {
+		t.Errorf("stats = %+v, want 0 entries: one key names every decision issued under it", stats)
+	}
+}
+
+// Both kinds of lookup path are bounded by the one setting, which is the fact an
+// operator sizing control.cache.max_entries has to know: a server hinting both
+// halves the number of targets a given bound covers.
+func TestHostKeyShapesShareTheEntryBoundWithAuthorizeShapes(t *testing.T) {
+	c, inner, _ := newTestCache(CacheOptions{MaxEntries: 2})
+	inner.hostKey = hostKeyServer(3600)
+	ctx := context.Background()
+
+	if _, err := c.Authorize(ctx, testAuthorizeRequest("alice@example.com", "host.company.com")); err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if _, err := c.ReportHostKey(ctx, testHostKeyRequest("host.company.com", 22, "SHA256:AAAA")); err != nil {
+		t.Fatalf("ReportHostKey: %v", err)
+	}
+	if stats := c.Stats(); stats.Shapes != 2 || stats.Evicted != 0 {
+		t.Fatalf("stats = %+v, want 2 shapes and no eviction: the bound is not reached yet", stats)
+	}
+
+	// One connection to a second target needs two more paths, and the bound is
+	// two: the least recently used one gives way.
+	if _, err := c.Authorize(ctx, testAuthorizeRequest("alice@example.com", "other.company.com")); err != nil {
+		t.Fatalf("Authorize for the second target: %v", err)
+	}
+	stats := c.Stats()
+	if stats.Shapes != 2 {
+		t.Errorf("stats = %+v, want the bound held at 2 shapes across both kinds", stats)
+	}
+	if stats.Evicted != 1 {
+		t.Errorf("stats = %+v, want 1 eviction", stats)
 	}
 }

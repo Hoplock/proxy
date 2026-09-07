@@ -382,6 +382,15 @@ type fixtureHostKeys struct {
 	Decision string `yaml:"decision"`
 	// Known pre-seeds keys so a report can be answered with known=true.
 	Known []fixtureKnownHostKey `yaml:"known"`
+	// Cache authorises the proxy to reuse a host-key decision (contract 4.1,
+	// phase 0023). Absent — or a zero ttl_seconds — means report every
+	// connection, which is what this mock did before the field existed.
+	//
+	// The key defaults to one per (target, fingerprint), which is the scope the
+	// proxy's own lookup already has; a server sharing one key more widely is
+	// sharing an INVALIDATION scope, not a trust scope, since the proxy still
+	// keys the lookup on the fingerprint whatever the key says.
+	Cache fixtureCacheHint `yaml:"cache"`
 }
 
 // fixtureKnownHostKey is one pre-trusted target host key.
@@ -654,6 +663,12 @@ func (f *fixtures) validate() error {
 	default:
 		add("host_keys.decision %q must be %q or %q", f.HostKeys.Decision,
 			control.HostKeyAccept, control.HostKeyReject)
+	}
+	if f.HostKeys.Cache.TTLSeconds < 0 {
+		add("host_keys.cache.ttl_seconds must not be negative")
+	}
+	if f.HostKeys.Cache.TTLSeconds == 0 && f.HostKeys.Cache.Key != "" {
+		add("host_keys.cache.key is set but ttl_seconds is 0 (nothing is cached)")
 	}
 	for i, k := range f.HostKeys.Known {
 		if k.Target == "" || k.Fingerprint == "" {

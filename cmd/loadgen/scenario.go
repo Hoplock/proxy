@@ -128,6 +128,15 @@ const (
 type ControlCfg struct {
 	// CacheHint attaches a cache hint to every authorize decision.
 	CacheHint bool `yaml:"cache_hint"`
+	// HostKeyCacheHint attaches a cache hint to every host-key decision the
+	// server has already ruled on and accepted (contract 4.1, phase 0023). It
+	// is a SEPARATE knob from CacheHint so a run can attribute what each one
+	// saves: the two calls are the joint-largest items in the residue an
+	// authorize hit leaves (PLAN §9.1), and one flag covering both would make
+	// their contributions inseparable.
+	//
+	// It shares CacheTTL, because the lifetime is the same kind of thing.
+	HostKeyCacheHint bool `yaml:"host_key_cache_hint"`
 	// CacheTTL is the lifetime the server grants.
 	CacheTTL time.Duration `yaml:"cache_ttl"`
 	// CacheScope is the server's sharing scope for the key it issues:
@@ -360,10 +369,12 @@ func (s *Scenario) validateConnection() error {
 	default:
 		return fmt.Errorf("unknown control.cache_scope %q", s.Control.CacheScope)
 	}
-	if s.Control.CacheHint && s.Control.CacheTTL <= 0 {
-		return fmt.Errorf("control.cache_ttl must be positive when control.cache_hint is set")
+	hinting := s.Control.CacheHint || s.Control.HostKeyCacheHint
+	if hinting && s.Control.CacheTTL <= 0 {
+		return fmt.Errorf("control.cache_ttl must be positive when control.cache_hint " +
+			"or control.host_key_cache_hint is set")
 	}
-	if s.Control.CacheHint && s.Control.CacheTTL < s.Run.Duration {
+	if hinting && s.Control.CacheTTL < s.Run.Duration {
 		// Not fatal, but it makes the hit rate a measurement of the TTL rather
 		// than of the key shape, which is what this harness exists to look at.
 		return fmt.Errorf("control.cache_ttl (%s) is shorter than run.duration (%s): "+

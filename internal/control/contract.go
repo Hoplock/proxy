@@ -432,8 +432,13 @@ func (r *AuthorizeResponse) EnforcedReach() ReachRung {
 	return r.Enforcement.ReachRung()
 }
 
-// CacheHint is Hoplock Control authorising the proxy to reuse this
-// authorize decision for later connections (PLAN §6.4, D2).
+// CacheHint is Hoplock Control authorising the proxy to reuse a decision it
+// has just been given, for later connections (PLAN §6.4, D2).
+//
+// It rides on two responses, and means the same thing on both: an
+// AuthorizeResponse (phase 0003) and a HostKeyReportResponse (phase 0023). What
+// differs is only what the proxy keys the reuse on, which each response
+// documents.
 //
 // The lifetime belongs to the server: a proxy may hold the decision for less
 // time than TTLSeconds, never longer, and never invents a hint of its own. That
@@ -669,6 +674,17 @@ type HostKeyReportResponse struct {
 	// before. The prototype accepts and records it (trust-on-first-use, D7).
 	Known  bool   `json:"known"`
 	Reason string `json:"reason,omitempty"`
+	// Cache is the server's permission to reuse this decision for a bounded
+	// time (phase 0023). Absent means report every connection, which is what
+	// every server did before this field existed.
+	//
+	// The proxy's reuse is keyed on target, port AND the key's fingerprint, so
+	// the reuse can only ever answer the question the server already answered:
+	// "may I continue to THIS target presenting THIS key?". A target presenting
+	// a different key is a different lookup, misses, and is reported — which is
+	// what keeps D7 intact for the man-in-the-middle, key-rotation and
+	// rebuilt-host cases alike.
+	Cache *CacheHint `json:"cache,omitempty"`
 }
 
 // LogKind classifies a log record. It is a string rather than a closed enum so

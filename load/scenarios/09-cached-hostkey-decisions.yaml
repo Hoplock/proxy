@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Mauro Silva. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+# 02 with the server also authorising reuse of the HOST-KEY decision
+# (contract 4.1, phase 0023). Everything else is identical, so the difference
+# between this run and 02's is exactly what that one hint buys, and nothing
+# else moved to explain it away.
+
+name: 09-cached-hostkey-decisions
+kind: connection
+description: >
+  Control request rate per connection with the server authorising reuse of BOTH
+  the authorize decision and the host-key decision. Compare with
+  02-cached-decisions (authorize only) and 01-establishment (neither).
+
+run:
+  mode: rate
+  rate_steps: [100, 300, 600]
+  duration: 20s
+  # The same 10s warmup as 02, and it does one extra job here: a host key is
+  # reported once per (target, fingerprint) before the server will hint it, so
+  # the warmup is what puts every target past its first sighting. Measuring
+  # without one would measure that first sweep.
+  warmup: 10s
+  session: exec
+  command: "show version"
+
+workload:
+  subjects: 1
+  targets: 32
+  order: cycle
+
+control:
+  cache_hint: true
+  host_key_cache_hint: true
+  cache_ttl: 1800s
+  cache_scope: per-target

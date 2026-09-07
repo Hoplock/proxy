@@ -24,10 +24,11 @@ companion. If the two disagree, the OpenAPI document wins.
   a stream cost **zero** calls to this API. The round trips are at session
   setup (auth, authorize, host-key report), not on the data path.
 - **The snapshot outlives the connection only if the server says so.** An
-  authorize decision may carry a `cache` hint (an opaque key plus a TTL the
-  *server* sets), and the proxy may then reuse it for later connections — but
-  only while it can still hear the revocation stream. No hint means no reuse.
-  See "Caching and the latency budget" below.
+  authorize decision — and, since contract 4.1, a host-key decision — may carry
+  a `cache` hint (an opaque key plus a TTL the *server* sets), and the proxy may
+  then reuse it for later connections, but only while it can still hear the
+  revocation stream. No hint means no reuse. See "Caching and the latency
+  budget" below.
 - **`401` is a decision, not a failure.** It means *deny*. Transport failures,
   timeouts, and `5xx` are different, and a caller must never treat them as
   either a deny or an allow — it fails the session closed. The two are also
@@ -66,6 +67,20 @@ as `control.PolicyVersion`). **The server MUST NOT answer with policy fields
 introduced after that version.** A server that respects it can add vocabulary
 freely; a server that ignores it is caught at the first response instead of
 having its policy quietly thinned.
+
+### The v4→v4.1 revision
+
+Phase 0023 adds one optional field: `HostKeyReportResponse.cache`, the same
+`CacheHint` `/v1/authorize` already answers with — see "Reusing a host-key
+decision" below. Absent means what every server does today: the proxy reports
+every connection.
+
+`policy_version` stays `4`, and the reasoning is the same one that kept it at
+`3` for v3.1. It numbers the vocabulary `/v1/authorize` may answer in, because
+that is the response the proxy decodes strictly and where an unknown field could
+be a restriction. This field is on another endpoint, it grants rather than
+restricts, and a proxy that has never heard of it ignores it and keeps
+reporting — which is correct, not a dropped restriction.
 
 ### The v3.1→v4 revision
 
@@ -752,8 +767,10 @@ that any of those systems exist.
 ### Host keys
 
 The proxy reports every target host key it sees before completing the target
-handshake. The prototype's server trusts on first use and records the key, and
-answers `known: false` the first time (D7). The response always carries an
+handshake — unless the server has authorised it to reuse a decision for that
+exact key, which is contract 4.1 and is described under "Reusing a host-key
+decision" below. The prototype's server trusts on first use and records the key,
+and answers `known: false` the first time (D7). The response always carries an
 explicit `decision`, so a stricter per-target policy later needs no change on
 the proxy.
 
@@ -781,7 +798,7 @@ Where the round trips are for one session, before any caching:
 | Authenticate (cert) | 1 | yes |
 | Authenticate (password + MFA) | 1 + one per poll | yes, and bounded by the user |
 | Authorize + route | 1 | yes |
-| Host-key report | 1 per target host key | yes, before the target handshake |
+| Host-key report | 1 per target host key, or 0 when the server authorised reuse (4.1) | yes, before the target handshake |
 | Channel open / command / stream data | **0** | — |
 | Logs | batched, off the data path | no (priority records excepted, by design) |
 
@@ -805,10 +822,10 @@ revocation.
 `ttl_seconds`. **Absent, or `ttl_seconds: 0`, means do not cache** — that is the
 default for every route that does not opt in.
 
-- **Only the authorize decision is cacheable.** Authentication never is: an MFA
-  approval is a per-session assertion, and certificate validation is where
-  revocation bites. `control.CachingClient` passes every other call straight
-  through.
+- **Two decisions are cacheable: this one and the host-key report** (4.1,
+  below). Authentication never is: an MFA approval is a per-session assertion,
+  and certificate validation is where revocation bites. `control.CachingClient`
+  passes every other call straight through.
 - **The server owns the lifetime.** By default the proxy honours
   `ttl_seconds` exactly. An operator may set a local ceiling
   (`CacheOptions.MaxTTL`), which clamps **downward only** — never longer, and
@@ -829,6 +846,36 @@ default for every route that does not opt in.
   one user be served another's policy. (`CachingClient` also refuses to serve an
   entry to a different subject, but that is a backstop, not the contract.)
 
+### Reusing a host-key decision (`cache` on `HostKeyReportResponse`)
+
+Contract 4.1 (phase 0023). Same object, same rules, same revocation stream — a
+server author who has reasoned about the hint above has already reasoned about
+this one. What is specific to it is the shape the proxy keys the reuse on and
+the two answers it declines to reuse:
+
+- **The lookup includes the fingerprint.** The proxy reuses a decision only for
+  the same `target`, the same `target_port`, and the same
+  `host_key.fingerprint`. A target presenting a **different** key is a different
+  lookup and is reported, so the man-in-the-middle, the rotated key and the
+  rebuilt host all still reach the server on the first connection that sees the
+  new key. This is what D7 exists for and no hint can widen it: the shape is the
+  proxy's, and only the *permission* to reuse it is the server's.
+- **A `reject` is never reused.** It is as revocable as an accept, the server
+  re-decides it for free, and a rejected host key is a security event the server
+  must keep seeing.
+- **A first sighting (`known: false`) is never reused.** Recording the key has
+  already changed the server's own answer, and replaying the response would put
+  "first use" into the proxy's audit log for every later connection.
+- **A subject-scoped invalidation does not touch it.** `cache_invalidate` with a
+  `subject` means one person's access changed; a host-key decision is not made
+  for a person. Withdraw host-key trust with the decision's `key`, or with
+  `resync`.
+
+Why it exists: phase 0020 measured the host-key report at **46% of the calls
+that survive an authorize cache hit** (PLAN §9.1). A proxy reconnecting to a
+target it has seen ten thousand times reported the same key ten thousand times
+and asked for the same answer every time.
+
 ### Revoking (`GET /v1/proxies/{proxy_id}/events`)
 
 A long-lived NDJSON response, one `RevocationEvent` per line. It is **outbound
@@ -840,7 +887,7 @@ damage of a cached allow. A server that issues cache hints must serve it.
 | `type` | Effect |
 | --- | --- |
 | `session_kill` | End the named `session_ids`, or every session for a `subject`, or `all`. The `reason` is **shown to the user** before the connection closes and copied into the audit log (PLAN §4.3) — a revoked session must not look like a crash — so it must be safe to disclose. |
-| `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. Running sessions are untouched: they already hold their snapshot. |
+| `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. `keys` and `all` reach host-key decisions too (4.1); `subject` does not, because a host-key decision is not made for a subject. Running sessions are untouched: they already hold their snapshot. |
 | `heartbeat` | Liveness only. A silent stream is indistinguishable from a healthy idle one, so a proxy that stops hearing these reconnects (default timeout 20s). |
 | `resync` | "You missed events that cannot be replayed": the proxy drops its entire cache and re-authorizes from scratch. |
 
@@ -852,7 +899,8 @@ nothing older. No `last_event_id` means a fresh subscription starting from now.
 
 **Fail-closed rule.** While the proxy has not heard the stream for longer than
 `CacheOptions.StaleAfter` (default 30s) it serves **nothing** from cache and
-stores nothing new: every connection is re-authorized. It does **not** kill live
+stores nothing new: every connection is re-authorized, and every host key is
+re-reported. It does **not** kill live
 sessions — losing the ability to hear about a revocation is a reason to distrust
 the cache, not to drop users mid-command. Both halves are deliberate.
 
@@ -910,7 +958,7 @@ test — that is the one omission nothing else catches.
 mock server checks its fixtures against the same rules the client enforces.
 
 Caching and revocation live in the same package: `CachingClient` (a `Client`
-decorator, `Authorize` only), `RevocationStream` (the subscription loop), and
+decorator: `Authorize` and, since 4.1, `ReportHostKey`), `RevocationStream` (the subscription loop), and
 `SessionRegistry` — the interface the proxy implements in phase 0005 to actually
 tear a session down, with `NopSessionRegistry` standing in until then.
 Enum values have named constants (`RouteTypeDirect`, `FilterActionKillSession`,
@@ -962,7 +1010,7 @@ startup, and every problem in a file is reported at once.
 | `routes[].grant_context` | `system`, `reference`, `window_start`/`window_end` (RFC 3339), and **one** of `additional_context_text` or `additional_context_fields` — the wire field is a string or an object, so setting both fails at startup. All of it is test data the proxy logs and never reads. |
 | `routes[].concurrency` | `max_sessions_per_subject` and/or `max_sessions_per_target`. Absent or `0` is uncapped. |
 | `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
-| `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, and `known[]` (`target` + `fingerprint`) to pre-seed trusted keys. |
+| `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision (4.1). Only a key already ruled on and accepted is hinted. |
 | `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to

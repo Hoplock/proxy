@@ -181,9 +181,14 @@ reading `internal/control/cache.go`.
   obligation (`docs/CROSS-REPO-PROTOCOL.md` §1). Confirm that in the PR.
 - `control.cache.max_entries`, its default, and `CacheStats` — 0022 shipped
   those and they are not re-opened here.
-- Host-key decision caching (**0023**), which may add a second cached shape per
-  connection. If it has landed, say what it did to the working set an operator
-  must size for; do not re-litigate it.
+- Host-key decision caching (**0023**), which **has landed**: where the server
+  hints host keys, each connection now costs a **second** cached shape sharing
+  the same `control.cache.max_entries`, so an estate sized to its target count
+  under 0022 covers half as many targets
+  (`docs/learnings/0023-host-key-report-reuse-learnings.md`, `docs/PLAN.md`
+  §6.4). Say what that does to the working set an operator must size for — and
+  to your traces, since a two-shapes-per-connection workload reaches any given
+  bound at half the target count. Do not re-litigate the feature itself.
 
 ## Acceptance criteria
 - The questions of Step 1 are asked in the session and their answers recorded.

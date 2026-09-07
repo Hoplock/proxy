@@ -62,6 +62,11 @@ func writeStep(w io.Writer, r *StepResult, h HostInfo, numbered bool, n int) {
 	} else {
 		fmt.Fprintf(w, "          server cache hint OFF (every connection re-authorizes)\n")
 	}
+	if r.HostKeyCacheHint {
+		fmt.Fprintf(w, "          server host-key cache hint ON, ttl %s (keyed on target+port+fingerprint)\n", r.CacheTTL)
+	} else {
+		fmt.Fprintf(w, "          server host-key cache hint OFF (every connection reports its host key)\n")
+	}
 
 	fmt.Fprintf(w, "\n  Establishment\n")
 	if r.Mode == ModeRate {
@@ -123,6 +128,8 @@ func writeStep(w io.Writer, r *StepResult, h HostInfo, numbered bool, n int) {
 	}
 	row(w, tagDerived, "authorize cache hit rate", fmt.Sprintf("%.1f%%", r.CacheHitRatePct),
 		"(connections - authorize calls) / connections")
+	row(w, tagDerived, "host-key cache hit rate", fmt.Sprintf("%.1f%%", r.HostKeyCacheHitRatePct),
+		"(connections - host-key reports) / connections")
 
 	if len(r.Errors) > 0 {
 		fmt.Fprintf(w, "\n  Failures\n")
