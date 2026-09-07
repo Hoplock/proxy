@@ -94,6 +94,7 @@ Two limits are structural and are stated rather than worked around:
 | `03-live-connections.yaml` | Memory and descriptors per **live** connection, from a held plateau |
 | `04-uc2-fanout.yaml` | Cache hit rate for one subject against a working set that crosses the cache's entry bound |
 | `05-uc2-fanout-shared-key.yaml` | The same with the server sharing one key across every target — can a better server key fix it? |
+| `08-uc2-fanout-evicting.yaml` | The 04 fan-out with the cache pinned to the pre-0022 bound, isolating the eviction policy from the larger default |
 | `06-provisioning-ceiling.yaml` | Provision/teardown cycles per second against **one target**, swept over concurrency |
 | `07-provisioning-accountdb-only.yaml` | The same without a home directory, separating the account-database lock from filesystem cost |
 
@@ -114,6 +115,14 @@ The two sweep axes are mutually exclusive:
 Set `run.warmup` to at least `targets / rate` on a fan-out scenario. Without a
 full sweep of the working set before the measured window, a "miss" only means
 "first visit" and the reported hit rate is an artefact of the run length.
+
+`proxy.cache_max_entries` is the **proxy's** side of the same question: how
+many lookup paths its decision cache holds before it evicts the least recently
+used one (`control.cache.max_entries`, phase 0022). Leave it at zero and the
+run measures the proxy's own default, which is what 04 and 05 do; set it to
+measure the ratio between a working set and a stated bound, which is what 08
+does. A fan-out hit rate is that ratio, so every report prints the bound beside
+the working set.
 
 `control.cache_scope` is the **server's** choice of sharing scope, not the
 proxy's: the proxy never builds a cache key (PLAN §6.4), so the widest sharing

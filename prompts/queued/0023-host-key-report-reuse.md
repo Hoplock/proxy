@@ -8,12 +8,17 @@
 > **It carries more weight than it did when it was queued.** Phase 0021 was
 > withdrawn on the strength of this phase and 0022 being the cheaper answer to
 > UC2's Hoplock Control load (`docs/PLAN.md` D17 and §9.1, "What the Control
-> rate becomes after 0022 and 0023"). Land 0022 first — this phase's 46% is of
-> the residue *that* one leaves.
+> rate becomes after 0022 and 0023"). **0022 has landed**: the decision cache
+> now evicts the least recently used entry and its bound is
+> `control.cache.max_entries`, default 32,768
+> (`docs/learnings/0022-decision-cache-under-fanout-learnings.md`). This
+> phase's 46% is of the residue *that* one leaves, and it is now the residue
+> that was measured.
 >
 > It is also, with 0021 gone, the **last queued phase that revises the
-> contract**, which is what phase **0032** waits on (the collapse prompt, queued
-> as 0029 and renumbered so its number matches its position).>
+> contract**, which is what phase **0033** waits on (the collapse prompt, queued
+> as 0029 and renumbered so its number matches its position — it is 0033 since
+> the admission-policy question was queued at 0032).>
 > **▶ Run order: this is #2 of three, and the number says so.** The queued
 > block is contiguous and in run order above the frozen implemented prompts, so
 > the lowest-numbered queued prompt is always the right one to start
@@ -25,6 +30,8 @@
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.
+- `docs/learnings/0022-decision-cache-under-fanout-learnings.md` — the cache
+  this phase's decisions would live in, and what its bound now is.
 - **`docs/CROSS-REPO-PROTOCOL.md`** — this phase changes `api/`, which is a
   shared surface (its §1), so the ordering rules, the downstream-impact check
   and the sync kickoff it requires all apply. Read it before writing any code.
@@ -96,10 +103,13 @@ means report every time, exactly as today.
 
 ## Out of scope
 - Caching authentication. Never (§6.4).
-- The 4,096-entry bound and its missing eviction policy — that is **0022**, and
-  this phase inherits whatever bound it leaves. If 0022 has not landed, say so
-  in the learnings: host-key entries share the table and make the bound bite
-  sooner.
+- The cache's entry bound and its eviction policy — that was **0022**, which
+  has landed. This phase inherits what it left: `control.cache.max_entries`,
+  default 32,768 lookup paths, least-recently-used eviction when full. If
+  host-key decisions end up sharing that table, say in the learnings what they
+  do to the working set an operator has to size for — two cached shapes per
+  connection instead of one is a halving of the effective bound, and nobody
+  will notice it from the setting's name.
 - Any change to what the proxy does with a `reject`, or to TOFU itself.
 - Trusting a locally remembered key without the server ever having ruled on it.
   The proxy must never invent trust; it may only reuse trust the server granted.

@@ -4,6 +4,12 @@
 # 04 with the server sharing as widely as the contract permits: ONE cache key
 # covering every target the subject may reach.
 #
+# Phase 0022 note: this run answered its question — no, a better server key
+# cannot fix it, because the proxy bounded its shape map by the same constant —
+# and 0022 acted on that answer. Re-run against a proxy carrying 0022 it shows
+# the fix instead: 100% at every step, the shared key costing one decision and
+# one lookup path per target rather than being wasted.
+#
 # The key is the server's and defines the sharing scope (PLAN §6.4), so if a
 # fan-out cache can be fixed by the server choosing a better key, this run is
 # where that shows up. If it cannot — if the proxy still asks once per target

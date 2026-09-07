@@ -1,5 +1,15 @@
 # 0003 — Policy caching & session revocation — Learnings
 
+> **Pointer, added by phase 0022 (this file is otherwise unchanged).** Where
+> this file describes `MaxEntries` — "default 4096", bounding both maps, "hitting
+> it costs hits" — read phase **0022**: the default is now **32,768**, the bound
+> is `control.cache.max_entries` and applies to the lookup paths (a decision is
+> held while a shape names it), and a full cache **evicts the least recently
+> used** entry instead of refusing the new one. The key semantics this file sets
+> out — the server owns the key, the lifetime and the sharing scope — are
+> unchanged. See `docs/learnings/0022-decision-cache-under-fanout-learnings.md`
+> and `docs/PLAN.md` §6.4.
+
 ## Summary
 - What shipped: server-authorised reuse of authorize decisions and the
   server→proxy revocation stream that makes it safe — contract, client-side

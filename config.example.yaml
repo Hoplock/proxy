@@ -32,6 +32,24 @@ control:
     # How long the revocation stream may be unheard before the cache stops
     # serving anything and every connection is re-authorized.
     stale_after: 30s
+    # How many cached lookup paths this proxy holds — one per (subject, login,
+    # target, port, auth method, hop trail) it serves, which is the working
+    # set. 0 uses the package default of 32768.
+    #
+    # Size it from the estate, not from a memory budget. Past the bound the
+    # cache evicts rather than refuses, which keeps a working set that CHANGES
+    # cached — but eviction is not a substitute for a big enough cache: an
+    # automation cycling through more targets than this holds evicts each entry
+    # about one visit before it comes back, and the hit rate goes to nearly
+    # zero (measured, load/results/08-uc2-fanout-evicting.json). The cost is
+    # about 1 KiB of live heap per entry (measured, docs/PLAN.md §9.1) and
+    # ~1.7 KiB of RSS with GC headroom, so the default is ~32 MiB of heap when
+    # it is actually full, and one automation polling 300,000 targets wants
+    # max_entries: 300000 and the ~300 MiB of heap that costs. CacheStats'
+    # Evicted counter is how a running proxy says this number is too small;
+    # Expired says something else entirely — the server's TTLs are shorter
+    # than the interval at which this proxy returns to the same target.
+    max_entries: 0
 
 dial:
   # How long to wait for the target leg (dial plus SSH handshake). Optional.

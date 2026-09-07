@@ -157,6 +157,15 @@ type ProxyCfg struct {
 	CacheMaxTTL time.Duration `yaml:"cache_max_ttl"`
 	// CacheStaleAfter is control.cache.stale_after.
 	CacheStaleAfter time.Duration `yaml:"cache_stale_after"`
+	// CacheMaxEntries is control.cache.max_entries: how many lookup paths the
+	// proxy's decision cache holds before it evicts the least recently used
+	// one (phase 0022). Zero leaves the setting out of the generated config,
+	// so the proxy's own default applies — and so a scenario runs unchanged
+	// against a proxy built before the setting existed, which is how a
+	// before/after comparison is made at all. It is here because the whole
+	// point of a fan-out scenario is the ratio between the working set and
+	// this number.
+	CacheMaxEntries int `yaml:"cache_max_entries"`
 	// LogBatchSize, LogFlushInterval and LogQueueSize are the telemetry
 	// pipeline's throughput knobs. They matter here because log shipping is
 	// itself a control call, and "control requests per connection" is

@@ -103,6 +103,7 @@ func run(configPath string, logger *log.Logger) error {
 	cache := control.NewCachingClient(rest, control.CacheOptions{
 		MaxTTL:     cfg.Control.Cache.MaxTTL,
 		StaleAfter: cfg.Control.Cache.StaleAfter,
+		MaxEntries: cfg.Control.Cache.MaxEntries,
 		Logger:     logger,
 	})
 

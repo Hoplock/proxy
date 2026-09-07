@@ -495,9 +495,11 @@ marked **(confirm)** are recommendations pending explicit user confirmation.
   calls it either — the constraint is per *target*, and one target sustains 58
   account cycles per second against the 0.017/s a 60-second poll of it asks for
   (§5.1). What measurement *did* find is a different problem in the same place:
-  the proxy's decision cache stops working above a fixed 4,096-entry bound, so
-  the Hoplock Control request rate — the largest number in the chain — does not
-  amortise across a fleet at all (phase **0022**).
+  the proxy's decision cache stopped working above a fixed 4,096-entry bound, so
+  the Hoplock Control request rate — the largest number in the chain — did not
+  amortise across a fleet at all. Phase **0022** fixed that: the bound is
+  `control.cache.max_entries`, and a proxy sized to its estate measures 2.17
+  Control calls per connection at fan-out (§9.1).
 
   The assumption under all of it was **asked rather than measured around**, and
   answered: the health checking is over SSH, at a **five-minute** interval, with
@@ -1575,9 +1577,18 @@ Setup, however, is not amortised: each connection costs ~3 sequential round
 trips (authenticate, authorize, host-key report), paid again per hop on a chain.
 Phase 0020 measured that as **3.17 Control calls per connection** uncached and
 **2.17** on a cache hit — a hint removes the authorize call and nothing else —
-and found that the client-side cache stops working above a fixed 4,096-entry
-bound, which is why UC2's fan-out gets almost no benefit from it (§9.1, and
-phase 0022 for the change that proposes).
+and found that the client-side cache stopped working above a fixed 4,096-entry
+bound, which is why UC2's fan-out got almost no benefit from it (§9.1).
+
+Phase **0022** answered that half without touching anything above: the bound is
+now `control.cache.max_entries` (default **32,768** lookup paths, at a measured
+~1 KiB each), and a full cache **evicts its least recently used entry** instead
+of refusing the new decision. Who owns a decision's lifetime did not change.
+Sizing that setting to the estate is what makes the fan-out hit rate follow the
+working set; eviction is what stops a cache filled by a cold sweep from
+refusing everything that comes after it (§9.1, "The decision cache under
+fan-out").
+
 Two mechanisms address that, and they only make sense together:
 
 - **Server-authorised caching.** The server may attach a cache hint (an opaque
@@ -2177,7 +2188,11 @@ phase **0023** proposes the fix.
 Log shipping scales with `logging.batch_size`, so 0.17 is a configuration
 rather than a property: roughly 11 records per session at 64 records per batch.
 
-#### The decision cache under fan-out (UC2)
+#### The decision cache under fan-out (UC2), before phase 0022
+
+**These are the pre-0022 figures and they are kept as the baseline.** What the
+same runs measure against the code that ships today is the subsection after
+this one; the finding below is what made that change.
 
 One subject, a working set of distinct targets, a fixed 250 conn/s, and a
 warmup long enough to sweep the whole set before measuring — so a miss means a
@@ -2209,8 +2224,54 @@ every target buys nothing, because the proxy's *shape* map — the
 (subject, login, target, port, method, hop trail) lookup that finds the key — is
 bounded by the same constant as the entry table. No server-side key choice can
 reach this; the limit is in the proxy. The bound is also not settable from
-`config.yaml`. Phase **0022** carries the proposed change; this phase measures
-and does not fix.
+`config.yaml`. Phase **0022** carries the change; phase 0020 measured and did
+not fix.
+
+#### The same runs after phase 0022
+
+Same scenarios, same hardware, same 250 conn/s and 40 s warmup; the only
+difference is a proxy carrying 0022, whose cache holds **32,768** lookup paths
+by default and **evicts the least recently used** one when full.
+
+| Distinct targets | Key per target | One shared key | Before, either | |
+| --- | --- | --- | --- | --- |
+| 512 | 100% | 100% | 100% | measured |
+| 2,048 | 100% | 100% | 100% | measured |
+| 4,096 | 100% | 100% | 100% | measured |
+| 8,192 | **100%** | **100%** | 59% | measured |
+
+Zero authorize calls at every step: the working set now fits, which is the
+whole of what a bigger, settable bound buys. Control calls per connection at
+8,192 targets go from 2.58 to **2.17** — §6.4's cached figure, reached at a
+fan-out where it previously was not.
+
+**What it costs, measured from the process rather than the heap.** At 8,192
+targets the proxy's peak RSS went from 25.6 MiB (holding 4,096 entries) to
+33.2 MiB (holding 8,192) on the key-per-target run: ~1.7 KiB of RSS per cached
+entry against the 1.0 KiB of live heap `BenchmarkCachedEntryFootprint`
+measures, the difference being GC headroom. The shared-key run grew by 0.5 KiB
+of RSS per target instead, because one decision serves all of them and only the
+lookup path is per target — the first measurable benefit a server gets from
+sharing a key widely.
+
+| Derived from those figures | Value | |
+| --- | --- | --- |
+| Heap at the default bound, full | ~32 MiB | derived: 32,768 × 1.0 KiB |
+| Entries needed for UC2's 300,000-target estate | 300,000 | stated: `control.cache.max_entries` |
+| Heap at that setting, full | ~300 MiB | derived: 300,000 × 1.0 KiB |
+
+**Eviction is not a substitute for sizing, and the harness says so.**
+`08-uc2-fanout-evicting.yaml` pins `max_entries` back to 4,096 and reruns the
+sweep: 100% at 4,096 targets, and **0%** at 8,192 — against the 59% the same
+bound gave before 0022. A strict cycle over a working set larger than the cache
+is the worst case for LRU, which evicts each entry roughly one visit before it
+is wanted, where refusing to store held whichever 4,096 shapes arrived first.
+The trade is deliberate and is stated here rather than buried: eviction is what
+keeps a **changing** working set cached at all — a cache filled by a cold sweep
+used to refuse everything that came after it, permanently — and the fix for a
+working set larger than the cache is to size the cache, which before 0022 was
+not something an operator could do. `CacheStats.Evicted` is how a running proxy
+says the bound is too small; `Expired` says the TTLs are too short.
 
 #### What `ephemeral-user` costs a target (§5.1)
 
@@ -2275,20 +2336,21 @@ at this fan-out.
 proxy fleet is a deployment, not an architecture: it needs no change to the
 connection model, no standing authorization, and no new audit granularity. The
 Control request rate is the larger number and the one to design against — and it
-is exactly where the cache finding bites, because at a 1.4% hit rate it does not
-amortise at all.
+is exactly where the cache finding bit, because at a 1.4% hit rate it did not
+amortise at all. Phase 0022 turned that hit rate into a question of sizing
+`control.cache.max_entries` rather than a fixed ceiling.
 
 #### What the Control rate becomes after 0022 and 0023
 
 Derived from the measured call table above, at the five-minute row's 1,167
-connections per second. Neither phase is built; this is what the measurement
-says they are worth, and it is the comparison phase **0021** was weighed against
-before being withdrawn (D17).
+connections per second. **0022 is now built**, so its row is measured per
+connection rather than projected; 0023 is not. This is the comparison phase
+**0021** was weighed against before being withdrawn (D17).
 
 | Model | Control calls per check | Control req/s at 1,167 checks/s | |
 | --- | --- | --- | --- |
-| Today, at UC2's fan-out (hit rate ~1.4%) | ~3.16 | ~3,690 | derived |
-| With **0022** — the cache works at fan-out | 2.17 | ~2,530 | derived from the measured cache-hit figure |
+| Before 0022, at UC2's fan-out (hit rate ~1.4%) | ~3.16 | ~3,690 | derived |
+| With **0022** — the cache works at fan-out, sized to it | **2.17** | ~2,530 | measured per connection (above); req/s derived |
 | With **0022 + 0023** — host-key decision reused too | **~1.17** | **~1,365** | derived |
 
 What is left at 1.17 is `POST /v1/auth/cert` at 1.00 and `POST /v1/logs/batch`
@@ -2343,8 +2405,10 @@ phase was withdrawn rather than built (D17):
   to two proxies is not a reason to change the connection model, and at the
   worst case it is still single digits.
 - **The Control request rate is what is left.** 3,700 req/s at the real
-  interval, and it is the number that does *not* amortise, because the decision
-  cache does not work at this fan-out (see above, and phase 0022).
+  interval uncached. It is the number that did *not* amortise, because the
+  decision cache did not work at this fan-out — phase 0022 fixed that, and a
+  proxy whose `control.cache.max_entries` covers its estate measures 2.17 calls
+  per connection there (see above), or ~2,530 req/s.
 
 #### Other findings from the harness
 
@@ -2380,9 +2444,9 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 > block, so no session has to be told which prompt to start (`docs/PROTOCOL.md`
 > §6). The queue was renumbered for that in the run-order revision below.
 >
-> So: **0022** (the decision cache) → **0023** (host-key report reuse) →
-> **0024** (the session deadline), then the rest by number, with **0032**, the
-> contract collapse, last. The first three are promoted because they make an
+> So: **0022** (the decision cache, **delivered**) → **0023** (host-key report
+> reuse) → **0024** (the session deadline), then the rest by number, with
+> **0033**, the contract collapse, last. The first three are promoted because they make an
 > argument this plan already relies on *true* rather than merely written down:
 > 0022 and 0023 are the cheaper answer that replaced the withdrawn 0021 (D17),
 > and 0024 enforces the `SessionDeadline` that the same withdrawal leans on.
@@ -2410,7 +2474,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account — an `authorized_keys` `command=` dispatcher over the route's own `restricted_exec` list, a curated `PATH`, a `noexec,nosuid,nodev` home, `setpriv --no-new-privs`, and a per-uid packet filter on both address families — and onto a device account through the platform's own authorizer under `enforcement.platform_role`. Plus the capability probe and `POST /v1/capabilities/report`, the teardown ordering the uid hazard requires, the reaper's residue sweep, the four audit fields, and the e2e scenarios. The mechanism table is §6.5, "What this proxy actually renders" |
 | 0020 | Scale harness & sizing evidence         | `cmd/loadgen` + `load/`: a synthetic load harness outside the compose topology, and the measured per-proxy ceilings, Control request rates, cache behaviour under fan-out and per-target provisioning ceiling it produced. **Results and sizing guidance: §9.1.** It refutes D17's arithmetic and finds a different problem — the cache's entry bound, queued as 0022 |
 | 0021 | Machine-identity connection model       | **Withdrawn — evaluated, not built.** 0020's measurements removed the connection-volume and provisioning arguments, and the Control load that was left has a cheaper answer in 0022 + 0023 (3.17 → ~1.17 calls per connection, no amendment to D2). D2 stands; the number **0021 is retired and must never be reused**. Reasoning: `docs/learnings/0021-machine-identity-connection-model-learnings.md`, and D17 |
-| 0022 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache holds a fixed 4,096 entries with **no eviction**, so a working set larger than that caches the first 4,096 shapes and refuses the rest. Give it LRU eviction, make the bound configurable, and re-derive the default from §9.1's measured per-entry cost. No contract change |
+| 0022 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache held a fixed 4,096 entries with **no eviction**, so a working set larger than that cached the first 4,096 shapes and refused the rest. **Delivered:** LRU eviction over the lookup paths (with `CacheStats.Evicted` beside `Expired`), the bound settable as `control.cache.max_entries`, and a default re-derived from a measured ~1 KiB per entry — 4,096 → **32,768**. Sizing the setting to the estate is what an operator past the default does; measurements in §9.1. No contract change |
 | 0023 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` is 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. Let the server attach a cache hint to the host-key decision, keyed on a shape that **includes the fingerprint** so a changed key still reports (D7). Contract change — carries a cross-repo obligation |
 | 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
 | 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
@@ -2420,10 +2484,27 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0029 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
 | 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 | 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |
-| 0032 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the run-order revision below moved it from 0029 |
+| 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
+| 0033 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the run-order revision below moved it from 0029 |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
+
+> **Renumbering note (admission-policy question), newest — compose it with the
+> ones below.** Phase 0022 shipped LRU eviction and, with it, a cliff at the
+> bound it could not close within its own scope (§9.1, "The same runs after
+> phase 0022"). The question of whether that needs an admission policy was
+> queued as **0032**, which meant moving the contract collapse **0032 → 0033**
+> so it stays the highest-numbered queued prompt: it must follow every phase
+> that revises the contract, and its own prompt asks any later session to
+> renumber for that. That is the whole mapping — **0032→0033**, one prompt, and
+> the queue is contiguous at 0023–0033. Live references were updated in place
+> (this section's run-order paragraph and phase table,
+> `prompts/queued/0023-host-key-report-reuse.md`, and the collapse prompt's own
+> number history). **`docs/learnings/` and `prompts/implemented/` were not
+> rewritten:** anything written before this revision that calls the contract
+> collapse "0032" — including phase 0022's learnings and the note below —
+> means what is now **0033**. Nothing else moved, and no number was reused.
 
 > **Renumbering note (run-order revision).** The queued block was renumbered so
 > that a number states **position**, not arrival: the frozen implemented prompts

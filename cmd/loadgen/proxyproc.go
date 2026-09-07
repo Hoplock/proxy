@@ -171,6 +171,12 @@ func renderProxyConfig(s proxySetup, hostKeyPath, targetKeyPath, bufferDir strin
 		s.ProxyID, s.ListenAddr, hostKeyPath)
 	fmt.Fprintf(&b, "control:\n  base_url: %q\n  token: %q\n  cache:\n    max_ttl: %s\n    stale_after: %s\n",
 		s.ControlURL, s.Token, sc.Proxy.CacheMaxTTL, sc.Proxy.CacheStaleAfter)
+	// Written only when the scenario asks for a size, so the generated config
+	// stays decodable by a proxy that predates the setting (the decoder is
+	// strict) and an unset scenario measures the proxy's own default.
+	if sc.Proxy.CacheMaxEntries > 0 {
+		fmt.Fprintf(&b, "    max_entries: %d\n", sc.Proxy.CacheMaxEntries)
+	}
 	fmt.Fprintf(&b, "dial:\n  dial_timeout: 15s\n  default_target_port: 22\n")
 	fmt.Fprintf(&b, "logging:\n  buffer_dir: %q\n  batch_size: %d\n  flush_interval: %s\n"+
 		"  queue_size: %d\n  send_timeout: 10s\n  retry_min: 1s\n  retry_max: 10s\n  max_payload_bytes: 32768\n",

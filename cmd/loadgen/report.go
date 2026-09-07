@@ -51,6 +51,14 @@ func writeStep(w io.Writer, r *StepResult, h HostInfo, numbered bool, n int) {
 		r.Mode, r.Duration, r.Warmup, r.Subjects, r.Targets, r.Order)
 	if r.CacheHint {
 		fmt.Fprintf(w, "          server cache hint ON, scope %s, ttl %s\n", r.CacheScope, r.CacheTTL)
+		// The working set is r.Targets and the bound is this: a fan-out hit
+		// rate is the ratio between them, so a result that names one without
+		// the other cannot be read (PLAN §9.1).
+		if r.CacheMaxEntries > 0 {
+			fmt.Fprintf(w, "          proxy cache max_entries %d\n", r.CacheMaxEntries)
+		} else {
+			fmt.Fprintf(w, "          proxy cache max_entries: the proxy's default\n")
+		}
 	} else {
 		fmt.Fprintf(w, "          server cache hint OFF (every connection re-authorizes)\n")
 	}
