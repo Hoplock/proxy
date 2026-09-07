@@ -23,7 +23,8 @@
   New scenario `08-uc2-fanout-evicting.yaml` pins `max_entries: 4096` and
   measures **0%** at 8,192 targets where the pre-0022 code gave 59%. Eviction
   buys a *changing* working set; **sizing** buys a fan-out. Both statements are
-  in `docs/PLAN.md` §9.1.
+  in `docs/PLAN.md` §9.1, and whether that cliff needs an admission policy is
+  the question queued as **0032** (see "Follow-up" below).
 - **Key files:** `internal/control/cache.go` (+`cache_test.go`,
   new `cache_bench_test.go`), `internal/config/config.go` (+test),
   `cmd/proxy/main.go`, `config.example.yaml`, `cmd/loadgen/{scenario,proxyproc,connrun,report}.go`,
@@ -126,16 +127,37 @@ That trade was made with eyes open and is the phase's one real caveat:
   which before this phase was not something an operator could change;
 - `CacheStats.Evicted` is how a running proxy says which case it is in.
 
-### Follow-up, considered and NOT queued
+### Follow-up: the question, queued as 0032
 
 A scan-resistant **admission** policy (TinyLFU-style: admit a candidate only
 when it looks hotter than the victim) would get both behaviours — LRU's
 adaptation *and* the incumbent-set stability that gives `MaxEntries / N` under
-a uniform cycle. It was not built and not queued: it changes the eviction
-policy this phase's acceptance criteria pin, it needs a frequency sketch and
-its own measurements, and an operator has a direct fix today (raise
-`max_entries`, which `Evicted` tells them to do). If a deployment turns up that
-genuinely cannot size its cache to its estate, that is the phase to write.
+a uniform cycle. It was not built here: it changes the eviction policy this
+phase's acceptance criteria pin, it needs a frequency sketch and its own
+measurements, and an operator has a direct fix today (raise `max_entries`,
+which `Evicted` tells them to do).
+
+What is *not* obvious is whether it is needed at all, so the **question** was
+queued rather than the answer:
+`prompts/queued/0032-decision-cache-admission-policy.md`. It is conditional in
+the way 0021 was — it asks four deployment questions (can operators size the
+cache to the estate; is the traffic a uniform sweep or a hot set with a tail;
+does the working set churn; is the cliff itself acceptable), builds an offline
+policy simulator validated against **both** of this phase's measured points
+(`freeze` ≈ 59% and `lru` ≈ 0% at 8,192 targets against a 4,096 bound), and
+decides against criteria written before the numbers. A "no" is a legitimate
+outcome and is written up rather than built. Queuing it moved the contract
+collapse from 0032 to **0033**, which must stay last; the mapping is the newest
+note at the end of `docs/PLAN.md` §10.
+
+The arithmetic that made this a question rather than a task, for whoever picks
+it up: at UC2's 300,000 targets against the shipped 32,768-entry default, an
+admission policy would restore `bound / N` ≈ 10.9% — worth ~120 Control req/s
+of the ~3,690 at §9.1's five-minute row, about 3%. Sizing `max_entries` to the
+estate instead is worth ~1,160 req/s, about 31%. **The argument for the phase
+is the cliff, not the throughput:** the step from ~100% to ~0% as a fleet grows
+past the bound is an operational surprise met in production rather than in a
+config file.
 
 ### Test notes
 

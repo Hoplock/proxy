@@ -2446,7 +2446,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 >
 > So: **0022** (the decision cache, **delivered**) → **0023** (host-key report
 > reuse) → **0024** (the session deadline), then the rest by number, with
-> **0032**, the contract collapse, last. The first three are promoted because they make an
+> **0033**, the contract collapse, last. The first three are promoted because they make an
 > argument this plan already relies on *true* rather than merely written down:
 > 0022 and 0023 are the cheaper answer that replaced the withdrawn 0021 (D17),
 > and 0024 enforces the `SessionDeadline` that the same withdrawal leans on.
@@ -2484,10 +2484,27 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0029 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
 | 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 | 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |
-| 0032 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the run-order revision below moved it from 0029 |
+| 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
+| 0033 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the run-order revision below moved it from 0029 |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
+
+> **Renumbering note (admission-policy question), newest — compose it with the
+> ones below.** Phase 0022 shipped LRU eviction and, with it, a cliff at the
+> bound it could not close within its own scope (§9.1, "The same runs after
+> phase 0022"). The question of whether that needs an admission policy was
+> queued as **0032**, which meant moving the contract collapse **0032 → 0033**
+> so it stays the highest-numbered queued prompt: it must follow every phase
+> that revises the contract, and its own prompt asks any later session to
+> renumber for that. That is the whole mapping — **0032→0033**, one prompt, and
+> the queue is contiguous at 0023–0033. Live references were updated in place
+> (this section's run-order paragraph and phase table,
+> `prompts/queued/0023-host-key-report-reuse.md`, and the collapse prompt's own
+> number history). **`docs/learnings/` and `prompts/implemented/` were not
+> rewritten:** anything written before this revision that calls the contract
+> collapse "0032" — including phase 0022's learnings and the note below —
+> means what is now **0033**. Nothing else moved, and no number was reused.
 
 > **Renumbering note (run-order revision).** The queued block was renumbered so
 > that a number states **position**, not arrival: the frozen implemented prompts

@@ -16,8 +16,9 @@
 > that was measured.
 >
 > It is also, with 0021 gone, the **last queued phase that revises the
-> contract**, which is what phase **0032** waits on (the collapse prompt, queued
-> as 0029 and renumbered so its number matches its position).>
+> contract**, which is what phase **0033** waits on (the collapse prompt, queued
+> as 0029 and renumbered so its number matches its position — it is 0033 since
+> the admission-policy question was queued at 0032).>
 > **▶ Run order: this is #2 of three, and the number says so.** The queued
 > block is contiguous and in run order above the frozen implemented prompts, so
 > the lowest-numbered queued prompt is always the right one to start
