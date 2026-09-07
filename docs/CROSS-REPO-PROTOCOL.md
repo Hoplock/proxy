@@ -148,9 +148,9 @@ obligations it ends with a ready-to-run sync kickoff, already filled in**:
 
 - the prompt is the "Downstream sync" block in `docs/KICKOFF.md`, verbatim
   except for its blanks;
-- `<upstream PR URL>` is this PR, `<short-description>` is the branch suffix the
-  sync should use, and the obligations line carries the obligations just stated
-  above it;
+- `<upstream PR URL>` is this PR, and the obligations line carries the
+  obligations just stated above it. There is no branch blank to fill: the sync
+  session uses whatever branch it was given (§5);
 - a repository answered **"None"** gets no kickoff — there is nothing to run.
 
 The session that opens the upstream PR **also puts each kickoff in its reply to
@@ -170,9 +170,15 @@ afterwards, in its own session, against the downstream repository.
 These exist because a sync PR fits none of the per-repo conventions: with no
 prompt there is no number, and the defaults quietly stop applying.
 
-- **Branch:** `claude/sync-<short-description>` — deliberately not
+- **Branch:** the one the session was given, whatever it is named. A sync
+  session is normally started with a branch already assigned and does not
+  rename it; **that is not a deviation and is not written up as one** (each
+  repository's own `docs/PROTOCOL.md` §2 says the same). When the name *is*
+  yours to choose, use `claude/sync-<short-description>` — deliberately not
   `claude/NNNN-…`, because there is no NNNN and inventing one collides with a
-  real prompt.
+  real prompt. Either way what identifies a sync is the PR body naming the
+  upstream change it follows, below, and never the branch: a name that cannot
+  be chosen cannot be relied on to identify anything.
 - **Commit:** Conventional Commits with the scope `sync`, e.g.
   `docs(sync): follow proxy contract v2`. The body names the upstream change.
 - **One upstream change, one sync PR per repository.** Do not batch two
