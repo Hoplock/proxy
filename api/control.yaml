@@ -107,7 +107,26 @@ info:
     documented absent-value default, and each default is exactly the behaviour
     a v3 server already produced: proxy-side enforcement only, no deadline, no
     required capture, no grant context, and no concurrency cap.
-  version: 4.0.0
+
+    ## Contract 4.1 (phase 0023) — reusing a host-key decision
+
+    `HostKeyReportResponse` may now carry a `cache` hint, the same object
+    `/v1/authorize` already answers with. It is **not** a policy-vocabulary
+    change and `policy_version` stays `4`: `policy_version` governs what
+    `/v1/authorize` may answer with, because that is where an unknown field
+    could be a restriction the proxy would have to fail closed on. This field is
+    on a different endpoint, it grants rather than restricts, and its absent
+    value is precisely what every server does today — report every connection.
+    A proxy that has never heard of it ignores it and keeps reporting, which is
+    correct behaviour and not a dropped restriction.
+
+    What it buys is measured, not asserted: the host-key report was **46% of
+    the Hoplock Control calls that survive an authorize cache hit** (PLAN §9.1),
+    because a proxy reconnecting to a target it has seen ten thousand times
+    reported the same key ten thousand times. See `POST /v1/hostkeys/report` for
+    the shape the proxy keys the reuse on, and for the two answers it will not
+    reuse whatever the hint says.
+  version: 4.1.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -282,6 +301,34 @@ paths:
         target host key it sees. In the prototype the server implements
         trust-on-first-use and records the key (D7); the response still carries
         an explicit decision so a later, stricter policy needs no proxy change.
+
+        ### Reuse (phase 0023)
+
+        The response may carry a `cache` hint, on exactly the mechanism
+        `/v1/authorize` uses (PLAN §6.4): an opaque server key, a server-set
+        lifetime, and `GET /v1/proxies/{proxy_id}/events` to withdraw it. Absent
+        means what every server did before the field existed — the proxy reports
+        every connection.
+
+        **The proxy keys the reuse on `target`, `target_port` AND
+        `host_key.fingerprint`**, so what it reuses is the answer to the
+        question the server already answered: may this target, presenting *this*
+        key, be reached. A target presenting a **different** key is a different
+        lookup, misses, and is reported — so a man-in-the-middle, a rotated key
+        and a rebuilt host all still reach the server on the first connection
+        that sees the new key. A server author authorising reuse here is
+        authorising exactly that and nothing wider.
+
+        Two answers the proxy will **not** reuse however they are hinted, so a
+        server need not withhold the hint per response to get this:
+
+        - `decision: reject` — it is as revocable as an accept, the server
+          re-decides it for free, and a rejected host key is a security event
+          the server must keep seeing.
+        - `known: false` — the first sighting. Recording the key has already
+          changed the server's own answer, and reusing this response would
+          replay "first use" into the proxy's audit log for every later
+          connection.
       requestBody:
         required: true
         content:
@@ -1731,6 +1778,14 @@ components:
         connections (PLAN §6.4, D2). Absent means: do not cache. There is no
         default lifetime and the proxy never invents one.
 
+        It rides on two responses and means the same thing on both:
+        `AuthorizeResponse` and `HostKeyReportResponse`. What differs is what
+        the proxy keys the reuse on — the authorize request's identity, target,
+        port, method and hop trail; the host-key report's target, port and
+        **key fingerprint** — and each response documents its own. The proxy
+        never widens either shape, and a request that does not carry enough to
+        build one is not cached at all.
+
         The lifetime belongs to the server. A proxy may hold the decision for
         less time than `ttl_seconds` (an operator may configure a stricter local
         clamp) but never longer, so the PDP keeps ownership of its own risk
@@ -2158,6 +2213,8 @@ components:
         reason:
           type: string
           description: Human-readable explanation, for logs.
+        cache:
+          $ref: '#/components/schemas/CacheHint'
 
     LogRecord:
       type: object

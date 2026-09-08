@@ -254,7 +254,19 @@ func (c *controlServer) handleHostKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, seen := c.hostKeys.LoadOrStore(req.Target+"|"+req.HostKey.Fingerprint, struct{}{})
-	writeJSON(w, control.HostKeyReportResponse{Decision: control.HostKeyAccept, Known: seen})
+	resp := control.HostKeyReportResponse{Decision: control.HostKeyAccept, Known: seen}
+	// Only a key this server has already ruled on is hinted: the proxy declines
+	// to reuse a first sighting anyway, so hinting one would model a server
+	// whose hint does nothing. A warmup long enough to sweep the working set is
+	// what puts every target past its first sighting before measuring, which
+	// every cache scenario already does for the authorize decision.
+	if c.scenario.Control.HostKeyCacheHint && seen {
+		resp.Cache = &control.CacheHint{
+			Key:        "hk:" + req.Target + "|" + req.HostKey.Fingerprint,
+			TTLSeconds: int(c.scenario.Control.CacheTTL / time.Second),
+		}
+	}
+	writeJSON(w, resp)
 }
 
 func (c *controlServer) handleLogBatch(w http.ResponseWriter, r *http.Request) {

@@ -48,6 +48,11 @@ type StepResult struct {
 	CacheHint   bool    `json:"cache_hint"`
 	CacheScope  string  `json:"cache_scope,omitempty"`
 	CacheTTL    string  `json:"cache_ttl,omitempty"`
+	// HostKeyCacheHint is whether the server authorised reuse of a host-key
+	// decision too (contract 4.1, phase 0023). A result without it was measured
+	// against a server that reported every connection, which is what every run
+	// before that phase did.
+	HostKeyCacheHint bool `json:"host_key_cache_hint"`
 	// CacheMaxEntries is the proxy's control.cache.max_entries for this run.
 	// Zero means the run took the proxy's own default, which is what every
 	// scenario did before phase 0022 made the bound settable — so a result
@@ -85,6 +90,13 @@ type StepResult struct {
 	ControlPerConn  float64      `json:"control_calls_per_connection"`
 	AuthorizeCalls  uint64       `json:"authorize_calls"`
 	CacheHitRatePct float64      `json:"authorize_cache_hit_rate_pct"`
+	// HostKeyCalls and HostKeyCacheHitRatePct are the same pair for
+	// POST /v1/hostkeys/report. They are reported apart from the authorize pair
+	// because the two are the joint-largest items in what a cache hit leaves,
+	// and one figure covering both cannot say which call an estate is paying
+	// for (PLAN §9.1).
+	HostKeyCalls           uint64  `json:"host_key_calls"`
+	HostKeyCacheHitRatePct float64 `json:"host_key_cache_hit_rate_pct"`
 
 	Errors []ErrorCount `json:"errors,omitempty"`
 	Notes  []string     `json:"notes,omitempty"`
@@ -381,6 +393,8 @@ func buildStepResult(
 		Order:       sc.Workload.Order,
 		CacheHint:   sc.Control.CacheHint,
 
+		HostKeyCacheHint: sc.Control.HostKeyCacheHint,
+
 		CacheMaxEntries: sc.Proxy.CacheMaxEntries,
 
 		Attempted: drv.started.Load(),
@@ -409,6 +423,8 @@ func buildStepResult(
 	}
 	if sc.Control.CacheHint {
 		res.CacheScope = sc.Control.CacheScope
+	}
+	if sc.Control.CacheHint || sc.Control.HostKeyCacheHint {
 		res.CacheTTL = sc.Control.CacheTTL.String()
 	}
 	if elapsed > 0 {
@@ -437,13 +453,26 @@ func buildStepResult(
 	// served from cache. It is exact for this harness because nothing else in
 	// the run calls authorize.
 	if succeeded > 0 {
-		hits := float64(succeeded) - float64(res.AuthorizeCalls)
-		if hits < 0 {
-			hits = 0
-		}
-		res.CacheHitRatePct = hits / float64(succeeded) * 100
+		res.CacheHitRatePct = derivedHitRate(succeeded, res.AuthorizeCalls)
+	}
+	// The same arithmetic for the host-key report, and it is exact for the same
+	// reason: one connection reports one host key, so a connection that did not
+	// produce a report was served from cache. Nothing else in the run reports.
+	res.HostKeyCalls = ctrl.count(control.PathReportHostKey)
+	if succeeded > 0 {
+		res.HostKeyCacheHitRatePct = derivedHitRate(succeeded, res.HostKeyCalls)
 	}
 	return res
+}
+
+// derivedHitRate is the share of connections that did NOT make a call the
+// uncached path makes exactly once per connection.
+func derivedHitRate(succeeded, calls uint64) float64 {
+	hits := float64(succeeded) - float64(calls)
+	if hits < 0 {
+		hits = 0
+	}
+	return hits / float64(succeeded) * 100
 }
 
 func ms(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }

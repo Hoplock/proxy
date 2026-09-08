@@ -24,10 +24,14 @@
 > `docs/PLAN.md` §10, which stack newest first and compose.
 >
 > In particular it **cannot start before 0018 (contract v4) has merged**, and
-> before **0023**'s host-key cache hint — with phase 0021 withdrawn
-> (`docs/learnings/0021-machine-identity-connection-model-learnings.md`), 0023 is
-> the last queued phase that revises the contract, and collapsing before the last
-> revising phase just means doing it twice.
+> before **0023**'s host-key cache hint. **Both have now merged**: 0023 landed
+> the hint as **contract 4.1** (`docs/learnings/0023-host-key-report-reuse-learnings.md`),
+> and with phase 0021 withdrawn
+> (`docs/learnings/0021-machine-identity-connection-model-learnings.md`) it was
+> the last queued phase that revises the contract. Nothing queued today revises
+> it again, so this phase's blocker is cleared — but check the queue before
+> starting anyway: collapsing before the last revising phase just means doing it
+> twice.
 
 ## What this phase removes, and what it must keep
 
@@ -125,8 +129,18 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 ### 1. `api/control.yaml`
 
 - **`info.description`** — delete the "Policy vocabulary v2 (phase 0006)" and
-  "Policy vocabulary v3 (phase 0013)" sections (and v4's, from 0018). Rewrite it
-  as a single statement of what the contract is. Keep the substance those
+  "Policy vocabulary v3 (phase 0013)" sections, v4's (from 0018), and
+  "Contract 4.1 (phase 0023)". Rewrite it as a single statement of what the
+  contract is.
+
+  **4.1 is the one to read before deleting**, because it is the only section
+  that is not purely history: it is where the contract says *why*
+  `policy_version` does not cover `HostKeyReportResponse.cache` — that version
+  governs what `/v1/authorize` may answer with, because that is the response
+  decoded strictly and the only place an unknown field could be a restriction.
+  That reasoning is live and belongs in the rewritten `policy_version`
+  description or beside the fail-closed rule; only the *narrative* of the
+  revision goes. Keep the substance those
   sections introduced — the fail-closed rule, the whole-policy-per-authorize
   model, `401` as a decision — and drop the framing that it *changed*.
 - **`AuthorizeRequest.policy_version` — the property stays.** Rewrite its
@@ -217,9 +231,11 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 
 ### 5. Docs
 
-- `api/README.md`: delete the "v3→v3.1", "v2→v3" and "v1→v2 rename" revision
-  sections (and v4's), and the version rows/columns in the field tables that
-  date a field to a generation. **Keep and rewrite** the `policy_version`
+- `api/README.md`: delete the "v4→v4.1", "v3.1→v4", "v3→v3.1", "v2→v3" and
+  "v1→v2 rename" revision sections, and the version rows/columns in the field
+  tables that date a field to a generation — including the "(4.1)" markers on
+  the host-key reuse text, whose substance (the fingerprint-keyed shape, the two
+  answers never reused, the subject-invalidation rule) all **stays**. **Keep and rewrite** the `policy_version`
   negotiation paragraphs — they document a live mechanism, and they currently
   explain it through its history.
 - `api/README.md` **"Changing the contract"** — this recipe stays, and step 4's

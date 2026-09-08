@@ -116,13 +116,19 @@ type Cache struct {
 	// cache stops serving and storing decisions. Zero means the package
 	// default.
 	StaleAfter time.Duration `yaml:"stale_after"`
-	// MaxEntries bounds how many cached lookup paths — one per (subject,
-	// login, target, port, method, hop trail) the proxy serves — this proxy
-	// holds. It is the working set, and it is what an estate larger than the
-	// default has to raise: past the bound the least recently used entry is
-	// evicted, so the hit rate follows the working set rather than freezing on
-	// whatever the proxy saw first (PLAN §9.1, phase 0022). Zero means the
-	// package default. Each entry costs about 1 KiB of heap.
+	// MaxEntries bounds how many cached lookup paths this proxy holds. Two
+	// kinds share the one number: one authorize path per (subject, login,
+	// target, port, method, hop trail), and — where the server hints them
+	// (contract 4.1, phase 0023) — one host-key path per (target, port,
+	// fingerprint). A server hinting both therefore costs two paths per
+	// connection, so an estate sized to its target count under phase 0022
+	// covers half as many targets and should double the setting.
+	//
+	// It is the working set, and it is what an estate larger than the default
+	// has to raise: past the bound the least recently used entry is evicted, so
+	// the hit rate follows the working set rather than freezing on whatever the
+	// proxy saw first (PLAN §9.1, phase 0022). Zero means the package default.
+	// Each entry costs about 1 KiB of heap.
 	MaxEntries int `yaml:"max_entries"`
 }
 

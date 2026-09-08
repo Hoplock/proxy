@@ -30,11 +30,19 @@ control:
     # and every decision it shortens is counted and logged.
     max_ttl: 0s
     # How long the revocation stream may be unheard before the cache stops
-    # serving anything and every connection is re-authorized.
+    # serving anything: every connection is re-authorized, and every target
+    # host key is re-reported.
     stale_after: 30s
-    # How many cached lookup paths this proxy holds — one per (subject, login,
-    # target, port, auth method, hop trail) it serves, which is the working
-    # set. 0 uses the package default of 32768.
+    # How many cached lookup paths this proxy holds. There are TWO KINDS and
+    # they share this one number: one authorize path per (subject, login,
+    # target, port, auth method, hop trail), and — where the server hints them
+    # (contract 4.1, phase 0023) — one host-key path per (target, port, host
+    # key fingerprint). 0 uses the package default of 32768.
+    #
+    # So a server hinting both decisions makes each connection cost two paths,
+    # and an estate sized to its target count under phase 0022 covers half as
+    # many targets now. Double the figure you would otherwise set. Nothing in
+    # the name says this, which is exactly why it is said here.
     #
     # Size it from the estate, not from a memory budget. Past the bound the
     # cache evicts rather than refuses, which keeps a working set that CHANGES
@@ -45,7 +53,8 @@ control:
     # about 1 KiB of live heap per entry (measured, docs/PLAN.md §9.1) and
     # ~1.7 KiB of RSS with GC headroom, so the default is ~32 MiB of heap when
     # it is actually full, and one automation polling 300,000 targets wants
-    # max_entries: 300000 and the ~300 MiB of heap that costs. CacheStats'
+    # max_entries: 300000 and the ~300 MiB of heap that costs — 600000 and
+    # ~600 MiB where the server hints host keys too. CacheStats'
     # Evicted counter is how a running proxy says this number is too small;
     # Expired says something else entirely — the server's TTLs are shorter
     # than the interval at which this proxy returns to the same target.

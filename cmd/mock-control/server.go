@@ -404,6 +404,13 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 		// unknown keys is.
 		resp.Decision = control.HostKeyAccept
 	}
+	// Authorise reuse only for a key this server has already ruled on and
+	// accepted (contract 4.1). The proxy declines to reuse the other two cases
+	// anyway; a mock that hinted them would be modelling a server whose hint
+	// does nothing, which teaches a fixture author the wrong thing.
+	if known && resp.Decision == control.HostKeyAccept {
+		resp.Cache = hostKeyCacheHint(&s.fx.HostKeys, req.Target, req.HostKey.Fingerprint)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -623,6 +630,20 @@ func hostKeyID(target, fingerprint string) string { return target + "\x00" + fin
 // The derived key is per (subject, target) — the narrowest scope, and never
 // shared across identities, which the contract forbids. A fixture can set the
 // key explicitly to model a server that shares one decision more widely.
+// hostKeyCacheHint is the server's permission to reuse one host-key decision.
+// The default key is per (target, fingerprint) — the narrowest scope, and the
+// one that matches how the proxy looks the decision up.
+func hostKeyCacheHint(fx *fixtureHostKeys, target, fingerprint string) *control.CacheHint {
+	if fx.Cache.TTLSeconds <= 0 {
+		return nil
+	}
+	key := fx.Cache.Key
+	if key == "" {
+		key = "hostkey:" + hostKeyID(target, fingerprint)
+	}
+	return &control.CacheHint{Key: key, TTLSeconds: fx.Cache.TTLSeconds}
+}
+
 func cacheHint(route *fixtureRoute, subject, target string) *control.CacheHint {
 	if route.Cache.TTLSeconds <= 0 {
 		return nil

@@ -1,5 +1,15 @@
 # 0021 — Machine-identity connection model — Learnings
 
+> **Pointer, added by phase 0023 (this file is otherwise unchanged).** The
+> comparison this withdrawal rests on was a projection when it was written and
+> is now **measured**. Both phases it named have shipped — read **0031** below
+> as phase **0022** (delivered) and **0032** as phase **0023** (delivered); the
+> renumbering mapping is in the run-order notes at the end of `docs/PLAN.md`
+> §10. The "~1.17 calls per check / ~1,365 req/s" row is measured at **1.173**
+> calls per connection (`docs/PLAN.md` §9.1, "The same table after phase 0023",
+> scenarios 02 vs 09), so the leg of the argument that said the leftover Control
+> load has a cheaper answer than amending D2 no longer rests on arithmetic.
+
 ## Summary
 - **Verdict: withdrawn. Nothing was built, and that is the deliverable.** The
   prompt was explicitly conditional on 0020's measurements and named deletion as

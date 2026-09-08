@@ -22,8 +22,14 @@ SSHD_COMPOSE := HOPLOCK_SSHD_PORT=$(SSHD_PORT) docker compose -p hoplock-sshd -f
 
 LOAD_DIR := load
 LOAD_OUT ?= $(LOAD_DIR)/results
-LOAD_SCENARIOS := $(sort $(wildcard $(LOAD_DIR)/scenarios/0[1-5]-*.yaml))
-LOAD_PROVISIONING := $(sort $(wildcard $(LOAD_DIR)/scenarios/0[6-9]-*.yaml))
+# Split by the scenario's OWN `kind`, not by its number. The two groups run
+# differently — `load` drives a proxy child process, `load-provisioning` needs
+# root and creates real accounts — so putting a scenario in the wrong one is not
+# a cosmetic mistake. Number ranges said which group a file was in until phase
+# 0022 added a connection scenario at 08 and it landed in the root-only group;
+# the file already declares what it is, so ask it.
+LOAD_SCENARIOS := $(sort $(shell grep -l '^kind: connection' $(LOAD_DIR)/scenarios/*.yaml))
+LOAD_PROVISIONING := $(sort $(shell grep -l '^kind: provisioning' $(LOAD_DIR)/scenarios/*.yaml))
 
 .PHONY: all build test test-sshd test-sshd-up test-sshd-run test-sshd-down \
 	e2e e2e-build e2e-up e2e-down vet lint fmt license-check \

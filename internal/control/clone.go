@@ -297,6 +297,17 @@ func (h *CacheHint) Clone() *CacheHint {
 	return &out
 }
 
+// Clone deep-copies a host-key decision, so a cached one cannot be mutated by
+// the caller it was handed to.
+func (r *HostKeyReportResponse) Clone() *HostKeyReportResponse {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.Cache = r.Cache.Clone()
+	return &out
+}
+
 // Clone deep-copies a whole authorize decision. It is what stands between a
 // cached policy and a caller that mutates the slice it was handed.
 func (r *AuthorizeResponse) Clone() *AuthorizeResponse {

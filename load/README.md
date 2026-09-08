@@ -90,7 +90,8 @@ Two limits are structural and are stated rather than worked around:
 | File | Answers |
 | --- | --- |
 | `01-establishment.yaml` | What one connection costs with nothing cached, swept over offered rate |
-| `02-cached-decisions.yaml` | The same, with the server authorising reuse — the difference is what caching buys |
+| `02-cached-decisions.yaml` | The same, with the server authorising reuse of the **authorize** decision — the difference is what that hint buys |
+| `09-cached-hostkey-decisions.yaml` | 02 with the server also authorising reuse of the **host-key** decision (contract 4.1); the difference from 02 is what that second hint buys |
 | `03-live-connections.yaml` | Memory and descriptors per **live** connection, from a held plateau |
 | `04-uc2-fanout.yaml` | Cache hit rate for one subject against a working set that crosses the cache's entry bound |
 | `05-uc2-fanout-shared-key.yaml` | The same with the server sharing one key across every target — can a better server key fix it? |
@@ -128,3 +129,14 @@ the working set.
 proxy's: the proxy never builds a cache key (PLAN §6.4), so the widest sharing
 the contract permits is something only the server can offer, and `per-subject`
 is the run that offers it.
+
+`control.host_key_cache_hint` is the other decision a server may authorise
+reuse of (contract 4.1, phase 0023). It is a separate knob from
+`control.cache_hint` on purpose: authenticate and report-host-key were the
+joint-largest items left after an authorize hit (PLAN §9.1), and one flag
+covering both hints would make their contributions inseparable — 02 and 09
+differ in this knob alone, which is what lets the difference between them be
+attributed to it. The instrumented server hints only a key it has already ruled
+on and accepted, because those are the only ones the proxy will reuse, so a
+fan-out scenario needs a warmup long enough to sweep the working set for this
+too.
