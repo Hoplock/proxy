@@ -752,6 +752,22 @@ The same rule covers policy actions mid-session: a blocked command says it was
 blocked, and a session killed by Hoplock Control prints the server's
 `reason` before teardown (§6.4). Never a bare drop.
 
+**A session reaching its `session_deadline` is a third case, and stretching
+either branch over it would be wrong** (D16, §6.5, phase 0024). Nothing was
+refused, so it is not a denial; nothing is broken, so it is not an outage — and
+telling a user "this is a service problem" about a session that ended exactly as
+it was authorized to sends them to open a ticket against a system that did its
+job. It therefore has its own wording, on the same session-channel stderr:
+a **warning** at a configurable lead time (`session.deadline_warning`,
+defaulting to a minute) while there is still time to act, and at expiry a
+message saying the session reached its authorized end and that **reconnecting is
+the remedy** — which is true here and is the opposite of what an outage message
+says. Both carry the proxy's prefix, and neither discloses the policy, who set
+the deadline, or how long the route allows. The channel ends with its own exit
+status (253), so a script can tell "time ran out" from the 254 a policy kill
+reports. A session with no channel open is told nothing, which is the
+`SSH_MSG_DISCONNECT` limitation already recorded below and not a new one.
+
 SSH gives four places to speak, and each phase owns the ones it touches:
 
 | Moment | Mechanism | Owner |
@@ -919,6 +935,31 @@ isolation and reattachability are the same mechanism seen from two sides, and
 this product cannot have the first without giving up the second. A user who
 needs a durable working session should be given a longer session, not a shared
 account.
+
+**Nothing detached outlives the session either, and that is the same trade-off
+from the other side.** Teardown runs `pkill -KILL -u` against the session's
+account, so `nohup`, `setsid`, `tmux`, `screen`, and a plain backgrounded job
+all die when the session ends — whether it ended because the user typed `exit`,
+because Hoplock Control revoked it, or because it reached its `session_deadline`
+(§6.5, phase 0024). No residue is the design, not an omission: an ephemeral
+account whose processes survived it would be a uid still running work after the
+account it was attributed to is gone, and after phase 0027 possibly under a uid
+that now belongs to someone else.
+
+So **work that must outlive a human's session is not a human's session.** It is
+either a machine identity with its own credential and its own bounds (§13 UC2),
+or a job handed to something on the target that owns its own lifecycle — a
+systemd unit, a batch scheduler, a queue runner — started by an approved argv
+under the session's execution rung (§6.5). Both of those are auditable as what
+they are; a `nohup`ed process is a session that stopped being a session while
+still holding the access one was granted.
+
+And this is the reattachability trade-off again, from the other side. The proxy
+can only record what flows through it (§7), so a process that keeps running with
+nothing attached is a process producing output no capture can see. Detached
+persistence and session capture are mutually exclusive *by construction*, which
+is why "let them `nohup` it" is not a setting: it would silently delete the
+audit trail for exactly the work that ran longest.
 
 ### 5.2 `brokered-key` — a credential held only for the session (D6a)
 
@@ -1379,8 +1420,10 @@ only offer its own key, and the server decides what that key may assert.
 **Hop trail, loops, and the cap.** Immediately after authenticating and before
 opening any channel, the upstream sends a connection-level request
 `hop-trail@hoplock.io` carrying the proxy ids traversed so far, the final
-target, and the cap in force. The next hop records it, forwards it to Hoplock
-Control as `conn.hop_trail`, and refuses the session when:
+target, the cap in force, and — since phase 0024 — the **session deadline the
+chain resolved** (§6.5). The next hop records it, forwards the trail to Hoplock
+Control as `conn.hop_trail`, takes the earlier of the deadline and its own
+authorize answer, and refuses the session when:
 
 - its own id is already in the incoming trail, or the route's `next_proxy_id`
   is (a **loop**); or
@@ -1393,7 +1436,11 @@ the trail: they are faults in the estate's routing, not decisions about the
 user. The trail carries **no authority** — every entry in it can only cause a
 refusal — so a client that forged one would only restrict itself, and a hop that
 announces itself and then sends no trail is refused rather than served with an
-empty one.
+empty one. The deadline it now carries is the same kind of thing: it can only
+ever shorten a session, never lengthen one, so a forged value costs its sender
+the session. A hop whose build does not understand the field refuses the request
+outright rather than dropping it, which fails closed — an unbounded chained
+session is the outcome worth refusing a hop over.
 
 **Relay registration.** `internal/relay` holds both halves. The downstream proxy
 (`chain.upstream`) keeps one outbound SSH connection open to the upstream's
@@ -1962,9 +2009,26 @@ would have cost Control a third sync for no gain.
 | `concurrency` | A per-subject and/or per-target ceiling on live sessions, enforced by the proxy against its own registry because the live count is knowable only there. Exceeding it is a **policy denial** (vague, §4.3), never an outage | Uncapped |
 
 Reaching the deadline is **neither a denial nor an outage**: the session is
-closed and the close is explained (§4.3). Two questions are deliberately left
-to phase **0024**, which enforces it: what the user is told at expiry, and
-whether a warning precedes it.
+closed and the close is explained (§4.3). The two questions this section left
+open — what the user is told at expiry, and whether a warning precedes it — were
+answered by phase **0024**, which enforces the field: a warning at
+`session.deadline_warning` before the instant, an expiry message naming the
+session id and saying that reconnecting is the remedy, and exit status 253 so a
+script can tell an expiry from a policy kill. The wording is §4.3's third case.
+
+Two properties of the enforcement belong here rather than only in that phase's
+learnings, because they are what make the field's *shape* the right one:
+
+- **It is enforced locally**, on the proxy's own timer, with no call to Hoplock
+  Control at any point. That is the whole reason the bound exists beside
+  revocation, and it is proven end to end with Control stopped.
+- **A chained session's deadline can only ever shorten.** The instant the chain
+  resolved travels to the next hop on the `hop-trail@hoplock.io` request beside
+  the trail and the hop cap, and each hop takes the earlier of it and its own
+  authorize answer (`routing.ShortenDeadline`). A hop answered a *later*
+  deadline than the session arrived with does not extend it — the failure mode
+  an absolute instant was chosen to avoid, and one that is invisible until a
+  session crosses three proxies.
 
 ## 7. Logging & telemetry (`internal/logging`, D8)
 
@@ -2030,6 +2094,15 @@ password: the user authenticator returns an identity, never a credential. The
 end-to-end test asserts it against every stored record *and* every byte in the
 disk buffer, so the property stays structural rather than becoming a filter
 somebody has to remember to apply.
+
+**Every session says how it ended.** The `session_end` record carries
+`end_reason`, and it takes exactly one of four values — `client_close`,
+`setup_failed`, `revoked`, `session_deadline` — so "why did this session stop"
+is a field an operator reads rather than an inference from which other records
+happen to be present. It was added by phase 0024 for the fourth of those: an
+expiry is neither a failure nor a revocation, and without a name of its own it
+would have been visible only as the absence of everything else. The name is
+query surface and is as load-bearing as any other attribute key.
 
 Still out of scope: tamper-evident/append-only storage at the destination
 (Section 12), and coalescing keystroke-sized chunks into fewer records.
@@ -2557,7 +2630,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0021 | Machine-identity connection model       | **Withdrawn — evaluated, not built.** 0020's measurements removed the connection-volume and provisioning arguments, and the Control load that was left has a cheaper answer in 0022 + 0023 (3.17 → 1.17 calls per connection, both now measured, no amendment to D2). D2 stands; the number **0021 is retired and must never be reused**. Reasoning: `docs/learnings/0021-machine-identity-connection-model-learnings.md`, and D17 |
 | 0022 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache held a fixed 4,096 entries with **no eviction**, so a working set larger than that cached the first 4,096 shapes and refused the rest. **Delivered:** LRU eviction over the lookup paths (with `CacheStats.Evicted` beside `Expired`), the bound settable as `control.cache.max_entries`, and a default re-derived from a measured ~1 KiB per entry — 4,096 → **32,768**. Sizing the setting to the estate is what an operator past the default does; measurements in §9.1. No contract change |
 | 0023 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` was 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. **Delivered:** an optional `cache` hint on `HostKeyReportResponse` (**contract 4.1**; `policy_version` stays 4), reuse in `CachingClient` keyed on target+port+**fingerprint** so a changed key still reports (D7), a `reject` and a first sighting never reused, host-key reuse counted apart in `CacheStats`, and the measured **2.17 → 1.17** calls per connection (§9.1, scenarios 02 vs 09). Contract change — carried a cross-repo obligation |
-| 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session |
+| 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session. **Delivered:** a local timer armed at authorize from the instant the chain resolved (`routing.ShortenDeadline` — a hop may only ever shorten it, and the resolved instant travels on the hop-trail request), expiry through the engine's ordinary teardown, the two messages and exit status **253** in §4.3, `end_reason` on every session_end record, and the detached-work consequence in §5.1. No contract change |
 | 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
 | 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |

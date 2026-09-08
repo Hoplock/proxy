@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
@@ -90,6 +91,15 @@ type Route struct {
 	// axes take their absent-value default: the proxy decides at the exec
 	// request, and forwarding policy covers SSH channels only.
 	Enforcement *control.EnforcementPolicy
+	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
+	// (contract v4, D16, enforced by phase 0024). Nil means the server set no
+	// deadline, which is not the same as zero: absent leaves the session
+	// unbounded, exactly as a v3 server left it.
+	//
+	// It bounds an ESTABLISHED session and is the only one of the three
+	// lifetimes on a route that does — see internal/proxy/deadline.go, which
+	// holds the distinction and the timer that enforces it.
+	SessionDeadline *time.Time
 	// Hop carries the chaining constraints of a next-hop route, connection
 	// direction included (D11, phase 0008).
 	Hop *control.HopMetadata
@@ -304,6 +314,7 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		TargetAuthLadder:        resp.TargetAuthLadder.Clone(),
 		Filter:                  resp.FilterPolicy.Clone(),
 		Enforcement:             resp.Enforcement.Clone(),
+		SessionDeadline:         cloneInstant(resp.SessionDeadline),
 		Hop:                     resp.Hop.Clone(),
 		DecisionID:              resp.DecisionID,
 	}
@@ -324,11 +335,11 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		route.Port = r.defaultPort
 	}
 
-	r.logf("routing: session=%s subject=%s target=%s route=%s permissions=%s channels=%v exec=%s enforcement=%s/%s hop=%s decision=%s",
+	r.logf("routing: session=%s subject=%s target=%s route=%s permissions=%s channels=%v exec=%s enforcement=%s/%s hop=%s deadline=%s decision=%s",
 		req.Conn.SessionID, req.Identity.Subject, req.Target, route.Type,
 		route.Permissions, route.PermittedChannels, route.ExecMode(),
 		route.EnforcedExecution(), route.EnforcedReach(),
-		route.HopDirection(), route.DecisionID)
+		route.HopDirection(), formatDeadline(route.SessionDeadline), route.DecisionID)
 	return route, nil
 }
 

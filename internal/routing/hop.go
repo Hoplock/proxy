@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -99,6 +100,15 @@ type Chain struct {
 	// MaxHops is the cap the chain has been carrying. Zero means none was
 	// declared.
 	MaxHops int
+	// Deadline is the instant the session must end by, as the hops before this
+	// one resolved it (D16, phase 0024). Nil means no hop has been given one.
+	//
+	// It travels with the chain for the same reason MaxHops does: no proxy sees
+	// the whole path, so a bound that is not carried forward is a bound the next
+	// hop cannot honour. Each hop takes the earlier of this and its own
+	// authorize answer (ShortenDeadline), so a session's deadline only ever
+	// shortens along the chain.
+	Deadline *time.Time
 }
 
 // hopTrailPayload is the SSH wire form of RequestHopTrail. []string marshals as
@@ -107,6 +117,18 @@ type hopTrailPayload struct {
 	Trail       []string
 	FinalTarget string
 	MaxHops     uint32
+	// DeadlineUnixMilli is Chain.Deadline as milliseconds since the Unix epoch,
+	// with zero meaning none. Milliseconds rather than a formatted instant
+	// because the field is machine-read on both sides and an integer cannot be
+	// ambiguous about its zone; UTC by construction.
+	//
+	// It is the newest field, so a proxy that predates it neither sends nor
+	// accepts one: ssh.Unmarshal refuses a payload with trailing bytes, so a
+	// mixed-version chain refuses the hop rather than silently dropping the
+	// deadline. That is the fail-closed direction — an unbounded session is the
+	// outcome worth refusing — and the refusal is reported as an outage with the
+	// session id (PLAN §4.3), not as a denial.
+	DeadlineUnixMilli uint64
 }
 
 // MarshalChain encodes a chain as a RequestHopTrail payload.
@@ -116,9 +138,10 @@ func MarshalChain(c Chain) []byte {
 		limit = 0
 	}
 	return ssh.Marshal(hopTrailPayload{
-		Trail:       []string(c.Trail),
-		FinalTarget: c.FinalTarget,
-		MaxHops:     uint32(limit),
+		Trail:             []string(c.Trail),
+		FinalTarget:       c.FinalTarget,
+		MaxHops:           uint32(limit),
+		DeadlineUnixMilli: deadlineToWire(c.Deadline),
 	})
 }
 
@@ -142,7 +165,36 @@ func ParseChain(payload []byte) (Chain, error) {
 	if len(trail) == 0 {
 		return Chain{}, fmt.Errorf("routing: %s payload carries no proxy ids", RequestHopTrail)
 	}
-	return Chain{Trail: trail, FinalTarget: p.FinalTarget, MaxHops: int(p.MaxHops)}, nil
+	return Chain{
+		Trail:       trail,
+		FinalTarget: p.FinalTarget,
+		MaxHops:     int(p.MaxHops),
+		Deadline:    deadlineFromWire(p.DeadlineUnixMilli),
+	}, nil
+}
+
+// deadlineToWire renders an optional instant as the payload's integer, with
+// zero meaning none. A deadline before the epoch cannot be expressed and is
+// treated as none rather than wrapping into a far-future instant: the one
+// reading never available is the one that lengthens a session.
+func deadlineToWire(t *time.Time) uint64 {
+	if t == nil {
+		return 0
+	}
+	ms := t.UnixMilli()
+	if ms <= 0 {
+		return 0
+	}
+	return uint64(ms)
+}
+
+// deadlineFromWire is deadlineToWire's inverse.
+func deadlineFromWire(ms uint64) *time.Time {
+	if ms == 0 {
+		return nil
+	}
+	at := time.UnixMilli(int64(ms)).UTC()
+	return &at
 }
 
 // HopPlan is everything the engine needs to extend the chain by one leg. It is
@@ -203,7 +255,16 @@ func PlanHop(self string, incoming Chain, route *Route, localMax int) (*HopPlan,
 	plan := &HopPlan{
 		Direction:   route.HopDirection(),
 		FinalTarget: route.FinalTarget(),
-		Chain:       Chain{Trail: trail, MaxHops: resolveMaxHops(incoming.MaxHops, route.MaxHops(), localMax)},
+		Chain: Chain{
+			Trail:   trail,
+			MaxHops: resolveMaxHops(incoming.MaxHops, route.MaxHops(), localMax),
+			// The chain's own deadline, not this hop's answer: a hop told a
+			// later instant than the session arrived with must not extend it
+			// (ShortenDeadline). What this proxy enforces locally is the same
+			// value — internal/proxy arms its timer from it — so the whole
+			// chain ends on one instant.
+			Deadline: ShortenDeadline(incoming.Deadline, route.SessionDeadline),
+		},
 	}
 	if route.Hop != nil {
 		plan.NextProxyID = route.Hop.NextProxyID

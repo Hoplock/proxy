@@ -22,18 +22,20 @@ import (
 // "channel_id" keeps working only if nothing renames it by accident.
 const (
 	// Session-wide.
-	AttrProxyID        = "proxy_id"        // the proxy that recorded this leg
-	AttrClientAddr     = "client_addr"     // where the client connected from
-	AttrServerAddr     = "server_addr"     // the proxy address it reached
-	AttrClientVersion  = "client_version"  // the client's SSH identification
-	AttrAuthMethod     = "auth_method"     // identity.Method: how the user proved who they are
-	AttrIdentitySource = "identity_source" // where the identity came from (D4)
-	AttrHopPeer        = "hop_peer"        // true when the client is another proxy
-	AttrHopTrail       = "hop_trail"       // the proxies this session has already crossed
-	AttrDuration       = "duration_ms"     // session or channel lifetime
-	AttrReason         = "reason"          // why a session or channel ended
-	AttrStage          = "stage"           // which part of setup failed
-	AttrError          = "error"           // the failure text, never a credential
+	AttrProxyID         = "proxy_id"         // the proxy that recorded this leg
+	AttrClientAddr      = "client_addr"      // where the client connected from
+	AttrServerAddr      = "server_addr"      // the proxy address it reached
+	AttrClientVersion   = "client_version"   // the client's SSH identification
+	AttrAuthMethod      = "auth_method"      // identity.Method: how the user proved who they are
+	AttrIdentitySource  = "identity_source"  // where the identity came from (D4)
+	AttrHopPeer         = "hop_peer"         // true when the client is another proxy
+	AttrHopTrail        = "hop_trail"        // the proxies this session has already crossed
+	AttrDuration        = "duration_ms"      // session or channel lifetime
+	AttrReason          = "reason"           // why a session or channel ended
+	AttrEndReason       = "end_reason"       // which of the endings below stopped the session
+	AttrSessionDeadline = "session_deadline" // the instant a bounded session was authorized until (D16)
+	AttrStage           = "stage"            // which part of setup failed
+	AttrError           = "error"            // the failure text, never a credential
 
 	// Route and policy (the authorize record).
 	AttrRouteType        = "route_type"        // direct or nexthop
@@ -154,6 +156,29 @@ const (
 	AttrTerm          = "term"           // the replay header's terminal type
 	AttrWidth         = "width"          //
 	AttrHeight        = "height"         //
+)
+
+// The values of AttrEndReason: why a session stopped, on the session_end
+// record. Every session carries exactly one of them, so "why did this session
+// stop" is answered by reading a field rather than by correlating the records
+// around it — which is what an operator dashboard is built on, and why these
+// names are as load-bearing as the attribute keys above.
+const (
+	// EndReasonClientClose is the ordinary ending: the user's client hung up,
+	// or the program it was running finished.
+	EndReasonClientClose = "client_close"
+	// EndReasonSetupFailed is a session that never reached the target: the
+	// stage and the error are on its own failure record (AttrStage).
+	EndReasonSetupFailed = "setup_failed"
+	// EndReasonRevoked is a session ended on someone else's orders — Hoplock
+	// Control's revocation stream, a kill_session rule, or a proxy shutdown.
+	// The order's own text is on the AttrReason of the policy_decision record.
+	EndReasonRevoked = "revoked"
+	// EndReasonDeadline is a session that reached the route's session deadline
+	// (contract v4, PLAN §6.5). It is deliberately its own value and not a
+	// flavour of the two above: an expiry is neither a failure nor a
+	// revocation, it is a session ending exactly as it was authorized to.
+	EndReasonDeadline = "session_deadline"
 )
 
 // CaptureFormatRawChunk is the value of AttrCaptureFormat on every stream

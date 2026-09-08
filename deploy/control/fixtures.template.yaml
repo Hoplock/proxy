@@ -207,6 +207,39 @@ routes:
           username: netadmin
           credential_ref: appliance-fleet
 
+  # A session the server bounds in time (D16, phase 0024). Scenarios: the user
+  # is warned and then told the session reached its authorized end; the exit
+  # status distinguishes it from a policy kill; the ephemeral account is gone
+  # afterwards; a backgrounded process on the target does not survive it; and
+  # the same happens with this server stopped, because the proxy enforces the
+  # deadline locally.
+  #
+  # `ephemeral-user` on purpose: the account-removal and detached-process
+  # assertions need an account to have been created. The deadline is short
+  # enough for a test suite and long enough to survive a loaded CI runner
+  # setting a session up and stopping a container — the proxies' own
+  # `session.deadline_warning` is what makes the warning fall inside it.
+  - login: alice
+    target: expiring.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    session_deadline_seconds: 30
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: alice
+        key_type: ed25519
+        lifetime_seconds: "900"
+    filter_policy:
+      mode: blacklist
+
   # Axis 2, the other way round: commands are allowed and a terminal is not.
   # Scenario: `ssh -tt host cmd` is refused, `ssh host cmd` succeeds.
   - login: alice

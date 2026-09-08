@@ -100,7 +100,14 @@ type session struct {
 	mu       sync.Mutex
 	leg      ssh.Conn
 	channels map[ssh.Channel]struct{}
-	killed   bool
+	// killed marks the session as already ending on the proxy's own initiative
+	// — a revocation, a shutdown, or the deadline — so that two of them cannot
+	// each tell the user a different story about why.
+	killed bool
+	// endedBy is the telemetry's answer to "why did this session stop"
+	// (logging.AttrEndReason). Empty until something other than the client
+	// ends it; recordEnd resolves the rest.
+	endedBy string
 
 	failedOnce sync.Once
 	failure    chan struct{}
@@ -211,7 +218,18 @@ func (s *session) setup() {
 		return
 	}
 	s.route = route
-	s.recordAuthorize(route)
+
+	// The deadline in force is the chain's, not this hop's answer alone: a hop
+	// may only ever shorten it (routing.ShortenDeadline, deadline.go). It is
+	// resolved here so the audit record and the timer cannot disagree about
+	// which instant this session was given.
+	deadline := routing.ShortenDeadline(s.chain().Deadline, route.SessionDeadline)
+	s.recordAuthorize(route, deadline)
+
+	// Armed before anything is provisioned or dialled, and for BOTH route
+	// types: a chained session is bounded at every hop, and a session that died
+	// between here and the target leg still had a deadline while it existed.
+	s.armDeadline(deadline)
 
 	// Command policy belongs to this connection, not to the proxy: the engine
 	// is compiled from this route's filter policy and attached to this
@@ -547,10 +565,8 @@ func (s *session) kill(reason string) {
 		return
 	}
 	s.killed = true
-	channels := make([]ssh.Channel, 0, len(s.channels))
-	for ch := range s.channels {
-		channels = append(channels, ch)
-	}
+	s.endedBy = logging.EndReasonRevoked
+	channels := s.channelsLocked()
 	s.mu.Unlock()
 
 	s.logf("proxy: session=%s killed: %s", s.id, reason)

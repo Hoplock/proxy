@@ -74,6 +74,7 @@ type Config struct {
 	Chain   Chain   `yaml:"chain"`
 	Auth    Auth    `yaml:"auth"`
 	Dial    Dial    `yaml:"dial"`
+	Session Session `yaml:"session"`
 	Logging Logging `yaml:"logging"`
 }
 
@@ -141,6 +142,24 @@ type Dial struct {
 	// DefaultTargetPort is used when Hoplock Control's route names no
 	// port. Zero means the package default (22).
 	DefaultTargetPort int `yaml:"default_target_port"`
+}
+
+// Session tunes how the proxy handles the bounds Hoplock Control puts on a
+// session — today the one it enforces locally, the route's session deadline
+// (contract v4, D16, PLAN §6.5).
+//
+// Nothing here sets a deadline, extends one, or decides which sessions get one:
+// that is the server's, per connection (D2). This is only how the proxy behaves
+// while obeying it.
+type Session struct {
+	// DeadlineWarning is how long before the deadline the user is warned on
+	// their open channels. Zero means proxy.DefaultDeadlineWarning; negative
+	// sends no warning at all, leaving only the message at expiry.
+	//
+	// A lead time longer than the session's whole deadline warns nobody rather
+	// than warning immediately: a message written before the client has asked
+	// for anything is written into a stream nobody is reading (PLAN §4.3).
+	DeadlineWarning time.Duration `yaml:"deadline_warning"`
 }
 
 // Logging configures the telemetry pipeline (PLAN §7, D8): how records are

@@ -222,6 +222,7 @@ func run(configPath string, logger *log.Logger) error {
 		RelayOpener:     relayOpener(hub),
 		MaxHops:         cfg.Chain.MaxHops,
 		DialTimeout:     cfg.Dial.DialTimeout,
+		DeadlineWarning: cfg.Session.DeadlineWarning,
 		Recorder:        recorder,
 		Logger:          logger,
 	})

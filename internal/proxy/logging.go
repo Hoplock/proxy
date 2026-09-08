@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -57,9 +58,15 @@ func (s *session) recordStart() {
 }
 
 // recordAuthorize captures Hoplock Control's decision: the route, the policy
-// that will be enforced on it, and the credential method chosen for the target
-// leg (D6a).
-func (s *session) recordAuthorize(route *routing.Route) {
+// that will be enforced on it, the credential method chosen for the target leg
+// (D6a), and the deadline this session is bounded by (D16).
+//
+// The deadline is the one IN FORCE — the chain's, already shortened by this
+// hop's answer where that was stricter — and not the field as it arrived, so a
+// chained session's record names the instant it will actually end at. It is
+// recorded here rather than only at expiry because a proxy that died mid-session
+// still owes an auditor the bound the session was given.
+func (s *session) recordAuthorize(route *routing.Route, deadline *time.Time) {
 	attrs := logging.Attrs{}.
 		Set(logging.AttrRouteType, string(route.Type)).
 		Set(logging.AttrPermissions, route.Permissions).
@@ -69,6 +76,9 @@ func (s *session) recordAuthorize(route *routing.Route) {
 		Set(logging.AttrFilterMode, string(route.Filter.Mode)).
 		Set(logging.AttrPermittedChannels, strings.Join(route.PermittedChannels, ",")).
 		SetInt(logging.AttrTargetPort, route.Port)
+	if deadline != nil {
+		attrs.Set(logging.AttrSessionDeadline, deadline.UTC().Format(time.RFC3339))
+	}
 	if route.TargetAuth != nil {
 		attrs.Set(logging.AttrCredentialMethod, string(route.TargetAuth.Method))
 	}
@@ -272,6 +282,26 @@ func (s *session) recordKill(reason string) {
 		Set(logging.AttrAction, string(control.FilterActionKillSession)))
 }
 
+// recordDeadlineExpiry captures a session ending at the route's session
+// deadline (contract v4, D16).
+//
+// It is an INFORMATIONAL record on the authorize kind, not a denial and not a
+// failure, because that is what it is: the decision that opened this session
+// also said when it would end, and it ended then. Recording it as a policy
+// decision would put every expiry on a security team's refusal dashboard, and
+// recording it as an error would put it on an outage one — both would be
+// telling an operator that something went wrong.
+//
+// The answer to "why did this session stop" is on the session_end record as
+// logging.AttrEndReason; this one carries the instant, which is what says the
+// close happened when it was supposed to.
+func (s *session) recordDeadlineExpiry(at time.Time) {
+	s.rec.Authorize("session reached its authorized end", logging.Attrs{}.
+		Set(logging.AttrEvent, "session.deadline_reached").
+		Set(logging.AttrEndReason, logging.EndReasonDeadline).
+		Set(logging.AttrSessionDeadline, at.UTC().Format(time.RFC3339)))
+}
+
 // recordFailure captures a setup failure, classified by the stage it happened
 // in — the same classification the user's message is built from (PLAN §4.3).
 func (s *session) recordFailure(err error) {
@@ -285,9 +315,31 @@ func (s *session) recordFailure(err error) {
 		Set(logging.AttrError, err.Error()))
 }
 
-// recordEnd captures the close of a session.
+// recordEnd captures the close of a session, naming what stopped it.
+//
+// AttrEndReason is the field an operator asking "why did this session stop"
+// reads, and every session carries exactly one value of it: an expiry and a
+// revocation both arrive here having already said which they were, and
+// everything left is either a setup that never reached the target or the
+// ordinary case of the client hanging up.
 func (s *session) recordEnd() {
-	s.rec.End(logging.Attrs{}.Set(logging.AttrHopTrail, s.chain().Trail.String()))
+	s.rec.End(logging.Attrs{}.
+		Set(logging.AttrHopTrail, s.chain().Trail.String()).
+		Set(logging.AttrEndReason, s.endReason()))
+}
+
+// endReason resolves the value of logging.AttrEndReason for this session.
+func (s *session) endReason() string {
+	s.mu.Lock()
+	reason := s.endedBy
+	s.mu.Unlock()
+	if reason != "" {
+		return reason
+	}
+	if s.setupErr != nil {
+		return logging.EndReasonSetupFailed
+	}
+	return logging.EndReasonClientClose
 }
 
 // denialAttrs adds the decision's own fields to a record. Reason is what the

@@ -20,6 +20,14 @@ dial:
   dial_timeout: 15s
   default_target_port: 22
 
+session:
+  # Lead time on the session-deadline warning (docs/PLAN.md §6.5, phase 0024).
+  # The engine's default is 1m, which no scenario could observe inside the
+  # 30-second deadline the fixtures give `expiring.company.com`: a lead longer
+  # than the whole deadline warns nobody. This is the same knob an operator
+  # would turn, set to a value this topology can see.
+  deadline_warning: 8s
+
 logging:
   # The resilience buffer is what the outage scenario asserts on: with control
   # stopped, records land here and drain in order when it returns (D8).
