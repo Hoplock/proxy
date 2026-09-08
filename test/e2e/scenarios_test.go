@@ -30,6 +30,12 @@ func TestTopology(t *testing.T) {
 	t.Run("target-side enforcement", testEnforcement)
 	t.Run("denial disclosure", testDenialDisclosure)
 	t.Run("telemetry", testTelemetry)
+	// Before the outage scenario, and it stops Hoplock Control itself for one
+	// of its subtests — the whole claim of a locally enforced deadline is that
+	// it holds when the policy service does not. It restarts it and waits for
+	// the drained records, so the scenario below still has a delivered history
+	// to compare against.
+	t.Run("session deadline", testSessionDeadline)
 	// Stops Hoplock Control, so nothing may run after it but the leak check.
 	t.Run("outage disclosure and log drain", testOutage)
 	t.Run("no ephemeral accounts left behind", testNoEphemeralLeak)
@@ -864,6 +870,173 @@ func mentionedIn(records []logRecord, text string) bool {
 		}
 	}
 	return false
+}
+
+// --- session deadline (D16, phase 0024) --------------------------------------
+
+// deadlineHold is how long the held session asks for. It has to outlive the
+// route's own deadline comfortably, because the assertion is that the PROXY
+// ended the session and not that the command finished.
+const deadlineHold = 120
+
+// expiringTarget is the fixture route Hoplock Control bounds in time
+// (deploy/control/fixtures.template.yaml). Its deadline is 30 seconds and the
+// proxies' warning lead time is 8, so a session on it is warned and then closed
+// well inside one client invocation.
+const expiringTarget = "expiring.company.com"
+
+// heldOnExpiringRoute is a session that would run for minutes if nothing ended
+// it, with an optional command run first.
+func heldOnExpiringRoute(setup string) session {
+	s := aliceOn(proxyDirect, expiringTarget)
+	s.opts = []string{"-tt"}
+	s.stdin = fmt.Sprintf("%secho deadline-marker\nsleep %d\nexit\n", setup, deadlineHold)
+	return s
+}
+
+// testSessionDeadline is the acceptance evidence for the one session bound the
+// proxy enforces itself (docs/PLAN.md §6.5, D16).
+//
+// Every subtest here holds a session open past its deadline, so this group
+// costs about two minutes of wall clock. That is the feature: a deadline
+// cannot be demonstrated faster than it elapses.
+func testSessionDeadline(t *testing.T) {
+	t.Run("the user is warned, then told the session reached its authorized end", func(t *testing.T) {
+		r := ssh(t, heldOnExpiringRoute(""))
+
+		// The session ran; it was not refused before it started.
+		wantContains(t, r, "session deadline", "deadline-marker")
+		// Both messages, and the warning first — a warning after the fact is
+		// not a warning.
+		wantContains(t, r, "session deadline", "reaches its authorized end in")
+		wantContains(t, r, "session deadline", "has reached its authorized end")
+		out := r.output()
+		if warned, expired := strings.Index(out, "reaches its authorized end in"),
+			strings.Index(out, "has reached its authorized end"); warned > expired {
+			t.Errorf("session deadline: the warning came after the expiry message\n%s", r)
+		}
+		// Reconnecting is the remedy, which is the opposite of what an outage
+		// message says — and it is neither of PLAN §4.3's two branches.
+		wantContains(t, r, "session deadline", "reconnect")
+		wantNotContains(t, r, "session deadline", "Access denied.")
+		wantNotContains(t, r, "session deadline", "not a permissions problem")
+		// Nothing about the policy, who set the deadline, or what the route
+		// allows.
+		wantNotContains(t, r, "session deadline", "readOnlyGroup")
+
+		// 253, not the 254 a policy kill reports and not the 0 a finished
+		// command would: a pipeline can tell "time ran out" from "policy
+		// stopped you" without reading the text.
+		wantExit(t, r, "session deadline", 253)
+	})
+
+	t.Run("the ephemeral account is gone afterwards", func(t *testing.T) {
+		// The same claim testNoEphemeralLeak makes at the end of the run,
+		// reached by a different path: teardown ran because the session
+		// EXPIRED, not because anyone closed it. The account is watched into
+		// existence first, or "no account is left" would also be true of a
+		// session that never provisioned one.
+		held := make(chan result, 1)
+		go func() {
+			r, err := sshE(heldOnExpiringRoute(""))
+			if err != nil {
+				t.Errorf("the held session could not be run: %v\n%s", err, r)
+			}
+			held <- r
+		}()
+
+		waitFor(t, "the expiring session's ephemeral account to be created", func() bool {
+			return strings.Contains(execIn(t, nodeTarget, "getent", "passwd").stdout, "hl-")
+		})
+
+		r := <-held
+		wantContains(t, r, "expiry teardown", "has reached its authorized end")
+		waitFor(t, "the expired session's ephemeral account to be removed", func() bool {
+			return !strings.Contains(execIn(t, nodeTarget, "getent", "passwd").stdout, "hl-")
+		})
+		if homes := execIn(t, nodeTarget, "sh", "-c", "ls /home"); strings.Contains(homes.stdout, "hl-") {
+			t.Errorf("an ephemeral home survived the expiry:\n%s", homes.stdout)
+		}
+	})
+
+	t.Run("a backgrounded process does not survive the expiry", func(t *testing.T) {
+		// This is what makes docs/PLAN.md §5.1's paragraph on detached work
+		// true rather than aspirational: teardown runs `pkill -KILL -u`, so
+		// nohup buys nothing. The sleep is long enough that finding it gone can
+		// only mean it was killed.
+		const marker = "4242"
+		r := ssh(t, heldOnExpiringRoute("nohup sleep "+marker+" >/dev/null 2>&1 &\n"))
+		wantContains(t, r, "detached work", "has reached its authorized end")
+
+		waitFor(t, "the detached process to be killed with its session", func() bool {
+			return execIn(t, nodeTarget, "pgrep", "-f", "sleep "+marker).code != 0
+		})
+	})
+
+	t.Run("the deadline holds with Hoplock Control stopped", func(t *testing.T) {
+		// The reason the deadline is enforced locally at all (§6.4): revocation
+		// needs the event stream, and an immortal privileged session is least
+		// acceptable exactly when that stream is down. Without this subtest the
+		// feature is untested where it matters.
+		before := fetchLogs(t)
+		held := make(chan result, 1)
+		go func() {
+			r, err := sshE(heldOnExpiringRoute(""))
+			if err != nil {
+				t.Errorf("the held session could not be run: %v\n%s", err, r)
+			}
+			held <- r
+		}()
+
+		waitFor(t, "the held session to reach Hoplock Control", func() bool {
+			return countKind(fetchLogs(t).Batched, "session_start") > countKind(before.Batched, "session_start")
+		})
+
+		if r := compose(t, "stop", nodeControl); r.code != 0 {
+			t.Fatalf("stop Hoplock Control: %v", r)
+		}
+		restarted := false
+		restart := func() {
+			if restarted {
+				return
+			}
+			restarted = true
+			if r := compose(t, "start", nodeControl); r.code != 0 {
+				t.Errorf("restart Hoplock Control: %v", r)
+			}
+		}
+		t.Cleanup(restart)
+
+		r := <-held
+		wantContains(t, r, "deadline with control stopped", "has reached its authorized end")
+		wantExit(t, r, "deadline with control stopped", 253)
+		sessionID := sessionIDOf(r)
+		if sessionID == "" {
+			t.Fatalf("could not read the expired session's id from what it was told\n%s", r)
+		}
+
+		restart()
+		waitFor(t, "Hoplock Control to answer again", func() bool {
+			_, err := tryFetchLogs()
+			return err == nil
+		})
+		// The record drains from the proxy's disk buffer once Control is back,
+		// which is also what leaves the outage scenario below a delivered
+		// history to compare against. An operator asking why this session
+		// stopped reads `end_reason`, not the absence of anything else.
+		waitFor(t, "the expired session's records to drain", func() bool {
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.SessionID != sessionID || rec.Kind != "session_end" {
+					continue
+				}
+				if got := rec.Attributes["end_reason"]; got != "session_deadline" {
+					t.Errorf("session_end end_reason = %q, want %q", got, "session_deadline")
+				}
+				return true
+			}
+			return false
+		})
+	})
 }
 
 // --- outage ------------------------------------------------------------------

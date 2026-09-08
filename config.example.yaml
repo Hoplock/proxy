@@ -66,6 +66,17 @@ dial:
   # Port used when Hoplock Control's route names none. Optional.
   default_target_port: 22
 
+session:
+  # How the proxy behaves while obeying the bounds Hoplock Control puts on a
+  # session (docs/PLAN.md §6.5, D16). Nothing here sets a deadline or extends
+  # one — that is the server's answer, per connection.
+  #
+  # How long before a session's deadline the user is warned on their open
+  # channels. Optional; 0 means the engine default (1m), and a negative value
+  # sends no warning at all, leaving only the message at expiry. A lead time
+  # longer than the whole deadline warns nobody rather than warning at once.
+  deadline_warning: 1m
+
 logging:
   # Telemetry pipeline (docs/PLAN.md §7, D8). These are throughput and
   # resilience knobs only: WHAT a session records is the architecture's answer,

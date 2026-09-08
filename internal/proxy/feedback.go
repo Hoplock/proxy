@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -31,6 +32,10 @@ const bannerPrefix = "Hoplock Proxy: "
 // (which would tell a script the command succeeded) and not 255 (which is what
 // the SSH client itself reports for its own errors), so a non-zero status that
 // came from the proxy is distinguishable in a pipeline.
+//
+// A session that reached its deadline reports exitSessionExpired instead, so
+// "time ran out" is distinguishable from "policy stopped you" — see
+// deadline.go.
 const exitProxyFailure = 254
 
 // stage names the part of session setup that failed. It exists to pick the
@@ -156,6 +161,42 @@ func deniedText(reason string) string {
 // of the command they ran.
 func noticeText(notice string) string {
 	return bannerPrefix + notice
+}
+
+// deadlineWarningText warns that the session is about to reach its deadline.
+//
+// PLAN §4.3 splits what a user is told into a denial and an outage, and this is
+// neither: nothing was refused and nothing is broken. It therefore gets its own
+// wording, and the wording is the deliverable — a session that vanished at its
+// deadline with an outage message would send its user to file a ticket against
+// a service that did exactly what it was asked to.
+//
+// It discloses only the time left. Not the policy, not who set the deadline,
+// not how long the route allows — a user learning "you were given four hours"
+// learns the shape of the policy one session at a time (§4.3).
+func deadlineWarningText(remaining time.Duration) string {
+	if remaining < time.Second {
+		remaining = time.Second
+	}
+	return fmt.Sprintf("%sThis session reaches its authorized end in %s and will then be closed. "+
+		"Finish up and save your work; reconnecting starts a new session.",
+		bannerPrefix, remaining.Round(time.Second))
+}
+
+// deadlineExpiredText is what the user is told as the session ends.
+//
+// Three things and nothing else: that the session reached its authorized end —
+// which is a statement about time, not about permission — that reconnecting is
+// the remedy, which is true here and is the opposite of what an outage message
+// says, and the session id as the support reference §4.3 promises everywhere
+// else. It names no policy and no target.
+func deadlineExpiredText(sessionID string) string {
+	text := bannerPrefix + "This session has reached its authorized end and is now closing. " +
+		"Nothing is wrong and nothing was denied; reconnect to start a new session."
+	if sessionID != "" {
+		text += fmt.Sprintf(" Session %s.", sessionID)
+	}
+	return text
 }
 
 // deniedChannelReason is the clause for a channel refused before the pipeline

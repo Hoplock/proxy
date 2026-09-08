@@ -159,6 +159,11 @@ type harnessOptions struct {
 	// filterPolicy is the connection's command policy (PLAN §6.3). Nil means
 	// an empty blacklist, which filters nothing.
 	filterPolicy *control.FilterPolicy
+	// sessionDeadline, when non-zero, gives the route a session deadline that
+	// far ahead of the moment authorize is answered (contract v4, D16). It is a
+	// duration here only because a test cannot know that instant in advance;
+	// what reaches the proxy is the absolute instant the contract defines.
+	sessionDeadline time.Duration
 	// routeType overrides the route type; empty means direct.
 	routeType control.RouteType
 	// authorize replaces the whole authorize behaviour.
@@ -229,6 +234,11 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	client.authorize = opts.authorize
 	if client.authorize == nil {
 		client.authorize = func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error) {
+			var deadline *time.Time
+			if opts.sessionDeadline != 0 {
+				at := time.Now().Add(opts.sessionDeadline)
+				deadline = &at
+			}
 			return &control.AuthorizeResponse{
 				RouteType:               routeType,
 				Target:                  host,
@@ -239,6 +249,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 				PermittedForwards:       opts.permittedForwards,
 				PermittedGlobalRequests: opts.permittedGlobalRequests,
 				FilterPolicy:            filterPolicy,
+				SessionDeadline:         deadline,
 				DecisionID:              "decision-1",
 			}, nil
 		}

@@ -99,6 +99,12 @@ type Options struct {
 	// AuthTimeout bounds an unauthenticated connection. Zero means
 	// DefaultAuthTimeout; negative disables the bound.
 	AuthTimeout time.Duration
+	// DeadlineWarning is how long before a session's deadline the user is
+	// warned on their open channels (deadline.go). Zero means
+	// DefaultDeadlineWarning; negative sends no warning, leaving only the
+	// message at expiry. It changes nothing about WHEN a session ends: the
+	// deadline is Hoplock Control's, and no local setting moves it (D2).
+	DeadlineWarning time.Duration
 	// ServerVersion overrides the SSH identification string.
 	ServerVersion string
 	// Logger receives session lifecycle events; nil discards them. It is never
@@ -122,24 +128,25 @@ type Options struct {
 // It also implements control.SessionRegistry, so Hoplock Control's
 // revocation stream can end a session that is already in flight (PLAN §6.4).
 type Server struct {
-	hostKey       ssh.Signer
-	auth          user.UserAuthenticator
-	resolver      *routing.Resolver
-	targetAuth    target.TargetAuthenticator
-	client        control.Client
-	proxyID       string
-	delimiter     string
-	hopSigner     ssh.Signer
-	relay         RelayOpener
-	recorder      *logging.Shipper
-	inspectors    *channel.Registry
-	maxHops       int
-	dialTimeout   time.Duration
-	authTimeout   time.Duration
-	serverVersion string
-	logger        *log.Logger
-	now           func() time.Time
-	newSessionID  func() string
+	hostKey         ssh.Signer
+	auth            user.UserAuthenticator
+	resolver        *routing.Resolver
+	targetAuth      target.TargetAuthenticator
+	client          control.Client
+	proxyID         string
+	delimiter       string
+	hopSigner       ssh.Signer
+	relay           RelayOpener
+	recorder        *logging.Shipper
+	inspectors      *channel.Registry
+	maxHops         int
+	dialTimeout     time.Duration
+	authTimeout     time.Duration
+	deadlineWarning time.Duration
+	serverVersion   string
+	logger          *log.Logger
+	now             func() time.Time
+	newSessionID    func() string
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -169,25 +176,26 @@ func New(opts Options) (*Server, error) {
 	}
 
 	s := &Server{
-		hostKey:       opts.HostKey,
-		auth:          opts.Authenticator,
-		resolver:      opts.Resolver,
-		targetAuth:    opts.TargetAuth,
-		client:        opts.Client,
-		proxyID:       opts.ProxyID,
-		delimiter:     opts.TargetDelimiter,
-		hopSigner:     opts.HopSigner,
-		relay:         opts.RelayOpener,
-		recorder:      opts.Recorder,
-		inspectors:    opts.Inspectors,
-		maxHops:       opts.MaxHops,
-		dialTimeout:   opts.DialTimeout,
-		authTimeout:   opts.AuthTimeout,
-		serverVersion: opts.ServerVersion,
-		logger:        opts.Logger,
-		now:           opts.Now,
-		newSessionID:  opts.NewSessionID,
-		sessions:      make(map[string]*session),
+		hostKey:         opts.HostKey,
+		auth:            opts.Authenticator,
+		resolver:        opts.Resolver,
+		targetAuth:      opts.TargetAuth,
+		client:          opts.Client,
+		proxyID:         opts.ProxyID,
+		delimiter:       opts.TargetDelimiter,
+		hopSigner:       opts.HopSigner,
+		relay:           opts.RelayOpener,
+		recorder:        opts.Recorder,
+		inspectors:      opts.Inspectors,
+		maxHops:         opts.MaxHops,
+		dialTimeout:     opts.DialTimeout,
+		authTimeout:     opts.AuthTimeout,
+		deadlineWarning: opts.DeadlineWarning,
+		serverVersion:   opts.ServerVersion,
+		logger:          opts.Logger,
+		now:             opts.Now,
+		newSessionID:    opts.NewSessionID,
+		sessions:        make(map[string]*session),
 	}
 	if s.dialTimeout <= 0 {
 		s.dialTimeout = DefaultDialTimeout
@@ -197,6 +205,9 @@ func New(opts Options) (*Server, error) {
 	}
 	if s.authTimeout == 0 {
 		s.authTimeout = DefaultAuthTimeout
+	}
+	if s.deadlineWarning == 0 {
+		s.deadlineWarning = DefaultDeadlineWarning
 	}
 	if s.serverVersion == "" {
 		s.serverVersion = defaultServerVersion
