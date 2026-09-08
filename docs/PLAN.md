@@ -809,6 +809,30 @@ tooling that parses the stream is not corrupted.
 
 ## 5. Target credentials (D6, D6a)
 
+**What a target owes the proxy before any of this works (phase 0025).** All
+three methods below end in the proxy authenticating to the target, and a
+decrypting proxy is a **single source address** to every target it fronts —
+which is the deployment model, not an artefact of any one topology. A target's
+per-source abuse defences are built on the opposite assumption, so
+`PerSourcePenalties` (on by default since OpenSSH 9.8), `MaxStartups` and
+`MaxSessions` each need a decision before a fleet goes behind this proxy;
+`README.md` §"Target prerequisites" is the operator-facing version, with what
+happens when they are left alone.
+
+The proxy does not depend on that decision having been made. A credential the
+target **refuses** is classified as its own failure rather than as an
+unreachable host (§4.3's outage branch, with wording that names the side the
+credential belongs to and nothing else), recorded as a critical audit event
+naming the credential's opaque handle, and withheld after a configurable run of
+consecutive rejections (`auth.target.rejection`). The breaker is keyed on
+(target, method, credential) and never on the user or the route: a wrong
+credential is wrong for everybody, a right one must keep working while another
+is failing, and keying on the subject would hand any user who can reach a target
+a way to withhold it from the next. It originates no policy (D2) on the same
+test that licenses `chain.max_hops` — it can only make the proxy attempt less
+than Hoplock Control authorised, never more — and a session it stops is an
+outage, never a denial.
+
 ### 5.1 `ephemeral-user` — just-in-time provisioning (D6)
 
 Lifecycle per session:
@@ -2639,7 +2663,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0022 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache held a fixed 4,096 entries with **no eviction**, so a working set larger than that cached the first 4,096 shapes and refused the rest. **Delivered:** LRU eviction over the lookup paths (with `CacheStats.Evicted` beside `Expired`), the bound settable as `control.cache.max_entries`, and a default re-derived from a measured ~1 KiB per entry — 4,096 → **32,768**. Sizing the setting to the estate is what an operator past the default does; measurements in §9.1. No contract change |
 | 0023 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` was 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. **Delivered:** an optional `cache` hint on `HostKeyReportResponse` (**contract 4.1**; `policy_version` stays 4), reuse in `CachingClient` keyed on target+port+**fingerprint** so a changed key still reports (D7), a `reject` and a first sighting never reused, host-key reuse counted apart in `CacheStats`, and the measured **2.17 → 1.17** calls per connection (§9.1, scenarios 02 vs 09). Contract change — carried a cross-repo obligation |
 | 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session. **Delivered:** a local timer armed at authorize from the instant the chain resolved (`routing.ShortenDeadline` — a hop may only ever shorten it, and the resolved instant travels on the hop-trail request), expiry through the engine's ordinary teardown, the two messages and exit status **253** in §4.3, `end_reason` on every session_end record, and the detached-work consequence in §5.1. No contract change |
-| 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
+| 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies. **Delivered:** `target.IsAuthRejection` (the one place that knows x/crypto's wording, with a tripwire test that drives a real rejection), the `target-auth` and `target-auth-withheld` stages and their §4.3 wording, a breaker keyed on (target, method, credential handle) consulted *before* provisioning through `Selector`/`ProvisionedAccess.DialOutcome` — the seam the device drivers adopt — `auth.target.rejection` in config, two critical `error` records naming the credential's handle and never its material, and §5's/README's target prerequisites. No contract change |
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
 | 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
 | 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |

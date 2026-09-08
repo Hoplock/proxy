@@ -831,3 +831,66 @@ func TestExampleConfigCarriesTheProxySettings(t *testing.T) {
 		t.Errorf("Chain.MaxHops = %d, want %d", got, want)
 	}
 }
+
+// TestParseRejectionSettings covers the one distinction this block cannot
+// collapse: absent means "use the default", and an explicit 0 is the escape
+// hatch that disables containment. A plain int would read them as the same
+// answer and quietly turn containment off for every proxy whose config
+// predates it.
+func TestParseRejectionSettings(t *testing.T) {
+	absent, err := Parse(strings.NewReader(minimalConfig))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if absent.Auth.Target.Rejection.Threshold != nil {
+		t.Errorf("an unwritten threshold parsed as %d, want absent", *absent.Auth.Target.Rejection.Threshold)
+	}
+
+	off, err := Parse(strings.NewReader(minimalConfig + `
+    rejection:
+      threshold: 0
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if off.Auth.Target.Rejection.Threshold == nil || *off.Auth.Target.Rejection.Threshold != 0 {
+		t.Errorf("an explicit 0 did not survive parsing: %v", off.Auth.Target.Rejection.Threshold)
+	}
+
+	set, err := Parse(strings.NewReader(minimalConfig + `
+    rejection:
+      threshold: 3
+      window: 90s
+      cooldown: 4m
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	r := set.Auth.Target.Rejection
+	if r.Threshold == nil || *r.Threshold != 3 || r.Window != 90*time.Second || r.Cooldown != 4*time.Minute {
+		t.Errorf("rejection settings = %v/%s/%s, want 3/1m30s/4m0s", r.Threshold, r.Window, r.Cooldown)
+	}
+}
+
+func TestValidateRejectionSettings(t *testing.T) {
+	negative := -1
+	cfg, err := Parse(strings.NewReader(minimalConfig))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cfg.Auth.Target.Rejection = RejectionAuth{Threshold: &negative, Window: -time.Second, Cooldown: -time.Second}
+
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("a negative rejection block validated")
+	}
+	for _, field := range []string{
+		"auth.target.rejection.threshold",
+		"auth.target.rejection.window",
+		"auth.target.rejection.cooldown",
+	} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("Validate did not report %s: %v", field, err)
+		}
+	}
+}

@@ -91,6 +91,41 @@ make run-proxy CONFIG=config.yaml
 make run-mock LISTEN=127.0.0.1:8080
 ```
 
+## Target prerequisites
+
+A decrypting proxy is a **single source address** to every target it fronts.
+That is the deployment model, not a detail of any one topology: every session
+for every user of a target arrives from the same handful of proxy addresses.
+Targets are normally configured on the opposite assumption — that many source
+addresses means many distinct clients, and that a burst from one of them is an
+attacker — so three sshd settings need a decision before a fleet goes behind
+this proxy.
+
+| Setting | Default | What happens if it is left alone |
+| --- | --- | --- |
+| `PerSourcePenalties` | **on** since OpenSSH 9.8 | Any failed authentication is scored against the **proxy's** address, not against the user who triggered it. One route's stale credential, retried as users arrive, gets the proxy blocked from the target: `drop connection #0 from [proxy] on [target]:22 penalty: failed authentication`. At the proxy that surfaces as a bare "connection reset by peer" — every user of that target loses a working session to a credential that was never theirs. |
+| `MaxStartups` | `10:30:100` | Unauthenticated connections are counted per **server**, and a proxy opens one per session. Ten concurrent session setups through one proxy start being dropped at random; the users see a connection that failed for no reason they can act on. |
+| `MaxSessions` | `10` | Channels per connection. The proxy opens a fresh connection per session, so this bites only where one session opens many channels — a multiplexed client, or forwarding — but it is the same shape of limit. |
+
+For a target reachable **only** through the proxy, turning `PerSourcePenalties`
+off is the right call: the defence exists to tell distinct attackers apart, and
+behind an enforcement point there are no distinct sources left to tell apart.
+For a target that also accepts direct connections, raise the thresholds instead
+and leave the defence on for everyone else. Either way it is a decision
+somebody made, and `deploy/target/entrypoint.sh` shows what it looks like
+applied.
+
+The proxy does its half of this and does not rely on the target's settings for
+it. A credential the target refuses is classified as a refused credential
+rather than as an unreachable host, recorded as a critical audit event naming
+the credential's **handle** (never material), and — after
+`auth.target.rejection.threshold` consecutive rejections — withheld for
+`auth.target.rejection.cooldown`, so the proxy stops opening connections that
+would be scored against it. Containment is keyed on the credential and the
+target, never on the user or the route: a different credential to the same
+target keeps working throughout. See `auth.target.rejection` in
+[`config.example.yaml`](config.example.yaml).
+
 ## The end-to-end topology
 
 The whole system runs in containers — Hoplock Control, an SSH client, three

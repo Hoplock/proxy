@@ -35,11 +35,22 @@ gen chain_proxy_nexthop
 gen chain_proxy_zone
 
 # proxy → target material: the management certificate's key (ephemeral-user,
-# D6) and one brokered credential (brokered-key, D6a).
+# D6) and the brokered credentials (brokered-key, D6a) — one the target accepts
+# and one it does not.
 gen management_key
 gen brokered_key
 cp "$keys/brokered_key" "$keys/brokered/appliance-fleet.key"
 chmod 600 "$keys/brokered/appliance-fleet.key"
+
+# A second brokered credential the target does NOT accept: its public half is
+# never installed anywhere (deploy/target/entrypoint.sh installs only
+# brokered_key.pub). It stands in for the everyday operational fault — a key
+# rotated on the estate and not in the broker, an account whose authorized_keys
+# the target cannot read — that phase 0025's containment scenarios are about.
+# Nothing else in the topology may reference it.
+gen stale_key
+cp "$keys/stale_key" "$keys/brokered/stale-fleet.key"
+chmod 600 "$keys/brokered/stale-fleet.key"
 
 # The relay hub's authorized_keys. The COMMENT is the proxy id the key may
 # register as — a key naming no id could register as any proxy and start

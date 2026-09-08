@@ -26,6 +26,11 @@ func TestTopology(t *testing.T) {
 	t.Run("channel policy", testChannelPolicy)
 	t.Run("command policy", testCommandPolicy)
 	t.Run("target credentials", testTargetCredentials)
+	// Before the outage scenario, which stops Hoplock Control: these read the
+	// records they produced. They also OPEN a breaker on one credential and
+	// leave it open for the rest of the run, which is safe only because
+	// `stale-fleet` is named by exactly one route in the fixtures.
+	t.Run("target credential rejection", testCredentialRejection)
 	t.Run("device credentials", testDeviceCredentials)
 	t.Run("target-side enforcement", testEnforcement)
 	t.Run("denial disclosure", testDenialDisclosure)
@@ -412,6 +417,158 @@ func testTargetCredentials(t *testing.T) {
 				before.stdout, after.stdout)
 		}
 	})
+}
+
+// --- refused target credentials (prompt 0025) --------------------------------
+
+// refusedTarget is the fixture route whose brokered credential the target does
+// not accept (deploy/control/fixtures.template.yaml). No other route names
+// `stale-fleet`, so the breaker these scenarios open cannot withhold anything
+// else.
+const refusedTarget = "refused.company.com"
+
+// testCredentialRejection is the acceptance evidence for phase 0025: the target
+// is up and answering, and what it refuses is a credential the PROXY holds.
+//
+// Phase 0012 found this reported as "the target could not be reached" and
+// retried at whatever rate users arrived — and because a decrypting proxy is a
+// single source address, the target's own per-source defences then blocked the
+// proxy for everybody. `PerSourcePenalties` is off in the target image on
+// purpose (deploy/target/entrypoint.sh): containment has to be proven by the
+// proxy's own behaviour, not by the target giving up on it.
+func testCredentialRejection(t *testing.T) {
+	// The proxy's threshold is 2 (deploy/proxy/proxy-direct.yaml), so the first
+	// two sessions here reach the target and the third does not.
+	t.Run("the user is told a credential was refused, not that the target is unreachable", func(t *testing.T) {
+		before := targetRefusedLogins(t)
+
+		s := aliceOn(proxyDirect, refusedTarget)
+		s.command = "/bin/echo must-not-run"
+		r := ssh(t, s)
+
+		wantFailure(t, r, "refused credential")
+		wantNotContains(t, r, "refused credential", "must-not-run")
+
+		// It is an OUTAGE: the proxy's own credential is not something the user
+		// can fix by presenting a different one of theirs.
+		wantContains(t, r, "refused credential", "not a permissions problem")
+		wantNotContains(t, r, "refused credential", "Access denied.")
+		wantContains(t, r, "refused credential", "credential for this target was refused")
+		// The classification this phase exists to correct.
+		wantNotContains(t, r, "refused credential", "the target could not be reached")
+		if sessionIDOf(r) == "" {
+			t.Errorf("the outage carries no session id as a support reference (PLAN §4.3)\n%s", r)
+		}
+
+		// It discloses nothing about the credential: not the reference, not the
+		// account, not the method. The target's own name is not on this list —
+		// the user typed it, and repeating it back reveals nothing (§4.3).
+		for _, leak := range []string{"stale-fleet", "netadmin", "brokered-key"} {
+			wantNotContains(t, r, "refused credential", leak)
+		}
+
+		// The target really was reached and really did refuse us. This
+		// assertion is also what makes the NEXT scenario's negative assertion
+		// mean anything: it proves the marker moves when a login is attempted,
+		// so a count that does not move is the proxy not attempting one.
+		waitFor(t, "the target to record the refused login", func() bool {
+			return targetRefusedLogins(t) > before
+		})
+
+		rec := waitForPriorityRecord(t, "target.credential_rejected")
+		if rec.Attributes["target_addr"] != nodeTarget+":22" {
+			t.Errorf("the record names target %q, want %q", rec.Attributes["target_addr"], nodeTarget+":22")
+		}
+		if rec.Attributes["credential_method"] != "brokered-key" {
+			t.Errorf("the record names method %q, want brokered-key", rec.Attributes["credential_method"])
+		}
+		if rec.Attributes["credential_handle"] != "stale-fleet" {
+			t.Errorf("the record names credential %q, want the route's credential_ref",
+				rec.Attributes["credential_handle"])
+		}
+		if rec.Severity != "critical" {
+			t.Errorf("the record is %s; a refused credential must not wait in a batch (D8)", rec.Severity)
+		}
+	})
+
+	t.Run("past the threshold the proxy stops reaching the target", func(t *testing.T) {
+		// The second session reaches the threshold.
+		s := aliceOn(proxyDirect, refusedTarget)
+		s.command = "/bin/true"
+		wantFailure(t, ssh(t, s), "refused credential, second attempt")
+
+		// Everything below is measured against the target's own log rather
+		// than against elapsed time: "the proxy stopped trying" is a claim
+		// about connections, and a timing assertion here would be a flake
+		// waiting to happen.
+		before := targetRefusedLogins(t)
+
+		r := ssh(t, s)
+		wantFailure(t, r, "withheld credential")
+		wantContains(t, r, "withheld credential", "is not attempting the connection at present")
+		wantNotContains(t, r, "withheld credential", "Access denied.")
+
+		if after := targetRefusedLogins(t); after != before {
+			t.Errorf("the target saw %d more login attempts after the breaker opened; it must see none",
+				after-before)
+		}
+
+		rec := waitForPriorityRecord(t, "target.credential_withheld")
+		if rec.Attributes["rejection_breaker"] != "open" || rec.Attributes["rejection_count"] != "2" {
+			t.Errorf("the withheld record = %v, want an open breaker at two consecutive rejections",
+				rec.Attributes)
+		}
+	})
+
+	// The assertion that catches the tempting wrong key: containment is scored
+	// on the credential and the target, never on the target alone and never on
+	// the user or the route.
+	t.Run("a different credential to the same target still works", func(t *testing.T) {
+		s := svcOn(proxyDirect, "appliance.company.com")
+		s.command = "/bin/echo still-working"
+		r := ssh(t, s)
+		wantExit(t, r, "another credential to the same target", 0)
+		wantContains(t, r, "another credential to the same target", "still-working")
+	})
+}
+
+// targetRefusedLogins counts the logins the target's own sshd saw reach
+// authentication and not complete it — which is what a refused credential looks
+// like from the target's side, and the only place it is visible at all.
+//
+// sshd says "authenticating user" only about a connection that got that far and
+// then went away, so a successful session never moves this and the count is a
+// count of attempts the target actually had to deal with. That is the measure
+// containment has to be proven against: not elapsed time, which is a flake
+// waiting to happen, and not the proxy's own view, which is the thing under
+// test.
+func targetRefusedLogins(t *testing.T) int {
+	t.Helper()
+	r := compose(t, "logs", nodeTarget)
+	if r.code != 0 {
+		t.Fatalf("read the target's log: %v", r)
+	}
+	return strings.Count(r.output(), "authenticating user")
+}
+
+// waitForPriorityRecord waits for the priority record carrying an event name.
+//
+// The priority endpoint is where a critical record goes (D8) and the handoff to
+// it is non-blocking, so the record lands shortly after the client call returns
+// rather than before it.
+func waitForPriorityRecord(t *testing.T, event string) logRecord {
+	t.Helper()
+	var found logRecord
+	waitFor(t, "the "+event+" record to reach Hoplock Control", func() bool {
+		for _, rec := range fetchLogs(t).Priority {
+			if rec.Attributes["event"] == event {
+				found = rec
+				return true
+			}
+		}
+		return false
+	})
+	return found
 }
 
 // --- target-side enforcement (PLAN §6.5, phase 0019) -------------------------

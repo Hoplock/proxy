@@ -8,12 +8,14 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/hoplock/proxy/internal/config"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/sshtest"
 )
 
 // recordingAuthenticator stands in for a credential method so a test can see
@@ -284,4 +286,172 @@ func (a *recordingAuth) Name() string { return a.name }
 func (a *recordingAuth) Provision(context.Context, *identity.Identity, Target) (*ProvisionedAccess, error) {
 	a.calls++
 	return &ProvisionedAccess{ClientConfig: &ssh.ClientConfig{User: "netadmin"}}, nil
+}
+
+// namedAuthenticator is a method that can name the credential it would dial
+// with, which is what makes it eligible for containment.
+type namedAuthenticator struct {
+	name   string
+	handle string
+	calls  int
+	err    error
+}
+
+func (a *namedAuthenticator) Name() string { return a.name }
+
+func (a *namedAuthenticator) CredentialHandle(Target) string { return a.handle }
+
+func (a *namedAuthenticator) Provision(context.Context, *identity.Identity, Target) (*ProvisionedAccess, error) {
+	a.calls++
+	if a.err != nil {
+		return nil, a.err
+	}
+	return &ProvisionedAccess{ClientConfig: &ssh.ClientConfig{User: a.name}}, nil
+}
+
+// TestSelectorWithholdsAnOpenCredentialBeforeProvisioning is the containment
+// property that matters most: an open breaker means the method never RUNS.
+//
+// Checking after provisioning would already have opened a connection to the
+// target — on the ephemeral method, the management login — and the connection
+// is precisely what a target's per-source defences count.
+func TestSelectorWithholdsAnOpenCredentialBeforeProvisioning(t *testing.T) {
+	method := &namedAuthenticator{name: MethodBrokeredKey, handle: "stale-fleet"}
+	sel, err := NewSelector(map[string]TargetAuthenticator{MethodBrokeredKey: method}, MethodBrokeredKey, nil)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	breaker := NewRejectionBreaker(RejectionPolicy{Threshold: 1, Window: time.Minute, Cooldown: time.Minute})
+	sel = sel.WithRejectionBreaker(breaker)
+
+	ctx := context.Background()
+	id := &identity.Identity{Subject: "u-1", Login: "alice"}
+	tgt := Target{Host: "appliance", Port: 22, Auth: &control.TargetAuth{Method: control.TargetAuthBrokeredKey}}
+
+	access, err := sel.Provision(ctx, id, tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	want := RejectionKey{Target: "appliance:22", Method: MethodBrokeredKey, Handle: "stale-fleet"}
+	if access.Credential != want {
+		t.Fatalf("access.Credential = %+v, want %+v", access.Credential, want)
+	}
+
+	// The engine reports the handshake through the access, which is the seam a
+	// device driver's own dial path adopts rather than reaching for the breaker.
+	access.DialOutcome(errors.New(
+		"ssh: unable to authenticate, attempted methods [none publickey], no supported methods remain"))
+
+	calls := method.calls
+	_, err = sel.Provision(ctx, id, tgt)
+	if !errors.Is(err, ErrCredentialWithheld) {
+		t.Fatalf("Provision after the threshold returned %v, want ErrCredentialWithheld", err)
+	}
+	if method.calls != calls {
+		t.Errorf("the method ran %d more times while its credential was withheld", method.calls-calls)
+	}
+}
+
+// TestSelectorDoesNotFallThroughAWithheldRung: a withheld credential is not an
+// unsatisfiable rung.
+//
+// D14's fall-through exists for rungs this proxy has no material for, which is
+// a standing fact about the deployment. Containment is a transient local
+// condition, and answering it by serving the session on the NEXT rung would be
+// a quiet downgrade to a weaker credential than the one Hoplock Control put
+// first — decided by the proxy, which is exactly what D2 forbids.
+func TestSelectorDoesNotFallThroughAWithheldRung(t *testing.T) {
+	first := &namedAuthenticator{name: MethodBrokeredKey, handle: "stale-fleet"}
+	second := &recordingAuthenticator{name: MethodStaticKey}
+	sel, err := NewSelector(map[string]TargetAuthenticator{
+		MethodBrokeredKey: first,
+		MethodStaticKey:   second,
+	}, MethodStaticKey, nil)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	breaker := NewRejectionBreaker(RejectionPolicy{Threshold: 1, Window: time.Minute, Cooldown: time.Minute})
+	breaker.Reject(RejectionKey{Target: "appliance:22", Method: MethodBrokeredKey, Handle: "stale-fleet"})
+	sel = sel.WithRejectionBreaker(breaker)
+
+	_, err = sel.Provision(context.Background(), &identity.Identity{Subject: "u-1"}, Target{
+		Host: "appliance", Port: 22,
+		Ladder: &control.TargetAuthLadder{
+			{Method: control.TargetAuthBrokeredKey},
+			{Method: control.TargetAuthStaticKey},
+		},
+	})
+	if !errors.Is(err, ErrCredentialWithheld) {
+		t.Fatalf("Provision returned %v, want ErrCredentialWithheld", err)
+	}
+	if second.calls != 0 {
+		t.Errorf("the session fell through to %s, which the server did not put first", second.name)
+	}
+}
+
+// TestSelectorScoresNothingForAMethodThatCannotNameItsCredential: a method with
+// no handle gets no containment, rather than containment keyed on something
+// that does not identify what it dials with.
+func TestSelectorScoresNothingForAMethodThatCannotNameItsCredential(t *testing.T) {
+	method := &recordingAuthenticator{name: MethodBrokeredKey}
+	sel, err := NewSelector(map[string]TargetAuthenticator{MethodBrokeredKey: method}, MethodBrokeredKey, nil)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	sel = sel.WithRejectionBreaker(NewRejectionBreaker(RejectionPolicy{Threshold: 1, Window: time.Minute, Cooldown: time.Minute}))
+
+	ctx := context.Background()
+	id := &identity.Identity{Subject: "u-1"}
+	tgt := Target{Host: "appliance", Port: 22, Auth: &control.TargetAuth{Method: control.TargetAuthBrokeredKey}}
+	access, err := sel.Provision(ctx, id, tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if access.Credential != (RejectionKey{}) {
+		t.Fatalf("access.Credential = %+v, want the zero key", access.Credential)
+	}
+	access.DialOutcome(errors.New(
+		"ssh: unable to authenticate, attempted methods [none publickey], no supported methods remain"))
+	if _, err := sel.Provision(ctx, id, tgt); err != nil {
+		t.Fatalf("a method with no credential handle was contained: %v", err)
+	}
+}
+
+// TestCredentialHandlesAreHandlesAndNotMaterial holds each method's handle to
+// being the identifier the audit record may carry.
+func TestCredentialHandlesAreHandlesAndNotMaterial(t *testing.T) {
+	signer := sshtest.MustGenerateSigner()
+
+	static, err := NewStaticKeyAuthenticator(StaticKeyOptions{Signer: signer, Username: "netadmin"})
+	if err != nil {
+		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	}
+	if got, want := static.CredentialHandle(Target{}), ssh.FingerprintSHA256(signer.PublicKey()); got != want {
+		t.Errorf("static-key handle = %q, want the key's fingerprint %q", got, want)
+	}
+
+	brokered, err := NewBrokeredKeyAuthenticator(BrokeredKeyOptions{Source: &fakeCredentialSource{}})
+	if err != nil {
+		t.Fatalf("NewBrokeredKeyAuthenticator: %v", err)
+	}
+	named := Target{Auth: &control.TargetAuth{
+		Method: control.TargetAuthBrokeredKey,
+		Params: map[string]string{ParamCredentialRef: "appliance-fleet"},
+	}}
+	if got := brokered.CredentialHandle(named); got != "appliance-fleet" {
+		t.Errorf("brokered-key handle = %q, want the route's credential_ref", got)
+	}
+	if got := brokered.CredentialHandle(Target{}); got == "" {
+		t.Error("a route naming no credential_ref produced no handle; the source keys on the target instead")
+	}
+}
+
+// fakeCredentialSource satisfies the brokered method's constructor; nothing
+// here fetches a credential.
+type fakeCredentialSource struct{}
+
+func (*fakeCredentialSource) Name() string { return "fake" }
+
+func (*fakeCredentialSource) Credential(context.Context, CredentialRequest) (*Credential, error) {
+	return nil, ErrNoCredential
 }

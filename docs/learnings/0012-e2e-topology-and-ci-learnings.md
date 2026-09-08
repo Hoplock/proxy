@@ -1,5 +1,13 @@
 # 0012 — Full end-to-end topology & CI gate — Learnings
 
+> **Pointer note (added by 0025).** The follow-up prompt this file calls
+> `prompts/queued/0019-target-auth-failure-containment.md` was renumbered to
+> **0025** and is now **implemented**:
+> `prompts/implemented/0025-target-auth-failure-containment.md`, with
+> `docs/learnings/0025-target-auth-failure-containment-learnings.md`. Nothing
+> else in this file changed — the `PerSourcePenalties` finding it records is
+> still exactly what happened.
+
 ## Summary
 - What shipped: the prototype's acceptance gate. `deploy/` is a `docker compose`
   topology of the whole system on networks that make its segmentation claims

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hoplock/proxy/internal/config"
 )
@@ -90,5 +91,66 @@ func TestFixtureTemplateHasPlaceholders(t *testing.T) {
 		if !bytes.Contains(script, []byte(placeholder)) {
 			t.Errorf("gen-material.sh no longer substitutes %s", placeholder)
 		}
+	}
+}
+
+// TestContainmentSettingsTheScenariosDependOn pins the two numbers the
+// credential-rejection scenarios are written against.
+//
+// They are not the defaults, deliberately: the threshold is low enough that a
+// scenario reaches it in two sessions, and the cooldown is long enough that no
+// assertion in the run can be overtaken by it. Both are load-bearing, and a
+// change to either turns a scenario into one that passes for the wrong reason
+// — or one that fails minutes into the e2e job for a reason nobody reads.
+func TestContainmentSettingsTheScenariosDependOn(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(filepath.Join(deployDir, "proxy", "proxy-direct.yaml"))
+	if err != nil {
+		t.Fatalf("load proxy-direct.yaml: %v", err)
+	}
+	r := cfg.Auth.Target.Rejection
+	if r.Threshold == nil || *r.Threshold != 2 {
+		t.Errorf("auth.target.rejection.threshold = %v, want 2 (test/e2e reaches it in two sessions)", r.Threshold)
+	}
+	if r.Cooldown < 10*time.Minute {
+		t.Errorf("auth.target.rejection.cooldown = %s, want at least 10m so no assertion outlives it", r.Cooldown)
+	}
+	if r.Window < r.Cooldown {
+		t.Errorf("auth.target.rejection.window = %s, shorter than the cooldown %s", r.Window, r.Cooldown)
+	}
+}
+
+// TestTheRefusedRouteNamesACredentialNothingElseUses is the property that keeps
+// the containment scenarios from breaking every route after them: they leave a
+// breaker OPEN for the rest of the run, and that is safe only while exactly one
+// route names the credential it is scored against.
+func TestTheRefusedRouteNamesACredentialNothingElseUses(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	if got := bytes.Count(body, []byte("credential_ref: stale-fleet")); got != 1 {
+		t.Errorf("%d routes name credential_ref stale-fleet, want exactly 1", got)
+	}
+
+	script, err := os.ReadFile(filepath.Join(deployDir, "gen-material.sh"))
+	if err != nil {
+		t.Fatalf("read gen-material.sh: %v", err)
+	}
+	if !bytes.Contains(script, []byte("stale-fleet.key")) {
+		t.Error("gen-material.sh no longer generates the stale brokered credential")
+	}
+	// Its public half must never be installed on the target, or the route it
+	// backs would simply work and every containment scenario would pass
+	// vacuously.
+	entrypoint, err := os.ReadFile(filepath.Join(deployDir, "target", "entrypoint.sh"))
+	if err != nil {
+		t.Fatalf("read the target entrypoint: %v", err)
+	}
+	if bytes.Contains(entrypoint, []byte("stale_key")) {
+		t.Error("the target installs the stale credential; the route it backs must be refused")
 	}
 }

@@ -325,6 +325,35 @@ type TargetAuth struct {
 	BrokeredKey BrokeredKeyAuth `yaml:"brokered_key"`
 	// EphemeralAccount configures short-lived administrators on devices (D13).
 	EphemeralAccount EphemeralAccountAuth `yaml:"ephemeral_account"`
+	// Rejection bounds how often a REFUSED proxy→target credential is retried
+	// (prompt 0025).
+	Rejection RejectionAuth `yaml:"rejection"`
+}
+
+// RejectionAuth bounds repeated proxy→target credential rejection.
+//
+// It is proxy-local rather than server-sent, and that is the same call D2
+// already makes for `chain.max_hops` and `control.cache.max_ttl`: it can only
+// make the proxy attempt LESS than Hoplock Control authorised, never more, and
+// it never turns a denial into an allow. It is self-protection, and what it
+// protects against is a property of this proxy's own deployment — a decrypting
+// proxy is one source address to every target it fronts, so a target's
+// per-source abuse defences score one route's stale credential against every
+// session the proxy opens (README, "Target prerequisites").
+type RejectionAuth struct {
+	// Threshold is the number of consecutive rejections of one credential, on
+	// one target, inside Window that stops the proxy attempting it.
+	//
+	// It is a pointer because absent and zero are different answers: absent
+	// takes the default, and an explicit 0 is the escape hatch that disables
+	// containment entirely.
+	Threshold *int `yaml:"threshold"`
+	// Window bounds how long a run of rejections counts as consecutive. Zero
+	// takes the default.
+	Window time.Duration `yaml:"window"`
+	// Cooldown is how long the proxy withholds a credential once the threshold
+	// is reached. Zero takes the default.
+	Cooldown time.Duration `yaml:"cooldown"`
 }
 
 // EphemeralAccountAuth is the local material the device provisioner needs (D13,
@@ -898,6 +927,22 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 			v.add("auth.target.brokered_key.source", ErrInvalid,
 				fmt.Sprintf("unknown source %q", t.BrokeredKey.Source))
 		}
+	}
+
+	// The breaker applies to every method, so it is checked unconditionally. A
+	// negative threshold is rejected rather than read as "disabled": disabling
+	// containment is a decision an operator writes as 0, and a typo that
+	// silently switched it off would be the one misconfiguration nothing ever
+	// reports.
+	if t.Rejection.Threshold != nil && *t.Rejection.Threshold < 0 {
+		v.add("auth.target.rejection.threshold", ErrInvalid,
+			"must not be negative; 0 disables containment")
+	}
+	if t.Rejection.Window < 0 {
+		v.add("auth.target.rejection.window", ErrInvalid, "must not be negative")
+	}
+	if t.Rejection.Cooldown < 0 {
+		v.add("auth.target.rejection.cooldown", ErrInvalid, "must not be negative")
 	}
 }
 

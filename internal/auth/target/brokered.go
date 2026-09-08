@@ -58,7 +58,22 @@ type BrokeredKeyAuthenticator struct {
 	logger   *log.Logger
 }
 
-var _ TargetAuthenticator = (*BrokeredKeyAuthenticator)(nil)
+var (
+	_ TargetAuthenticator  = (*BrokeredKeyAuthenticator)(nil)
+	_ CredentialIdentifier = (*BrokeredKeyAuthenticator)(nil)
+)
+
+// CredentialHandle implements CredentialIdentifier with the route's
+// credential_ref, which is an opaque handle by contract (D6a): no credential
+// material travels on the API, and the reference only SELECTS material this
+// proxy already holds.
+//
+// A route naming no reference gets the same placeholder the log lines use. The
+// source then keys on the target, and the target is already a field of the
+// breaker's key, so one placeholder is not one shared identity.
+func (a *BrokeredKeyAuthenticator) CredentialHandle(tgt Target) string {
+	return refForLog(newParams(tgt.Auth).str(ParamCredentialRef, ""))
+}
 
 // NewBrokeredKeyAuthenticator validates opts and returns the authenticator.
 func NewBrokeredKeyAuthenticator(opts BrokeredKeyOptions) (*BrokeredKeyAuthenticator, error) {

@@ -135,6 +135,21 @@ func NewSSHAdminDialer(opts SSHAdminOptions) (AdminDialer, error) {
 	return d, nil
 }
 
+// CredentialHandle names the management credential without disclosing it: the
+// SHA256 fingerprint of its public key.
+//
+// A fingerprint is a handle by construction — it is what an operator already
+// reads in `ssh-keygen -lf` output and what a target's own logs print — so it
+// is safe in an audit record, and it is stable across the sessions one key
+// provisions, which is what makes it the identity a run of rejections is scored
+// against (prompt 0025).
+func (d *sshAdminDialer) CredentialHandle() string {
+	if d.signer == nil {
+		return ""
+	}
+	return ssh.FingerprintSHA256(d.signer.PublicKey())
+}
+
 // Dial opens the privileged login.
 //
 // The host-key policy is the caller's (D7): a session hands its own callback
