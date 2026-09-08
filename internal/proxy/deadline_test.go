@@ -413,3 +413,87 @@ func TestAChainedSessionCannotExtendItsDeadline(t *testing.T) {
 		t.Errorf("exit status = %d, want %d", got, exitSessionExpired)
 	}
 }
+
+// TestDeadlineTearsDownWhileTheRemoteCommandIsStillRunning is the regression
+// test for the defect the e2e topology caught: the deadline fired on time and
+// the user was told, but the session's teardown did not run until the remote
+// program exited two minutes later — so the ephemeral account, and anything it
+// had backgrounded, outlived the deadline by however long the command ran.
+//
+// The cause is that teardown waits for the channel pumps and one of them is
+// blocked reading the TARGET leg, which nothing had closed. A deadline is
+// precisely the case where a session ends while a long command is still
+// running, which is why the ordinary close path never showed it.
+func TestDeadlineTearsDownWhileTheRemoteCommandIsStillRunning(t *testing.T) {
+	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	if err != nil {
+		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	}
+	counting := &countingAuthenticator{inner: staticKey}
+
+	// A shell that never returns on its own, standing in for the `sleep 120`
+	// the topology runs. It is released only when the test is over, so a
+	// teardown that happens is a teardown the expiry caused.
+	release := make(chan struct{})
+
+	h := newHarness(t, harnessOptions{
+		sessionDeadline: testDeadline,
+		targetAuth:      counting,
+		options:         func(o *Options) { o.DeadlineWarning = -1 },
+		targetOptions: sshtest.Options{
+			Shell: func(io.ReadWriter) uint32 {
+				<-release
+				return 0
+			},
+		},
+	})
+	// Registered AFTER the harness so it runs BEFORE the harness's cleanups
+	// (t.Cleanup is LIFO): the stand-in target cannot shut down while one of
+	// its shells is still blocked.
+	t.Cleanup(func() { close(release) })
+
+	session, _ := heldSession(t, h)
+	_ = session.Wait()
+
+	waitFor(t, func() bool { return counting.teardowns.Load() == 1 },
+		"the credentials to be torn down while the remote command is still running")
+	waitFor(t, func() bool { return len(h.server.Sessions()) == 0 }, "the session to be deregistered")
+}
+
+// TestRevokedSessionTearsDownWhileTheRemoteCommandIsStillRunning is the same
+// claim for the other proxy-initiated ending.
+//
+// The defect above was latent in the kill path too — a revoked session held its
+// ephemeral account for as long as the command it was revoked in the middle of
+// kept running — and only never showed because every kill scenario until now
+// used a command that exits at once. PLAN §6.4 says "the session was killed"
+// must mean the connection is gone; it has to mean the account is gone too.
+func TestRevokedSessionTearsDownWhileTheRemoteCommandIsStillRunning(t *testing.T) {
+	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	if err != nil {
+		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	}
+	counting := &countingAuthenticator{inner: staticKey}
+	release := make(chan struct{})
+
+	h := newHarness(t, harnessOptions{
+		targetAuth: counting,
+		targetOptions: sshtest.Options{
+			Shell: func(io.ReadWriter) uint32 {
+				<-release
+				return 0
+			},
+		},
+	})
+	t.Cleanup(func() { close(release) })
+
+	session, _ := heldSession(t, h)
+	if err := h.server.KillSubject(context.Background(), testSubject, "revoked by the security team"); err != nil {
+		t.Fatalf("KillSubject: %v", err)
+	}
+	_ = session.Wait()
+
+	waitFor(t, func() bool { return counting.teardowns.Load() == 1 },
+		"the revoked session's credentials to be torn down while the remote command is still running")
+	waitFor(t, func() bool { return len(h.server.Sessions()) == 0 }, "the session to be deregistered")
+}

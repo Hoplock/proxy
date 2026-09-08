@@ -577,6 +577,12 @@ func (s *session) kill(reason string) {
 		sendExitStatus(ch, exitProxyFailure)
 		_ = ch.Close()
 	}
+	// The same reason an expiry closes it (endLeg): teardown is deferred behind
+	// the channel pumps, and a pump blocked on the target leg would hold the
+	// revoked session's credentials open until the remote program finished.
+	// "The session was killed" has to mean the connection is gone AND the
+	// account is gone, which is the claim close() already makes below.
+	s.endLeg()
 	s.disconnect(text)
 }
 

@@ -9,6 +9,7 @@
 - **Key files:** `internal/proxy/deadline.go` (new: the timer, and the two
   lifetimes it is NOT) + `{session,logging,feedback,proxy}.go`;
   `internal/routing/deadline.go` (new: `ShortenDeadline`) + `{resolve,hop}.go`;
+  `internal/proxy/session.go`'s `kill` (the same leg-closing fix — see below);
   `internal/logging/record.go`; `internal/config/config.go` +
   `config.example.yaml`; `cmd/proxy/main.go`;
   `deploy/control/fixtures.template.yaml`, `deploy/proxy/proxy-{direct,nexthop,zone}.yaml`;
@@ -42,6 +43,19 @@
 - **Exit status 253** (`exitSessionExpired`), deliberately not the **254** a
   policy kill reports: a pipeline can tell "time ran out" from "policy stopped
   you" without parsing text.
+- **The defect the e2e topology caught, and the one thing to remember from this
+  phase:** ending a session on the proxy's own initiative must close the
+  **target leg**, not just the client's side. Teardown runs in `session.close`,
+  deferred behind `run`'s wait for the channel pumps, and a pump sits blocked
+  reading the target leg until the remote program exits by itself — so a
+  30-second deadline against a `sleep 120` tore down at **120 seconds**, keeping
+  the ephemeral account and everything it had backgrounded alive the whole time.
+  `session.endLeg` fixes it, and **the same hole was latent in `kill`** (a
+  revoked session held its account for the rest of the command it was revoked
+  during); every kill scenario until now used a command that exits at once.
+  Regression tests: `TestDeadlineTearsDownWhileTheRemoteCommandIsStillRunning`
+  and `TestRevokedSessionTearsDownWhileTheRemoteCommandIsStillRunning`, both
+  driving a stand-in target whose shell never returns.
 - **Tolerance: the close is *initiated* at the instant, plus Go timer latency**
   (single-digit ms idle, tens of ms under load) — the timer never fires early,
   and nothing new is served after it. The client's connection is gone within
@@ -66,7 +80,9 @@
 - **Decisions:** D2, D11, D16 and §6.5 unchanged in substance. §4.3 gained a
   **third case** (an expiry is neither branch), §5.1 gained the detached-work
   consequence, §6.1 the deadline on the hop trail, §7 the `end_reason` field.
-- **What the NEXT session must know:** the hop-trail payload gained a field, so
+- **What the NEXT session must know:** ending a session from the proxy side
+  means closing **both** legs — the bullet above is the trap, and it is invisible
+  in any test whose remote command exits promptly. Also: the hop-trail payload gained a field, so
   a chain of **mixed proxy builds refuses the hop** rather than dropping the
   deadline (fail-closed, deliberate — see *Details*). And `end_reason` is now
   the single answer to "why did this session stop": a phase that invents a new
@@ -182,6 +198,39 @@ would put it on an outage one).
 The instant is on the **authorize** record too, so a proxy that died mid-session
 still shows an auditor the bound the session was given.
 
+### The bug CI found that local tests could not
+
+Everything about the timer was right the first time — the CI log shows
+`deadline reached at=... overshoot=0s`, the warning at exactly 8 seconds out,
+and the client exiting with 253 after 30.15s. What was wrong was what happened
+*after*:
+
+```
+01:40:13 deadline armed at=01:40:43 in=30s warn_at=01:40:35
+01:40:35 deadline warning delivered channels=1 remaining=8s
+01:40:43 deadline reached at=01:40:43 overshoot=0s channels=1
+01:42:13 session ... end ... duration=2m0.18s      ← 90 seconds late
+```
+
+`2m0.18s` is the `sleep 120` the scenario ran. The chain is: `session.close`
+holds the credential teardown, `run` defers `close` until the channel pumps
+finish, and one pump is blocked reading the target leg. Closing the client's
+connection does not unblock it — nothing on the target end knows the client has
+gone — so the session's account lived until the remote command finished on its
+own.
+
+Three of the four e2e subtests failed on that and were **right to**: the
+account-removal, detached-process and record-drain assertions are the ones that
+distinguish "the deadline fired" from "the deadline ended the session". A
+weaker suite would have passed on the first subtest alone and shipped a deadline
+that closes the terminal while leaving the account and its background jobs
+running — which is the security claim, not a detail.
+
+The two unit tests that now cover it use a stand-in target whose `Shell` blocks
+until the test releases it. Registering that release with `t.Cleanup` **after**
+`newHarness` matters: cleanups are LIFO, and the stand-in target cannot shut
+down while one of its shells is still blocked.
+
 ### Test notes
 
 - Unit tests use real short durations (500ms deadline, 250ms warning) rather
@@ -201,11 +250,14 @@ still shows an auditor the bound the session was given.
   `ephemeral-user`). It is ephemeral-user on purpose: the account-removal and
   detached-process assertions need an account to have been created.
 
-### What could not be run in this session
+### What could not be run in this session (first push)
 
 `make e2e` needs a Docker daemon and this session had none, so the four e2e
-subtests are **compiled and vetted (`go vet -tags e2e`) but not executed
-locally**; CI's `e2e topology` job is the gate. `golangci-lint` could not run
+subtests were **compiled and vetted (`go vet -tags e2e`) but not executed
+locally** on the first push; CI's `e2e topology` job is the gate, and it earned
+its keep — it found the leg-closing defect above, which no unit test in the
+suite would have caught because they all used remote commands that exit at once.
+The two regression tests added afterwards close that gap locally. `golangci-lint` could not run
 either — the sandbox's v2.5.0 refuses a module targeting Go 1.26, the exact
 mismatch `.github/workflows/ci.yml` documents; the `lint` job pins v2.13.2.
 Everything else (`go build ./...`, `go vet ./...`, `go test ./...`, `gofmt -l`)

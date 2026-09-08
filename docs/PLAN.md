@@ -2022,6 +2022,14 @@ learnings, because they are what make the field's *shape* the right one:
 - **It is enforced locally**, on the proxy's own timer, with no call to Hoplock
   Control at any point. That is the whole reason the bound exists beside
   revocation, and it is proven end to end with Control stopped.
+- **Ending a session from the proxy's side closes BOTH legs.** Credential
+  teardown is deferred behind the channel pumps, and a pump blocked reading the
+  target leg does not unblock when the client's side closes — nothing on the
+  target end knows the client has gone. Without closing the leg, a session ended
+  by the proxy keeps its account, and anything that account has backgrounded,
+  for the whole remaining runtime of whatever it happened to be running. It
+  applies identically to a revocation (§6.4): "the session was killed" has to
+  mean the account is gone, not only the connection.
 - **A chained session's deadline can only ever shorten.** The instant the chain
   resolved travels to the next hop on the `hop-trail@hoplock.io` request beside
   the trail and the hop cap, and each hop takes the earlier of it and its own

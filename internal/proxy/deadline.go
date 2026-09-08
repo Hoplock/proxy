@@ -168,6 +168,10 @@ func (s *session) expire(at time.Time) {
 		sendExitStatus(ch, exitSessionExpired)
 		_ = ch.Close()
 	}
+	// The TARGET leg goes too, and this is not tidiness — see endLeg. Without
+	// it the account this session was provisioned outlives its own deadline for
+	// as long as the remote command happens to run.
+	s.endLeg()
 	// Let the client read the exit status and hang up before the connection
 	// goes. Unlike a policy kill, the status here is the point — it is what
 	// distinguishes an expiry from every other ending in a pipeline — and
@@ -178,6 +182,28 @@ func (s *session) expire(at time.Time) {
 	}
 	s.disconnect(text)
 }
+
+// endLeg closes the target-leg connection when the PROXY is the one ending the
+// session — an expiry, or a revocation.
+//
+// It is load-bearing rather than housekeeping. Teardown runs in session.close,
+// which is deferred behind run's wait for the channel pumps, and a pump is
+// blocked reading the target leg until the remote program exits on its own.
+// Closing the client's side does not unblock it: nothing on the target end
+// knows the client has gone. So without this, a session ended by the proxy
+// keeps its ephemeral account — and anything that account has backgrounded —
+// alive for the whole remaining runtime of whatever was running. `sleep 120`
+// meant a deadline of 30 seconds tore down at 120.
+//
+// The ordinary close path never showed it: a user hanging up closes the
+// target's stdin, the remote program exits, and the pump ends. A deadline is
+// exactly the case where a session ends while a long command is still running.
+//
+// Closing the leg before teardown is the order session.close already uses, and
+// it is safe: credential teardown opens its own management connection to the
+// target and never rides this one. closeLeg is idempotent, so close doing it
+// again is a no-op.
+func (s *session) endLeg() { s.closeLeg() }
 
 // openChannels is the session's currently open channels.
 func (s *session) openChannels() []ssh.Channel {
