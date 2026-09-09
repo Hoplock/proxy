@@ -10,12 +10,12 @@
 > naming the policy the evidence picked.
 >
 > **▶ Run order.** It is queued ahead of the contract collapse because that one
-> must stay last (`prompts/queued/0033-collapse-contract-to-one-version.md`),
+> must stay last (`prompts/queued/0034-collapse-contract-to-one-version.md`),
 > and behind everything else because nothing depends on it: an operator's fix
 > for the problem it studies — raise `control.cache.max_entries` — already
 > shipped in **0022**. It was inserted at **0032** by the revision that moved
-> the collapse to **0033**; the mapping is in the note at the end of
-> `docs/PLAN.md` §10.
+> the collapse to **0033**, which phase 0025 then moved to **0034**; both
+> mappings are in the notes at the end of `docs/PLAN.md` §10.
 
 ## Read first
 - `docs/PROTOCOL.md` — session workflow.

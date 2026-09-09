@@ -46,9 +46,10 @@
   `credential_method`, `credential_handle`, `rejection_count`,
   `rejection_breaker` (`open`/`closed`) and `rejection_open_until`. New
   recorder method `logging.SessionRecorder.CriticalFailure`.
-- **Yes, there is another place a target-side failure reads as a network fault**
-  — `handshakeNextHop` in `internal/proxy/nexthop.go`. Details below; it is a
-  follow-up, not a regression this PR introduced.
+- **Yes, there is another place a far-side refusal reads as a network fault**
+  — `handshakeNextHop` in `internal/proxy/nexthop.go`. Queued as
+  **`prompts/queued/0033-hop-credential-rejection.md`**, which moved the
+  contract collapse to **0034**; details below.
 - What the NEXT session must know: `ProvisionedAccess.DialOutcome(err)` is the
   seam. Anything that opens a leg with provisioned credentials reports the
   handshake through it and gets back the credential's state; phase 0014's device
@@ -123,11 +124,23 @@ to a hub exactly as it is to a target.
 
 It was left alone deliberately — this prompt scopes itself to the proxy→target
 credential plane, and the chain key is a different credential with a different
-lifecycle and a different operator remedy. Fixing it is small
-(`IsAuthRejection` and the breaker are both reusable as they stand; it needs a
-`stageHopAuth`, its wording, its record, and a key naming the hop rather than a
-target) and it has **no prompt yet**. Queueing one means renumbering, because
-`0033` (the contract collapse) must stay last — see `docs/PROTOCOL.md` §6.
+lifecycle and a different operator remedy. It is now
+**`prompts/queued/0033-hop-credential-rejection.md`**, added by this phase at
+the user's request, which required renumbering the contract collapse
+**0033 → 0034** so it stays last (`docs/PROTOCOL.md` §6; the mapping is the
+newest run-order note at the end of `docs/PLAN.md` §10).
+
+**One thing that phase must not copy from this one.** Containment here was
+justified by a property of the *far end*: an OpenSSH target scores failed
+authentications against the proxy's source address, so one stale credential got
+the proxy blocked for everybody. The far end of a chain leg is **another Hoplock
+proxy**, built on `x/crypto/ssh`, which has no such defence — so that blast
+radius does not exist there, and the two hop directions differ again (a `relay`
+hop opens no new connection at all; it rides a registration the downstream
+already made). The prompt therefore makes classification, disclosure and the
+record **required**, and makes containment a question it must answer with
+reasoning rather than a mechanism to copy across. Reuse `RejectionBreaker` if
+the answer is yes; do not write a second one.
 
 Two lesser cases, both out of this prompt's scope and neither claiming a network
 fault:
@@ -182,8 +195,9 @@ pre-existing environment mismatch, not something this change introduced; CI's
 
 ### Follow-ups
 
-- A prompt for `handshakeNextHop`'s classification and containment, above. Not
-  queued here because it needs a renumber to sit before `0033`.
+- **`prompts/queued/0033-hop-credential-rejection.md`** — `handshakeNextHop`'s
+  classification, and the containment question, above. Queued by this phase;
+  the contract collapse moved to `0034` for it.
 - `brokered-key` still falls back to `identity.Login` for its username
   (0013's known gap, prompt 0028). Unchanged by this phase, but note that a
   route naming no `credential_ref` gets the handle `(by target)` — the source
