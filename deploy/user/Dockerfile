@@ -17,4 +17,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-client ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# The keyboard-interactive answering machine the password+MFA scenarios need;
+# see askpass.sh for why a helper program is the only way in without a terminal.
+COPY user/askpass.sh /usr/local/bin/hoplock-askpass
+RUN chmod 0755 /usr/local/bin/hoplock-askpass
+
 ENTRYPOINT []

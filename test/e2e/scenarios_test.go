@@ -7,8 +7,11 @@ package e2e
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestTopology is the prototype's acceptance gate.
@@ -26,6 +29,13 @@ func TestTopology(t *testing.T) {
 	t.Run("channel policy", testChannelPolicy)
 	t.Run("command policy", testCommandPolicy)
 	t.Run("target credentials", testTargetCredentials)
+	// Directly after the credential scenarios, because it is the same subject
+	// seen under load: what the per-session token in an ephemeral principal is
+	// for (PLAN §5.1). It has to run before the outage scenario, which stops
+	// Hoplock Control — a session cannot be provisioned without it — and before
+	// the leak check, which is what proves neither of its overlapping teardowns
+	// took the other's account with it.
+	t.Run("concurrent provisioning", testConcurrentProvisioning)
 	// Before the outage scenario, which stops Hoplock Control: these read the
 	// records they produced. They also OPEN a breaker on one credential and
 	// leave it open for the rest of the run, which is safe only because
@@ -34,6 +44,12 @@ func TestTopology(t *testing.T) {
 	t.Run("device credentials", testDeviceCredentials)
 	t.Run("target-side enforcement", testEnforcement)
 	t.Run("denial disclosure", testDenialDisclosure)
+	// Next to the disclosure scenario, because half of it is the same claim on
+	// a second axis: a denial must not say WHICH FACTOR failed any more than it
+	// says which target existed. It is before telemetry and the outage scenario
+	// because it reads the audit record its own session produced, and Hoplock
+	// Control has to be up both to decide the second factor and to receive it.
+	t.Run("password and out-of-band MFA", testPasswordMFA)
 	t.Run("telemetry", testTelemetry)
 	// Before the outage scenario, and it stops Hoplock Control itself for one
 	// of its subtests — the whole claim of a locally enforced deadline is that
@@ -417,6 +433,214 @@ func testTargetCredentials(t *testing.T) {
 				before.stdout, after.stdout)
 		}
 	})
+}
+
+// --- concurrent provisioning (PLAN §5.1) -------------------------------------
+
+// concurrentHold is how long each overlapping session stays on the target.
+//
+// It has to outlast provisioning both sessions plus the polls that observe the
+// overlap, and stay comfortably inside commandTimeout: a session the harness
+// killed for running long would be torn down because the CLIENT went away,
+// which is a different path from the one under test.
+const concurrentHold = 15 * time.Second
+
+// holdingCommand reports the account it is running as and then keeps the
+// session open. The account is taken from what the client printed rather than
+// only from the target, so that the two halves of the claim stay independent:
+// what the session was logged in AS, and what the target actually HELD.
+func holdingCommand() string {
+	return fmt.Sprintf("/usr/bin/id -un; /bin/sleep %d", int(concurrentHold.Seconds()))
+}
+
+// overlapping starts every session at once and returns a function that collects
+// what they produced.
+//
+// sshE is what makes this possible: it takes no *testing.T precisely so it can
+// run off the test goroutine, where t.Fatalf is illegal (0012 added it for the
+// outage scenario). Everything asserted here is asserted by the caller, on the
+// test goroutine, from the results this hands back.
+func overlapping(t *testing.T, sessions ...session) func() []result {
+	t.Helper()
+
+	type outcome struct {
+		res result
+		err error
+	}
+	done := make(chan outcome, len(sessions))
+	for _, s := range sessions {
+		go func(s session) {
+			res, err := sshE(s)
+			done <- outcome{res: res, err: err}
+		}(s)
+	}
+
+	return func() []result {
+		t.Helper()
+		out := make([]result, 0, len(sessions))
+		for range sessions {
+			o := <-done
+			if o.err != nil {
+				t.Errorf("an overlapping session could not run: %v\n%s", o.err, o.res)
+				continue
+			}
+			out = append(out, o.res)
+		}
+		return out
+	}
+}
+
+// testConcurrentProvisioning is the situation the token in an ephemeral
+// principal exists for (PLAN §5.1, "Why a per-session account"), and the one
+// nothing else in the tree exercises against a real target.
+//
+// The interesting claim is not that two sessions both worked — a shared account
+// would let both work too. It is that the target carried TWO ACCOUNTS while they
+// ran: one uid each, so neither session could attach to the other's tmux socket,
+// signal its processes or read its files without the proxy seeing a channel
+// open, and neither teardown had the other's account to remove.
+//
+// "While they ran" is therefore observed and not assumed. Run one after the
+// other, every assertion below would hold and prove nothing — it would be a
+// slower copy of the ephemeral-user scenario that already exists.
+func testConcurrentProvisioning(t *testing.T) {
+	t.Run("two overlapping sessions get two different accounts", func(t *testing.T) {
+		// An earlier scenario's account is removed as its session closes, and
+		// that teardown is asynchronous: counting accounts before it finished
+		// would count somebody else's.
+		waitFor(t, "the target to be free of ephemeral accounts before the overlap", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+
+		hold := func() session {
+			s := aliceOn(proxyDirect, "host.company.com")
+			s.command = holdingCommand()
+			return s
+		}
+		collect := overlapping(t, hold(), hold())
+
+		// The whole scenario rests on this: the target's own account database,
+		// read while both sessions are live, holding two accounts at once.
+		var live []string
+		waitUpTo(t, concurrentHold, "both sessions to hold an account on the target at the same moment", func() bool {
+			live = ephemeralAccountsOn(t)
+			return len(live) == 2
+		})
+		for _, name := range live {
+			if !strings.HasPrefix(name, "hl-") || !strings.Contains(name, "-alice-") {
+				t.Errorf("account %q on the target is not an hl-<tag>-alice-<token> account; live: %v", name, live)
+			}
+		}
+
+		results := collect()
+		if len(results) != 2 {
+			return // collect() already said which session could not run
+		}
+		reported := make([]string, 0, 2)
+		for i, r := range results {
+			wantExit(t, r, fmt.Sprintf("overlapping ephemeral session %d", i+1), 0)
+			reported = append(reported, strings.TrimSpace(r.stdout))
+		}
+		if reported[0] == reported[1] {
+			t.Errorf("both sessions logged in as %q; the per-session token is what stops two sessions "+
+				"for one login sharing an account (PLAN §5.1)", reported[0])
+		}
+		// The two accounts the target held are the two accounts the clients
+		// were logged in as — not two of one session's and none of the other's.
+		if got, want := sortedJoin(reported), sortedJoin(live); got != want {
+			t.Errorf("the sessions reported accounts %s, the target held %s at the same moment", got, want)
+		}
+
+		// Two teardowns, neither of which took the other's account with it and
+		// neither of which left its own behind. The suite-wide leak check runs
+		// much later; this one is what attributes a leak to the overlap.
+		waitFor(t, "both ephemeral accounts to be removed", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+		if homes := execIn(t, nodeTarget, "sh", "-c", "ls /home"); strings.Contains(homes.stdout, "hl-") {
+			t.Errorf("ephemeral home directories left behind by two overlapping sessions:\n%s", homes.stdout)
+		}
+	})
+
+	// The mirror image (D6a, PLAN §5.2). Nothing is provisioned, so the two
+	// sessions do share a uid — and the claim is not isolation but that the
+	// method has no per-session state for concurrency to corrupt: both work,
+	// and the target is byte-identical afterwards.
+	t.Run("two overlapping brokered sessions change nothing on the target", func(t *testing.T) {
+		const snapshot = "cat /etc/passwd; cat /home/netadmin/.ssh/authorized_keys; ls -la /home/netadmin /home/netadmin/.ssh"
+
+		// Same reason as the brokered scenario in testTargetCredentials: an
+		// ephemeral account disappearing between the two snapshots would read
+		// as "brokered-key modified the target".
+		waitFor(t, "the target to be free of ephemeral accounts before the snapshot", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+
+		before := execIn(t, nodeTarget, "sh", "-c", snapshot)
+		if before.code != 0 {
+			t.Fatalf("snapshot the target: %v", before)
+		}
+
+		hold := func() session {
+			s := svcOn(proxyDirect, "standing.company.com")
+			s.command = holdingCommand()
+			return s
+		}
+		collect := overlapping(t, hold(), hold())
+
+		// The overlap cannot be read out of the account database here — one
+		// standing account is the whole point — so it is counted in the
+		// processes the two sessions are running as it.
+		waitUpTo(t, concurrentHold, "both brokered sessions to be running on the target at the same moment", func() bool {
+			return standingSessionsOn(t) == 2
+		})
+
+		results := collect()
+		if len(results) != 2 {
+			return
+		}
+		for i, r := range results {
+			what := fmt.Sprintf("overlapping brokered session %d", i+1)
+			wantExit(t, r, what, 0)
+			if account := strings.TrimSpace(r.stdout); account != brokeredAccount {
+				t.Errorf("%s: logged in as %q, want the standing account %q\n%s", what, account, brokeredAccount, r)
+			}
+		}
+
+		after := execIn(t, nodeTarget, "sh", "-c", snapshot)
+		if after.stdout != before.stdout {
+			t.Errorf("two overlapping brokered sessions modified the target:\n--- before ---\n%s\n--- after ---\n%s",
+				before.stdout, after.stdout)
+		}
+	})
+}
+
+// brokeredAccount is the standing account every brokered route in the fixtures
+// logs in as. It exists on the target image before the proxy ever connects, and
+// nothing the proxy does creates or removes it.
+const brokeredAccount = "netadmin"
+
+// standingSessionsOn counts the held brokered sessions running on the target.
+//
+// It counts processes rather than accounts because there is only ever one
+// account to count. `who` would not do: an exec channel opens no pty and writes
+// no utmp record, so the sessions these scenarios run are invisible to it.
+func standingSessionsOn(t *testing.T) int {
+	t.Helper()
+	r := execIn(t, nodeTarget, "sh", "-c", "pgrep -u "+brokeredAccount+" -x sleep | wc -l")
+	n, err := strconv.Atoi(strings.TrimSpace(r.stdout))
+	if err != nil {
+		t.Fatalf("count the standing account's running sessions from %q: %v", r.stdout, err)
+	}
+	return n
+}
+
+// sortedJoin renders a set of account names so two of them can be compared
+// without depending on the order getent or the goroutines happened to produce.
+func sortedJoin(names []string) string {
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ", ")
 }
 
 // --- refused target credentials (prompt 0025) --------------------------------
@@ -969,6 +1193,195 @@ func testDenialDisclosure(t *testing.T) {
 	for _, leak := range []string{target, "ephemeral-user", "brokered-key", "readOnlyGroup", "deployGroup"} {
 		wantNotContains(t, r, "unauthorized target", leak)
 	}
+}
+
+// --- password + out-of-band MFA (PLAN §4.1, §4.3) ----------------------------
+
+// The password users in deploy/control/fixtures.template.yaml. Neither has a
+// key, so neither has any way in but the fallback method. These are test
+// fixtures; the password is never a secret and never reaches a log (D8).
+const (
+	mfaLogin    = "bob"
+	mfaPassword = "bob-e2e-password"
+
+	mfaDeniedLogin    = "mallory"
+	mfaDeniedPassword = "mallory-e2e-password"
+
+	// mfaPrompt is the fixture's own challenge text. Asserting on the SERVER's
+	// wording rather than the proxy's default is what shows the prompt travelled
+	// end to end: Hoplock Control knows which factor the user actually has, and
+	// user.DefaultMFAPrompt is only what the proxy says when it was told nothing.
+	mfaPrompt = "Approve the Hoplock Proxy sign-in on your phone."
+
+	// mfaProgress is the "still waiting" line the proxy repeats while polling.
+	mfaProgress = "Still waiting for approval"
+)
+
+// testPasswordMFA is the method PLAN §4.1 falls back to, against a real OpenSSH
+// client for the first time. Phase 0012's topology was certificate-only, so
+// everything below had unit-test evidence and nothing else.
+//
+// Only proxy-direct offers the method (deploy/proxy/proxy-direct.yaml), and only
+// these scenarios ask for it: sshBaseArgs still pins publickey, so every other
+// scenario in the suite is on the certificate path exactly as before.
+func testPasswordMFA(t *testing.T) {
+	// One invocation carries three assertions because they are three properties
+	// of the same login, and re-running it to assert them separately would be
+	// three MFA waits proving one thing each.
+	t.Run("an approved second factor reaches the target, and the wait is explained", func(t *testing.T) {
+		s := mfaOn(proxyDirect, mfaLogin, mfaPassword, "host.company.com")
+		s.command = "/usr/bin/id -un"
+		r := ssh(t, s)
+
+		wantExit(t, r, "password-mfa approval", 0)
+		// The challenge the server issued reached the person waiting on it.
+		wantContains(t, r, "password-mfa approval", mfaPrompt)
+		// And the wait was explained while it lasted. This is the entire reason
+		// the flow rides keyboard-interactive rather than plain password auth
+		// (PLAN §4.3): password auth has no field to say this in, and a user
+		// staring at a frozen terminal cannot tell a pending approval from a
+		// hung proxy. The fixture's `pending_polls` is what makes the wait long
+		// enough to have a middle.
+		wantContains(t, r, "password-mfa approval", mfaProgress)
+
+		// The session is a real session on the far side, not just an accepted
+		// authentication: it provisioned an account and ran a command on it.
+		account := strings.TrimSpace(r.stdout)
+		if !strings.HasPrefix(account, "hl-") || !strings.Contains(account, "-"+mfaLogin+"-") {
+			t.Errorf("password-mfa approval: ran as %q, want an hl-<tag>-%s-<token> account\n%s",
+				account, mfaLogin, r)
+		}
+	})
+
+	// The disclosure rule on a second axis (PLAN §4.3). testDenialDisclosure
+	// asserts a denial never says which TARGET; this asserts it never says which
+	// FACTOR. A message that separated "wrong password" from "MFA refused" would
+	// hand an attacker a password oracle one login attempt at a time.
+	t.Run("a denied second factor discloses no factor", func(t *testing.T) {
+		s := mfaOn(proxyDirect, mfaDeniedLogin, mfaDeniedPassword, "host.company.com")
+		s.command = "/bin/echo must-not-run"
+		denied := ssh(t, s)
+
+		wantFailure(t, denied, "denied second factor")
+		wantNotContains(t, denied, "denied second factor", "must-not-run")
+		wantContains(t, denied, "denied second factor", "Access denied.")
+		// A denial, not an outage: the two branches must never converge.
+		wantNotContains(t, denied, "denied second factor", "not a permissions problem")
+		for _, leak := range []string{"password", "Password", "MFA", "mfa", "second factor", "approval was"} {
+			wantNotContains(t, denied, "denied second factor", leak)
+		}
+
+		// The other half of the claim, and the half no assertion on wording can
+		// make on its own: a login whose FIRST factor was wrong must be told the
+		// same thing. Mallory's password is right and her approval is refused;
+		// this one's password is wrong and never reaches a second factor. If the
+		// two endings differ, the difference is the oracle.
+		wrong := mfaOn(proxyDirect, mfaLogin, "not-"+mfaPassword, "host.company.com")
+		wrong.command = "/bin/echo must-not-run"
+		refused := ssh(t, wrong)
+
+		wantFailure(t, refused, "wrong password")
+		if got, want := endingOf(refused), endingOf(denied); got != want {
+			t.Errorf("a wrong password ends with %q and a refused second factor with %q; "+
+				"a denial that separates the two is a password oracle (PLAN §4.3)", got, want)
+		}
+
+		// What this does NOT claim: that the two runs are indistinguishable.
+		// They are not — a correct password gets an MFA challenge and a wrong
+		// one never does, so the presence of the challenge tells an attacker
+		// the first factor was right. That is a property of asking for an
+		// out-of-band approval at all, it is decided by Hoplock Control rather
+		// than by the proxy, and it is not something this phase may quietly fix
+		// under the heading of a test. It is written up in
+		// prompts/queued/0035-mfa-challenge-first-factor-oracle.md.
+	})
+
+	// The audit trail is where the estate sees which method let someone in, and
+	// it is the only place a certificate login and a password+MFA login are
+	// distinguishable after the fact.
+	t.Run("the audit trail attributes the session to password-mfa", func(t *testing.T) {
+		s := mfaOn(proxyDirect, mfaLogin, mfaPassword, "host.company.com")
+		s.command = "/bin/echo audited"
+		r := ssh(t, s)
+		wantExit(t, r, "password-mfa audit", 0)
+
+		id := sessionIDOf(r)
+		if id == "" {
+			t.Fatalf("the proxy quoted no session id, so its records cannot be found\n%s", r)
+		}
+
+		var auth *logRecord
+		var logs debugLogs
+		waitFor(t, "the session's authentication record to reach Hoplock Control", func() bool {
+			logs = fetchLogs(t)
+			auth = recordFor(logs, id, "auth")
+			return auth != nil
+		})
+		if got := auth.Attributes["auth_method"]; got != "password-mfa" {
+			t.Errorf("session %s authenticated over keyboard-interactive is recorded as auth_method=%q, want %q",
+				id, got, "password-mfa")
+		}
+		if auth.Login != mfaLogin {
+			t.Errorf("session %s is attributed to login %q, want %q", id, auth.Login, mfaLogin)
+		}
+		if start := recordFor(logs, id, "session_start"); start == nil {
+			t.Errorf("session %s produced no session_start record", id)
+		} else if got := start.Attributes["auth_method"]; got != "password-mfa" {
+			t.Errorf("session %s starts with auth_method=%q, want %q", id, got, "password-mfa")
+		}
+
+		// The initial-auth password is never logged (D8, PLAN §7), and this is
+		// the only run in the suite where the proxy has ever held one. Every
+		// record delivered so far, not just this session's: a leak into some
+		// other record would still be the password in the audit store.
+		for _, set := range [][]logRecord{logs.Batched, logs.Priority} {
+			for _, rec := range set {
+				if rec.mentions(mfaPassword) {
+					t.Errorf("a %s record names the initial-auth password; it must never be logged (PLAN §7)", rec.Kind)
+				}
+			}
+		}
+	})
+}
+
+// endingOf is the last thing the PROXY said before the connection closed — the
+// message the user is left holding, and the one PLAN §4.3's disclosure rule is
+// about.
+//
+// Two failures cannot be compared on their whole output. OpenSSH signs off with
+// the username it was invoked with ("bob#host.company.com@proxy-direct:
+// Permission denied"), the proxy's banner carries a session id that is different
+// every time, and the client warns about the host key it just learned. All three
+// differ between any two runs whatever the proxy said, so a comparison that kept
+// them would fail always and assert nothing.
+func endingOf(r result) string {
+	var last string
+	for _, line := range strings.Split(r.output(), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+		case strings.Contains(line, "Permission denied"):
+		case strings.Contains(line, "Session sess-"):
+		case strings.HasPrefix(line, "Warning: Permanently added"):
+		default:
+			last = line
+		}
+	}
+	return last
+}
+
+// recordFor finds one session's record of a given kind, wherever it was
+// delivered: an authentication record rides the batch, but a phase that made one
+// urgent would move it to the priority endpoint without changing what it says.
+func recordFor(logs debugLogs, sessionID, kind string) *logRecord {
+	for _, set := range [][]logRecord{logs.Batched, logs.Priority} {
+		for i := range set {
+			if set[i].SessionID == sessionID && set[i].Kind == kind {
+				return &set[i]
+			}
+		}
+	}
+	return nil
 }
 
 // --- telemetry (D8) ----------------------------------------------------------

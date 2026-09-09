@@ -16,8 +16,9 @@
 proxy_token: "e2e-proxy-token"
 
 users:
-  # The interactive user. Certificate-only: the topology's proxies enable no
-  # password method, so there is no MFA path to drive here.
+  # The interactive user. Certificate-only on purpose even though proxy-direct
+  # now offers both methods (phase 0026): she has no password here, so every
+  # scenario she appears in is unambiguously the certificate path.
   - login: alice
     identity:
       subject: alice@example.com
@@ -40,6 +41,57 @@ users:
       groups: [deployers]
     key_fingerprints:
       - "@@FP_USER_SVC@@"
+
+  # ------------------------------------------------- password + MFA (0026) ---
+  # Two password users with no key at all, which is what puts them on the
+  # fallback method (PLAN §4.1): there is no certificate for them to offer, so
+  # the only way in is keyboard-interactive against proxy-direct.
+  #
+  # Shapes copied from cmd/mock-control/fixtures.example.yaml rather than
+  # invented — `bob` is that file's approving user and `mallory` its denying
+  # one.
+
+  # Approved, but not immediately. `pending_polls` is what makes the wait real:
+  # with 0 the challenge resolves on the first poll and the "still waiting"
+  # progress line — the reason this flow is keyboard-interactive rather than
+  # plain password auth (PLAN §4.3) — never happens, so the scenario asserting
+  # on it would pass against a proxy that had no such line to print. Three
+  # polls at proxy-direct's 200ms floor is under a second of wall clock and
+  # several progress lines.
+  - login: bob
+    identity:
+      subject: bob@example.com
+      display_name: Bob Example
+      source: fixture
+      principals: [bob]
+      groups: [engineering]
+    password: "bob-e2e-password"
+    mfa:
+      required: true
+      decision: approve
+      pending_polls: 3
+      poll_after_ms: 10
+      ttl_ms: 60000
+      prompt: "Approve the Hoplock Proxy sign-in on your phone."
+
+  # Denied at the second factor, holding a password the server accepts. That
+  # combination is the whole point: the deny happens AFTER the first factor
+  # succeeded, so a message that named the failing factor would be telling an
+  # attacker that the password was right. `mallory` also has a route below for
+  # the same reason — nothing about her denial may be explicable as "she was
+  # not authorized for that target".
+  - login: mallory
+    identity:
+      subject: mallory@example.com
+      source: fixture
+    password: "mallory-e2e-password"
+    mfa:
+      required: true
+      decision: deny
+      pending_polls: 0
+      poll_after_ms: 10
+      ttl_ms: 60000
+      prompt: "Approve the Hoplock Proxy sign-in on your phone."
 
 # The fleet's own proxies, recognised by the key one presents when it extends a
 # chain to the next (D11). The identity the far hop is answered with is still
@@ -106,6 +158,61 @@ routes:
         - match: "sudo *"
           action: warn_and_continue
           message: "Privileged command — this is recorded."
+
+  # ----------------------------------------------- password + MFA (0026) ---
+  # The same Linux host, reached by the two password users. The route is a copy
+  # of the one above with a different login: the point of these two is the
+  # AUTHENTICATION method, so everything downstream of it stays identical and
+  # a difference in outcome can only have come from the method.
+  #
+  # Scenarios: an MFA approval reaches a shell and runs a command, the user is
+  # shown the challenge and at least one progress line, and the session is
+  # attributed to `password-mfa` in the audit trail.
+  - login: bob
+    target: host.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    permitted_global_requests:
+      types: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: bob
+        key_type: ed25519
+        lifetime_seconds: "900"
+
+  # Mallory is authorized for exactly the same thing, and never gets there: her
+  # second factor is refused. The route exists so that the denial scenario has
+  # nothing else to attribute the refusal to — an unrouted login would be denied
+  # by authorization, which is a different assertion wearing the same message.
+  #
+  # Scenario: MFA denial discloses no factor.
+  - login: mallory
+    target: host.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    permitted_global_requests:
+      types: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: mallory
+        key_type: ed25519
+        lifetime_seconds: "900"
 
   # ------------------------------------------------- ephemeral-account ---
   # An appliance: a CLI over SSH with no useradd, no authorized_keys and no home
@@ -570,6 +677,38 @@ routes:
       rules:
         - match: "/bin/echo *"
           action: allow_and_log
+
+  # ------------------------------------ overlapping brokered sessions (0026) ---
+  # A standing account on the brokered estate, with a policy that permits a
+  # command long enough to hold the session open. It is a route of its own
+  # rather than a reuse of one above because every other brokered route here
+  # constrains what may run — `appliance.company.com` to two exact binaries,
+  # `filtered.company.com` and `allowlist.company.com` to their own patterns —
+  # and a scenario about the CREDENTIAL should not have to satisfy a command
+  # filter to make its point.
+  #
+  # Scenario: two overlapping brokered sessions share the one standing account,
+  # both succeed, and the target is byte-identical afterwards. That is the
+  # opposite of the ephemeral case by design (D6a, PLAN §5.2): nothing is
+  # created, so there is nothing for two sessions to collide over.
+  - login: svc-deploy
+    target: standing.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: deployGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
 
   # ------------------------------------------- target-side enforcement (0019) ---
   # The rungs of docs/PLAN.md §6.5, rendered onto the ephemeral account rather

@@ -1,5 +1,13 @@
 # 0012 — Full end-to-end topology & CI gate — Learnings
 
+> **Pointer note (added by 0026).** Two of the "known gaps" below are closed:
+> **Password + MFA** and **Concurrency**. `proxy-direct` now offers
+> `password-mfa` beside `cert`, the suite drives keyboard-interactive with the
+> real client, and two overlapping sessions on one login are asserted to hold two
+> different accounts at the same instant. See
+> `docs/learnings/0026-e2e-coverage-mfa-and-concurrency-learnings.md`. The gap
+> list below still describes what phase 0012 shipped and is not rewritten.
+>
 > **Pointer note (added by 0025).** The follow-up prompt this file calls
 > `prompts/queued/0019-target-auth-failure-containment.md` was renumbered to
 > **0025** and is now **implemented**:

@@ -198,7 +198,20 @@ func execInWithStdin(t *testing.T, node, stdin string, argv ...string) result {
 
 // execArgs renders the docker arguments that run argv inside one node.
 func execArgs(node string, argv ...string) []string {
-	return append([]string{"compose", "-p", composeProject, "-f", composeFile, "exec", "-T", node}, argv...)
+	return execArgsEnv(node, nil, argv...)
+}
+
+// execArgsEnv is execArgs with environment variables set on the process inside
+// the node. Only the password+MFA scenarios need it: OpenSSH takes the askpass
+// program and the secret it answers with from the environment and from nowhere
+// else (deploy/user/askpass.sh), so this is the one thing a scenario cannot say
+// on the client's command line.
+func execArgsEnv(node string, env []string, argv ...string) []string {
+	full := []string{"compose", "-p", composeProject, "-f", composeFile, "exec", "-T"}
+	for _, e := range env {
+		full = append(full, "-e", e)
+	}
+	return append(append(full, node), argv...)
 }
 
 // --- the SSH client ----------------------------------------------------------
@@ -219,12 +232,54 @@ var sshBaseArgs = []string{
 	"-o", "ConnectTimeout=10",
 }
 
+// mfaBaseArgs are the client options for the password+MFA scenarios (0026).
+//
+// They are a second set rather than an edit to sshBaseArgs, and that is the
+// whole point: sshBaseArgs is what keeps every other scenario on the
+// certificate path now that proxy-direct offers a second method, so a change
+// there would silently re-aim the entire suite at once.
+//
+// One option is required and two are hygiene:
+//
+//   - BatchMode=no is required. OpenSSH's userauth_kbdint returns immediately
+//     under BatchMode — batch mode means "never ask a person anything", and
+//     this method is by definition asking — so the client never offers the
+//     method and the proxy's callback never runs. Driven that way the session
+//     fails with no banner at all, which is the tell.
+//   - PubkeyAuthentication=no stops the certificate method answering first.
+//     These logins have no key in the fixtures, so the flow works without it,
+//     but a client that offers a key anyway leaves the run ambiguous about
+//     which method PLAN §4.1's ordering actually landed on.
+//   - NumberOfPasswordPrompts=1 because OpenSSH otherwise repeats the whole
+//     exchange three times on a denial — three MFA waits and three audit
+//     records for one assertion.
+//
+// The password itself is not here. It reaches the client through SSH_ASKPASS
+// (see mfaOn). The learnings file records the mechanisms that do NOT work, two
+// of which fail as an ordinary wrong password rather than as an error.
+var mfaBaseArgs = []string{
+	"-o", "StrictHostKeyChecking=no",
+	"-o", "UserKnownHostsFile=/dev/null",
+	"-o", "GlobalKnownHostsFile=/dev/null",
+	"-o", "BatchMode=no",
+	"-o", "PubkeyAuthentication=no",
+	"-o", "PreferredAuthentications=keyboard-interactive",
+	"-o", "NumberOfPasswordPrompts=1",
+	"-o", "ConnectTimeout=10",
+}
+
 // session describes one SSH client invocation against the topology.
 type session struct {
 	// proxy is the node the client connects to.
 	proxy string
-	// key is the private key inside the user container.
+	// key is the private key inside the user container. Empty offers none,
+	// which is what a password+MFA session does.
 	key string
+	// baseArgs are the shared client options. Nil means sshBaseArgs — every
+	// scenario but the password+MFA ones.
+	baseArgs []string
+	// env is set on the client process inside the user node, as KEY=VALUE.
+	env []string
 	// login and target are encoded into the SSH username with the proxy's
 	// delimiter (D1).
 	login, target string
@@ -241,9 +296,16 @@ func (s session) username() string { return s.login + "#" + s.target }
 
 // argv renders the SSH client invocation this session describes.
 func (s session) argv() []string {
+	base := s.baseArgs
+	if base == nil {
+		base = sshBaseArgs
+	}
 	argv := []string{"ssh"}
-	argv = append(argv, sshBaseArgs...)
-	argv = append(argv, "-i", s.key, "-p", proxyPort, "-l", s.username())
+	argv = append(argv, base...)
+	if s.key != "" {
+		argv = append(argv, "-i", s.key)
+	}
+	argv = append(argv, "-p", proxyPort, "-l", s.username())
 	argv = append(argv, s.opts...)
 	argv = append(argv, s.proxy)
 	if s.command != "" {
@@ -255,13 +317,13 @@ func (s session) argv() []string {
 // ssh runs one SSH client invocation inside the user node.
 func ssh(t *testing.T, s session) result {
 	t.Helper()
-	return execInWithStdin(t, nodeUser, s.stdin, s.argv()...)
+	return run(t, s.stdin, "docker", execArgsEnv(nodeUser, s.env, s.argv()...)...)
 }
 
 // sshE is ssh without a *testing.T, for the one scenario that has to run a
 // session on another goroutine.
 func sshE(s session) (result, error) {
-	return runE(s.stdin, "docker", execArgs(nodeUser, s.argv()...)...)
+	return runE(s.stdin, "docker", execArgsEnv(nodeUser, s.env, s.argv()...)...)
 }
 
 // sessionIDPattern finds the session id the proxy quotes in its banner. It is
@@ -286,6 +348,28 @@ func aliceOn(proxy, target string) session {
 // forwarding routes.
 func svcOn(proxy, target string) session {
 	return session{proxy: proxy, key: keySvc, login: "svc-deploy", target: target}
+}
+
+// mfaOn is a password user on the fallback method (PLAN §4.1). It offers no
+// key, so the only way in is keyboard-interactive.
+//
+// The password travels in the client process's environment because OpenSSH
+// will not read a keyboard-interactive answer from stdin — read_passphrase
+// wants /dev/tty, and `docker compose exec -T` gives the client none. SSH_ASKPASS
+// answers it instead, and SSH_ASKPASS_REQUIRE=force (OpenSSH >= 8.4) is what
+// makes the client use an askpass program with no X11 display present.
+func mfaOn(proxy, login, password, target string) session {
+	return session{
+		proxy:    proxy,
+		login:    login,
+		target:   target,
+		baseArgs: mfaBaseArgs,
+		env: []string{
+			"HOPLOCK_PASSWORD=" + password,
+			"SSH_ASKPASS=/usr/local/bin/hoplock-askpass",
+			"SSH_ASKPASS_REQUIRE=force",
+		},
+	}
 }
 
 // --- assertions --------------------------------------------------------------
@@ -452,14 +536,25 @@ func tryDeviceAdministrators(debugAddr string) ([]deviceAdministrator, error) {
 // for rather than with a timeout nobody can interpret.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(readyTimeout)
+	waitUpTo(t, readyTimeout, what, cond)
+}
+
+// waitUpTo is waitFor bounded by the caller.
+//
+// It exists for conditions that can only hold inside a window the scenario
+// itself opened — two sessions being live at the same moment, say. Waiting the
+// full readyTimeout for one of those reports a timeout long after the window
+// shut, which names the wrong thing as the problem.
+func waitUpTo(t *testing.T, within time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
 		time.Sleep(pollInterval)
 	}
-	t.Fatalf("timed out after %s waiting for %s", readyTimeout, what)
+	t.Fatalf("timed out after %s waiting for %s", within, what)
 }
 
 // requireTopology fails the whole run, early and legibly, unless the topology
