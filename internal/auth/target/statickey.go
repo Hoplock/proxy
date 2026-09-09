@@ -56,7 +56,19 @@ type StaticKeyAuthenticator struct {
 	logger   *log.Logger
 }
 
-var _ TargetAuthenticator = (*StaticKeyAuthenticator)(nil)
+var (
+	_ TargetAuthenticator  = (*StaticKeyAuthenticator)(nil)
+	_ CredentialIdentifier = (*StaticKeyAuthenticator)(nil)
+)
+
+// CredentialHandle implements CredentialIdentifier with the fingerprint of the
+// one preloaded key this placeholder logs in with everywhere.
+func (a *StaticKeyAuthenticator) CredentialHandle(Target) string {
+	if a.signer == nil {
+		return ""
+	}
+	return ssh.FingerprintSHA256(a.signer.PublicKey())
+}
 
 // NewStaticKeyAuthenticator loads the configured key and returns the
 // placeholder authenticator.

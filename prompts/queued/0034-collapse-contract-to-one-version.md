@@ -1,4 +1,4 @@
-# 0032 — Drop the superseded contract vocabularies
+# 0034 — Drop the superseded contract vocabularies
 
 > **New prompt, and it must run LAST.** Every phase that revises the contract
 > adds a vocabulary generation and, with it, code and prose that keep the
@@ -16,12 +16,12 @@
 >
 > **This prompt must be the highest-numbered queued prompt when it runs.** If a
 > later session queues work after it, renumber under `docs/PROTOCOL.md` §6 so
-> this stays last. It has already moved three times for that reason — it was
-> queued as **0029**, was briefly **0033**, then **0032**, and is **0033** again
-> now that phase 0022 queued the admission-policy question at 0032. It is still
-> the top of a contiguous queue. Anything written before those moves calls it by
-> an older number; the mapping is in the run-order notes at the end of
-> `docs/PLAN.md` §10, which stack newest first and compose.
+> this stays last. It has already moved four times for that reason — it was
+> queued as **0029**, was briefly **0033**, then **0032**, then **0033** again,
+> and is **0034** now that phase 0025 queued the hop-credential classification
+> at 0033. It is still the top of a contiguous queue. Anything written before
+> those moves calls it by an older number; the mapping is in the run-order notes
+> at the end of `docs/PLAN.md` §10, which stack newest first and compose.
 >
 > In particular it **cannot start before 0018 (contract v4) has merged**, and
 > before **0023**'s host-key cache hint. **Both have now merged**: 0023 landed

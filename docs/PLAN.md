@@ -809,6 +809,30 @@ tooling that parses the stream is not corrupted.
 
 ## 5. Target credentials (D6, D6a)
 
+**What a target owes the proxy before any of this works (phase 0025).** All
+three methods below end in the proxy authenticating to the target, and a
+decrypting proxy is a **single source address** to every target it fronts —
+which is the deployment model, not an artefact of any one topology. A target's
+per-source abuse defences are built on the opposite assumption, so
+`PerSourcePenalties` (on by default since OpenSSH 9.8), `MaxStartups` and
+`MaxSessions` each need a decision before a fleet goes behind this proxy;
+`README.md` §"Target prerequisites" is the operator-facing version, with what
+happens when they are left alone.
+
+The proxy does not depend on that decision having been made. A credential the
+target **refuses** is classified as its own failure rather than as an
+unreachable host (§4.3's outage branch, with wording that names the side the
+credential belongs to and nothing else), recorded as a critical audit event
+naming the credential's opaque handle, and withheld after a configurable run of
+consecutive rejections (`auth.target.rejection`). The breaker is keyed on
+(target, method, credential) and never on the user or the route: a wrong
+credential is wrong for everybody, a right one must keep working while another
+is failing, and keying on the subject would hand any user who can reach a target
+a way to withhold it from the next. It originates no policy (D2) on the same
+test that licenses `chain.max_hops` — it can only make the proxy attempt less
+than Hoplock Control authorised, never more — and a session it stops is an
+outage, never a denial.
+
 ### 5.1 `ephemeral-user` — just-in-time provisioning (D6)
 
 Lifecycle per session:
@@ -2607,7 +2631,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 >
 > So: **0022** (the decision cache, **delivered**) → **0023** (host-key report
 > reuse, **delivered**) → **0024** (the session deadline), then the rest by
-> number, with **0033**, the contract collapse, last. The first three are
+> number, with **0034**, the contract collapse, last. The first three are
 > promoted because they make an argument this plan already relies on *true*
 > rather than merely written down: 0022 and 0023 are the cheaper answer that
 > replaced the withdrawn 0021 (D17) — now measured, not projected — and 0024
@@ -2639,7 +2663,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0022 | The decision cache under fan-out        | a finding from 0020, not a new idea: the authorize cache held a fixed 4,096 entries with **no eviction**, so a working set larger than that cached the first 4,096 shapes and refused the rest. **Delivered:** LRU eviction over the lookup paths (with `CacheStats.Evicted` beside `Expired`), the bound settable as `control.cache.max_entries`, and a default re-derived from a measured ~1 KiB per entry — 4,096 → **32,768**. Sizing the setting to the estate is what an operator past the default does; measurements in §9.1. No contract change |
 | 0023 | Host-key report reuse                   | a second finding from 0020: with authorize caching working, `POST /v1/hostkeys/report` was 46% of the remaining Control calls, re-asking the same question about an unchanged key on every connection. **Delivered:** an optional `cache` hint on `HostKeyReportResponse` (**contract 4.1**; `policy_version` stays 4), reuse in `CachingClient` keyed on target+port+**fingerprint** so a changed key still reports (D7), a `reject` and a first sighting never reused, host-key reuse counted apart in `CacheStats`, and the measured **2.17 → 1.17** calls per connection (§9.1, scenarios 02 vs 09). Contract change — carried a cross-repo obligation |
 | 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session. **Delivered:** a local timer armed at authorize from the instant the chain resolved (`routing.ShortenDeadline` — a hop may only ever shorten it, and the resolved instant travels on the hop-trail request), expiry through the engine's ordinary teardown, the two messages and exit status **253** in §4.3, `end_reason` on every session_end record, and the detached-work consequence in §5.1. No contract change |
-| 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies |
+| 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies. **Delivered:** `target.IsAuthRejection` (the one place that knows x/crypto's wording, with a tripwire test that drives a real rejection), the `target-auth` and `target-auth-withheld` stages and their §4.3 wording, a breaker keyed on (target, method, credential handle) consulted *before* provisioning through `Selector`/`ProvisionedAccess.DialOutcome` — the seam the device drivers adopt — `auth.target.rejection` in config, two critical `error` records naming the credential's handle and never its material, and §5's/README's target prerequisites. It also queued **0033**, the same defect on the proxy→proxy leg, which it found and scoped out. No contract change |
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals |
 | 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
 | 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
@@ -2647,13 +2671,36 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 | 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |
 | 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
-| 0033 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the run-order revision below moved it from 0029 |
+| 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reports a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. Classifies it as its own stage, discloses it on §4.3's terms, and records it critically with the key's fingerprint — reusing 0025's single copy of x/crypto's wording rather than adding a second. **Conditional in one part:** whether it should also be *contained* is a question this phase must answer and write down, because the blast radius that justified 0025's breaker (an OpenSSH target penalising the proxy's source address) does not exist when the far end is another Hoplock proxy. Added by 0025 |
+| 0034 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0033 to make room for 0025's follow-up |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
-> **Renumbering note (admission-policy question), newest — compose it with the
-> ones below.** Phase 0022 shipped LRU eviction and, with it, a cliff at the
+> **Renumbering note (hop credential rejection), newest — compose it with the
+> ones below.** Phase 0025 fixed a refused proxy→**target** credential being
+> reported as an unreachable host, and found the same defect one function away
+> on the proxy→**proxy** leg (`handshakeNextHop`), outside its own scope. That
+> was queued as **0033**, which meant moving the contract collapse
+> **0033 → 0034** so it stays the highest-numbered queued prompt: it must follow
+> every phase that revises the contract, and its own prompt asks any later
+> session to renumber for that. The new phase revises no contract, so it could
+> in principle have gone after — it is placed before because "the collapse runs
+> last" is an invariant the plan relies on, and a queue where that stops being
+> literally true is one a future session has to reason about instead of read.
+> That is the whole mapping — **0033→0034**, one prompt, and the queue is
+> contiguous at 0026–0034. Live references were updated in place (this section's
+> run-order paragraph and phase table, `prompts/queued/0032-…`'s run-order note,
+> and the collapse prompt's own title and number history).
+> **`docs/learnings/` and `prompts/implemented/` were not rewritten:** anything
+> written before this revision that calls the contract collapse "0033" — the
+> note below, `prompts/implemented/0023-host-key-report-reuse.md`, and phase
+> 0025's learnings, which record that queueing this work would need exactly this
+> renumber — means what is now **0034**. Nothing else moved, and no number was
+> reused.
+
+> **Renumbering note (admission-policy question) — compose it with the ones
+> below.** Phase 0022 shipped LRU eviction and, with it, a cliff at the
 > bound it could not close within its own scope (§9.1, "The same runs after
 > phase 0022"). The question of whether that needs an admission policy was
 > queued as **0032**, which meant moving the contract collapse **0032 → 0033**

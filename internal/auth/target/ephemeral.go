@@ -120,9 +120,36 @@ type EphemeralAuthenticator struct {
 }
 
 var (
-	_ TargetAuthenticator = (*EphemeralAuthenticator)(nil)
-	_ Lifecycle           = (*EphemeralAuthenticator)(nil)
+	_ TargetAuthenticator  = (*EphemeralAuthenticator)(nil)
+	_ Lifecycle            = (*EphemeralAuthenticator)(nil)
+	_ CredentialIdentifier = (*EphemeralAuthenticator)(nil)
 )
+
+// credentialNamer is an AdminDialer that can name the credential it logs in
+// with. It is an optional interface so that a test dialer needs nothing, and a
+// dialer that cannot name its credential simply gets no containment.
+type credentialNamer interface {
+	CredentialHandle() string
+}
+
+// CredentialHandle implements CredentialIdentifier with the fingerprint of the
+// MANAGEMENT key, not of the session key this method generates.
+//
+// The session key is fresh per session and could never accumulate a run of
+// rejections; the management key is what identifies the provisioning path that
+// keeps producing logins the target refuses. That is the thing a run of
+// rejections is evidence about — phase 0012's finding was a target-side
+// prerequisite the provisioning path did not satisfy, identical for every
+// session it provisioned.
+//
+// It does not vary by target: the target is already a field of the key.
+func (a *EphemeralAuthenticator) CredentialHandle(Target) string {
+	namer, ok := a.dialer.(credentialNamer)
+	if !ok {
+		return ""
+	}
+	return namer.CredentialHandle()
+}
 
 // NewEphemeralAuthenticator validates opts and returns the provisioner.
 func NewEphemeralAuthenticator(opts EphemeralOptions) (*EphemeralAuthenticator, error) {

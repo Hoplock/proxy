@@ -50,6 +50,7 @@ type Selector struct {
 	methods  map[string]TargetAuthenticator
 	fallback string
 	logger   *log.Logger
+	breaker  *RejectionBreaker
 }
 
 var (
@@ -73,6 +74,18 @@ func NewSelector(methods map[string]TargetAuthenticator, fallback string, logger
 	s.logf("auth/target: credential methods available: %s (fallback %s, overridden per route by Hoplock Control)",
 		strings.Join(s.available(), ", "), fallback)
 	return s, nil
+}
+
+// WithRejectionBreaker attaches the breaker that bounds repeated proxy→target
+// credential rejection (prompt 0025), and returns the selector.
+//
+// It is here rather than in NewSelector because it is optional and orthogonal:
+// the selector's job is choosing the method the server named, and containment
+// neither chooses nor substitutes one. A nil breaker leaves every session
+// attempting, which is the behaviour before this existed.
+func (s *Selector) WithRejectionBreaker(b *RejectionBreaker) *Selector {
+	s.breaker = b
+	return s
 }
 
 // Name implements TargetAuthenticator.
@@ -217,6 +230,18 @@ func (s *Selector) provisionOne(ctx context.Context, id *identity.Identity, tgt 
 			return nil, err
 		}
 	}
+	// Containment is checked BEFORE the method runs, because on the ephemeral
+	// method running it means opening the management login — the connection the
+	// target's per-source defences count, and the most privileged one this proxy
+	// makes. A withheld credential is not a skipped rung: falling through to the
+	// next entry would answer a transient local condition by quietly serving the
+	// session on a weaker credential than the one Hoplock Control put first,
+	// which is a downgrade nobody authorised (D14).
+	key := s.credentialKey(tgt, method)
+	if err := s.breaker.Check(key); err != nil {
+		return nil, err
+	}
+
 	access, err := method.Provision(ctx, id, tgt)
 	if err != nil {
 		return nil, err
@@ -231,6 +256,8 @@ func (s *Selector) provisionOne(ctx context.Context, id *identity.Identity, tgt 
 		if access.Rung == 0 {
 			access.Rung = index
 		}
+		access.Credential = key
+		access.breaker = s.breaker
 		if access.Enforcement == nil {
 			// A method that rendered nothing still owes the record an answer.
 			// The two proxy-side rungs and an ATTESTED rung are all satisfiable
@@ -253,6 +280,25 @@ func (s *Selector) provisionOne(ctx context.Context, id *identity.Identity, tgt 
 		s.logf("auth/target: session used ladder entry %d (%s) — earlier entries could not be satisfied", index, access.Method)
 	}
 	return access, nil
+}
+
+// credentialKey names the credential this rung would dial with, for the
+// breaker and for the audit record.
+//
+// A method that cannot name one yields a zero key, which every breaker call
+// treats as "not scored": containment on a handle that does not identify the
+// credential would withhold sessions that have nothing to do with the one
+// failing.
+func (s *Selector) credentialKey(tgt Target, method TargetAuthenticator) RejectionKey {
+	namer, ok := method.(CredentialIdentifier)
+	if !ok {
+		return RejectionKey{}
+	}
+	handle := namer.CredentialHandle(tgt)
+	if handle == "" {
+		return RejectionKey{}
+	}
+	return RejectionKey{Target: tgt.Addr(), Method: method.Name(), Handle: handle}
 }
 
 // rungs reads the route's ladder, preserving the absent/empty distinction.

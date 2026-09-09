@@ -138,6 +138,57 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 	s.rec.Provisioning(fmt.Sprintf("target access provisioned by %s", method), attrs)
 }
 
+// recordCredentialRejected captures the TARGET refusing the proxy's own
+// credential (prompt 0025).
+//
+// It is critical, and therefore takes D8's immediate path, for the reason a
+// refused command does: this is a security-relevant fact about the estate that
+// an operator has to see now, and the sessions that produce it are exactly the
+// ones that keep producing it. A run of these in a batch that lands ten minutes
+// later is a run nobody stopped.
+//
+// What it must never carry is credential MATERIAL. The handle is a
+// credential_ref or a key fingerprint — the same identifiers an operator
+// already reads in configuration and in `ssh-keygen -lf` output — and there is
+// nothing else here that would let a reader find a key.
+func (s *session) recordCredentialRejected(key target.RejectionKey, state target.RejectionState, err error) {
+	attrs := logging.Attrs{}.
+		Set(logging.AttrEvent, "target.credential_rejected").
+		Set(logging.AttrStage, string(stageTargetAuth)).
+		Set(logging.AttrTargetAddr, s.route.Addr()).
+		Set(logging.AttrCredentialMethod, key.Method).
+		Set(logging.AttrCredentialHandle, key.Handle).
+		Set(logging.AttrRejectionState, state.Name()).
+		Set(logging.AttrError, err.Error())
+	if state.Consecutive > 0 {
+		attrs.SetInt(logging.AttrRejectionCount, state.Consecutive)
+	}
+	if state.Open {
+		attrs.Set(logging.AttrRejectionUntil, state.Until.UTC().Format(time.RFC3339))
+	}
+	s.rec.CriticalFailure("the target refused the proxy's credential", attrs)
+}
+
+// recordCredentialWithheld captures a session the proxy did not attempt,
+// because the credential its route names has been refused too often.
+//
+// It is a separate record from the one above, with the same attributes, because
+// an operator reading the trail is asking a question the two answer
+// differently: this one says no connection was made, which is why the target's
+// own log has nothing to correlate with it.
+func (s *session) recordCredentialWithheld(err *target.WithheldError) {
+	attrs := logging.Attrs{}.
+		Set(logging.AttrEvent, "target.credential_withheld").
+		Set(logging.AttrStage, string(stageTargetWithheld)).
+		Set(logging.AttrTargetAddr, err.Key.Target).
+		Set(logging.AttrCredentialMethod, err.Key.Method).
+		Set(logging.AttrCredentialHandle, err.Key.Handle).
+		Set(logging.AttrRejectionState, err.State.Name()).
+		SetInt(logging.AttrRejectionCount, err.State.Consecutive).
+		Set(logging.AttrRejectionUntil, err.State.Until.UTC().Format(time.RFC3339))
+	s.rec.CriticalFailure("the proxy is not attempting this target with this credential", attrs)
+}
+
 // recordEnforcement captures the enforcement rung the session actually stood
 // on, per axis (contract v4, PLAN §6.5).
 //

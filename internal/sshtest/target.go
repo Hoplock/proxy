@@ -32,19 +32,29 @@ type Options struct {
 	// AllowedChannels are the channel types the target accepts. Nil means
 	// "session" and "direct-tcpip".
 	AllowedChannels []string
+	// AuthorizedKeys are the public keys this target accepts. Nil — the usual
+	// case — accepts ANY key, because authentication to the target is normally
+	// the proxy's problem and a test that had to manage authorized_keys would
+	// be testing the wrong thing.
+	//
+	// Setting it is for the tests where being REFUSED is the point: a target
+	// that accepts everything cannot produce a real credential rejection, and a
+	// rejection is what internal/auth/target's classifier has to be held to.
+	AuthorizedKeys []ssh.PublicKey
 }
 
 // Target is an in-process SSH server standing in for a target host. It accepts
-// any public key: authentication to the target is the proxy's problem, and a
-// test that had to manage the target's authorized_keys would be testing the
-// wrong thing.
+// any public key unless Options.AuthorizedKeys says otherwise: authentication
+// to the target is the proxy's problem, and a test that had to manage the
+// target's authorized_keys would be testing the wrong thing.
 type Target struct {
-	listener net.Listener
-	config   *ssh.ServerConfig
-	hostKey  ssh.Signer
-	exec     ExecFunc
-	shell    ShellFunc
-	allowed  map[string]bool
+	listener   net.Listener
+	config     *ssh.ServerConfig
+	hostKey    ssh.Signer
+	exec       ExecFunc
+	shell      ShellFunc
+	allowed    map[string]bool
+	authorized map[string]bool
 
 	wg     sync.WaitGroup
 	closed chan struct{}
@@ -89,6 +99,12 @@ func StartTarget(opts Options) (*Target, error) {
 	for _, name := range allowed {
 		t.allowed[name] = true
 	}
+	if opts.AuthorizedKeys != nil {
+		t.authorized = make(map[string]bool, len(opts.AuthorizedKeys))
+		for _, key := range opts.AuthorizedKeys {
+			t.authorized[string(key.Marshal())] = true
+		}
+	}
 
 	t.config = &ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -96,6 +112,12 @@ func StartTarget(opts Options) (*Target, error) {
 				t.logins = append(t.logins, conn.User())
 				t.keys = append(t.keys, key)
 			})
+			// The attempt is recorded before it is judged: a test asserting
+			// that a key was OFFERED needs it either way, and a refused login
+			// is exactly the case where that matters.
+			if t.authorized != nil && !t.authorized[string(key.Marshal())] {
+				return nil, fmt.Errorf("sshtest: key not authorized for %q", conn.User())
+			}
 			return &ssh.Permissions{}, nil
 		},
 	}

@@ -128,9 +128,48 @@ type ProvisionedAccess struct {
 	// not answer, and the Selector fills it in from the method's own
 	// capabilities rather than leaving the audit record silent.
 	Enforcement *EnforcementResult
+	// Credential names the credential this access dials with, for the audit
+	// record and for the rejection breaker (prompt 0025). It is filled in by
+	// the Selector from the method's own CredentialHandle, and is the zero
+	// value for a method that cannot name one — a device driver's, today.
+	//
+	// Every field of it is a HANDLE. Nothing here may be, or be derived from,
+	// credential material.
+	Credential RejectionKey
 
-	once sync.Once
-	err  error
+	breaker *RejectionBreaker
+	once    sync.Once
+	err     error
+}
+
+// DialOutcome reports the result of the target-leg handshake to whatever bounds
+// repeated credential rejection, and returns the credential's state after it.
+//
+// This is the seam, and it is on the access rather than on the engine so that
+// anything opening a leg with provisioned credentials reports through one call:
+// the proxy engine does today, and a device driver's own dial path (phase 0014)
+// adopts this rather than having containment retrofitted into it.
+//
+// err is the error from the handshake, or nil for one that succeeded.
+// Classification happens here so that the caller's only job is to hand over
+// what it got: a caller that had to decide what counts as a rejection would be
+// a second copy of reject.go.
+func (p *ProvisionedAccess) DialOutcome(err error) RejectionState {
+	if p == nil {
+		return RejectionState{}
+	}
+	if err == nil {
+		p.breaker.Succeed(p.Credential)
+		return RejectionState{}
+	}
+	if !IsAuthRejection(err) {
+		// A target that would not answer, a host key that was not accepted, a
+		// timeout: real failures, and none of them evidence about the
+		// credential. Scoring them would withhold a working credential for a
+		// network fault.
+		return RejectionState{}
+	}
+	return p.breaker.Reject(p.Credential)
 }
 
 // Close runs Teardown exactly once and returns its result on every call.
@@ -149,6 +188,25 @@ func (p *ProvisionedAccess) Close(ctx context.Context) error {
 		}
 	})
 	return p.err
+}
+
+// CredentialIdentifier is implemented by a method that can name the credential
+// it would use for a route BEFORE it provisions or dials anything.
+//
+// The ordering is what makes it an interface rather than a field on
+// ProvisionedAccess: a breaker that could only be consulted after provisioning
+// would already have opened the connection it exists to withhold, and on the
+// ephemeral method that connection is the management login — the most
+// privileged one this proxy makes.
+//
+// A method that does not implement it gets no containment. That is the honest
+// outcome rather than a default: containment keyed on something that does not
+// identify the credential would withhold the wrong sessions.
+type CredentialIdentifier interface {
+	// CredentialHandle returns an opaque, stable name for the credential this
+	// method would dial tgt with, or "" when it has none. It is a HANDLE and
+	// never material: the value reaches audit records and log lines.
+	CredentialHandle(tgt Target) string
 }
 
 // ErrUnknownMethod is returned when configuration names a target

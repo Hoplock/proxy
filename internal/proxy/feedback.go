@@ -51,11 +51,25 @@ const (
 	stageRoute     stage = "route"
 	stageProvision stage = "provision"
 	stageDial      stage = "dial"
-	stageHop       stage = "hop"
-	stageHopDial   stage = "hop-dial"
-	stageRelay     stage = "relay"
-	stageHostKey   stage = "hostkey"
-	stageChannel   stage = "channel"
+	// stageTargetAuth is the target refusing the proxy's OWN credential, and it
+	// is separate from stageDial because the two send an operator to opposite
+	// places. The host answered, the handshake reached authentication, and what
+	// failed is a credential this proxy holds — reported as a dial failure it
+	// reads as a network fault, which is the one thing that is working
+	// (prompt 0025).
+	stageTargetAuth stage = "target-auth"
+	// stageTargetWithheld is that credential having been refused often enough
+	// that the proxy has stopped offering it. It is deliberately its own stage
+	// rather than a flavour of the one above: "we tried just now and were
+	// refused" and "we are not currently trying" are different facts about the
+	// estate, and only the second one explains why nothing appears in the
+	// target's logs.
+	stageTargetWithheld stage = "target-auth-withheld"
+	stageHop            stage = "hop"
+	stageHopDial        stage = "hop-dial"
+	stageRelay          stage = "relay"
+	stageHostKey        stage = "hostkey"
+	stageChannel        stage = "channel"
 )
 
 // setupError is a session-setup failure tagged with the stage it happened in.
@@ -93,6 +107,21 @@ func outageDetail(err error) string {
 		return "credentials for the target could not be provisioned"
 	case stageDial:
 		return "the target could not be reached"
+	case stageTargetAuth:
+		// Says which SIDE the credential belongs to and nothing else. Not the
+		// method, not the reference, not the account, and not whether the
+		// target exists — a user who could learn which credential was refused
+		// could map the estate one refused session at a time (PLAN §4.3). What
+		// it does say is the part that is actionable for whoever reads the
+		// ticket: this is the proxy's credential, so it is not the user's to
+		// fix and a different key of theirs will not help.
+		return "the proxy's own credential for this target was refused"
+	case stageTargetWithheld:
+		// The same non-disclosure, plus the one thing that distinguishes it:
+		// nothing was attempted. An operator who reads "refused" and finds no
+		// matching entry in the target's log is looking for a bug; this wording
+		// tells them there is nothing to find.
+		return "the proxy's own credential for this target was refused repeatedly, so it is not attempting the connection at present"
 	case stageHop:
 		// Deliberately vague about WHY the chain could not be extended: a loop,
 		// an exceeded hop count, and a missing chain key are all faults in the

@@ -74,6 +74,20 @@ auth:
       username: "netadmin"
       dir: "/material/brokered"
       file_suffix: ".key"
+    # Containment for a credential the target refuses (docs/PLAN.md §5,
+    # prompt 0025). The threshold is 2 rather than the default 5 so a scenario
+    # can reach it in two sessions; the window and cooldown are long on purpose.
+    #
+    # The scenarios assert on the TARGET's connection count, never on timing,
+    # and a cooldown that could expire between two assertions in one subtest
+    # would put timing back in. Ten minutes outlives any run of this suite —
+    # which does mean that re-running the containment scenario against an
+    # already-used rig needs `make e2e-down && make e2e-up` first
+    # (deploy/README.md says so).
+    rejection:
+      threshold: 2
+      window: 10m
+      cooldown: 10m
     # The third estate this one proxy fronts: appliances that cannot create an
     # OS user at all (D13). The `device` node stands in for one.
     ephemeral_account:

@@ -55,6 +55,23 @@ const (
 	AttrAccessProfile    = "access_profile"    // the platform's own scope for a device account
 	AttrLifetimeSeconds  = "lifetime_seconds"  // how long a provisioned credential was meant to live
 	AttrNameConstrained  = "name_constrained"  // true when the account name had to drop its login segment
+	// AttrTargetAddr is the "host:port" the proxy dialled, which is what a
+	// credential rejection is a fact about — the record's own Target field is
+	// the name the USER asked for, and a route resolves it to something else.
+	AttrTargetAddr = "target_addr"
+	// AttrCredentialHandle is the opaque name of the credential the proxy
+	// offered a target: a brokered route's credential_ref, or the fingerprint
+	// of a management key. It is a HANDLE and never material — a reference, a
+	// fingerprint, and nothing that would let a reader find a key.
+	AttrCredentialHandle = "credential_handle"
+	// AttrRejectionCount and AttrRejectionState are what the rejection breaker
+	// knows about that credential as of this record: how many consecutive
+	// refusals it has had, and whether the proxy is still attempting it
+	// ("closed") or has stopped ("open"). AttrRejectionUntil is when an open
+	// breaker next allows an attempt.
+	AttrRejectionCount = "rejection_count"
+	AttrRejectionState = "rejection_breaker"
+	AttrRejectionUntil = "rejection_open_until"
 	// AttrExpiryMechanism carries a driver's declaration of WHAT the device
 	// does at the deadline onto the sessions where the device holds one
 	// (device.Capabilities.ExpiryMechanism, phase 0017).
@@ -520,6 +537,25 @@ func (r *SessionRecorder) Failure(message string, attrs Attrs) {
 	r.Record(Event{
 		Kind:     control.LogKindError,
 		Severity: control.SeverityWarn,
+		Message:  message,
+		Attrs:    attrs,
+	})
+}
+
+// CriticalFailure records a proxy-side failure that IS a security event, and
+// therefore takes D8's immediate path.
+//
+// It is deliberately separate from Failure rather than a severity argument on
+// it. Failure is warn because a target that would not answer is an outage, and
+// putting every network blip on the priority endpoint would drown the events a
+// security team watches for. What comes through here is the subset that is
+// evidence about a credential — a refused proxy→target login, and the proxy
+// withholding one after a run of them — where the whole point is that it does
+// not wait in a batch behind the session it happened on.
+func (r *SessionRecorder) CriticalFailure(message string, attrs Attrs) {
+	r.Record(Event{
+		Kind:     control.LogKindError,
+		Severity: control.SeverityCritical,
 		Message:  message,
 		Attrs:    attrs,
 	})

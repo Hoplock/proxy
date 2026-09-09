@@ -74,6 +74,21 @@ who has the image — so regenerating never requires a rebuild.
 Each route says which scenarios it backs, so a failing scenario leads to one
 rule rather than to a search.
 
+**Two brokered credentials, and one of them is refused on purpose.**
+`brokered/appliance-fleet.key` is installed on `netadmin` and works;
+`brokered/stale-fleet.key` is installed nowhere, so the one route naming it —
+`refused.company.com` — is refused by the target. That is what the credential
+rejection scenarios (phase 0025) are made of, and it is why exactly one route
+may ever name it: those scenarios leave the proxy's breaker **open** on that
+credential for the rest of the run, and a second route on the same credential
+would inherit an outage nobody asked for. `test/topology` asserts both halves.
+
+One consequence for re-runs: the breaker's cooldown in `proxy/proxy-direct.yaml`
+is ten minutes, long enough that no assertion in a run can be overtaken by it.
+Re-running `TestTopology/target_credential_rejection` against a rig that has
+already run it needs `make e2e-down && make e2e-up` first — the first two
+sessions it expects to reach the target would otherwise be withheld.
+
 ## Four things the target image must not change
 
 - **`UsePAM yes`.** `useradd` leaves a new account with a locked password, and
@@ -100,10 +115,11 @@ rule rather than to a search.
 
   Turning it off is right for a target reachable only through a proxy: the
   defence has no distinct sources left to distinguish. It also keeps this suite
-  honest — prompt 0025's containment scenarios have to be proven by the proxy's
+  honest — phase 0025's containment scenarios have to be proven by the proxy's
   own behaviour, not by the target giving up on it. The entrypoint applies each
   directive only if this `sshd` understands it. **A real fleet has to make the
-  same decision deliberately**; `prompts/queued/0025-*` is the proxy-side half.
+  same decision deliberately**; `README.md` §"Target prerequisites" is the
+  operator-facing version, and phase 0025 is the proxy-side half.
 
 - **`NET_ADMIN` and `SYS_ADMIN` on the target service.** They are what phase
   0019's enforcement rungs (docs/PLAN.md §6.5) are actually made of:

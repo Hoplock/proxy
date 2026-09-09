@@ -94,7 +94,30 @@ func NewFromConfig(cfg config.TargetAuth, opts Options) (TargetAuthenticator, er
 		methods[MethodEphemeralAccount] = method
 	}
 
-	return NewSelector(methods, cfg.Method, opts.Logger)
+	selector, err := NewSelector(methods, cfg.Method, opts.Logger)
+	if err != nil {
+		return nil, err
+	}
+	return selector.WithRejectionBreaker(NewRejectionBreaker(rejectionPolicy(cfg.Rejection))), nil
+}
+
+// rejectionPolicy resolves the containment settings, which are optional in the
+// file and documented by their defaults.
+//
+// The threshold's absent-versus-zero distinction is the one thing config cannot
+// collapse: absent means "use the default", and an explicit 0 means "do not
+// contain anything", which is an operator's decision and not the same
+// statement.
+func rejectionPolicy(cfg config.RejectionAuth) RejectionPolicy {
+	policy := RejectionPolicy{
+		Threshold: DefaultRejectionThreshold,
+		Window:    cfg.Window,
+		Cooldown:  cfg.Cooldown,
+	}
+	if cfg.Threshold != nil {
+		policy.Threshold = *cfg.Threshold
+	}
+	return policy
 }
 
 // deviceConfigured reports whether this proxy has the material the device

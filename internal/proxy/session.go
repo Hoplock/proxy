@@ -300,7 +300,7 @@ func (s *session) setup() {
 		Enforcement: target.EnforcementFrom(route.Enforcement, route.Filter),
 	})
 	if err != nil {
-		s.failSetup(&setupError{stage: stageProvision, err: err})
+		s.failSetup(s.provisionError(err))
 		return
 	}
 	s.access = access
@@ -314,6 +314,22 @@ func (s *session) setup() {
 
 	s.logf("proxy: session=%s target leg up target=%s route=%s permissions=%s channels=%v",
 		s.id, s.route.Addr(), s.route.Type, s.route.Permissions, s.route.PermittedChannels)
+}
+
+// provisionError classifies a failure to obtain credentials for the target.
+//
+// Almost everything here is stageProvision, which says the credential could not
+// be produced. The exception is the credential plane withholding one it has
+// stopped attempting: nothing failed to be produced, the proxy declined to
+// offer it, and the user's message and the audit record both have to say so
+// rather than describe a provisioning fault that did not happen.
+func (s *session) provisionError(err error) error {
+	var withheld *target.WithheldError
+	if errors.As(err, &withheld) {
+		s.recordCredentialWithheld(withheld)
+		return &setupError{stage: stageTargetWithheld, err: err}
+	}
+	return &setupError{stage: stageProvision, err: err}
 }
 
 // checkProxyRung verifies that a rung the PROXY provides is actually being
@@ -427,11 +443,27 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 		_ = conn.Close()
 		if hostKeyErr := s.takeHostKeyErr(); hostKeyErr != nil {
 			// The host key is why the handshake failed; report that rather than
-			// x/crypto's rendering of it.
+			// x/crypto's rendering of it. This branch stays FIRST: a rejected
+			// host key also surfaces as a handshake error, and it is a
+			// different failure with a different fix — nothing about our
+			// credential was refused, so it must not be scored as if it had
+			// been.
 			return &setupError{stage: stageHostKey, err: hostKeyErr}
+		}
+		// The credential plane is told what the handshake did and decides
+		// whether it was a refusal; the engine asks the same package which it
+		// was rather than reading x/crypto's text itself, so there is exactly
+		// one classifier (auth/target's reject.go, prompt 0025).
+		state := access.DialOutcome(err)
+		if target.IsAuthRejection(err) {
+			s.recordCredentialRejected(access.Credential, state, err)
+			return &setupError{stage: stageTargetAuth, err: err}
 		}
 		return &setupError{stage: stageDial, err: err}
 	}
+	// A success closes the breaker and resets the count: the run it bounds is
+	// CONSECUTIVE rejections, and this credential has just had none.
+	access.DialOutcome(nil)
 	_ = conn.SetDeadline(time.Time{})
 
 	s.setLeg(legConn)

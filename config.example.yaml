@@ -262,6 +262,37 @@ auth:
         # process using this proxy id. Minutes, not seconds.
         grace: 30m
 
+    # Containment for a credential the TARGET refuses (prompt 0025).
+    #
+    # A decrypting proxy is a SINGLE SOURCE ADDRESS to every target it fronts,
+    # so a target's per-source abuse defences — OpenSSH 9.8's
+    # PerSourcePenalties, on by default — score one route's stale credential
+    # against the proxy rather than against the user who happened to trigger it.
+    # Retried at whatever rate users arrive, one wrong key ends with the target
+    # refusing to answer the proxy at all, and every other user of that target
+    # loses a working session to a credential that was never theirs. See
+    # README.md, "Target prerequisites", for the target side of this.
+    #
+    # This is SELF-PROTECTION and not policy (D2): it can only make the proxy
+    # attempt less than Hoplock Control authorised, never more, and it never
+    # turns a denial into an allow. A session it stops is an outage.
+    #
+    # Scored per (target, method, credential) — never per user or per route: a
+    # wrong credential is wrong for everybody, and a right one keeps working
+    # while another one is failing. All three settings are optional.
+    rejection:
+      # Consecutive rejections of one credential on one target, inside `window`,
+      # that stop the proxy attempting it. Default 5. Set it to 0 — and only
+      # deliberately — to disable containment entirely.
+      threshold: 5
+      # How long a run of rejections counts as consecutive. A rejection arriving
+      # after this starts a run of its own, so a slow trickle never accumulates.
+      # Default 5m.
+      window: 5m
+      # How long the credential is withheld once the threshold is reached. The
+      # first success afterwards closes it and resets the count. Default 5m.
+      cooldown: 5m
+
     # brokered-key (D6a, PLAN §5.2): a credential held in memory for the
     # session and never written to disk, for the appliances, network gear, and
     # OT devices the proxy cannot administer. The target is not modified.
