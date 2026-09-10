@@ -156,7 +156,20 @@ func (a *EphemeralAuthenticator) provisionScript(c *confinement, authorizedKey s
 	// this phase exists to prevent, reintroduced by the fix. Creating a file
 	// named after the uid is atomic and reads nothing, so the maximum can only
 	// ever move up.
+	//
+	// ROOT-OWNED AND ROOT-ONLY, re-established on every provisioning rather than
+	// assumed from whatever `mkdir -p` found. Lowering the mark is the one way to
+	// make this proxy hand out a uid it has already used, so the directory that
+	// holds it gets the same treatment as the dispatcher next to it: a mark a
+	// session could delete is not a mark. `mkdir -p` leaves an existing
+	// directory's mode alone, so setting it here is what covers a base an
+	// operator pointed somewhere permissive, and a provisioning shell with an
+	// unusual umask. It is 700 rather than the dispatcher's 755 because nothing
+	// but the provisioner ever reads it.
 	fmt.Fprintf(&b, "mkdir -p \"$w\" || exit %d\n", exitUIDMarkFailed)
+	fmt.Fprintf(&b, "chown 0:0 \"${w%%/*}\" \"$w\" || exit %d\n", exitUIDMarkFailed)
+	fmt.Fprintf(&b, "chmod 755 \"${w%%/*}\" || exit %d\n", exitUIDMarkFailed)
+	fmt.Fprintf(&b, "chmod 700 \"$w\" || exit %d\n", exitUIDMarkFailed)
 	fmt.Fprintf(&b, ": > \"$w/$uid\" || exit %d\n", exitUIDMarkFailed)
 	// Pruning keeps the directory at one entry without ever removing a mark
 	// ABOVE this one, so a concurrent provisioner that allocated higher is never

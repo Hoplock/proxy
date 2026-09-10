@@ -977,6 +977,28 @@ never a denial, and with nothing provisioned. The uid is on the provisioning
 audit record beside the account name, because the name is deleted at teardown and
 the number is what a `find -uid` and the target's own auditd actually speak.
 
+**Who is trusted with the floor, and who is not.** The census and the mark are
+both read off the **target**, which is the party this proxy does not trust, so
+everything the target says may only ever **raise** the next uid and never lower
+it: the allocator takes the maximum of the mark, the census, and its own record
+of what it has handed out. A target that under-reports — a mark an attacker with
+root has deleted, a census missing an account — can therefore only make the proxy
+SKIP uids, which is loud (the pressure warning, then the refusal), and never make
+it reuse one. The mark directory is root-owned and mode 700, re-established on
+every provisioning rather than inherited, so nothing short of root on the target
+can lower it at all; and a root attacker there defeats this guarantee more
+directly by `chown`ing the files they want inherited.
+
+The residual is a **proxy restart**, which empties the in-process record and
+leaves a fresh process with only the target's word for the floor. Closing that
+needs the floor held where neither the target nor any single proxy owns it —
+which is Hoplock Control, and which is a **contract change** with a cross-repo
+obligation (D3) and an availability decision to make first: a floor fetched from
+Control couples provisioning to Control's availability, and §5.1's teardown, §6.5's
+rungs and D16's deadline are all deliberately built the other way. It is
+therefore a phase of its own rather than part of 0027, and phase 0027's learnings
+carry the design sketch.
+
 Phase **0019**'s filesystem confinement is the other half: with a home mounted
 `noexec` and nothing writable outside it there is nothing left to inherit, and
 `rm -rf "$h"` becomes complete. Neither alone is the fix. Until a route names a

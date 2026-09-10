@@ -40,6 +40,14 @@
   **4** where a duplicate name exits **9**. **`-K UID_MIN=…` is NOT the fix** — it
   moves the range searched and still hands a freed uid straight back (2000002 →
   delete → 2000002). Full table: *Details → What was measured*.
+- **Who is trusted with the floor:** the census and the mark are read off the
+  **target**, so both may only ever **raise** the next uid, never lower it — a
+  tampered mark or an under-reported census costs range (loud) and can never cause
+  reuse. The mark directory is root-owned, mode **700**, re-established on every
+  provisioning. **Residual:** a proxy restart empties the in-process record, so a
+  fresh process on a tampered target has only the target's word for the floor.
+  Closing that is Hoplock Control's to hold — a contract change, out of 0027's
+  scope, design sketch under *Details → Why the floor is not (yet) Control's*.
 - **What is still inheritable — the honest scope of the fix:** anything a session
   writes **outside its home** (`/tmp`, `/var/tmp`, `/dev/shm`, shared storage)
   still survives it, and this phase deletes none of it. 0019's confinement is the
@@ -212,6 +220,78 @@ order, so a lost race costs a retry inside one script instead of a refused
 session. Only the **first** candidate advances the allocator's per-target
 high-water cache; advancing by the whole list would burn eight uids per session.
 
+### Why the floor is not (yet) Control's
+
+Raised in review on PR #40: an attacker on the target can tamper with the mark
+directory, so why is the state not the proxy's or the server's? The answer has
+three layers, and the third is a follow-up phase.
+
+**What tampering can actually do.** Only lower the mark, and only with root on the
+target. Raising it or adding low entries is a no-op (the mark is the maximum);
+lowering it drops the floor back to whatever the census reports. That was the
+exposure worth closing, and two things close most of it:
+
+- Everything the target says may only **raise** the floor. `allocate` takes the
+  maximum of the mark, the census, and `a.high[addr]` — this process's own record
+  of what it has issued. So a wiped mark makes the proxy skip uids, never reuse
+  one, and skipping is loud: the pressure warning, then the refusal. Asserted by
+  `TestATamperedMarkCannotLowerAnAllocation` and
+  `TestAnUnderReportedCensusCannotLowerAnAllocation`.
+- The mark directory is `chown 0:0` + `chmod 700`, **set on every provisioning**
+  rather than inherited, because `mkdir -p` leaves an existing directory's mode
+  alone. That covers a permissive `enforcement_base`, an odd provisioning umask,
+  and a pre-created directory. It was missing in the first cut of this phase,
+  which is a straight inconsistency with phase 0019's sibling directory in the
+  same base — that one carries an explicit `chmod` and the comment "a directory
+  the session could rewrite is not an allow-list". `TestTheUIDMarkIsNotWritableByASession`
+  pre-creates the mark 0777 and fails if the mode is not tightened.
+
+A root attacker on the target is still able to lower the mark — and defeats this
+guarantee far more directly by `chown`ing the files they want inherited, so the
+marginal loss there is nil.
+
+**Why not proxy-local state.** It was considered and it is strictly worse than the
+target-side mark for the two cases that matter: a proxy **replaced** without a
+persistent volume starts with an empty floor, and **two proxies serving one
+target** (which PLAN §5.1 and `principal.go` both treat as an expected
+deployment) never see each other's allocations at all. Either case reissues a
+torn-down session's uid, which is the defect this phase exists to close. The
+proxy already keeps durable local state for one thing (`logging`'s disk buffer),
+so the precedent exists — it just does not solve this.
+
+**Why Control is the right home, and why it is not here.** Control is the only
+party that sees every proxy for a target, so it closes the restart case, the
+replaced-proxy case and the multi-proxy case at once, and it is already the trust
+anchor for policy (D2), host-key decisions (D7) and the audit trail. The shape
+that fits the existing contract is 0023's, not a new synchronous call: the floor
+arrives as a **hint on the authorize response**, and the allocation is reported
+asynchronously like `POST /v1/capabilities/report`, so nothing is added to the
+per-connection round-trip budget that 0022 and 0023 spent two phases reducing
+(3.17 → 1.17 calls).
+
+Three things stop it being part of this phase, and the prompt's own out-of-scope
+section anticipated the first ("`api/control.yaml`. This is proxy-local. If you
+think the server must choose the range, stop and ask"):
+
+1. It is a **contract change**, so it carries a cross-repo obligation
+   (`docs/CROSS-REPO-PROTOCOL.md` §5): upstream merges first, then a sync PR in
+   Hoplock Control.
+2. It needs an **availability decision** made deliberately. A floor fetched from
+   Control couples provisioning to Control's availability, and the rest of the
+   system is built the other way on purpose — §5.1 keeps teardown and sweeps
+   independent of the policy service, and 0024 enforces the session deadline
+   locally precisely so it holds when Control does not. Fail-closed is the
+   posture consistent with this phase, but it turns a Control outage into an
+   ephemeral-provisioning outage fleet-wide, which is an operator's call.
+3. Control needs a per-target **monotonic counter with atomic increment** —
+   real server-side storage, correct under concurrent proxies.
+
+**A note for whoever picks this up:** the target-side mark should probably survive
+even then, demoted to a floor that may only raise Control's answer — the same
+"the server informs, the proxy re-checks" relationship `probeCache` and 0023's
+host-key hint already have. It is what keeps a Control outage from being the
+moment the invariant quietly weakens.
+
 ### Tests, and the one that fails without the fix
 
 - `internal/auth/target/uid_test.go` — the allocator: the rule, the **wrap-around
@@ -281,10 +361,18 @@ independent and still worth asserting:
   `std-error-handling` preset excludes.
 - `go build ./...`, `go vet ./...` and `go test ./...` pass.
 
-### Follow-ups (not queued — deliberately)
+### Follow-ups
 
-Nothing new is queued. Two things a future phase may want, recorded here rather
-than as prompts, because neither is a defect and both are cheap to reconsider:
+**Not queued yet, and it needs a number:** moving the uid floor to Hoplock
+Control, per *Why the floor is not (yet) Control's* above. It revises `api/`, so
+it must run **before 0035** (the contract collapse, which must follow every phase
+that touches the contract) — which means inserting it and renumbering the
+collapse, the one-prompt shape phase 0026 used for 0034→0035. It was raised in
+review on PR #40 and is not yet written up as a prompt; the design sketch above is
+what a prompt would be built from.
+
+Two smaller things a future phase may want, recorded here rather than as prompts,
+because neither is a defect and both are cheap to reconsider:
 
 1. **The pressure warning is a log line.** It could be a `LogRecord` so an
    operator's dashboard sees it rather than a proxy's stderr. That is a telemetry

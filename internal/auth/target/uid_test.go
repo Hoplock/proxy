@@ -281,3 +281,64 @@ func TestParseProvisionedUIDFailsClosed(t *testing.T) {
 		t.Fatalf("parseProvisionedUID with no uid line = %v, want ErrUIDUnavailable", err)
 	}
 }
+
+// TestATamperedMarkCannotLowerAnAllocation is the trust boundary, stated as a
+// test: the census and the high-water mark are read off the TARGET, which is the
+// party this proxy does not trust.
+//
+// An attacker with root there can delete the mark. What they must not be able to
+// do is make this proxy hand out a uid it has already used — so a mark that goes
+// backwards is ignored, and the allocation keeps climbing. Tampering costs range,
+// which is loud, rather than causing reuse, which is silent.
+func TestATamperedMarkCannotLowerAnAllocation(t *testing.T) {
+	a := testAllocator(t, 2000, 2999)
+
+	first, err := a.allocate("target:22", census(2500))
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	if first.uid != 2501 {
+		t.Fatalf("allocated uid %d, want 2501", first.uid)
+	}
+
+	// The mark is now gone, and the account that held 2501 is gone with it: the
+	// target reports an empty range, which is what a wiped mark directory looks
+	// like from here.
+	second, err := a.allocate("target:22", census(0))
+	if err != nil {
+		t.Fatalf("allocate after the mark was wiped: %v", err)
+	}
+	if second.uid <= first.uid {
+		t.Errorf("a wiped mark pulled the allocation back to %d after %d; target-supplied "+
+			"evidence must only ever raise the floor", second.uid, first.uid)
+	}
+	for _, uid := range second.candidates {
+		if uid <= first.uid {
+			t.Errorf("candidates = %v, want nothing at or below the already-issued %d",
+				second.candidates, first.uid)
+			break
+		}
+	}
+}
+
+// TestAnUnderReportedCensusCannotLowerAnAllocation is the same claim for the
+// other half of what the target says. A census missing an account — because the
+// account database was tampered with, or simply because a name was hidden — must
+// not put a uid back in play.
+func TestAnUnderReportedCensusCannotLowerAnAllocation(t *testing.T) {
+	a := testAllocator(t, 2000, 2999)
+
+	if _, err := a.allocate("target:22", census(0, 2000, 2001, 2002)); err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	// The same target now claims nothing at all is in use and nothing was ever
+	// allocated.
+	next, err := a.allocate("target:22", census(0))
+	if err != nil {
+		t.Fatalf("allocate against an under-reported census: %v", err)
+	}
+	if next.uid <= 2003 {
+		t.Errorf("allocated uid %d against a census claiming an empty range; the process's own "+
+			"record must still hold the floor at 2003", next.uid)
+	}
+}

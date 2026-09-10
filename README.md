@@ -143,7 +143,10 @@ to a different person, would own it. So:
   mark, which is what makes the guarantee survive a teardown, a proxy restart,
   and a second proxy on the same fleet. A target where the mark cannot be written
   refuses the session as an outage rather than provisioning an account whose uid
-  nothing has recorded.
+  nothing has recorded. The proxy sets that directory root-owned and mode `700`
+  on every provisioning, and treats what it reads there as evidence that may only
+  ever **raise** the next uid — so a tampered mark costs uids out of the range,
+  loudly, and can never hand a session a uid a previous one held.
 - **The uid range** (`auth.target.ephemeral_user.uid_min`/`uid_max`, default
   `2000000-2999999`) must be free on the fleet. It sits above every
   distribution's own `UID_MAX`, so the target's allocator never enters it; move

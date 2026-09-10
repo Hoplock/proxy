@@ -868,3 +868,44 @@ func TestAUIDTheTargetCannotRecordFailsTheSession(t *testing.T) {
 		t.Errorf("the failed provisioning left %v behind", accounts)
 	}
 }
+
+// TestTheUIDMarkIsNotWritableByASession is the other half of the trust boundary,
+// on the target side.
+//
+// Lowering the mark is the one way to make this proxy reissue a uid it has
+// already used, so the directory holding it must not be writable by anything but
+// the provisioner — the same rule phase 0019 applies to the dispatcher sitting
+// beside it, for the same reason. `mkdir -p` leaves an existing directory's mode
+// alone, so this asserts the mode is SET rather than inherited.
+func TestTheUIDMarkIsNotWritableByASession(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	// Pre-created world-writable, standing in for a base an operator pointed
+	// somewhere permissive — or a provisioning shell with an odd umask.
+	mark := filepath.Join(h.enforce, uidWatermarkName)
+	if err := os.MkdirAll(mark, 0o777); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Chmod(mark, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	access, err := auth.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	defer func() { _ = access.Close(ctx) }()
+
+	info, err := os.Stat(mark)
+	if err != nil {
+		t.Fatalf("stat the uid mark: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("the uid mark directory is mode %#o; a session that can delete the mark can "+
+			"make the next one reuse its uid", mode)
+	}
+}

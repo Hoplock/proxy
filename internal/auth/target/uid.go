@@ -265,6 +265,19 @@ func (a *uidAllocator) allocate(addr string, c uidCensus) (uidPlan, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// EVERYTHING THE TARGET SAYS MAY ONLY RAISE THE FLOOR, NEVER LOWER IT, and
+	// that is a security property rather than an accident of taking a maximum.
+	// The census and the mark are both read off the target, which is the party
+	// this proxy does not trust; a.high[addr] is this process's own record of
+	// what it has handed out. Because all three are maxima, a target that
+	// under-reports — a mark an attacker with root has deleted, a census missing
+	// an account — can only make this proxy SKIP uids, which is loud (the
+	// pressure warning, then the refusal), and can never make it reuse one.
+	//
+	// The residual is a proxy restart, which empties a.high: a fresh process on a
+	// tampered target has only the target's word for it. Closing that needs the
+	// floor held somewhere neither the target nor a single proxy owns — see the
+	// learnings for why that is Hoplock Control's to hold and not this phase's.
 	next := a.min
 	for _, floor := range []int{c.watermark, a.high[addr]} {
 		if floor >= next {
