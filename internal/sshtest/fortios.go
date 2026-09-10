@@ -145,12 +145,34 @@ type FortiOSFaults struct {
 	// that answers one and not the other is a unit whose clock is known, and
 	// refusing it would be refusing a route over a command name.
 	NoExecuteClock bool
+	// HideIdentity drops the `Version:` line from `get system status`,
+	// standing in for a unit whose status output a driver cannot read.
+	//
+	// It is a FAULT and not a mode because of what the switch driver does with
+	// the answer. The two platforms accept the same administrator commands, so
+	// the version line is the only thing that distinguishes a switch from a
+	// firewall — and a driver that carried on without it would create a
+	// privileged administrator on whatever answered. What this proves is that
+	// it refuses instead.
+	HideIdentity bool
 }
 
 // FortiOSOptions configures a FakeFortiOS.
 type FortiOSOptions struct {
 	// HostKey is the device's host key. Generated when nil.
 	HostKey ssh.Signer
+	// Platform is which Fortinet unit this fake pretends to be. Empty means
+	// FortiOSPlatformFortiGate.
+	//
+	// It is one fake rather than two because the two platforms speak NEARLY
+	// the same CLI, and "nearly" is the interesting part: `config system
+	// admin`, `edit`, `set accprofile`, `set password` and `show system admin`
+	// are identical, so a second fake would have been a copy whose drift
+	// nobody would notice. What differs — the identity line, the tables that
+	// do not exist, the built-in profiles — is exactly what a driver has to
+	// get right, and it is modelled here so getting it wrong FAILS rather than
+	// passing against a fake that was permissive in the same places.
+	Platform string
 	// Hostname is what the prompt is built from. Empty means "FGT-TEST".
 	Hostname string
 	// AdminUser and AdminPassword are the privileged login the proxy uses.
@@ -197,6 +219,38 @@ type FortiOSOptions struct {
 	// Faults make it misbehave.
 	Faults FortiOSFaults
 }
+
+// The units this fake can pretend to be.
+//
+// They are not two products so much as two configurations of one CLI, which is
+// why phase 0029's driver could reuse phase 0014's state machine — and why the
+// differences below have to be modelled rather than assumed away.
+const (
+	FortiOSPlatformFortiGate   = "fortigate"
+	FortiOSPlatformFortiSwitch = "fortiswitch"
+)
+
+// FortiSwitchBuiltinProfiles are the access profiles FortiSwitchOS documents.
+//
+// ONE. "The super_admin administrator is the administrative account that the
+// primary administrator should have to log into the FortiSwitch unit. The
+// profile cannot be deleted or modified" — and no FortiSwitchOS source
+// mentions `prof_admin` or `super_admin_readonly`, which are FortiOS's. A fake
+// that carried FortiOS's three would let a proxy configured for a FortiGate
+// estate resolve `super_admin_readonly` happily against a switch that does not
+// have it.
+var FortiSwitchBuiltinProfiles = []string{"super_admin"}
+
+// FortiSwitchMaxNameLen is the administrator-name length this fake enforces on
+// a switch, and it is the one number here that Fortinet does NOT document.
+//
+// FortiSwitchOS's CLI reference gives `config system admin`'s `<admin_name>`
+// with no size at all. 35 is the naming-rules KB's general figure for "most
+// name fields", which is the conservative reading and is exactly what the
+// driver declares (fortios.maxSwitchAccountNameLen). The fake is deliberately
+// as strict as the driver's own claim: if a real unit proves the field wider
+// or narrower, both move together and these tests are what say so.
+const FortiSwitchMaxNameLen = 35
 
 // FortiOSMaxNameLen is the administrator-name length FortiOS accepts.
 //
@@ -257,6 +311,7 @@ type FakeFortiOS struct {
 	config   *ssh.ServerConfig
 	hostKey  ssh.Signer
 	hostname string
+	platform string
 	profiles map[string]bool
 	vdomMode string
 	vdoms    []string
@@ -309,6 +364,7 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	d := &FakeFortiOS{
 		hostKey:   hostKey,
 		hostname:  opts.Hostname,
+		platform:  opts.Platform,
 		profiles:  map[string]bool{},
 		faults:    opts.Faults,
 		closed:    make(chan struct{}),
@@ -319,14 +375,27 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	if d.now == nil {
 		d.now = time.Now
 	}
+	if d.platform == "" {
+		d.platform = FortiOSPlatformFortiGate
+	}
 	if d.hostname == "" {
 		d.hostname = "FGT-TEST"
+		if d.isSwitch() {
+			// A FortiSwitch's default hostname is its serial number, which is
+			// what Fortinet's own `get system status` example shows.
+			d.hostname = "S248EPTF19000001"
+		}
 	}
 	if d.faults.MaxNameLen == 0 {
 		d.faults.MaxNameLen = FortiOSMaxNameLen
+		if d.isSwitch() {
+			d.faults.MaxNameLen = FortiSwitchMaxNameLen
+		}
 	}
 	d.vdomMode = opts.VDOMMode
 	if d.vdomMode == "" {
+		// FortiSwitchOS has no virtual domains at all, so a switch is always
+		// the unpartitioned shape and `config global` does not exist on it.
 		d.vdomMode = FortiOSVDOMDisabled
 	}
 	d.vdoms = append([]string(nil), opts.VDOMs...)
@@ -340,10 +409,16 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 	}
 	profiles := opts.Profiles
 	if len(profiles) == 0 {
-		// The documented FortiOS built-ins, so a profile resolves against the
-		// same set a real unit has — and, just as importantly, so one that is
-		// not on a real unit fails here.
-		profiles = append([]string(nil), FortiOSBuiltinProfiles...)
+		// The documented built-ins for whichever unit this is, so a profile
+		// resolves against the same set a real one has — and, just as
+		// importantly, so one that is not on a real unit fails here. The two
+		// sets differ, which is the point: FortiOS documents three and
+		// FortiSwitchOS documents one.
+		if d.isSwitch() {
+			profiles = append([]string(nil), FortiSwitchBuiltinProfiles...)
+		} else {
+			profiles = append([]string(nil), FortiOSBuiltinProfiles...)
+		}
 	}
 	for _, p := range profiles {
 		d.profiles[p] = true
@@ -564,6 +639,9 @@ func (d *FakeFortiOS) AddAccount(a FortiOSAccount) {
 	}
 	d.record(func() { d.accounts[a.Name] = a })
 }
+
+// isSwitch reports whether this fake is pretending to be a FortiSwitch.
+func (d *FakeFortiOS) isSwitch() bool { return d.platform == FortiOSPlatformFortiSwitch }
 
 // SetUnreachable makes the device refuse and drop connections, standing in for
 // one that has gone away mid-teardown.
@@ -854,7 +932,29 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, st *cliState) bool {
 		d.set(ch, fields, *editing)
 		return false
 
-	case line == scheduleTableLine:
+	case line == scheduleTableLine, strings.HasPrefix(line, scheduleShowLine):
+		if d.isSwitch() {
+			// The table does not exist here. FortiSwitchOS has `config system
+			// schedule onetime`, `... recurring` and `... group` under
+			// `config system`, and no `config firewall` anything — which is
+			// why phase 0029's switch driver is a SEPARATE TYPE that does not
+			// implement device.ResidueSweeper. A fake that accepted this would
+			// let a sweep for an object class this platform does not have pass
+			// silently, every two minutes, against a customer's switch.
+			d.fail(ch, "Unknown action 0")
+			d.fail(ch, failReturnCode)
+			return false
+		}
+		if strings.HasPrefix(line, scheduleShowLine) {
+			// A read of the same table, under the same scope rule.
+			if d.vdomMode != FortiOSVDOMDisabled && !containsScope(*scope, "global") {
+				d.fail(ch, "Command parse error before 'firewall'")
+				d.fail(ch, failReturnCode)
+				return false
+			}
+			d.showSchedules(ch)
+			return false
+		}
 		// The one-time schedule table, and it is held to the SAME scope rule as
 		// the administrator table: on a partitioned unit it is reached through
 		// `config global`.
@@ -921,16 +1021,6 @@ func (d *FakeFortiOS) dispatch(ch ssh.Channel, line string, st *cliState) bool {
 		d.setSchedule(ch, fields, st.sched)
 		return false
 
-	case strings.HasPrefix(line, scheduleShowLine):
-		// A read of the same table, under the same scope rule.
-		if d.vdomMode != FortiOSVDOMDisabled && !containsScope(*scope, "global") {
-			d.fail(ch, "Command parse error before 'firewall'")
-			d.fail(ch, failReturnCode)
-			return false
-		}
-		d.showSchedules(ch)
-		return false
-
 	case strings.HasPrefix(line, "show system admin"):
 		// The administrator table is a GLOBAL table. On a partitioned unit it
 		// is read where it is configured — inside `config global` — and a
@@ -981,11 +1071,25 @@ func containsScope(scope []string, want string) bool {
 
 // showStatus answers `get system status`.
 //
-// Only the line a driver has any business reading is modelled. Fortinet
-// documents it as the way to tell whether virtual domains are enabled — "the
-// output will display the 'Virtual domain configuration' status" — with
-// `disable` and `multiple` as its values.
+// Only the lines a driver has any business reading are modelled, and which
+// those are differs by unit. On a FortiGate it is the virtual-domain
+// configuration — Fortinet documents this command as the way to tell whether
+// virtual domains are enabled, "the output will display the 'Virtual domain
+// configuration' status", with `disable` and `multiple` as its values. On a
+// FortiSwitch it is the VERSION line, because the two platforms answer
+// `config system admin` identically and the version line is the only thing in
+// the conversation that says which unit is on the other end.
+//
+// The FortiSwitch shape is quoted from Fortinet's own example, which — unlike
+// the FortiGate one — is published: `get system status` has a documented
+// "Example output" in the FortiSwitchOS CLI reference, beginning `Version:
+// FortiSwitch-224E v7.4.0,build0752,230410`. It carries no virtual-domain
+// line at all, which is what a driver written for a FortiGate would trip over.
 func (d *FakeFortiOS) showStatus(ch ssh.Channel) {
+	if d.isSwitch() {
+		d.showSwitchStatus(ch)
+		return
+	}
 	fmt.Fprintf(ch, "Version: FortiGate-VM64 v7.6.6,build2775,250000 (GA.F)\r\n")
 	fmt.Fprintf(ch, "Hostname: %s\r\n", d.hostname)
 	if !d.faults.HideClock {
@@ -998,6 +1102,24 @@ func (d *FakeFortiOS) showStatus(ch ssh.Channel) {
 	}
 	fmt.Fprintf(ch, "Virtual domains status: 1 in NAT mode, 0 in TP mode\r\n")
 	fmt.Fprintf(ch, "Virtual domain configuration: %s\r\n", d.vdomMode)
+}
+
+// showSwitchStatus answers `get system status` on a FortiSwitch.
+//
+// The shape is Fortinet's published example. What matters to a driver is the
+// first line and the ABSENCE of the last two above: there is no virtual-domain
+// configuration on a FortiSwitch, so a driver that insisted on reading one
+// would refuse every switch it met.
+func (d *FakeFortiOS) showSwitchStatus(ch ssh.Channel) {
+	if !d.faults.HideIdentity {
+		fmt.Fprintf(ch, "Version: FortiSwitch-248E-FPOE v7.6.5,build1234,250000 (GA)\r\n")
+	}
+	fmt.Fprintf(ch, "Serial-Number: %s\r\n", d.hostname)
+	fmt.Fprintf(ch, "BIOS version: 04000015\r\n")
+	fmt.Fprintf(ch, "Hostname: %s\r\n", d.hostname)
+	if !d.faults.HideClock {
+		fmt.Fprintf(ch, "System time: %s\r\n", d.clock()().Format("Mon Jan 2 15:04:05 2006"))
+	}
 }
 
 // set applies one field to the entry being edited.

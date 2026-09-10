@@ -126,7 +126,7 @@ func (d *Driver) createSchedule(ctx context.Context, s *cliSession, name, start,
 		step{command: "set expiration-days 0", label: "silence the schedule's pre-expiration warning"},
 		step{command: "next", label: "commit the expiry schedule"},
 	)
-	if err := d.run(ctx, s, append(steps, s.leaveScheduleTable()...)); err != nil && s.vdomMode.partitioned() {
+	if err := s.run(ctx, append(steps, s.leaveScheduleTable()...)); err != nil && s.vdomMode.partitioned() {
 		// The failure names the assumption, because on a partitioned unit this
 		// is the sequence most likely to be wrong and the device's own error
 		// will not say so (see enterScheduleTable).
@@ -152,7 +152,7 @@ func (d *Driver) removeSchedule(ctx context.Context, s *cliSession, name string)
 	steps := append(s.enterScheduleTable(),
 		step{command: "delete " + quote(name), label: "remove the expiry schedule", notFoundIsSuccess: true},
 	)
-	return d.run(ctx, s, append(steps, s.leaveScheduleTable()...))
+	return s.run(ctx, append(steps, s.leaveScheduleTable()...))
 }
 
 // listSchedules reads the schedule table and returns the entries under a
@@ -160,7 +160,7 @@ func (d *Driver) removeSchedule(ctx context.Context, s *cliSession, name string)
 // widened, because on a shared device the prefix is the whole defence against
 // one proxy deleting another's objects.
 func (d *Driver) listSchedules(ctx context.Context, s *cliSession, prefix string) ([]string, error) {
-	out, err := d.showGlobal(ctx, s, scheduleShowCommand, "list one-time schedules")
+	out, err := s.showGlobal(ctx, scheduleShowCommand, "list one-time schedules")
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func (d *Driver) ListResidue(ctx context.Context, req device.ListRequest) ([]dev
 	if len(schedules) == 0 {
 		return nil, nil
 	}
-	accounts, err := d.listAccounts(ctx, s, req.Prefix)
+	accounts, err := s.listAccounts(ctx, req.Prefix)
 	if err != nil {
 		return nil, err
 	}

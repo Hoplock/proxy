@@ -33,6 +33,13 @@ below was read directly. **Findings only — no code was changed.**
 > the naming scheme fits it with nothing to spare. See "What phase 0017 did with
 > claim 2" and the verification section under it.
 
+> **This file has a second half (phase 0029).** Everything down to "Summary of
+> what should change" is about **FortiOS**. Below it, under "FortiSwitchOS and
+> FortiLink", is the same exercise for the second platform in
+> `internal/auth/target/device/fortios` — and it is where the finding that
+> changed phase 0029's design lives, because that prompt's stated premise is
+> not what Fortinet documents.
+
 Unless a row says otherwise, each finding was checked in the FortiGate CLI
 reference / Administration Guide for **7.0.17, 7.2.11, 7.4.9, 7.6.6 and 8.0.0**
 and is identical in all five. FortiOS 6.4 and earlier are end-of-support and
@@ -748,3 +755,221 @@ consequence:
 Claims 3, 4, 6, 7 and 10 need no change. Claims 7 and 10, the two the author
 flagged as least certain alongside claim 1, both survive verification —
 claim 10 as a sound inference rather than a documented fact.
+
+---
+
+# FortiSwitchOS and FortiLink (phase 0029)
+
+Everything above is about FortiOS. This section is the same exercise for the
+second platform in `internal/auth/target/device/fortios`, and it was run for the
+same reason: phase 0029's prompt required its FortiLink facts to be established
+from Fortinet's current documentation rather than from memory, and that
+discipline is what found the correction below.
+
+Every page was read directly from a session that could reach `docs.fortinet.com`
+and `community.fortinet.com`. Unless a row says otherwise, FortiSwitchOS facts
+were checked in the **7.6.x** FortiSwitchOS CLI reference and administration
+guide, and FortiOS-side facts in the **7.6.6** FortiGate CLI reference.
+
+## The finding that changed the phase
+
+Phase 0029's prompt states, as its premise:
+
+> A FortiLink-managed switch has no independent administrative plane the proxy
+> can SSH into: it is administered *through* its managing FortiGate.
+
+**This is not what Fortinet documents.** `config switch-controller
+security-policy local-access` on the FortiGate is described as "Configure
+allowaccess list for **mgmt and internal interfaces on managed FortiSwitch
+units**", with two parameters:
+
+```
+internal-allowaccess   Allowed access on the switch internal interface.    default: https ping ssh
+mgmt-allowaccess       Allowed access on the switch management interface.  default: https ping ssh
+```
+
+Source: [`config switch-controller security-policy local-access`, FortiOS 7.6.6 CLI reference](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/305574535/config-switch-controller-security-policy-local-access)
+
+A managed FortiSwitch therefore keeps its own SSH administrative plane, on both
+its in-band and its out-of-band management interfaces, **enabled by default**,
+and the managing FortiGate's role is to be able to close it. Whether this proxy
+can reach that address is a routing and firewall-policy question in the
+customer's deployment, not a property of the platform — which is why the switch
+is its own endpoint and FortiLink is a deployment fact. `docs/PLAN.md` §5.3
+("As decided (phase 0029)") carries the decision and the alternatives.
+
+## FortiSwitchOS facts the driver declares
+
+| # | Claim | Verdict |
+| --- | --- | --- |
+| S1 | `config system admin` exists, with `accprofile`, `password`, `ssh-public-key1..3`, `trusthost1..10`, `ip6-trusthost1..10` | ✅ Documented |
+| S2 | Built-in access profiles | ⚠️ **ONE**, `super_admin` — not FortiOS's three |
+| S3 | Administrator-name length | ❌ **Undocumented** — no size given for this field |
+| S4 | Per-administrator expiry | ⚠️ **Contradictory** — the field exists, the table it names does not |
+| S5 | `set cfg-save {automatic \| manual \| revert}` in `config system global` | ✅ Documented, same as FortiOS |
+| S6 | `get system status` identifies the unit | ✅ Documented, **with an example** — unlike FortiOS's |
+| S7 | Creating administrators needs a privileged account | ✅ Documented, and it is an operator prerequisite |
+
+**S1.** `config system admin` / `edit <admin_name>` takes `set accprofile`,
+`set password` ("up to 256 characters"), `set ssh-public-key1`..`3`,
+`set trusthost1`..`10` (default `0.0.0.0 0.0.0.0`) and
+`set ip6-trusthost1`..`10` (default `::/0`). The IPv6 pair defaults wide open
+exactly as on FortiOS, so the driver writes both families — claim 9's gap,
+avoided here rather than repeated.
+Source: [`config system`, FortiSwitchOS 7.6.0 CLI reference](https://docs.fortinet.com/document/fortiswitch/7.6.0/fortiswitchos-cli-reference/500379/config-system)
+
+**S2.** "The `super_admin` administrator is the administrative account that the
+primary administrator should have to log into the FortiSwitch unit. The profile
+cannot be deleted or modified to ensure there is always a method to administer
+the FortiSwitch unit. This user profile has access to all components of the
+system, including the ability to add and remove other system administrators."
+No FortiSwitchOS source mentions `prof_admin` or `super_admin_readonly`; both
+are FortiOS profiles. Any narrower scope on a switch is a **custom** profile
+built with `config system accprofile`, whose twelve permission groups
+(`admingrp`, `loggrp`, `mntgrp`, `netgrp`, `pktmongrp`, `routegrp`,
+`swcoregrp`, `swmonguardgrp`, `sysgrp`, `utilgrp`, `exec-alias-grp` and the
+alias list) are the granularity `platform-authorized` actually buys here.
+Source: [Profiles, FortiSwitchOS 7.6.5 administration guide](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortiswitchos-administration-guide/606914/profiles)
+
+**S3.** The CLI reference gives `<admin_name>` as "Enter the name for the admin
+account." with **no size column at all** — the FortiSwitchOS reference uses the
+older Variable/Description/Default table, unlike FortiOS's, which is where the
+64 in claim 1 comes from. So there is nothing to read, and the driver's **35**
+is the naming-rules KB's general figure used as a conservative default. This is
+the same figure that was *wrong* for FortiOS, used here for the opposite
+reason: no field-specific number exists to prefer over it. Both clear PLAN
+§5.3's threshold of 32, so nothing turns on it. **On the hardware list.**
+
+**S4.** `config system admin` carries `set schedule <schedule-name>`, described
+as: "Restrict times that an administrator can log in. **Defined in config
+firewall schedule.** No default indicates that the administrator can log in at
+any time." But FortiSwitchOS's `config system` chapter lists
+`config system schedule onetime`, `config system schedule recurring` and
+`config system schedule group`, and the CLI reference has **no `config
+firewall` chapter at all**. The field's own description names a table the
+platform does not have, and which table it resolves against is unstated. That
+is why `Capabilities.EnforcesExpiry` is false here where it is true on FortiOS:
+the bit means the device ends the account's usefulness whether or not the proxy
+is alive (phase 0017), and that cannot be established from a contradiction.
+**On the hardware list, and the highest-value item on it.**
+
+**S5.** Same command, same three values, same device-wide scope as FortiOS's
+claim 6, so `PersistsAcrossReload` is true for the same reason.
+
+**S6.** Fortinet publishes the output, which FortiOS's `get system status` does
+not have anywhere:
+
+```
+S224ENTF18000826 # get system status
+
+Version: FortiSwitch-224E v7.4.0,build0752,230410 (Interim)
+Serial-Number: S224ENTF18000826
+...
+System time: Wed Apr 12 16:34:42 2023
+```
+
+Two things matter. The `Version:` line names the product, which is the only
+thing in the conversation that distinguishes a switch from a FortiGate — the
+two accept `config system admin`, `edit`, `set accprofile` and `set password`
+identically, so a route naming this platform against a firewall would otherwise
+create a privileged administrator there and report success. And there is **no
+"Virtual domain configuration" line**, because FortiSwitchOS has no virtual
+domains; a driver written for a FortiGate would refuse every switch it met.
+Source: [`get`, FortiSwitchOS 7.6.0 CLI reference](https://docs.fortinet.com/document/fortiswitch/7.6.0/fortiswitchos-cli-reference/896953/get)
+
+**S7.** "Only the default 'admin' account can create a new administrator
+account. If required, you can add an additional account with read-write access
+control to add new administrator accounts." So the privileged account this
+proxy logs in as needs `admingrp` read-write on the switch. It is an operator
+prerequisite and is stated in `Capabilities.AuthorizationCaveat` rather than
+left to a mid-sequence refusal.
+Source: [Administrators, FortiSwitchOS 7.6.5 administration guide](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortiswitchos-administration-guide/288914/administrators)
+
+## FortiLink facts, for phase 0030 as much as for this one
+
+**The FortiGate has no view of a managed switch's administrator table.**
+`config switch-controller managed-switch` carries no administrator fields at
+all. The only lever the switch controller has on switch credentials is
+`config switch-controller switch-profile`'s `login-passwd` and
+`login-passwd-override` — "Enable/disable overriding the **admin**
+administrator password for a managed FortiSwitch with the FortiGate admin
+administrator account password" — which touches the built-in `admin` account
+and nothing else. Nothing on the FortiGate will ever reconcile away an account
+this proxy leaves on a switch.
+Sources: [`config switch-controller managed-switch`](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/308952696/config-switch-controller-managed-switch),
+[`config switch-controller switch-profile`](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/772820924/config-switch-controller-switch-profile)
+
+**Un-managing a switch: two different answers.**
+`execute switch-controller switch-action set-standalone <switch-id>` "returns
+the FortiSwitch to the factory defaults, reboots the FortiSwitch, and prevents
+the FortiGate from automatically detecting and authorizing" it;
+`execute switch-controller factory-reset <switch-id>` does the same without the
+second half. Both **destroy** an administrator this proxy created. Plain
+**deauthorization** — Security Fabric → Deauthorize, or clearing the Authorized
+slider — does not: it removes the switch from management and Fortinet documents
+nothing about it touching the switch's own configuration. On a switch the proxy
+reaches directly that changes nothing, because the reaper still sweeps it; on
+one reachable only through its FortiGate it would strand the account beyond
+recovery.
+Source: [Discovering, authorizing, and deauthorizing FortiSwitch units, FortiLink Guide 7.6.5](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortilink-guide/173266/discovering-authorizing-and-deauthorizing-fortiswitch-units)
+
+**Reaching a switch CLI *through* its FortiGate, and what it costs.** Two
+documented mechanisms, and phase 0030 has to choose between them:
+
+- `execute switch-controller ssh <user> <switch>` — "SSH to FortiSwitch." It
+  reaches the switch's own CLI, and it needs **the switch's own credentials**:
+  Fortinet's KB describes the GUI equivalent as granting access "once the
+  correct credentials for FortiSwitch are entered".
+- `config switch-controller custom-command` + `execute switch-controller
+  custom-command <cmd-name> <target-switch>` — pushes generic FortiSwitch
+  commands over FortiLink with no switch credential, but it requires a
+  **persisted command object on the FortiGate** (`command`, max 4095 chars;
+  `command-name`, max 35) and returns nothing, so there is no enumerate for the
+  reaper, no existence check, and no way to tell success from a silently
+  unreachable switch.
+
+Sources: [`execute switch-controller`, FortiOS 7.6.6 CLI reference](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/324047635/execute-switch-controller),
+[`config switch-controller custom-command`](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/454027989/config-switch-controller-custom-command),
+[Executing custom FortiSwitch scripts, FortiLink Guide 7.6.5](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortilink-guide/173262/executing-custom-fortiswitch-scripts),
+[Technical Tip: Access to FortiSwitch CLI console via FortiGate](https://community.fortinet.com/fortigate-3/technical-tip-access-to-fortiswitch-cli-console-via-fortigate-184481)
+
+**Neither Fortinet SSH client can present a key or forward a port.** FortiOS's
+is documented as a "Simple SSH client", `execute ssh <user@host> <port>`, and
+its only settings are `execute ssh-options interface` and
+`execute ssh-options source`. FortiSwitchOS's is narrower: `execute ssh
+<destination>`, with no port argument and no options. Neither exposes an
+identity file, a client key store, or local/remote forwarding, so **every hop
+that leaves a Fortinet unit is password-only** and a switch-initiated reverse
+tunnel is not expressible. (`execute ssh-regen-keys` on both platforms
+regenerates the unit's own **inbound host** keys.) That is what makes phase
+0030's nested hop password-only, and it is also why connecting to the switch
+directly is what keeps `set ssh-public-key1` usable as a session credential at
+all.
+Sources: [`execute ssh`, FortiOS 7.6.6 CLI reference](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/989928731/execute-ssh),
+[`execute ssh-options`](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/278689109/execute-ssh-options),
+[Using SSH and the Telnet client, FortiSwitchOS 7.6.5 administration guide](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortiswitchos-administration-guide/296990/using-ssh-and-the-telnet-client)
+
+**A standing instruction worth knowing before phase 0030 designs anything.**
+The FortiLink Guide says: "Use the FortiGate GUI or CLI to configure the
+FortiSwitch units unless this manual specifically says to directly configure
+the FortiSwitch units. If you make configuration changes directly on the
+FortiSwitch units, the FortiGate device will not be aware of the changes,
+resulting in missing configurations when the FortiSwitch units are restarted."
+It is general guidance about switch configuration rather than a statement about
+the administrator table, which the FortiGate does not manage at all (above) —
+but it is the vendor's stated posture and any phase administering a managed
+switch should say why it is departing from it.
+Source: [FortiSwitch management, FortiLink Guide 7.6.5](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortilink-guide/173270/fortiswitch-management)
+
+## The hardware list this section adds
+
+1. **S4, the schedule contradiction.** Does `set schedule` on a FortiSwitch
+   administrator resolve against `config system schedule onetime`? If it does,
+   `EnforcesExpiry` can become true here on phase 0017's reasoning, and the
+   switch driver grows the residue sweep it deliberately does not have.
+2. **S3, the administrator-name limit.** Anything below 32 would move
+   FortiSwitchOS onto PLAN §5.3's constrained naming scheme; the driver and
+   `internal/sshtest` currently agree on 35 so that a correction moves both.
+3. **Deauthorization.** Confirm that deauthorizing a switch really does leave
+   its `config system admin` table intact, which is what makes the stranding
+   hazard above real rather than inferred.

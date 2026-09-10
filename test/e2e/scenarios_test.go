@@ -1323,6 +1323,97 @@ func testDeviceCredentials(t *testing.T) {
 		})
 	})
 
+	// Phase 0029: a FortiSwitch, on a third listener on the appliance node.
+	//
+	// What this scenario holds in place is a DECISION and not only a driver.
+	// 0029's prompt expected a FortiLink-managed switch to be administered
+	// through its managing FortiGate — the shape 0016 established for a
+	// virtual domain, one level further out — and Fortinet's documentation
+	// does not support that: `config switch-controller security-policy
+	// local-access` configures a managed switch's own allowaccess list and
+	// `ssh` is in the default for both its interfaces. So the switch is its
+	// own endpoint with its own host key, and there is no device field on the
+	// route at all. If a later phase reintroduces one, this scenario is what
+	// makes that a deliberate change.
+	t.Run("a session to a FortiSwitch gets an administrator on the switch itself", func(t *testing.T) {
+		before, err := tryDeviceAdministrators(deviceSwitchDebugAddr)
+		if err != nil {
+			t.Fatalf("read the switch's administrator table: %v", err)
+		}
+
+		s := aliceOn(proxyDirect, "fortiswitch.company.com")
+		// `get system status` because it is the command that proves WHICH box
+		// answered: FortiSwitchOS reports a `Version: FortiSwitch-…` line and
+		// no virtual-domain configuration, and the driver refuses a unit that
+		// does not. A session that landed on either FortiGate would fail here
+		// rather than quietly pass.
+		s.stdin = "get system status\nshow system admin\nexit\n"
+		r := ssh(t, s)
+		wantExit(t, r, "ephemeral-account on a FortiSwitch", 0)
+		wantContains(t, r, "ephemeral-account on a FortiSwitch", "Version: FortiSwitch")
+
+		created := deviceAccountIn(r.stdout)
+		if created == "" {
+			t.Fatalf("ephemeral-account on a FortiSwitch: no hl-<tag>-alice-<token> account in the switch's table\n%s", r)
+		}
+		for _, a := range before {
+			if a.Name == created {
+				t.Fatalf("ephemeral-account on a FortiSwitch: %q existed before the session; it must not have been adopted", created)
+			}
+		}
+
+		// The audit record names the switch and not a FortiGate. That is the
+		// whole payoff of making the switch its own endpoint: a reviewer
+		// asking "what did this session touch" reads one address and does not
+		// have to know the FortiLink topology to answer it.
+		var mapping logRecord
+		waitFor(t, "the account-mapping record for the switch", func() bool {
+			for _, rec := range fetchLogs(t).Priority {
+				if rec.Attributes["event"] == "device.account.mapping" && rec.Attributes["target_account"] == created {
+					mapping = rec
+					return true
+				}
+			}
+			return false
+		})
+		if got := mapping.Attributes["platform"]; got != "fortiswitchos" {
+			t.Errorf("the mapping record names platform %q, want fortiswitchos", got)
+		}
+
+		// And it is gone afterwards. On this platform that matters more than
+		// on a FortiGate: FortiSwitchOS's `set schedule` names a table it does
+		// not have, so the driver declares no expiry mechanism and the reaper
+		// is the ONLY thing that ever removes one of these accounts.
+		waitFor(t, "the administrator on the switch to be removed", func() bool {
+			admins, err := tryDeviceAdministrators(deviceSwitchDebugAddr)
+			if err != nil {
+				return false
+			}
+			for _, a := range admins {
+				if strings.HasPrefix(a.Name, "hl-") {
+					return false
+				}
+			}
+			return true
+		})
+
+		// The switch's own administrator is untouched, exactly as on the two
+		// FortiGates.
+		admins, err := tryDeviceAdministrators(deviceSwitchDebugAddr)
+		if err != nil {
+			t.Fatalf("read the switch's administrator table: %v", err)
+		}
+		found := false
+		for _, a := range admins {
+			if a.Name == "admin" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the switch's own administrator is gone; the proxy must only ever remove what it created (have: %+v)", admins)
+		}
+	})
+
 	t.Run("the device's own administrator is never touched", func(t *testing.T) {
 		accounts := deviceAccounts(t)
 		found := false
@@ -1364,9 +1455,11 @@ func deviceAccountIn(out string) string {
 			continue
 		}
 		name := strings.Trim(fields[1], `"`)
-		// FortiOS accepts 35-character names, above PLAN §5.3's threshold, so
-		// the readable scheme survives here and the account on the device names
-		// the person it belongs to.
+		// Both device platforms accept names above PLAN §5.3's threshold of
+		// 32 — FortiOS documents 64, and the FortiSwitch driver declares a
+		// conservative 35 for a field Fortinet gives no size for — so the
+		// readable scheme survives on each and the account on the device names
+		// the person it belongs to. This helper reads either unit's table.
 		if strings.HasPrefix(name, "hl-") && strings.Contains(name, "-alice-") {
 			return name
 		}
@@ -1993,5 +2086,24 @@ func testNoEphemeralLeak(t *testing.T) {
 	}
 	if len(onDevice) > 0 {
 		t.Errorf("device administrators left on the appliance after the suite:\n%s", strings.Join(onDevice, "\n"))
+	}
+
+	// And on the FortiSwitch, where the argument above is stronger still: the
+	// switch driver declares NO expiry mechanism at all — FortiSwitchOS's
+	// `set schedule` names a `config firewall schedule` table the platform
+	// does not have — so the proxy's teardown and its reaper are the only two
+	// things in the world that remove one of these accounts (phase 0029).
+	var onSwitch []string
+	switchAdmins, err := tryDeviceAdministrators(deviceSwitchDebugAddr)
+	if err != nil {
+		t.Errorf("read the switch's administrator table: %v", err)
+	}
+	for _, a := range switchAdmins {
+		if strings.HasPrefix(a.Name, "hl-") {
+			onSwitch = append(onSwitch, a.Name)
+		}
+	}
+	if len(onSwitch) > 0 {
+		t.Errorf("device administrators left on the FortiSwitch after the suite:\n%s", strings.Join(onSwitch, "\n"))
 	}
 }

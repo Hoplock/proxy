@@ -39,7 +39,8 @@ before reading the code.
 > **brokered-key**, a credential held in memory for one session. A third,
 > **ephemeral-account**, takes the ephemeral model onto gear that has no
 > `useradd` at all: it creates a short-lived *administrator* on a device through
-> a per-platform driver — FortiGate first — and removes it afterwards. Hoplock
+> a per-platform driver — FortiGate and FortiSwitch today — and removes it
+> afterwards. Hoplock
 > Control chooses between them per route, and since contract v3 it sends an
 > ordered **ladder** rather than a single method: the proxy walks it top-down,
 > stops at the first entry it can satisfy, and records which one that was. It

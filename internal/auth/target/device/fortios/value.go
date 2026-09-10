@@ -67,15 +67,45 @@ var profilePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,34}$`)
 // the platform, and a narrowing nobody needs is a claim that is simply untrue.
 const maxAccountNameLen = 64
 
+// maxSwitchAccountNameLen is the administrator-name length this repository will
+// send to a FortiSwitch, and it is the one figure in the switch driver that
+// Fortinet does NOT document (phase 0029).
+//
+// FortiSwitchOS's CLI reference gives `config system admin`'s `<admin_name>`
+// as "Enter the name for the admin account." with no size at all — the older
+// Variable/Description/Default table has no width column, unlike FortiOS's,
+// which is where the 64 above comes from. So there is nothing to read.
+//
+// 35 is the naming-rules KB's general figure ("Most name fields accept 35
+// characters"), which is guidance about most fields rather than about this one
+// — exactly the reasoning that made 35 WRONG for FortiOS. It is used here for
+// the opposite reason: with no field-specific figure to prefer, the general
+// one is the conservative choice, and being conservative costs nothing. 35
+// still clears PLAN §5.3's threshold of 32, so a FortiSwitch administrator
+// gets the readable `hl-<tag>-<login>-<token>` scheme just as a FortiGate one
+// does, and no behaviour turns on the difference between 35 and 64.
+//
+// It is an ASSUMPTION and it is on the hardware list. internal/sshtest's fake
+// switch enforces the same number deliberately, so the fake is exactly as
+// strict as the claim: if a real unit proves the field wider or narrower, both
+// move together and the tests say so.
+const maxSwitchAccountNameLen = 35
+
 // validateAccountName gates the one value that reaches `edit`, `delete`, and
 // every `set` in between.
 func validateAccountName(name string) error {
+	return validateAccountNameWithin(name, maxAccountNameLen)
+}
+
+// validateAccountNameWithin is validateAccountName against a platform's own
+// limit, because the two platforms in this package do not share one.
+func validateAccountNameWithin(name string, max int) error {
 	switch {
 	case name == "":
 		return fmt.Errorf("%w: an empty administrator name", errInvalidValue)
-	case len(name) > maxAccountNameLen:
-		return fmt.Errorf("%w: %q is longer than the %d characters FortiOS accepts",
-			errInvalidValue, name, maxAccountNameLen)
+	case len(name) > max:
+		return fmt.Errorf("%w: %q is longer than the %d characters this platform accepts",
+			errInvalidValue, name, max)
 	case !accountNamePattern.MatchString(name):
 		return fmt.Errorf("%w: %q is not a name this driver creates", errInvalidValue, name)
 	}
