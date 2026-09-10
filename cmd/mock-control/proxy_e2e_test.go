@@ -144,6 +144,10 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 	}
 	targetAuth, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{
 		Signer: sshtest.MustGenerateSigner(),
+		// The account on the TARGET. Since phase 0028 it is never derived from
+		// the login the user typed at their SSH client, so a route that names
+		// none needs the proxy to configure one.
+		Username: "svc-target",
 	})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)

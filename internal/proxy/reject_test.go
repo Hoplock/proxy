@@ -34,7 +34,7 @@ func refusingOptions(t *testing.T, breaker *target.RejectionBreaker) harnessOpti
 	accepted := sshtest.MustGenerateSigner()
 	held := sshtest.MustGenerateSigner()
 
-	placeholder, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: held})
+	placeholder, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: held, Username: testTargetAccount})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
 	}

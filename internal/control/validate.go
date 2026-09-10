@@ -195,11 +195,13 @@ func (a *TargetAuth) validate(where string) error {
 		return fmt.Errorf("%s.method %q is not a method this proxy knows", where, a.Method)
 	}
 	if a.Method.requiresUsername() && a.Params[ParamUsername] == "" {
-		// Contract v3. Before it, this defaulted to the identity's login — a
-		// client-typed string internal/identity says must never be the basis of
-		// an authorization decision. The account name is what the target's own
-		// audit trail is made of, so the server names it or there is no route.
-		return fmt.Errorf("%s.params.%s is required for method %q (contract v3)",
+		// Contract v3 for the three provisioning methods, v4.2 for
+		// brokered-key. Before those, this defaulted to the identity's login —
+		// a client-typed string internal/identity says must never be the basis
+		// of an authorization decision. The account name is what the target's
+		// own audit trail is made of, so the server names it or there is no
+		// route.
+		return fmt.Errorf("%s.params.%s is required for method %q",
 			where, ParamUsername, a.Method)
 	}
 	return nil

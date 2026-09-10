@@ -28,7 +28,12 @@ const (
 	testProxyID   = "proxy-test"
 	testLogin     = "alice"
 	testSubject   = "alice@example.com"
-	testDelimiter = "#"
+	// testTargetAccount is the account on the TARGET, and it is deliberately
+	// not testLogin: since phase 0028 no account name may come from the login
+	// the user typed at their SSH client, so a fixture that used one string for
+	// both could not tell a passing test from a regression.
+	testTargetAccount = "svc-target"
+	testDelimiter     = "#"
 )
 
 // fakeClient is Hoplock Control. It is a fake rather than the mock
@@ -52,10 +57,11 @@ func (c *fakeClient) AuthenticateCert(_ context.Context, req *control.Authentica
 	return &control.AuthenticateResponse{
 		Status: control.AuthStatusAuthenticated,
 		Identity: &control.Identity{
-			Subject: testSubject,
-			Login:   req.Login,
-			Source:  "fixture",
-			Groups:  []string{"engineering"},
+			Subject:    testSubject,
+			Login:      req.Login,
+			Source:     "fixture",
+			Groups:     []string{"engineering"},
+			Principals: []string{testTargetAccount},
 		},
 	}, nil
 }
@@ -261,7 +267,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 	targetAuth := opts.targetAuth
 	if targetAuth == nil {
-		staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+		staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner(), Username: testTargetAccount})
 		if err != nil {
 			t.Fatalf("NewStaticKeyAuthenticator: %v", err)
 		}

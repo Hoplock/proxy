@@ -108,8 +108,14 @@ type Identity struct {
 	// Source names the identity source that made the decision ("fixture", "ad",
 	// "okta"). SourceUnknown when the server did not say.
 	Source string
-	// Principals are the principals this identity may assume on a target. The
-	// target-side provisioner (0006) draws the ephemeral account name from here.
+	// Principals are the principals this identity may assume on a target.
+	//
+	// They are SERVER-ESTABLISHED: Hoplock Control puts them on the
+	// authenticate/authorize response and nothing in the proxy adds to them,
+	// which is what makes them usable where Login is not. When a route names no
+	// account of its own, internal/auth/target's ephemeral-user method draws
+	// the account name from here — exactly one principal, or the session is
+	// refused (target.ErrNoAccountName). It never falls back to Login.
 	Principals []string
 	// Groups are the group memberships policy may key on.
 	Groups []string

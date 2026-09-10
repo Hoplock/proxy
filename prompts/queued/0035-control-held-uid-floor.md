@@ -173,8 +173,10 @@ slot), it is a finding for the learnings and a new prompt, not work for this one
 ### 5. The mock, the contract test, and the rig
 
 `cmd/mock-control` grows the endpoint and a per-target cursor;
-`api/control.yaml` carries the schema and a version bump (4.1 → **4.2**, unless
-you are removing fields, in which case say why it is not 5.0);
+`api/control.yaml` carries the schema and a version bump (**4.2 → 4.3**, unless
+you are removing fields, in which case say why it is not 5.0 — phase 0028 took
+4.2 for the `brokered-key` `username` requirement, so re-read `info.version` on
+`main` rather than trusting this line);
 `deploy/control/fixtures.template.yaml` and `test/e2e` prove it end to end.
 
 ## Out of scope

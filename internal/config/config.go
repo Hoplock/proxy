@@ -526,7 +526,9 @@ type BrokeredKeyAuth struct {
 	// BrokeredSourceDir.
 	Source string `yaml:"source"`
 	// Username logs into every brokered target as this account when the route
-	// names none. Empty uses the authenticated login.
+	// names none. Empty means the route MUST name one (phase 0028): there is no
+	// fallback to the client-typed login, so a route naming no account on a
+	// proxy configuring none is refused.
 	Username string `yaml:"username"`
 	// Dir holds one file per credential reference. Required for the dir source.
 	Dir string `yaml:"dir"`
@@ -544,8 +546,9 @@ type BrokeredKeyAuth struct {
 type StaticKeyAuth struct {
 	// KeyPath is the private key the proxy logs into targets with.
 	KeyPath string `yaml:"key_path"`
-	// Username logs into every target as this account instead of the
-	// authenticated login. Empty — the default — uses the login.
+	// Username logs into every target as this account when the route names
+	// none. Empty means the route MUST name one (phase 0028); there is no
+	// fallback to the client-typed login.
 	Username string `yaml:"username"`
 }
 

@@ -313,13 +313,19 @@ func TestBrokeredKeyWithoutMaterialIsAnOutage(t *testing.T) {
 	}
 }
 
-// TestBrokeredKeyFallsBackToTheTargetAndLogin covers the route that names
-// neither a reference nor a username: the source keys on the target, and the
-// session logs in as the authenticated user.
-func TestBrokeredKeyFallsBackToTheTargetAndLogin(t *testing.T) {
+// TestBrokeredKeyFallsBackToTheTarget covers the route that names no
+// credential reference: the source keys on the target instead. That half is
+// unchanged.
+//
+// Its other half is gone. This test used to assert that a route naming no
+// username logged in as the authenticated login, and phase 0028 closed that
+// fallback — so the account comes from the proxy's own configuration here, and
+// TestBrokeredKeyRefusesWhenNothingNamesAnAccount below covers what happens
+// when nothing names one at all.
+func TestBrokeredKeyFallsBackToTheTarget(t *testing.T) {
 	cred, _ := newBrokeredCredential(t)
 	source := &mapCredentialSource{creds: map[string]*Credential{"switch.example.com": cred}}
-	auth, err := NewBrokeredKeyAuthenticator(BrokeredKeyOptions{Source: source})
+	auth, err := NewBrokeredKeyAuthenticator(BrokeredKeyOptions{Source: source, Username: "netadmin"})
 	if err != nil {
 		t.Fatalf("NewBrokeredKeyAuthenticator: %v", err)
 	}
@@ -329,14 +335,57 @@ func TestBrokeredKeyFallsBackToTheTargetAndLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if got, want := access.ClientConfig.User, "alice"; got != want {
-		t.Errorf("login = %q, want the authenticated login %q", got, want)
+	if got, want := access.ClientConfig.User, "netadmin"; got != want {
+		t.Errorf("login = %q, want the operator-configured account %q", got, want)
 	}
 	if got, want := source.calls[0].key(), "switch.example.com"; got != want {
 		t.Errorf("credential keyed on %q, want %q", got, want)
 	}
 	if got, want := source.calls[0].Subject, testIdentity().Subject; got != want {
 		t.Errorf("credential requested for subject %q, want %q", got, want)
+	}
+}
+
+// TestBrokeredKeyRefusesWhenNothingNamesAnAccount is the refusal that replaced
+// the login fallback.
+//
+// The identity's PRINCIPALS are deliberately not consulted either, unlike
+// ephemeral-user: the account this method logs into is standing and shared
+// across sessions (PLAN §5.2), chosen by an operator, so a per-identity
+// principal is the wrong shape for it and using one would imply an attribution
+// this method explicitly does not provide.
+func TestBrokeredKeyRefusesWhenNothingNamesAnAccount(t *testing.T) {
+	cred, _ := newBrokeredCredential(t)
+	source := &mapCredentialSource{creds: map[string]*Credential{"switch.example.com": cred}}
+	auth, err := NewBrokeredKeyAuthenticator(BrokeredKeyOptions{Source: source})
+	if err != nil {
+		t.Fatalf("NewBrokeredKeyAuthenticator: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		tgt  Target
+	}{
+		{"no route at all", Target{Host: "switch.example.com", Port: 22}},
+		{"a route naming no username", Target{Host: "switch.example.com", Port: 22, Auth: brokeredRoute(nil)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := testIdentity()
+			_, err := auth.Provision(context.Background(), id, tc.tgt)
+			if !errors.Is(err, ErrNoAccountName) {
+				t.Fatalf("Provision = %v, want errors.Is(..., ErrNoAccountName)", err)
+			}
+			for _, forbidden := range append([]string{id.Login}, id.Principals...) {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Errorf("the refusal %q names %q; neither the login nor a principal is an input here", err, forbidden)
+				}
+			}
+			// Nothing was fetched, so nothing is held: the refusal happens
+			// before the credential source is ever asked.
+			if len(source.calls) != 0 {
+				t.Errorf("the credential source was called %d times, want 0", len(source.calls))
+			}
+		})
 	}
 }
 

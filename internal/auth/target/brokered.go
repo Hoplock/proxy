@@ -23,9 +23,9 @@ const MethodBrokeredKey = string(control.TargetAuthBrokeredKey)
 type BrokeredKeyOptions struct {
 	// Source yields the per-session credential. Required.
 	Source CredentialSource
-	// Username logs in as this account when the route names none. Empty falls
-	// back to the authenticated login, which is what a target with matching
-	// account names wants.
+	// Username logs in as this account when the route names none. Empty means
+	// the route MUST name one: there is no fallback, and a route that names
+	// nothing on a proxy that configures nothing is refused (ErrNoAccountName).
 	Username string
 	// Logger receives session events; nil discards them. It is NEVER given
 	// credential material — see the note on Provision.
@@ -109,10 +109,12 @@ func (a *BrokeredKeyAuthenticator) Provision(ctx context.Context, id *identity.I
 		return nil, err
 	}
 	if username == "" {
-		username = id.Login
-	}
-	if username == "" {
-		return nil, errors.New("auth/target: brokered-key has no account to log in as")
+		// The account here is STANDING and shared across sessions (PLAN §5.2),
+		// chosen by an operator rather than provisioned by the proxy, so the
+		// identity's principals are deliberately not consulted: a per-identity
+		// principal is the wrong shape for a shared account and would imply an
+		// attribution this method explicitly does not provide.
+		return nil, noAccountName(MethodBrokeredKey, "auth.target.brokered_key.username is unset")
 	}
 
 	// The target is UNMODIFIABLE by definition (D6a), so an applied rung on this

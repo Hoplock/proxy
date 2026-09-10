@@ -31,10 +31,16 @@
 > the hint as **contract 4.1** (`docs/learnings/0023-host-key-report-reuse-learnings.md`),
 > and with phase 0021 withdrawn
 > (`docs/learnings/0021-machine-identity-connection-model-learnings.md`) it was
-> the last queued phase that revises the contract. Nothing queued today revises
-> it again, so this phase's blocker is cleared — but check the queue before
-> starting anyway: collapsing before the last revising phase just means doing it
-> twice.
+> the last queued phase that revises the contract *at the time this was written*.
+>
+> **That sentence is no longer true, and it is why the paragraph ends by telling
+> you to check the queue rather than to trust it.** Two phases have revised the
+> contract since: **0028** took it to **4.2** (`username` required on
+> `brokered-key`, so required on every method — a tightening, `policy_version`
+> still 4), and **0035**, still queued, revises it again for the Control-held
+> uid floor. So this phase's blocker is **not** cleared by the paragraph above:
+> re-derive it from `prompts/queued/` on `main`. Collapsing before the last
+> revising phase just means doing it twice.
 
 ## What this phase removes, and what it must keep
 
@@ -132,9 +138,17 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 ### 1. `api/control.yaml`
 
 - **`info.description`** — delete the "Policy vocabulary v2 (phase 0006)" and
-  "Policy vocabulary v3 (phase 0013)" sections, v4's (from 0018), and
-  "Contract 4.1 (phase 0023)". Rewrite it as a single statement of what the
-  contract is.
+  "Policy vocabulary v3 (phase 0013)" sections, v4's (from 0018),
+  "Contract 4.1 (phase 0023)" and "Contract 4.2 (phase 0028)". Rewrite it as a
+  single statement of what the contract is.
+
+  **4.2 carries a live reason too**, on the same footing as 4.1 below: it is
+  where the contract says why a *tightening* — `username` becoming required on
+  `brokered-key`, which makes it required on every method — is announced as a
+  break rather than gated by `policy_version`, because that number declares what
+  a proxy can **read** and has never expressed what it requires. Keep that
+  reasoning beside `policy_version`; only the narrative of which phase tightened
+  which method goes.
 
   **4.1 is the one to read before deleting**, because it is the only section
   that is not purely history: it is where the contract says *why*
@@ -234,7 +248,8 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 
 ### 5. Docs
 
-- `api/README.md`: delete the "v4→v4.1", "v3.1→v4", "v3→v3.1", "v2→v3" and
+- `api/README.md`: delete the "v4.1→v4.2", "v4→v4.1", "v3.1→v4", "v3→v3.1",
+  "v2→v3" and
   "v1→v2 rename" revision sections, and the version rows/columns in the field
   tables that date a field to a generation — including the "(4.1)" markers on
   the host-key reuse text, whose substance (the fingerprint-keyed shape, the two

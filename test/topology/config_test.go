@@ -270,6 +270,56 @@ func TestTheRefusedRouteNamesACredentialNothingElseUses(t *testing.T) {
 	}
 }
 
+// TestTheUnnamedAccountRouteIsTheOnlyOneWithNoAccountName pins the arrangement
+// the phase-0028 scenario depends on, which is spread across two files and is
+// invisible in either one alone.
+//
+// The scenario asserts that a session with NO account name available anywhere
+// is refused as an outage. Since contract v4.2 every credential method requires
+// a `username` on its route, so the only way to reach that state is a route
+// naming no `target_auth` at all, served by a proxy that also configures no
+// account for its local method. Break either half — add a username to
+// proxy-nexthop, or a target_auth to the route — and the scenario passes
+// vacuously against a proxy that had an account all along.
+func TestTheUnnamedAccountRouteIsTheOnlyOneWithNoAccountName(t *testing.T) {
+	t.Parallel()
+
+	// Half one: proxy-nexthop configures no fallback account, and the other two
+	// proxies still do — this is a deliberate single exception, not a drift.
+	want := map[string]string{
+		"proxy-direct.yaml":  "netadmin",
+		"proxy-nexthop.yaml": "",
+		"proxy-zone.yaml":    "netadmin",
+	}
+	for file, account := range want {
+		cfg, err := config.Load(filepath.Join(deployDir, "proxy", file))
+		if err != nil {
+			t.Fatalf("load %s: %v", file, err)
+		}
+		if got := cfg.Auth.Target.BrokeredKey.Username; got != account {
+			t.Errorf("%s: auth.target.brokered_key.username = %q, want %q", file, got, account)
+		}
+	}
+
+	// Half two: the route exists, is scoped to that proxy, and names no
+	// credential method of its own.
+	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	const route = "  - login: alice\n    target: unnamed.company.com\n    proxy_id: proxy-nexthop\n"
+	if !bytes.Contains(body, []byte(route)) {
+		t.Fatal("the unnamed.company.com route is gone or is no longer scoped to proxy-nexthop")
+	}
+	rest := body[bytes.Index(body, []byte(route))+len(route):]
+	if end := bytes.Index(rest, []byte("\n  - login:")); end >= 0 {
+		rest = rest[:end]
+	}
+	if bytes.Contains(rest, []byte("target_auth")) {
+		t.Error("the unnamed.company.com route now names a target_auth; it must name none")
+	}
+}
+
 // contains reports whether list holds want.
 func contains(list []string, want string) bool {
 	for _, v := range list {

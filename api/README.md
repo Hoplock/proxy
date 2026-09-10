@@ -68,6 +68,36 @@ introduced after that version.** A server that respects it can add vocabulary
 freely; a server that ignores it is caught at the first response instead of
 having its policy quietly thinned.
 
+### The v4.1→v4.2 revision
+
+Phase 0028 makes one change and it is a **break**, called out here for the same
+reason v3's was: it is the only kind of change this document cannot let a server
+discover at runtime.
+
+**`username` becomes required on `brokered-key`**, which makes it required on
+every method the contract defines. A `brokered-key` route that omits it is
+refused as a contract violation at the first authorize call, in the
+single-object and the ladder shape alike.
+
+v3 required it on the three methods where the proxy *names the account it
+creates*, and deliberately excluded `brokered-key` because that method logs into
+a **standing** account an operator already chose. That reasoning is sound as far
+as it goes, and it did not reach the code: `internal/auth/target/brokered.go`
+still fell back to the identity's `login` when neither the route nor the proxy's
+own configuration named an account, so a deployment that set nothing locally
+logged in as whatever string the connecting user typed at their SSH client —
+which is exactly what the v3 note says must never happen. The scoping was
+narrower than the argument for it. What is left after this is the route's
+`username` or the operator's `auth.target.brokered_key.username`, and a route
+with neither is refused as an **outage** rather than served on a guess.
+
+`policy_version` stays `4`. It numbers the vocabulary a proxy can *read*, so
+that a server can avoid answering in fields the proxy would fail closed on; it
+has never expressed what the proxy *requires*, and a tightening is not
+expressible through it — nothing is added, nothing changes meaning, and an older
+proxy parses the route exactly as it always did. v3 announced its `username`
+requirement the same way, as a break rather than a gate.
+
 ### The v4→v4.1 revision
 
 Phase 0023 adds one optional field: `HostKeyReportResponse.cache`, the same
@@ -128,8 +158,11 @@ to the identity's `login`, which is a **client-typed string**
 of an authorization decision), and letting it name an OS or device account was
 that rule leaking through the back door. A v2 server that omitted it now gets
 its route refused as a contract violation, loudly, at the first authorize call.
-`brokered-key` is deliberately not in that set: it logs into an account that
-already exists and was chosen by an operator, and its v2 behaviour is unchanged.
+`brokered-key` is deliberately not in that set at v3: it logs into an account
+that already exists and was chosen by an operator, and its v2 behaviour is
+unchanged here. **That exclusion is gone as of v4.2** — see "The v4.1→v4.2
+revision" above for why the scoping turned out to be narrower than the argument
+for it.
 
 ### The v1→v2 rename
 
@@ -313,7 +346,7 @@ account), never the selection.
 | `method` | What it does | Documented `params` |
 | --- | --- | --- |
 | `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it (D6, PLAN §5.1) | `username` (**required**), `key_type`, `lifetime_seconds` |
-| `brokered-key` | Uses a per-target credential held for the session and never written to disk (PLAN §5.2) | `username`, `credential_ref` |
+| `brokered-key` | Uses a per-target credential held for the session and never written to disk (PLAN §5.2) | `username` (**required**), `credential_ref` |
 | `ephemeral-account` | Creates a short-lived administrator on a device through a platform driver and removes it (D13, PLAN §5.3) | `username`, `platform`, `credential_kind`, `expiry_posture` (**all required**), `lifetime_seconds` |
 | `static-key` | The phase 0005 development placeholder; not a production method | `username` (**required**) |
 

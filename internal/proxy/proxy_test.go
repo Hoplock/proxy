@@ -48,8 +48,11 @@ func TestExecEndToEnd(t *testing.T) {
 	if got := h.target.Commands(); len(got) != 1 || got[0] != "uptime" {
 		t.Errorf("target saw commands %v, want [uptime]", got)
 	}
-	if got := h.target.Logins(); len(got) != 1 || got[0] != testLogin {
-		t.Errorf("target saw logins %v, want [%s]", got, testLogin)
+	// The account on the TARGET, which is not the login the user typed: since
+	// phase 0028 no account name may be derived from that (D1's username split
+	// feeds routing and the authorize call, and nothing else).
+	if got := h.target.Logins(); len(got) != 1 || got[0] != testTargetAccount {
+		t.Errorf("target saw logins %v, want [%s]", got, testTargetAccount)
 	}
 
 	// The authorize call carries the identity and the parsed target, not the
@@ -600,7 +603,8 @@ func settle() {
 // and no other method is quietly substituted.
 func TestUnimplementedTargetAuthMethodIsAnOutage(t *testing.T) {
 	placeholder, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{
-		Signer: sshtest.MustGenerateSigner(),
+		Signer:   sshtest.MustGenerateSigner(),
+		Username: testTargetAccount,
 	})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)

@@ -67,8 +67,13 @@ func TestEphemeralProvisionsAndTearsDown(t *testing.T) {
 	if !strings.HasPrefix(principal, principalPrefix) {
 		t.Errorf("account %q does not carry the reaper's prefix %q", principal, principalPrefix)
 	}
-	if !strings.Contains(principal, "alice") {
-		t.Errorf("account %q does not name the login it belongs to", principal)
+	// The identity's PRINCIPAL, not its login. The two differ in testIdentity
+	// precisely so this assertion can tell them apart (phase 0028).
+	if !strings.Contains(principal, "alice-svc") {
+		t.Errorf("account %q does not name the principal it belongs to", principal)
+	}
+	if strings.Contains(principal, "alice@") || strings.HasSuffix(principal, "alice") {
+		t.Errorf("account %q looks derived from the client-typed login", principal)
 	}
 	if !h.hasAccount(t, principal) {
 		t.Fatalf("account %q was not created; the host has %v", principal, h.accounts(t))
@@ -444,6 +449,129 @@ func TestEphemeralUsesTheRoutesUsername(t *testing.T) {
 	}
 	if strings.HasSuffix(principal, "svc-deploy") {
 		t.Errorf("account %q has no uniqueness token; two sessions would collide", principal)
+	}
+}
+
+// TestEphemeralDrawsTheAccountFromThePrincipal covers the route that names no
+// username: the account comes from the identity's server-established
+// principals, never from the login the user typed at their SSH client (phase
+// 0028).
+func TestEphemeralDrawsTheAccountFromThePrincipal(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+
+	id := testIdentity()
+	id.Principals = []string{"svc-observer"}
+
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+	access, err := auth.Provision(ctx, id, tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	defer func() { _ = access.Close(ctx) }()
+
+	principal := access.ClientConfig.User
+	if !strings.Contains(principal, "svc-observer") {
+		t.Errorf("account %q does not carry the identity's principal", principal)
+	}
+	if strings.Contains(principal, id.Login) {
+		t.Errorf("account %q carries the client-typed login %q", principal, id.Login)
+	}
+}
+
+// TestEphemeralRefusesWhenNoPrincipalNamesTheAccount pins both halves of the
+// multi-principal rule, and the refusal that replaced the login fallback.
+//
+// One principal is the identity's account. SEVERAL is refused unless the route
+// names one, because picking the first would turn the order the server happened
+// to serialise a list in into policy — nothing about that order is contractual.
+// NONE is refused because there is nothing to pick. In every refusing case the
+// login is still present on the identity and is still not used.
+func TestEphemeralRefusesWhenNoPrincipalNamesTheAccount(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name       string
+		principals []string
+	}{
+		{"no principal at all", nil},
+		{"several principals and no route username", []string{"svc-a", "svc-b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := testIdentity()
+			id.Principals = tc.principals
+
+			tgt := h.tgt()
+			tgt.Auth = ephemeralRoute(nil)
+			access, err := auth.Provision(ctx, id, tgt)
+			if err == nil {
+				_ = access.Close(ctx)
+				t.Fatalf("Provision succeeded as %q, want a refusal", access.ClientConfig.User)
+			}
+			if !errors.Is(err, ErrNoAccountName) {
+				t.Fatalf("Provision = %v, want errors.Is(..., ErrNoAccountName)", err)
+			}
+			if strings.Contains(err.Error(), id.Login) {
+				t.Errorf("the refusal %q names the client-typed login; it must not be an input here", err)
+			}
+			// Nothing was created: the refusal happens before the management
+			// login, so the target is exactly as it was found (PLAN §4.3).
+			for _, name := range h.accounts(t) {
+				if strings.HasPrefix(name, principalPrefix) {
+					t.Errorf("the target holds the ephemeral account %q; the refusal provisioned something", name)
+				}
+			}
+		})
+	}
+
+	// The route naming one settles it whatever the identity carries — the PDP
+	// named the account, and overriding it would be the proxy originating
+	// policy (D2).
+	t.Run("the route names one and several principals do not matter", func(t *testing.T) {
+		id := testIdentity()
+		id.Principals = []string{"svc-a", "svc-b"}
+
+		tgt := h.tgt()
+		tgt.Auth = ephemeralRoute(map[string]string{ParamUsername: "svc-chosen"})
+		access, err := auth.Provision(ctx, id, tgt)
+		if err != nil {
+			t.Fatalf("Provision: %v", err)
+		}
+		defer func() { _ = access.Close(ctx) }()
+		if !strings.Contains(access.ClientConfig.User, "svc-chosen") {
+			t.Errorf("account %q does not carry the route's username", access.ClientConfig.User)
+		}
+	})
+}
+
+// TestEphemeralDoesNotCrossCheckTheRouteAgainstThePrincipals is a decision
+// recorded as a test.
+//
+// A route naming an account the identity's principal list does not contain is
+// SERVED. The PDP naming it is the PDP's decision to make, and a proxy that
+// overrode it would be originating policy (D2) — the same rule that stops the
+// proxy widening an identity stops it narrowing one.
+func TestEphemeralDoesNotCrossCheckTheRouteAgainstThePrincipals(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+
+	id := testIdentity()
+	id.Principals = []string{"svc-a"}
+
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(map[string]string{ParamUsername: "svc-unlisted"})
+	access, err := auth.Provision(ctx, id, tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	defer func() { _ = access.Close(ctx) }()
+	if !strings.Contains(access.ClientConfig.User, "svc-unlisted") {
+		t.Errorf("account %q does not carry the route's username", access.ClientConfig.User)
 	}
 }
 

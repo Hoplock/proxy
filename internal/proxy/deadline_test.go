@@ -226,7 +226,7 @@ func (a *countingAuthenticator) Provision(ctx context.Context, id *identity.Iden
 // removed on the way out however it ended (D6, PLAN §5.1). A second path would
 // be a second place for that to be forgotten.
 func TestDeadlineExpiryTearsDownThroughTheNormalPath(t *testing.T) {
-	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner(), Username: testTargetAccount})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestAChainedSessionCannotExtendItsDeadline(t *testing.T) {
 // precisely the case where a session ends while a long command is still
 // running, which is why the ordinary close path never showed it.
 func TestDeadlineTearsDownWhileTheRemoteCommandIsStillRunning(t *testing.T) {
-	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner(), Username: testTargetAccount})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestDeadlineTearsDownWhileTheRemoteCommandIsStillRunning(t *testing.T) {
 // used a command that exits at once. PLAN §6.4 says "the session was killed"
 // must mean the connection is gone; it has to mean the account is gone too.
 func TestRevokedSessionTearsDownWhileTheRemoteCommandIsStillRunning(t *testing.T) {
-	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	staticKey, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner(), Username: testTargetAccount})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
 	}

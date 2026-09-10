@@ -440,6 +440,48 @@ func testTargetCredentials(t *testing.T) {
 				before.stdout, after.stdout)
 		}
 	})
+
+	// Phase 0028. The account the proxy logs into a target as never comes from
+	// `identity.Login` — the string the user typed at her own SSH client — so a
+	// session where nothing else names one is REFUSED rather than served on a
+	// guess.
+	//
+	// `unnamed.company.com` on proxy-nexthop is the only shape in this topology
+	// that can still reach that state: the route names no `target_auth`, so the
+	// proxy falls back to its locally configured method, and that proxy is the
+	// one whose `auth.target.brokered_key.username` is deliberately unset
+	// (deploy/proxy/proxy-nexthop.yaml). Every other route and every other
+	// proxy names an account explicitly, which is why the rest of the suite is
+	// unaffected by this phase.
+	t.Run("a route with no account name anywhere is an outage that touches nothing", func(t *testing.T) {
+		before := ephemeralAccountsOn(t)
+
+		s := aliceOn(proxyNextHop, "unnamed.company.com")
+		s.command = "/bin/echo must-not-run"
+		r := ssh(t, s)
+
+		wantFailure(t, r, "no account name")
+		wantNotContains(t, r, "no account name", "must-not-run")
+
+		// Outage class, not a denial (PLAN §4.3). Nobody decided alice may not
+		// reach this target: the estate could not say who to log in as, and
+		// that is a configuration fault an operator fixes — so she is told it
+		// is a service problem and given the reference her ticket needs.
+		wantContains(t, r, "no account name", "This is a service problem")
+		wantContains(t, r, "no account name", "credentials for the target could not be provisioned")
+		wantNotContains(t, r, "no account name", "Access denied.")
+		if sessionIDOf(r) == "" {
+			t.Errorf("the outage does not name a session id\n%s", r)
+		}
+
+		// Nothing was provisioned. The refusal happens before the management
+		// login and before the target leg is dialled, so the target is exactly
+		// as it was found. The assertion is that no NEW account appeared — a
+		// previous scenario's teardown legitimately makes the count fall.
+		if appeared := added(before, ephemeralAccountsOn(t)); len(appeared) > 0 {
+			t.Errorf("the refused session left accounts behind: %v", appeared)
+		}
+	})
 }
 
 // --- uid allocation (PLAN §5.1, phase 0027) ----------------------------------

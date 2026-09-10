@@ -454,17 +454,62 @@ func TestAlgorithmProfileDefaultsToTheStrongestAndRefusesTheUnknown(t *testing.T
 	}
 }
 
-// TestBrokeredKeyKeepsItsV2Username records a deliberate limit of this phase.
-// The username requirement is scoped to the methods where the PROXY names the
-// account it creates; brokered-key logs into an account an operator already
-// chose, and phase 0007's behaviour for it is unchanged.
-func TestBrokeredKeyKeepsItsV2Username(t *testing.T) {
-	resp := ladderResponse()
-	resp.TargetAuthLadder = ladderOf(TargetAuth{
+// TestBrokeredKeyNeedsAUsernameToo is the exact opposite of the test it
+// replaces, and that is the point of it.
+//
+// Phase 0013 wrote TestBrokeredKeyKeepsItsV2Username so that leaving
+// brokered-key out of the v3 username requirement would be a VISIBLE decision
+// rather than an accidental one. It was visible, it was argued, and phase 0028
+// reversed it: the reasoning (the account is standing and operator-chosen) was
+// sound, and it did not reach the code, where a route naming no username still
+// fell back to the client-typed login. Requiring it here is the contract half
+// of closing that.
+//
+// Both shapes are covered, because a ladder rung and a single object are
+// validated on different paths and only one of them names the rung.
+func TestBrokeredKeyNeedsAUsernameToo(t *testing.T) {
+	entry := TargetAuth{
 		Method: TargetAuthBrokeredKey,
 		Params: map[string]string{ParamCredentialRef: "edge-fleet-2026"},
-	})
-	if err := resp.Validate(); err != nil {
-		t.Fatalf("brokered-key without a username was refused: %v", err)
 	}
+
+	t.Run("in a ladder, with the rung named", func(t *testing.T) {
+		resp := ladderResponse()
+		resp.TargetAuthLadder = ladderOf(entry)
+		err := resp.Validate()
+		if err == nil {
+			t.Fatal("brokered-key without a username was accepted in a ladder")
+		}
+		for _, want := range []string{"target_auth_ladder[0]", ParamUsername, string(TargetAuthBrokeredKey)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Validate() = %q, want it to name %q", err, want)
+			}
+		}
+	})
+
+	t.Run("as a single object", func(t *testing.T) {
+		resp := ladderResponse()
+		resp.TargetAuthLadder = nil
+		resp.TargetAuth = &entry
+		err := resp.Validate()
+		if err == nil {
+			t.Fatal("brokered-key without a username was accepted as a single object")
+		}
+		if !strings.Contains(err.Error(), ParamUsername) {
+			t.Errorf("Validate() = %q, want it to name %q", err, ParamUsername)
+		}
+	})
+
+	t.Run("and is accepted with one", func(t *testing.T) {
+		withName := entry
+		withName.Params = map[string]string{
+			ParamCredentialRef: "edge-fleet-2026",
+			ParamUsername:      "netadmin",
+		}
+		resp := ladderResponse()
+		resp.TargetAuthLadder = ladderOf(withName)
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("brokered-key with a username was refused: %v", err)
+		}
+	})
 }
