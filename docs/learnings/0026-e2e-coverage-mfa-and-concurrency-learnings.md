@@ -1,5 +1,13 @@
 # 0026 — e2e coverage: password+MFA and concurrent provisioning — Learnings
 
+> **Pointer note (added by 0027).** The renumbering this file records — the
+> contract collapse moved to **0035** — has been superseded: phase 0027 queued the
+> Control-held uid floor at 0035, so the collapse is now
+> `prompts/queued/0036-collapse-contract-to-one-version.md`. The MFA question this
+> phase queued is unaffected and is still **0034**. Compose the mappings through
+> the renumbering notes at the end of `docs/PLAN.md` §10, newest first. Nothing
+> else in this file changed — it stays the record of what phase 0026 shipped.
+
 ## Summary
 - What shipped: the two gaps phase 0012 recorded that were **not** plan-level
   deferrals. `proxy-direct` now offers `password-mfa` beside `cert`, and the

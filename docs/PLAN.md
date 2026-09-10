@@ -2697,7 +2697,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 >
 > So: **0022** (the decision cache, **delivered**) → **0023** (host-key report
 > reuse, **delivered**) → **0024** (the session deadline), then the rest by
-> number, with **0035**, the contract collapse, last. The first three are
+> number, with **0036**, the contract collapse, last. The first three are
 > promoted because they make an argument this plan already relies on *true*
 > rather than merely written down: 0022 and 0023 are the cheaper answer that
 > replaced the withdrawn 0021 (D17) — now measured, not projected — and 0024
@@ -2739,12 +2739,39 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reports a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. Classifies it as its own stage, discloses it on §4.3's terms, and records it critically with the key's fingerprint — reusing 0025's single copy of x/crypto's wording rather than adding a second. **Conditional in one part:** whether it should also be *contained* is a question this phase must answer and write down, because the blast radius that justified 0025's breaker (an OpenSSH target penalising the proxy's source address) does not exist when the far end is another Hoplock proxy. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Conditional — it asks a question and may answer "no", as 0032 does.** Phase 0026 drove `password-mfa` with a real client and found that the denial discloses nothing but the *flow* does: a correct password is answered with an MFA challenge and a wrong one never is, so the challenge's presence is a first-factor oracle, and its duration says the same thing more quietly. The proxy cannot fix it alone — Control decides when a challenge is issued (D2) — so the phase decides whose problem it is, whether a decoy challenge is worth what it costs in Control load and in an unclosable timing channel, and whether it belongs to the prototype at all (§12 puts a real IdP, where enumeration defences usually live, out of scope). A "yes" closes it in `api/`, `cmd/mock-control` and a scenario; a "no" is written up and the prompt deleted, as 0021 was. Added by 0026 |
-| 0035 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0034 to make room for 0026's follow-up |
+| 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lives on the **target**, so a proxy RESTART — no attacker needed — leaves a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target has no continuity at all. Worse, a target that can store nothing (§5.3's devices; an ordinary Linux host with a read-only root filesystem) is refused outright by 0027 on a route that worked before it. Holds the floor at Hoplock Control as an **exclusive per-proxy uid-block lease** — which closes the multi-proxy case by construction, is safe to hold across a Control outage because the block cannot have been granted to anyone else, and costs one call per BLOCK rather than per session, so 0022 and 0023's 3.17 → 1.17 per-connection budget is untouched. The target-side mark is demoted to an optional signal that may only ever RAISE the floor, and its absence stops being an outage. **Two things it must not do, both settled in 0027's learnings:** put the floor on the authorize response (that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one), and assume the proxy can write anything on the target. Contract change — carries a cross-repo obligation |
+| 0036 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0035 to make room for 0027's follow-up |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
-> **Renumbering note (the MFA disclosure question), newest — compose it with the
+> **Renumbering note (the Control-held uid floor), newest — compose it with the
+> ones below.** Phase 0027 made uid allocation non-reusing and left the
+> high-water mark on the target. Review of its PR asked why security state sits
+> on the untrusted side; the answer is that the restart case, the replaced-proxy
+> case and a target that can store nothing all need the floor held elsewhere,
+> and that "elsewhere" is Hoplock Control. Because it revises `api/`, it must run
+> **before** the contract collapse, so it was inserted at **0035** and the
+> collapse moved **0035 → 0036**. That is the whole mapping — **0035→0036**, one
+> prompt — and the queue is contiguous at **0028–0036**.
+>
+> Live references updated in place: this section's run-order paragraph and phase
+> table, the run-order notes in `prompts/queued/0032-…`, `0033-…` and `0034-…`,
+> and the collapse prompt's own title and number history. **One dangling
+> reference predating this revision was fixed in the same sweep:**
+> `test/e2e/scenarios_test.go` pointed at
+> `prompts/queued/0035-mfa-challenge-first-factor-oracle.md`, a path that has
+> never existed — phase 0026 queued that prompt at **0034** and moved the collapse
+> to 0035, and the citation took the wrong one of the two. It is exactly the
+> failure `docs/PROTOCOL.md` §3 describes, and it is why that section asks for a
+> whole-repository grep rather than a grep of the package you were working in.
+>
+> `docs/learnings/` and `prompts/implemented/` were **not** rewritten and must be
+> read through this mapping — `docs/learnings/0026-…` carries a pointer note
+> saying so, and `docs/learnings/0027-…` describes the phase that queued this
+> one.
+>
+> **Renumbering note (the MFA disclosure question) — compose it with the
 > ones below.** Phase 0026 gave the password+MFA flow its first end-to-end
 > coverage and found, while asserting that a denial names no factor, that the
 > *challenge* names one: it is issued only when the password was right. That was

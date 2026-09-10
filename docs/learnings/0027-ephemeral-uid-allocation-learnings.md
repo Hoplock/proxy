@@ -47,7 +47,13 @@
   provisioning. **Residual:** a proxy restart empties the in-process record, so a
   fresh process on a tampered target has only the target's word for the floor.
   Closing that is Hoplock Control's to hold — a contract change, out of 0027's
-  scope, design sketch under *Details → Why the floor is not (yet) Control's*.
+  scope, now queued as **0035** (design under *Details → Why the floor is not
+  (yet) Control's*; the collapse moved 0035 → 0036 to make room).
+- **A narrowing this phase introduced:** `<enforcement_base>` must now be writable
+  on **every** ephemeral target, not only those rendering a 0019 rung, so a host
+  with a read-only root filesystem is refused where it used to work. Devices
+  (§5.3) are unaffected — no uid, no filesystem. See *Details → A target that can
+  store nothing*; 0035 is where it is properly fixed.
 - **What is still inheritable — the honest scope of the fix:** anything a session
   writes **outside its home** (`/tmp`, `/var/tmp`, `/dev/shm`, shared storage)
   still survives it, and this phase deletes none of it. 0019's confinement is the
@@ -312,6 +318,41 @@ think the server must choose the range, stop and ask"):
 3. Control needs a per-target **allocation cursor** it advances on grant — real
    server-side storage, correct under concurrent proxies.
 
+### A target that can store nothing
+
+Raised in review after the hardening landed, and it is a real narrowing this phase
+introduced rather than only a design input for the next one.
+
+`ephemeral-user` already required a writable filesystem on the target — `useradd
+-m` creates a home and the script writes `$h/.ssh/authorized_keys` — so the mark
+does not change *which class* of target can take the method. §5.3's devices are
+unaffected for the same reason they were out of scope: a firewall or switch has no
+uid the proxy allocates and no filesystem it writes, so `ephemeral-account`
+(`deviceaccount.go`) never touches any of this. Verified rather than assumed:
+`uidWatermarkPath` and the mark scripts are `EphemeralAuthenticator` methods only.
+
+**What did narrow** is more specific. Before this phase, `<enforcement_base>`
+(`/var/lib/hoplock`) had to be writable only for routes that rendered a 0019
+enforcement rung. Now it is needed on **every** ephemeral provisioning, because the
+mark write fails the session closed. So a shape that worked before 0027 does not
+now: **a Linux host with a read-only root filesystem and a writable `/home`.** It
+can run `useradd -m`, it can hold an `authorized_keys`, and it cannot take
+`/var/lib/hoplock`.
+
+The operator's remedy today is the existing knob — point `enforcement_base` at a
+writable path — and `README.md` says the directory must be writable on every
+target. That is a workaround, not an answer: on a target where *nothing* is
+writable there is no path to point it at, and the honest fix is that the floor
+should not need the target at all. That is 0035's §2, where it is a first-class
+requirement: the lease alone must be sufficient, the mark is demoted to an
+optional signal that may only raise the floor, and its absence becomes a logged
+fact rather than an outage.
+
+Failing closed was still the right call for *this* phase. The alternative —
+provisioning anyway when the mark cannot be written — is fail-open on exactly the
+invariant the phase exists to establish, and it would have shipped a proxy that
+silently reuses uids on the targets least able to tell anyone.
+
 ### Tests, and the one that fails without the fix
 
 - `internal/auth/target/uid_test.go` — the allocator: the rule, the **wrap-around
@@ -383,13 +424,15 @@ independent and still worth asserting:
 
 ### Follow-ups
 
-**Not queued yet, and it needs a number:** moving the uid floor to Hoplock
-Control, per *Why the floor is not (yet) Control's* above. It revises `api/`, so
-it must run **before 0035** (the contract collapse, which must follow every phase
-that touches the contract) — which means inserting it and renumbering the
-collapse, the one-prompt shape phase 0026 used for 0034→0035. It was raised in
-review on PR #40 and is not yet written up as a prompt; the design sketch above is
-what a prompt would be built from.
+**Queued as `prompts/queued/0035-control-held-uid-floor.md`:** moving the uid
+floor to Hoplock Control, per *Why the floor is not (yet) Control's* above, built
+from the lease sketch there. It revises `api/`, so it must run **before** the
+contract collapse — which moved **0035 → 0036** to make room, one prompt, mapping
+in the newest renumbering note at the end of `docs/PLAN.md` §10.
+
+It carries one requirement this phase did not anticipate, added after review:
+**it must work on a target the proxy can write nothing to.** See *A target that
+can store nothing* below.
 
 Two smaller things a future phase may want, recorded here rather than as prompts,
 because neither is a defect and both are cheap to reconsider:

@@ -1,4 +1,4 @@
-# 0035 — Drop the superseded contract vocabularies
+# 0036 — Drop the superseded contract vocabularies
 
 > **New prompt, and it must run LAST.** Every phase that revises the contract
 > adds a vocabulary generation and, with it, code and prose that keep the
@@ -19,8 +19,10 @@
 > this stays last. It has already moved four times for that reason — it was
 > queued as **0029**, was briefly **0033**, then **0032**, then **0033** again,
 > then **0034** once phase 0025 queued the hop-credential classification at
-> 0033, and is **0035** now that phase 0026 queued its MFA-disclosure question
-> at 0034. It is still the top of a contiguous queue. Anything written before
+> 0033, then **0035** once phase 0026 queued its MFA-disclosure question at
+> 0034, and is **0036** now that phase 0027 queued the Control-held uid floor at
+> 0035 — that one revises the contract, so it must run before this one. It is
+> still the top of a contiguous queue. Anything written before
 > those moves calls it by an older number; the mapping is in the run-order notes
 > at the end of `docs/PLAN.md` §10, which stack newest first and compose.
 >
@@ -368,9 +370,9 @@ that repository checked out. Upstream merges first: this PR, then the sync.
    with the versioning mechanism intact and tested.
 2. `docs/PLAN.md` updated, including the note recording the collapse and its
    boundary.
-3. `prompts/queued/0032-collapse-contract-to-one-version.md` moved to
+3. `prompts/queued/0036-collapse-contract-to-one-version.md` moved to
    `prompts/implemented/` (same filename) in this PR.
-4. `docs/learnings/0032-collapse-contract-to-one-version-learnings.md`, with the
+4. `docs/learnings/0036-collapse-contract-to-one-version-learnings.md`, with the
    summary block `docs/PROTOCOL.md` §5 requires. It must state, for the next
    session: **one live vocabulary from here on, and the next revision bumps
    `PolicyVersion` rather than keeping this one alive beside it.**

@@ -10,7 +10,7 @@
 > than changing the flow under the heading of a test.
 >
 > It is inserted **before** the contract collapse (now
-> `prompts/queued/0035-…`) because that one must stay the highest-numbered
+> `prompts/queued/0036-…`) because that one must stay the highest-numbered
 > queued prompt; the mapping is in the newest run-order note at the end of
 > `docs/PLAN.md` §10. Nothing in 0027–0033 depends on this and it depends on
 > nothing they change.

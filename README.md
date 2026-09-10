@@ -147,6 +147,12 @@ to a different person, would own it. So:
   on every provisioning, and treats what it reads there as evidence that may only
   ever **raise** the next uid — so a tampered mark costs uids out of the range,
   loudly, and can never hand a session a uid a previous one held.
+
+  Note the shape this rules out: a host with a **read-only root filesystem** can
+  run `useradd -m` and hold an `authorized_keys` in a writable `/home`, but cannot
+  take `/var/lib`. Point `enforcement_base` at a writable path on such a fleet.
+  Appliances reached with `ephemeral-account` — firewalls, switches — are
+  unaffected: the proxy allocates no uid and writes no files there.
 - **The uid range** (`auth.target.ephemeral_user.uid_min`/`uid_max`, default
   `2000000-2999999`) must be free on the fleet. It sits above every
   distribution's own `UID_MAX`, so the target's allocator never enters it; move

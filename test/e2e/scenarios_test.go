@@ -1456,7 +1456,7 @@ func testPasswordMFA(t *testing.T) {
 		// out-of-band approval at all, it is decided by Hoplock Control rather
 		// than by the proxy, and it is not something this phase may quietly fix
 		// under the heading of a test. It is written up in
-		// prompts/queued/0035-mfa-challenge-first-factor-oracle.md.
+		// prompts/queued/0034-mfa-challenge-first-factor-oracle.md.
 	})
 
 	// The audit trail is where the estate sees which method let someone in, and
