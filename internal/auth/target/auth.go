@@ -123,6 +123,16 @@ type ProvisionedAccess struct {
 	// tells an honest user nothing they can act on (D14).
 	Method string
 	Rung   int
+	// AccountUID is the numeric uid of the account the proxy connected as, or 0
+	// for a method that created no account (phase 0027).
+	//
+	// It is on the audit record beside the account NAME because the name is
+	// deleted at teardown and the uid is not: a `find -uid` in an incident, the
+	// target's own auditd, and every file the session left outside its home all
+	// speak the number, and PLAN §5.1's promise of a join key back to the session
+	// id is empty without it. It carries no credential material — a uid is not a
+	// secret and is readable by anyone on the target.
+	AccountUID int
 	// Enforcement is what was ACTUALLY rendered on the target, never what the
 	// route asked for (PLAN §6.5, phase 0019). Nil means the provisioner did
 	// not answer, and the Selector fills it in from the method's own

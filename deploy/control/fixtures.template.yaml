@@ -214,6 +214,39 @@ routes:
         key_type: ed25519
         lifetime_seconds: "900"
 
+  # ------------------------------------------------ uid allocation (0027) ---
+  # The SAME Linux host, reached by the machine account. It exists so the uid
+  # scenarios have TWO LOGINS on one target with no enforcement rung between
+  # them: the claim is that a second person's session does not inherit ownership
+  # of what the first one wrote, and a rung that confined either of them would
+  # make the result unattributable to allocation.
+  #
+  # No filter policy on purpose. The scenario reads and writes files in /tmp and
+  # asks the target for uids, and a blacklist rule firing on one of those would
+  # be a different assertion wearing the same failure.
+  #
+  # Scenarios: two sequential sessions get different uids; a file one session
+  # wrote outside its home is not owned by the next session's account.
+  - login: svc-deploy
+    target: inherit.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    permitted_global_requests:
+      types: []
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: svc-deploy
+        key_type: ed25519
+        lifetime_seconds: "900"
+
   # ------------------------------------------------- ephemeral-account ---
   # An appliance: a CLI over SSH with no useradd, no authorized_keys and no home
   # directory (D13, PLAN §5.3). The proxy creates a short-lived ADMINISTRATOR on

@@ -51,6 +51,14 @@ const (
 	stageRoute     stage = "route"
 	stageProvision stage = "provision"
 	stageDial      stage = "dial"
+	// stageProvisionUID is the proxy declining to provision because it cannot
+	// allocate an account uid that no previous account on the target has held
+	// (phase 0027). It is separate from stageProvision for 0025's reason: the two
+	// send an operator to different places. Nothing failed on the target — the
+	// range this proxy allocates from is exhausted, or its census could not be
+	// read — and an operator told "credentials could not be provisioned" would go
+	// looking at the provisioning account.
+	stageProvisionUID stage = "provision-uid"
 	// stageTargetAuth is the target refusing the proxy's OWN credential, and it
 	// is separate from stageDial because the two send an operator to opposite
 	// places. The host answered, the handshake reached authentication, and what
@@ -105,6 +113,13 @@ func outageDetail(err error) string {
 		return "reaching this target needs a route this proxy cannot serve yet"
 	case stageProvision:
 		return "credentials for the target could not be provisioned"
+	case stageProvisionUID:
+		// Says what an operator can act on and nothing about the target: not
+		// whether it exists, not which range, not what is on it. "Isolated"
+		// rather than "uid" on purpose — the guarantee that failed is that this
+		// session inherits nothing from the last one, which is the sentence a
+		// user reading it can understand and a ticket can carry.
+		return "the target could not be given an isolated account for this session"
 	case stageDial:
 		return "the target could not be reached"
 	case stageTargetAuth:

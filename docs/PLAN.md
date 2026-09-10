@@ -860,7 +860,10 @@ part of the guarantee rather than an implementation detail:
   confinement directory — and it **verifies every one of them**. `useradd` reuses
   freed uids, so a uid-keyed rule that outlives its account silently attaches to
   whoever gets that uid next; phase **0027**'s non-reusing range is the other
-  half of the same problem;
+  half of the same problem and has landed, so nothing this proxy provisions is
+  handed a departed account's number — the ordering still stands, because it is
+  what holds for a rule left by a session that died mid-rung and for a range an
+  operator has widened onto uids something else has held;
 - the orphan reaper looks for those artefacts by name — every rule carries a
   comment naming the account — so a rule, a mount, or a dispatcher whose account
   is already gone is still findable and still removed.
@@ -944,12 +947,42 @@ backend a figure came from. For scale: a 60-second poll of one target asks it
 for 0.017 cycles/s, so this ceiling binds bursts and reprovisioning storms
 rather than routine polling. Account churn also means
 UID churn, and a reused UID inherits ownership of anything a deleted account
-left behind — which today it does *immediately*, because provisioning takes
-whatever uid the target's allocator offers and that is the lowest free one.
-Phase **0027** makes allocation non-reusing and fails closed where it cannot;
-phase **0019**'s filesystem confinement is the other half, leaving nothing
-outside the home to inherit. Teardown deliberately does not sweep the
-filesystem for a departing uid: see 0027 for why that is the wrong fix.
+left behind. Teardown deliberately does not sweep the filesystem for a departing
+uid — the invariant is a property of **allocation**, not of deletion, and a walk
+over a production host's filesystem at every session end would be slow,
+incomplete, and a delete primitive nobody should grant. So:
+
+**UID allocation is the proxy's, not the target's (phase 0027).** `useradd` with
+no `-u` allocates out of the fleet's own range, and shadow's allocator hands a
+torn-down account's uid straight back to the next caller — measured on shadow
+4.13: create, delete, create, and the second account holds the first's uid.
+`-K UID_MIN=…`, the flag that looks like the fix, is not one: it moves the range
+searched and nothing else, and inside a dedicated range the freed uid still comes
+straight back. So the uid is chosen **off-target** and passed as an explicit
+`-u`, from a dedicated range (`auth.target.ephemeral_user.uid_min`/`uid_max`,
+default `2000000-2999999`, above every distribution's own `UID_MAX`), **strictly
+above everything the target has ever handed out**: the highest in-range uid any
+account holds now, and a high-water mark recorded on the target itself under
+`enforcement_base`, so the guarantee survives a teardown, a proxy restart, and a
+second proxy on the same fleet.
+
+**It does not wrap, and it fails closed.** At the top of the range allocation
+refuses rather than returning to the bottom, because wrapping is the one moment
+reuse becomes possible again and a warning in a log is not a boundary; the
+operator's remedy is to raise `uid_max`, and every allocation past nine tenths of
+the range warns so the refusal is never the first anyone hears of it. A target
+whose census cannot be read, or that cannot record the uid it allocated, refuses
+the session the same way — as an **outage** (§4.3, its own `provision-uid` stage),
+never a denial, and with nothing provisioned. The uid is on the provisioning
+audit record beside the account name, because the name is deleted at teardown and
+the number is what a `find -uid` and the target's own auditd actually speak.
+
+Phase **0019**'s filesystem confinement is the other half: with a home mounted
+`noexec` and nothing writable outside it there is nothing left to inherit, and
+`rm -rf "$h"` becomes complete. Neither alone is the fix. Until a route names a
+confining rung, a session can still write to `/tmp`, `/var/tmp` and `/dev/shm`,
+and those files outlive it — what 0027 guarantees is that they are never
+**inherited** by a later session.
 
 The trade-off a user actually feels is different, and is accepted deliberately:
 **one person in two windows cannot see their own work, and cannot reattach to
@@ -967,8 +1000,8 @@ all die when the session ends — whether it ended because the user typed `exit`
 because Hoplock Control revoked it, or because it reached its `session_deadline`
 (§6.5, phase 0024). No residue is the design, not an omission: an ephemeral
 account whose processes survived it would be a uid still running work after the
-account it was attributed to is gone, and after phase 0027 possibly under a uid
-that now belongs to someone else.
+account it was attributed to is gone — and, before phase 0027 made allocation
+non-reusing, possibly under a uid that had since been given to someone else.
 
 So **work that must outlive a human's session is not a human's session.** It is
 either a machine identity with its own credential and its own bounds (§13 UC2),
@@ -1811,8 +1844,12 @@ to whoever gets that uid next — a rule written for an automation becomes a rul
 governing a person. Any rung keyed on uid is therefore removed by the same
 teardown that removes the account, and is part of what the orphan reaper looks
 for, with the same guarantee as the account itself, or it is not a rung. Phase
-**0027**'s non-reusing uid range is the other half of the same problem, and
-0019 owns the teardown half.
+**0027**'s non-reusing uid range is the other half of the same problem and is
+delivered (§5.1): the proxy allocates the uid, so a rule this proxy leaves behind
+can no longer be transplanted onto a session it provisioned. 0019 owns the
+teardown half, and it is not made redundant by that — it is what holds for a rung
+whose account died mid-provision, and for a range an operator has moved onto uids
+something else has held.
 
 **Some rungs are attested rather than applied, and that is what makes appliances
 reachable.** A router, a firewall, or a filer typically enforces its own command
@@ -2670,7 +2707,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session. **Delivered:** a local timer armed at authorize from the instant the chain resolved (`routing.ShortenDeadline` — a hop may only ever shorten it, and the resolved instant travels on the hop-trail request), expiry through the engine's ordinary teardown, the two messages and exit status **253** in §4.3, `end_reason` on every session_end record, and the detached-work consequence in §5.1. No contract change |
 | 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies. **Delivered:** `target.IsAuthRejection` (the one place that knows x/crypto's wording, with a tripwire test that drives a real rejection), the `target-auth` and `target-auth-withheld` stages and their §4.3 wording, a breaker keyed on (target, method, credential handle) consulted *before* provisioning through `Selector`/`ProvisionedAccess.DialOutcome` — the seam the device drivers adopt — `auth.target.rejection` in config, two critical `error` records naming the credential's handle and never its material, and §5's/README's target prerequisites. It also queued **0033**, the same defect on the proxy→proxy leg, which it found and scoped out. No contract change |
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals. **Delivered:** `password-mfa` enabled on `proxy-direct` only and driven by a real OpenSSH client through `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` (the `user` image's `askpass.sh`), with `sshBaseArgs` untouched so every other scenario is still on the certificate path; an approval, its progress lines, a denial that ends exactly as a wrong password does, and `auth_method=password-mfa` in the audit trail; and two overlapping sessions on one login whose **overlap is observed** in the target's own account database — two accounts at one instant — then removed by two independent teardowns, with the `brokered-key` mirror leaving the target byte-identical. No production code changed. It queued **0034**: the challenge itself still discloses whether the first factor was right |
-| 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement) |
+| 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement). **Delivered:** the uid is the proxy's choice and travels as an explicit `useradd -u` — `-K UID_MIN=…` was measured and rejected, because it moves the range the target's own allocator searches and still hands a freed uid straight back — allocated strictly above the highest in-range uid in use **and** a high-water mark recorded on the target under `enforcement_base`, so the invariant survives a teardown, a restart and a second proxy. `auth.target.ephemeral_user.uid_min`/`uid_max` default to **2000000-2999999**, above every distribution's own `UID_MAX`. **Allocation does not wrap**: at the top of the range, on an unreadable census, or where the mark cannot be written, the route is refused as an outage on its own `provision-uid` stage with nothing provisioned, and every allocation past nine tenths of the range warns. The uid is on the provisioning record beside the account name. What is still inheritable until a route names one of 0019's confining rungs: anything a session wrote outside its home — and 0027 is what stops a *later* session inheriting it |
 | 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
 | 0029 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
 | 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |

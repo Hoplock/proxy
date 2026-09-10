@@ -242,7 +242,32 @@ auth:
       # `account-confined` rung the home is mounted noexec, so a dispatcher
       # living in it could not be executed, and one the account could write
       # would not be an allow-list.
+      # It also holds the uid high-water mark (below), which is why it must
+      # exist and be writable by the provisioning account even on a fleet that
+      # renders no enforcement rung at all.
       enforcement_base: "/var/lib/hoplock"
+      # The DEDICATED uid range ephemeral accounts are allocated from (phase
+      # 0027). Leave both at 0 for the defaults, 2000000-2999999.
+      #
+      # This is not tuning. `useradd` with no explicit uid hands a torn-down
+      # account's uid straight back to the next caller, and teardown removes an
+      # account's home but deliberately never walks the filesystem — so every
+      # file a session wrote OUTSIDE its home keeps the bare number, and the next
+      # session, belonging to a DIFFERENT PERSON, would own it. The proxy
+      # therefore chooses the uid itself, strictly above everything the target has
+      # ever handed out, and records the mark under enforcement_base so the
+      # guarantee survives a teardown, a restart, and a second proxy.
+      #
+      # The defaults sit above every distribution's own UID_MAX, so an ephemeral
+      # account can never be handed a uid the fleet's own allocator would also
+      # hand out. Move them only for a fleet that already allocates there, and
+      # keep the range WIDE: allocation does not wrap. Reaching the top refuses
+      # every ephemeral session on that target — an outage, disclosed to the user
+      # as one — until uid_max is raised, and every allocation past nine tenths of
+      # the range warns in the proxy log so that raising it is still a cheap
+      # change when it matters.
+      uid_min: 0
+      uid_max: 0
       # Write OpenSSH's expiry-time restriction into the ephemeral
       # authorized_keys entry when a route asks for a lifetime. Set it to false
       # only for a fleet whose sshd predates 8.2: a route that then asks for a

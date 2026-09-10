@@ -129,6 +129,12 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 	attrs := logging.Attrs{}.
 		Set(logging.AttrCredentialMethod, method).
 		Set(logging.AttrTargetAccount, account)
+	if access.AccountUID > 0 {
+		// The uid outlives the account name, which teardown deletes. Without it
+		// the join key PLAN §5.1 promises between a target's own audit trail and
+		// a session id is a name that no longer exists anywhere (phase 0027).
+		attrs = attrs.SetInt(logging.AttrTargetAccountUID, access.AccountUID)
+	}
 	if access.Rung > 0 {
 		// The rung in force is an AUDIT fact and never a user-facing one (D14):
 		// "you got the weaker credential" tells an attacker which targets are

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -247,9 +248,18 @@ func TestSSHDTeardownRemovesEveryRungArtefact(t *testing.T) {
 	}
 }
 
-// TestSSHDUIDReuseInheritsNothing is the one failure here that is silent in
-// every other test (PLAN §6.5, and phase 0027's other half).
-func TestSSHDUIDReuseInheritsNothing(t *testing.T) {
+// TestSSHDUIDAllocationInheritsNothing is the one failure here that is silent in
+// every other test (PLAN §6.5), against a real useradd on a real distribution.
+//
+// It asserted uid REUSE until phase 0027, by provisioning until the target handed
+// the same uid out twice and then checking what the second session stood behind.
+// That loop is gone because its premise is: the proxy now allocates the uid from
+// a dedicated range, strictly above everything the target has ever handed out, so
+// the reuse it waited for never happens. What is asserted instead is the pair of
+// claims that replaced it — consecutive accounts never share a uid, and teardown
+// still leaves no rule and no mount behind — because the second is what the first
+// would be hiding if it ever regressed.
+func TestSSHDUIDAllocationInheritsNothing(t *testing.T) {
 	sshd := requireSSHD(t)
 	ctx := context.Background()
 	auth := sshdEphemeral(t, sshd, "integration-uid")
@@ -265,12 +275,13 @@ func TestSSHDUIDReuseInheritsNothing(t *testing.T) {
 	tgt := sshd.target
 	tgt.Auth = ephemeralRoute(nil)
 
-	// Provision and tear down until a uid is handed out twice. useradd reuses
-	// the lowest free uid, so on a quiet target this happens on the second
-	// round; the loop is here so the test does not depend on that.
+	// Three sessions with a reach rung, each fully torn down before the next.
+	// Every uid is FREE by the time the next round starts, which is exactly the
+	// state in which the target's own allocator hands the last one back — and on
+	// a real distribution it does: `useradd`, `userdel`, `useradd` returns the
+	// same uid, verified on shadow 4.13.
 	var uids []string
-	var reused string
-	for i := 0; i < 6 && reused == ""; i++ {
+	for i := 0; i < 3; i++ {
 		tgt.Enforcement = confined()
 		access, err := auth.Provision(ctx, testIdentity(), tgt)
 		if err != nil {
@@ -281,16 +292,16 @@ func TestSSHDUIDReuseInheritsNothing(t *testing.T) {
 			t.Fatalf("teardown: %v", err)
 		}
 		if contains(uids, uid) {
-			reused = uid
+			t.Fatalf("round %d was handed uid %s again after it had been torn down (saw %v)", i, uid, uids)
+		}
+		if got := strconv.Itoa(access.AccountUID); got != uid {
+			t.Errorf("the access reports uid %s and the target holds %s", got, uid)
 		}
 		uids = append(uids, uid)
 	}
-	if reused == "" {
-		t.Skipf("no uid was reused in six rounds (saw %v); the hazard is not reproducible on this target", uids)
-	}
 
-	// The session that lands on the reused uid asks for NO reach rung, so any
-	// rule it stands behind is one it inherited.
+	// A fourth session asks for NO reach rung, so any rule it stands behind is
+	// one it inherited from the three above.
 	tgt.Enforcement = &Enforcement{
 		Execution:      control.ExecutionAccountRestricted,
 		RestrictedExec: catProbeOnly(),
@@ -303,7 +314,7 @@ func TestSSHDUIDReuseInheritsNothing(t *testing.T) {
 
 	for _, script := range []string{"iptables -S OUTPUT", "ip6tables -S OUTPUT"} {
 		if out := sshd.run(t, script); strings.Contains(out, ruleTagPrefix) {
-			t.Errorf("a rule outlived its account and now attaches to the reused uid %s:\n%s", reused, out)
+			t.Errorf("a rule outlived its account and now attaches to whoever holds its uid (saw %v):\n%s", uids, out)
 		}
 	}
 	if out := sshd.run(t, "mount"); strings.Contains(out, DefaultHomeBase+"/hl-") {

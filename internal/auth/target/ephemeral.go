@@ -75,6 +75,15 @@ type EphemeralOptions struct {
 	// in it could not be executed, and a dispatcher the account could write
 	// would not be an allow-list.
 	EnforcementBase string
+	// UIDMin and UIDMax bound the dedicated uid range ephemeral accounts are
+	// allocated from (phase 0027). Zero means DefaultUIDMin/DefaultUIDMax.
+	//
+	// The range exists so a fresh account never inherits a torn-down one's
+	// files: allocation is strictly above everything the target has ever handed
+	// out, never the lowest free uid the target's own allocator would pick. A
+	// target where that cannot be established refuses the session.
+	UIDMin int
+	UIDMax int
 	// Reporter records what a target can enforce, so a server never chooses a
 	// rung this target cannot take (contract v4). Nil skips reporting, which
 	// costs the server a better-informed choice and costs the session nothing:
@@ -112,6 +121,7 @@ type EphemeralAuthenticator struct {
 	shell       string
 	enforceBase string
 	keyExpiry   bool
+	uids        *uidAllocator
 	reporter    control.CapabilityReporter
 	probes      *probeCache
 	logger      *log.Logger
@@ -193,6 +203,11 @@ func NewEphemeralAuthenticator(opts EphemeralOptions) (*EphemeralAuthenticator, 
 	if err := validatePath(a.enforceBase); err != nil {
 		return nil, err
 	}
+	uids, err := newUIDAllocator(opts.UIDMin, opts.UIDMax)
+	if err != nil {
+		return nil, err
+	}
+	a.uids = uids
 	a.reaper = newReaper(a, opts.ReaperInterval, opts.ReaperGrace)
 	return a, nil
 }
@@ -269,23 +284,42 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 		return nil, err
 	}
 
-	authorizedKey, err := a.authorizedKeyLine(signer.PublicKey(), lifetime, confinement)
-	if err != nil {
-		return nil, err
-	}
-	script, err := a.provisionScript(confinement, authorizedKey)
+	// The uid comes next, and it comes from the PROXY (phase 0027). It is after
+	// the rung check because that one is local and free, and before anything is
+	// created because a range that cannot serve a non-reusing uid is an outage
+	// with the target exactly as it was found.
+	plan, err := a.allocateUID(ctx, admin, tgt)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := admin.Run(ctx, script); err != nil {
+	authorizedKey, err := a.authorizedKeyLine(signer.PublicKey(), lifetime, confinement)
+	if err != nil {
+		return nil, err
+	}
+	script, err := a.provisionScript(confinement, authorizedKey, plan.candidates)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := admin.Run(ctx, script)
+	if err != nil {
 		// Failure isolation (PLAN §5.1): whatever the script managed before it
 		// failed is removed now, on the connection that is already open, so a
 		// denied session never leaves a half-created account — or a half-applied
 		// rung — behind.
 		a.cleanUpFailedProvision(ctx, admin, principal, home)
-		return nil, stageErr("provision", err)
+		return nil, stageErr("provision", a.uidError(err))
 	}
+	// The uid the target actually holds, which is not always the one allocated:
+	// an account adopted from a crashed session keeps its own, and a lost race
+	// lands on a fallback candidate.
+	uid, err := parseProvisionedUID(out)
+	if err != nil {
+		a.cleanUpFailedProvision(ctx, admin, principal, home)
+		return nil, err
+	}
+	a.uids.observe(tgt.Addr(), uid)
 
 	hostKey := admin.HostKey()
 	a.reaper.observe(tgt, hostKey)
@@ -300,8 +334,8 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 	enforcement := resultFor(tgt.Enforcement, execMechanism, reachMechanism)
 	enforcement.Caveat = confinement.caveat()
 
-	a.logf("auth/target: ephemeral-user provisioned subject=%s target=%s account=%s key=%s enforcement=%s/%s",
-		id.Subject, tgt, principal, keyType, enforcement.Execution, enforcement.Reach)
+	a.logf("auth/target: ephemeral-user provisioned subject=%s target=%s account=%s uid=%d key=%s enforcement=%s/%s",
+		id.Subject, tgt, principal, uid, keyType, enforcement.Execution, enforcement.Reach)
 	if names := interpretersIn(confinement.commands); len(names) > 0 {
 		// A warning and never a refusal (0018): an allow-list containing an
 		// interpreter is not an allow-list, but a shipped deny-list of
@@ -320,6 +354,7 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 			// implementation of this interface.
 		},
 		Enforcement: enforcement,
+		AccountUID:  uid,
 		Teardown: func(ctx context.Context) error {
 			return a.teardown(ctx, tgt, hostKey, principal, home)
 		},
@@ -353,6 +388,61 @@ func (a *EphemeralAuthenticator) teardown(ctx context.Context, tgt Target, hostK
 	}
 	a.logf("auth/target: ephemeral-user removed target=%s account=%s", tgt, principal)
 	return nil
+}
+
+// allocateUID takes the target's uid census on the connection that is already
+// open and allocates from it, or refuses the session (phase 0027).
+//
+// It reuses discoverScript — the reaper's — rather than adding a script of its
+// own: the census a non-reusing allocation needs is the account database plus
+// the high-water mark, and the reaper's listing already reads the first. One
+// round trip, one script, one thing to keep correct.
+func (a *EphemeralAuthenticator) allocateUID(ctx context.Context, admin AdminSession, tgt Target) (uidPlan, error) {
+	script, err := a.discoverScript()
+	if err != nil {
+		return uidPlan{}, err
+	}
+	out, err := admin.Run(ctx, script)
+	if err != nil {
+		// FAIL CLOSED. A census that could not be read is not "assume the range
+		// is empty": assuming that is how a fresh account lands on a departed
+		// one's uid, which is the whole defect. The user gets an outage.
+		a.logf("auth/target: ephemeral-user could not read %s's uid census: %v", tgt, err)
+		return uidPlan{}, fmt.Errorf("%w: the target's uid census could not be read", ErrUIDUnavailable)
+	}
+
+	plan, err := a.uids.allocate(tgt.Addr(), parseUIDCensus(out, a.uids.min, a.uids.max))
+	if err != nil {
+		a.logf("auth/target: ephemeral-user cannot allocate a uid on %s: %v", tgt, err)
+		return uidPlan{}, err
+	}
+	if plan.pressured {
+		// Every allocation from nine tenths of the range onward says so. The
+		// refusal at the top of the range is a target-wide outage for this
+		// method, and the remedy — a wider uid_max — is only cheap while there
+		// is still time to apply it.
+		a.logf("auth/target: WARNING ephemeral-user has %d uid(s) left in %d-%d on %s; allocation does not wrap, so raise auth.target.ephemeral_user.uid_max before it runs out",
+			plan.remaining, a.uids.min, a.uids.max, tgt)
+	}
+	return plan, nil
+}
+
+// uidError re-labels the two provisioning-script failures that are about the uid
+// rather than about the account, so the engine classifies them as what they are.
+func (a *EphemeralAuthenticator) uidError(err error) error {
+	var rce *RemoteCommandError
+	if !errors.As(err, &rce) {
+		return err
+	}
+	switch rce.ExitStatus {
+	case exitUIDExhausted:
+		return fmt.Errorf("%w: every uid offered to the target was already taken: %w", ErrUIDUnavailable, err)
+	case exitUIDMarkFailed:
+		return fmt.Errorf("%w: the target could not record the allocated uid, so the next allocation there would reuse it: %w",
+			ErrUIDUnavailable, err)
+	default:
+		return err
+	}
 }
 
 // cleanUpFailedProvision undoes a partial provisioning on the connection that
