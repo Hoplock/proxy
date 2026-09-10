@@ -122,7 +122,7 @@ func (a uidReportingAuth) Provision(ctx context.Context, id *identity.Identity, 
 // outside its home actually speak.
 func TestTheProvisioningRecordCarriesTheAccountUID(t *testing.T) {
 	const uid = 2000004
-	placeholder, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	placeholder, err := target.NewStaticKeyAuthenticator(target.StaticKeyOptions{Signer: sshtest.MustGenerateSigner(), Username: testTargetAccount})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
 	}

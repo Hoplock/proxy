@@ -235,7 +235,7 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 	}
 
 	p := newParams(tgt.Auth)
-	login := p.str(ParamUsername, id.Login)
+	login := p.str(ParamUsername, "")
 	keyType := p.str(ParamKeyType, KeyTypeEd25519)
 	lifetime, hasLifetime, err := p.duration(ParamLifetimeSeconds)
 	if err != nil {
@@ -254,7 +254,16 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 			ErrInvalidParam, ParamLifetimeSeconds)
 	}
 	if login == "" {
-		return nil, errors.New("auth/target: ephemeral-user has no login to derive an account from")
+		// This is the one place where the replacement is a BETTER answer and
+		// not merely a safer one. The account name is the attribution here
+		// (PLAN §5.1) — it is what the target's own audit trail records — so
+		// deriving it from a server-established principal is what makes that
+		// trail mean something, where deriving it from what the user typed
+		// meant nothing at all.
+		login, err = accountFromPrincipals(id, MethodEphemeralUser)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	principal, err := newPrincipal(a.prefix, login)

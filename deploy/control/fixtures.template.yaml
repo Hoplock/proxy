@@ -453,6 +453,36 @@ routes:
     filter_policy:
       mode: blacklist
 
+  # ------------------------------------------ no account name at all (0028) ---
+  # The route that names NO target_auth, served by the one proxy that also
+  # configures no local account (deploy/proxy/proxy-nexthop.yaml). Since
+  # contract v4.2 a brokered-key route must carry its own `username`, so this
+  # v1-shaped route — "use whatever method the proxy is configured for" — is the
+  # only remaining way for a session to arrive with no account name available
+  # anywhere.
+  #
+  # It must fail as an OUTAGE and not as a denial: nobody decided alice may not
+  # reach this target, the estate could not say who to log in as. Before phase
+  # 0028 it would have logged in as "alice", because that is the string she
+  # typed at her SSH client.
+  #
+  # `resolved_target` deliberately points at the real target, so a session that
+  # got past the refusal would reach a host that is up and answering — a green
+  # run here means the refusal happened, not that the connection failed anyway.
+  - login: alice
+    target: unnamed.company.com
+    proxy_id: proxy-nexthop
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    filter_policy:
+      mode: blacklist
+
   # --------------------------------------------------------------- nexthop ---
   # Chained in `dial` mode: the edge proxy opens the leg to the next hop, which
   # therefore needs an inbound rule. Both hops run the whole flow for

@@ -380,8 +380,9 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth, e *Enforc
 		// There is deliberately NO fallback to identity.Login here. Login is
 		// what the user typed at their SSH client, and internal/identity says
 		// it must never be the basis of an authorization decision — choosing
-		// an account name is one. Prompt 0028 closes that fallback everywhere
-		// it still exists; this method never opened one.
+		// an account name is one. This method never opened such a fallback;
+		// phase 0028 closed the three that were still open elsewhere, so this
+		// is now the shape every method has (see ErrNoAccountName).
 		return nil, fmt.Errorf("%w: %s is required", ErrInvalidParam, ParamUsername)
 	case r.platform == "":
 		return nil, fmt.Errorf("%w: %s is required and is never inferred", ErrInvalidParam, ParamPlatform)

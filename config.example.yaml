@@ -207,8 +207,10 @@ auth:
     static_key:
       # Private key the proxy logs into targets with. Never commit a real key.
       key_path: "/etc/hoplock/target_key"
-      # Log into every target as this account instead of the authenticated
-      # login. Optional; empty uses the login.
+      # Log into every target as this account when the route names none.
+      # Empty means the route MUST name one — this method reads the route's
+      # username parameter like every other, and refuses when neither names an
+      # account (phase 0028).
       username: ""
 
     # ephemeral-user (D6, PLAN §5.1): the proxy logs in with a management
@@ -327,7 +329,9 @@ auth:
       # carries material itself.
       source: "dir"
       # Log into brokered targets as this account when the route names none.
-      # Empty uses the authenticated login.
+      # Empty means the route MUST name one: there is no fallback to what the
+      # user typed at their SSH client, and a route that names no account on a
+      # proxy that configures none is refused as an outage (phase 0028).
       username: ""
       # dir source: one file per reference, "<dir>/<ref><file_suffix>".
       dir: "/etc/hoplock/brokered"

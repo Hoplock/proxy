@@ -9,23 +9,44 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hoplock/proxy/internal/config"
+	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
 	"github.com/hoplock/proxy/internal/sshtest"
 )
 
+func staticKeyRoute(params map[string]string) *control.TargetAuth {
+	return &control.TargetAuth{Method: control.TargetAuthStaticKey, Params: params}
+}
+
+// testIdentity is the authenticated identity every test in this package
+// provisions for.
+//
+// Principals is populated and Login is deliberately DIFFERENT from it. Since
+// phase 0028 no account name may come from Login — it is what the user typed at
+// their SSH client — so a fixture whose login and principal were the same
+// string could not tell a passing test from a regression. Any test asserting an
+// account name asserts against the principal.
 func testIdentity() *identity.Identity {
 	return &identity.Identity{
-		Subject: "alice@example.com",
-		Login:   "alice",
-		Source:  "fixture",
-		Method:  identity.MethodCert,
+		Subject:    "alice@example.com",
+		Login:      "alice",
+		Source:     "fixture",
+		Principals: []string{"alice-svc"},
+		Method:     identity.MethodCert,
 	}
 }
 
-func TestStaticKeyProvisionUsesTheAuthenticatedLogin(t *testing.T) {
+// TestStaticKeyProvisionUsesTheRoutesUsername replaces a test that asserted the
+// opposite: that a route naming no account logged in as the authenticated
+// login. Contract v3 requires a username on a static-key route and
+// internal/control enforces it, and until phase 0028 this authenticator never
+// read the route at all — so the document said one thing and the proxy did
+// another. It reads it now.
+func TestStaticKeyProvisionUsesTheRoutesUsername(t *testing.T) {
 	auth, err := NewStaticKeyAuthenticator(StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
 	if err != nil {
 		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
@@ -34,11 +55,14 @@ func TestStaticKeyProvisionUsesTheAuthenticatedLogin(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
 
-	access, err := auth.Provision(context.Background(), testIdentity(), Target{Host: "host.company.com", Port: 22})
+	tgt := Target{Host: "host.company.com", Port: 22, Auth: staticKeyRoute(map[string]string{
+		control.ParamUsername: "svc-deploy",
+	})}
+	access, err := auth.Provision(context.Background(), testIdentity(), tgt)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if got, want := access.ClientConfig.User, "alice"; got != want {
+	if got, want := access.ClientConfig.User, "svc-deploy"; got != want {
 		t.Errorf("ClientConfig.User = %q, want %q", got, want)
 	}
 	if len(access.ClientConfig.Auth) != 1 {
@@ -66,6 +90,55 @@ func TestStaticKeyUsernameOverride(t *testing.T) {
 	}
 	if got, want := access.ClientConfig.User, "testrunner"; got != want {
 		t.Errorf("ClientConfig.User = %q, want %q", got, want)
+	}
+}
+
+// TestStaticKeyRefusesWhenNothingNamesAnAccount is the refusal that replaced
+// the fallback. Neither the route nor the proxy names an account, and the
+// identity's login is NOT consulted, so there is nothing left to log in as.
+func TestStaticKeyRefusesWhenNothingNamesAnAccount(t *testing.T) {
+	auth, err := NewStaticKeyAuthenticator(StaticKeyOptions{Signer: sshtest.MustGenerateSigner()})
+	if err != nil {
+		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		tgt  Target
+	}{
+		{"no route at all", Target{Host: "host", Port: 22}},
+		{"a route naming no username", Target{Host: "host", Port: 22, Auth: staticKeyRoute(nil)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := auth.Provision(context.Background(), testIdentity(), tc.tgt)
+			if !errors.Is(err, ErrNoAccountName) {
+				t.Fatalf("Provision = %v, want errors.Is(..., ErrNoAccountName)", err)
+			}
+			if strings.Contains(err.Error(), testIdentity().Login) {
+				t.Errorf("the refusal %q names the client-typed login; it must not be an input here", err)
+			}
+		})
+	}
+}
+
+// TestStaticKeyRefusesAnUnknownParameter: the placeholder now reads the route
+// like every other method, so an unknown parameter is a possibly dropped
+// constraint rather than something silently ignored.
+func TestStaticKeyRefusesAnUnknownParameter(t *testing.T) {
+	auth, err := NewStaticKeyAuthenticator(StaticKeyOptions{
+		Signer:   sshtest.MustGenerateSigner(),
+		Username: "testrunner",
+	})
+	if err != nil {
+		t.Fatalf("NewStaticKeyAuthenticator: %v", err)
+	}
+
+	tgt := Target{Host: "host", Port: 22, Auth: staticKeyRoute(map[string]string{
+		control.ParamUsername: "svc-deploy",
+		"source_address":      "10.0.0.0/8",
+	})}
+	if _, err := auth.Provision(context.Background(), testIdentity(), tgt); !errors.Is(err, ErrUnknownParam) {
+		t.Fatalf("Provision = %v, want errors.Is(..., ErrUnknownParam)", err)
 	}
 }
 

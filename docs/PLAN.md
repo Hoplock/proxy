@@ -705,6 +705,31 @@ behaviour, because the account it uses is a standing one an operator chose; that
 its username still falls back to the login is a known gap, recorded in 0013's
 learnings rather than closed there.
 
+**As finished (contract v4.2, phase 0028).** That gap is closed: **`username` is
+required on `brokered-key` too**, which makes it required on every method the
+contract defines, and no account name reaches a target from `identity.Login` on
+any path. The v3 reasoning for the exclusion was sound and did not reach the
+code — `brokered.go` still fell back to the login when neither the route nor the
+proxy's own configuration named an account — and `static-key` was worse than a
+fallback: the contract required a `username` on its routes and the authenticator
+never read them at all. Each method now resolves the account in a fixed order
+ending in a **refusal**, outage-class per §4.3 with nothing provisioned:
+`brokered-key` takes the route's `username` then
+`auth.target.brokered_key.username`; `static-key` takes the route's `username`
+(which it now reads, refusing an unknown parameter like every other method) then
+`auth.target.static_key.username`; `ephemeral-user` takes the route's `username`
+then **`identity.Principals`** — server-established, immutable per D2, and
+therefore the property `Login` lacks — accepting exactly one principal and
+refusing both none and several, because picking one of several would make the
+order a server happened to serialise a list in into policy. `policy_version`
+stays **4**: it declares what a proxy can read, and a tightening is not
+expressible through it. `brokered-key` deliberately does **not** consult
+`Principals` — its account is standing and shared (§5.2), so a per-identity
+principal would imply an attribution the method does not provide — and no method
+cross-checks a route-named `username` against `Principals`, because the PDP
+naming an account is the PDP's decision and overriding it would be the proxy
+originating policy (D2).
+
 **As extended (contract v3.1, phase 0016).** `ephemeral-account` params carry an
 open namespace of platform-specific fields, `device_field.<name>`, for devices
 that are one unit partitioned into many — a FortiGate running virtual domains
@@ -895,6 +920,18 @@ concrete form, and later phases depend on all three:
   proxy from sweeping another's live sessions on a shared target; and the token
   makes each session's account unique, so two sessions for one login never share
   an account or a teardown.
+
+  **Where the `<login>` segment comes from (phase 0028).** The route's
+  `username`, or — when the route names none — the identity's `Principals`, and
+  otherwise nothing: the route is refused. It is *never* `identity.Login`. The
+  name is the attribution here, so a segment taken from what the user typed at
+  their SSH client made the target's own audit trail mean nothing: §4.1 forbids
+  keying a decision on `Login`, `Login` is not guaranteed stable across logins,
+  and choosing the account is the most consequential decision the proxy makes.
+  `Principals` is server-established and immutable per D2, which is the property
+  that makes it an answer. Exactly one principal is used; several is refused
+  unless the route names one, because picking the first would make a server's
+  serialisation order into policy.
 - **Sweeps happen on the provisioning path, not only on a timer.** A restarted
   proxy has no idea which targets it owes cleanup on, so the first successful
   provisioning on a target triggers a (rate-limited, background) sweep of it.
@@ -1071,6 +1108,16 @@ process environment, both keyed by the reference and read on demand rather than
 cached. **A Hoplock Control that mints per-session credentials implements this
 interface**; it arrives as another `target_auth` method plus a source, and
 nothing that touches a credential changes.
+
+**Who the account is (phase 0028).** The route's `username`, or the operator's
+`auth.target.brokered_key.username`, and otherwise the route is refused
+(outage-class, §4.3). Contract v4.2 makes `username` required on this method too,
+so a served route always names one and the local key answers only the v1-shaped
+route that names no `target_auth` at all. Unlike §5.1 this method deliberately
+does **not** read the identity's `Principals`: the account is standing and shared
+across sessions by construction, so a per-identity principal is the wrong shape
+for it and using one would imply exactly the attribution the bullet above says
+this method does not provide.
 
 ### 5.3 `ephemeral-account` — a short-lived administrator on a device (D13)
 
@@ -2732,7 +2779,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies. **Delivered:** `target.IsAuthRejection` (the one place that knows x/crypto's wording, with a tripwire test that drives a real rejection), the `target-auth` and `target-auth-withheld` stages and their §4.3 wording, a breaker keyed on (target, method, credential handle) consulted *before* provisioning through `Selector`/`ProvisionedAccess.DialOutcome` — the seam the device drivers adopt — `auth.target.rejection` in config, two critical `error` records naming the credential's handle and never its material, and §5's/README's target prerequisites. It also queued **0033**, the same defect on the proxy→proxy leg, which it found and scoped out. No contract change |
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals. **Delivered:** `password-mfa` enabled on `proxy-direct` only and driven by a real OpenSSH client through `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` (the `user` image's `askpass.sh`), with `sshBaseArgs` untouched so every other scenario is still on the certificate path; an approval, its progress lines, a denial that ends exactly as a wrong password does, and `auth_method=password-mfa` in the audit trail; and two overlapping sessions on one login whose **overlap is observed** in the target's own account database — two accounts at one instant — then removed by two independent teardowns, with the `brokered-key` mirror leaving the target byte-identical. No production code changed. It queued **0034**: the challenge itself still discloses whether the first factor was right |
 | 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement). **Delivered:** the uid is the proxy's choice and travels as an explicit `useradd -u` — `-K UID_MIN=…` was measured and rejected, because it moves the range the target's own allocator searches and still hands a freed uid straight back — allocated strictly above the highest in-range uid in use **and** a high-water mark recorded on the target under `enforcement_base`, so the invariant survives a teardown, a restart and a second proxy. `auth.target.ephemeral_user.uid_min`/`uid_max` default to **2000000-2999999**, above every distribution's own `UID_MAX`. **Allocation does not wrap**: at the top of the range, on an unreadable census, or where the mark cannot be written, the route is refused as an outage on its own `provision-uid` stage with nothing provisioned, and every allocation past nine tenths of the range warns. The uid is on the provisioning record beside the account name. What is still inheritable until a route names one of 0019's confining rungs: anything a session wrote outside its home — and 0027 is what stops a *later* session inheriting it |
-| 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013) |
+| 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013). **Delivered:** `username` is required on `brokered-key` too (**contract v4.2**, a break; `policy_version` stays 4, because it declares what a proxy can *read* and a tightening is not expressible through it), which makes it required on every method the contract defines; each of the three remaining call sites resolves the account in a fixed order ending in a refusal — `brokered-key`: route → `auth.target.brokered_key.username` → refuse; `static-key`: route → `auth.target.static_key.username` → refuse, and it now **reads the route at all**, which it never did, so the document requiring a `username` and the proxy using something else no longer disagree and an unknown parameter is refused like everywhere else; `ephemeral-user`: route → **`identity.Principals`** → refuse, taking exactly one principal and refusing none or several. Refusals are outage-class (§4.3) with nothing provisioned and no target leg dialled. `brokered-key` deliberately does not read `Principals` (its account is standing and shared, §5.2) and nothing cross-checks a route-named account against them (that would be the proxy originating policy, D2). The `Principals` doc comment, false since it was written, now describes what actually draws from it. Contract change — carried a cross-repo obligation |
 | 0029 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
 | 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
 | 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |

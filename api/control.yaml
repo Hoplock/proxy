@@ -126,7 +126,31 @@ info:
     reported the same key ten thousand times. See `POST /v1/hostkeys/report` for
     the shape the proxy keys the reuse on, and for the two answers it will not
     reuse whatever the hint says.
-  version: 4.1.0
+
+    ## Contract 4.2 (phase 0028) — `username` is required on `brokered-key` too
+
+    This revision is a **break**, and it is the same break v3 made for the other
+    three methods, finished. `TargetAuth.params.username` is now required on
+    `brokered-key` as well, which makes it required on every method this
+    document defines. A route that omits it is refused at the first authorize
+    call, in the single-object and the ladder shape alike.
+
+    v3 left `brokered-key` out on the reasoning that it logs into a **standing**
+    account an operator already chose, rather than one the proxy provisions.
+    That reasoning is sound and it did not reach the proxy's code: the fallback
+    to the identity's `login` was still implemented, so a deployment that
+    configured no account locally logged in as whatever the connecting user had
+    typed at their SSH client. The scoping was narrower than the argument for
+    it, and this closes the difference.
+
+    `policy_version` stays `4`. It declares what a proxy can **read**, so a
+    server can avoid answering in vocabulary the proxy would fail closed on; it
+    has never expressed what the proxy **requires**, and a tightening is not
+    expressible through it — no field is added, none changes meaning, and an
+    older proxy parses a route exactly as it always did. v3 announced its
+    `username` requirement as a break rather than a version gate for the same
+    reason.
+  version: 4.2.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -1204,17 +1228,16 @@ components:
             parameter may be a constraint, and dropping a constraint widens
             access.
 
-            **`username` is REQUIRED on every provisioning method** —
-            `ephemeral-user`, `ephemeral-account`, and `static-key` alike
-            (contract v3). Before v3 it defaulted to the identity's `login`,
-            which is a **client-typed string** the proxy must never base an
-            authorization decision on; letting it name an OS or device account
-            was that rule leaking through the back door. The account name is
-            what the target's own audit trail, its file ownership, and — on a
-            password credential — half the credential pair are made of, so the
-            server names it or there is no route. `brokered-key` is deliberately
-            not in that set: it logs into an account that already exists and was
-            chosen by an operator.
+            **`username` is REQUIRED on every method this document defines** —
+            `ephemeral-user`, `ephemeral-account`, and `static-key` since
+            contract v3, and `brokered-key` since contract v4.2. Before those it
+            defaulted to the identity's `login`, which is a **client-typed
+            string** the proxy must never base an authorization decision on;
+            letting it name an OS or device account was that rule leaking
+            through the back door. The account name is what the target's own
+            audit trail, its file ownership, and — on a password credential —
+            half the credential pair are made of, so the server names it or
+            there is no route.
 
             Documented parameters today:
 
@@ -1222,11 +1245,11 @@ components:
               create), `key_type` (e.g. `ed25519`; absent leaves the proxy's
               default), `lifetime_seconds` (upper bound on the provisioned
               credential's life; absent leaves it unbounded by the route).
-            - `brokered-key`: `username` (the standing account to log in as;
-              absent derives it from the identity's login, unchanged from v2)
-              and `credential_ref` (an **opaque handle** naming local material
-              on the proxy). No credential material travels on this API —
-              `credential_ref` selects it, it does not carry it.
+            - `brokered-key`: `username` (**required** since v4.2: the standing
+              account to log in as) and `credential_ref` (an **opaque handle**
+              naming local material on the proxy). No credential material
+              travels on this API — `credential_ref` selects it, it does not
+              carry it.
             - `ephemeral-account` (D13, PLAN §5.3): `username` (**required**),
               `platform` (**required**: which driver; it is **never inferred**
               from a banner, because guessing wrong means running configuration

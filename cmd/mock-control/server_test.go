@@ -759,6 +759,24 @@ func TestFixtureValidation(t *testing.T) {
 			wantErrs: []string{"target_auth.method"},
 		},
 		{
+			// Contract v4.2 (phase 0028). The fixture layer does not carry its
+			// own copy of the rule — it runs the client's Validate — so this
+			// test is what proves the requirement reaches startup rather than
+			// waiting for a session.
+			name: "brokered-key route with no username",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    target_auth:\n      method: brokered-key\n" +
+				"      params:\n        credential_ref: edge-fleet-2026\n",
+			wantErrs: []string{"params.username", "brokered-key"},
+		},
+		{
+			name: "brokered-key ladder rung with no username",
+			yaml: "users:\n  - login: alice\n    password: pw\n" +
+				"routes:\n  - target: h\n    target_auth_ladder:\n      - method: brokered-key\n" +
+				"        params:\n          credential_ref: edge-fleet-2026\n",
+			wantErrs: []string{"target_auth_ladder[0].params.username", "brokered-key"},
+		},
+		{
 			name: "empty prefix in an argument spec",
 			yaml: "users:\n  - login: alice\n    password: pw\n" +
 				"routes:\n  - target: h\n    filter_policy:\n      mode: whitelist\n" +

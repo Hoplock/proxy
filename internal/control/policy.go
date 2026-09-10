@@ -267,9 +267,9 @@ const (
 	TargetAuthStaticKey TargetAuthMethod = "static-key"
 )
 
-// Provisioning methods are the ones where the proxy NAMES THE ACCOUNT it logs
-// in as, rather than being handed one. Every one of them requires the username
-// parameter (contract v3, phase 0013).
+// Every method this contract defines requires the username parameter — the
+// three provisioning methods since contract v3 (phase 0013), and brokered-key
+// since contract v4.2 (phase 0028).
 //
 // Before v3 the username defaulted to identity.Identity.Login, and Login is a
 // CLIENT-TYPED STRING — internal/identity says in as many words that it must
@@ -279,13 +279,21 @@ const (
 // credential) half the credential pair are made of. So the server names it, or
 // there is no route.
 //
-// brokered-key is deliberately not in this set: it logs into an account that
-// already exists and is chosen by the operator, and phase 0007's behaviour for
-// it is unchanged. Its username fallback is the same leak reached from a
-// different direction and is recorded as a follow-up rather than fixed here.
+// v3 scoped that to the methods where the PROXY names the account it creates,
+// and left brokered-key out on the reasoning that it logs into a standing
+// account an operator already chose. The reasoning was sound and it did not
+// reach the code: the fallback to Login was still there in
+// internal/auth/target/brokered.go, so an operator who configured no username
+// locally got an account named by whoever was connecting. Phase 0028 closed the
+// fallback, which leaves the route or the local configuration as the only two
+// sources — and this is the half of that pair the contract owns.
+//
+// The function is kept rather than folded into a constant `true` because the
+// set is the thing being stated: a method added later declares its own answer
+// here instead of inheriting one nobody chose.
 func (m TargetAuthMethod) requiresUsername() bool {
 	switch m {
-	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount, TargetAuthStaticKey:
+	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount, TargetAuthStaticKey, TargetAuthBrokeredKey:
 		return true
 	default:
 		return false
@@ -324,8 +332,8 @@ func (m TargetAuthMethod) Provisions() bool {
 // cannot honour one must not connect. Do not move that check here and do not
 // duplicate it — two almost-correct copies of one rule eventually disagree.
 const (
-	// ParamUsername names the account on the target. Required on every
-	// provisioning method (see requiresUsername).
+	// ParamUsername names the account on the target. Required on every method
+	// this contract defines (see requiresUsername).
 	ParamUsername = "username"
 	// ParamKeyType selects the ephemeral key algorithm (ephemeral-user).
 	ParamKeyType = "key_type"

@@ -29,10 +29,10 @@ type StaticKeyOptions struct {
 	// Signer overrides KeyPath with an in-memory key. Tests use it; production
 	// deployments load from disk.
 	Signer ssh.Signer
-	// Username logs into every target as this account instead of the
-	// authenticated login. It exists for the development topology, where the
-	// target has one pre-created test account and no user provisioning at all.
-	// Empty means the authenticated login.
+	// Username logs into every target as this account when the route names
+	// none. It exists for the development topology, where the target has one
+	// pre-created test account and no user provisioning at all. Empty means the
+	// route MUST name one (ErrNoAccountName).
 	Username string
 	// Logger receives provisioning events; nil discards them.
 	Logger *log.Logger
@@ -105,12 +105,19 @@ func (a *StaticKeyAuthenticator) Provision(_ context.Context, id *identity.Ident
 	if id == nil {
 		return nil, errors.New("auth/target: static-key requires an authenticated identity")
 	}
-	username := a.username
-	if username == "" {
-		username = id.Login
+	// The route is read even by the placeholder. Contract v3 REQUIRES a
+	// username on a static-key route and internal/control enforces it, so an
+	// authenticator that took the account from somewhere else made the document
+	// and the proxy disagree — and, because it never called rest(), it silently
+	// ignored an unknown parameter that every other method treats as a possibly
+	// dropped constraint (ErrUnknownParam).
+	p := newParams(tgt.Auth)
+	username := p.str(ParamUsername, a.username)
+	if err := p.rest(); err != nil {
+		return nil, err
 	}
 	if username == "" {
-		return nil, errors.New("auth/target: static-key has no username to log in as")
+		return nil, noAccountName(MethodStaticKey, "auth.target.static_key.username is unset")
 	}
 
 	// This method touches nothing on the target, so the only rungs it can carry
