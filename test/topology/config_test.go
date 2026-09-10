@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -328,4 +329,108 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestEveryRoutedPlatformHasADriverOnItsProxy is the check phase 0029 needed
+// and did not have.
+//
+// The FortiSwitch scenario failed in CI three minutes into the e2e job with
+// `no driver for this platform: "fortiswitchos" (this proxy has: [fortigate])`
+// — a route naming a platform its serving proxy does not register. That is
+// correct behaviour on the proxy's side and D13 requires it (an unregistered
+// platform is an outage-class denial, never the nearest driver), so the bug is
+// entirely in the topology: two files that have to agree, in different
+// directories, with nothing checking that they do.
+//
+// The whole class is cheap to close here. `platforms:` is an ALLOW-LIST — an
+// empty one means every driver the build ships, and a non-empty one silently
+// excludes the rest — so adding a driver to the code is not enough to make a
+// proxy serve it, and adding a route is not enough either.
+func TestEveryRoutedPlatformHasADriverOnItsProxy(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+
+	// Walk the fixture's routes, pairing each `platform:` parameter with the
+	// `proxy_id:` above it. A regex is enough and a YAML decode is not
+	// obviously better: the fixture's own schema lives in cmd/mock-control,
+	// which this package deliberately does not import.
+	var proxyID string
+	seen := map[string]map[string]bool{}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if rest, ok := bytes.CutPrefix(trimmed, []byte("proxy_id:")); ok {
+			proxyID = string(bytes.Trim(bytes.TrimSpace(rest), `"`))
+			continue
+		}
+		rest, ok := bytes.CutPrefix(trimmed, []byte("platform:"))
+		if !ok {
+			continue
+		}
+		platform := string(bytes.Trim(bytes.TrimSpace(rest), `"`))
+		if platform == "" || proxyID == "" {
+			continue
+		}
+		if seen[proxyID] == nil {
+			seen[proxyID] = map[string]bool{}
+		}
+		seen[proxyID][platform] = true
+	}
+	if len(seen) == 0 {
+		t.Fatal("no route in the fixture template names a device platform; this test has stopped checking anything")
+	}
+
+	// One platform is deliberately unserved, and it is the whole point of the
+	// route that names it: D14's ladder fall-through needs a first entry this
+	// proxy CANNOT satisfy, so that the second one is what serves the session.
+	// The exemption is tied to that one name, and the assertion below keeps it
+	// tied — if the fall-through route is ever removed or renamed, this stops
+	// being an exemption and starts being a hole.
+	const deliberatelyUnserved = "some-other-vendor"
+	if got := bytes.Count(body, []byte("platform: "+deliberatelyUnserved)); got != 1 {
+		t.Errorf("%d routes name platform %q, want exactly 1 (D14's ladder fall-through); "+
+			"this test exempts that name from needing a driver", got, deliberatelyUnserved)
+	}
+
+	for id, platforms := range seen {
+		delete(platforms, deliberatelyUnserved)
+		cfg, err := config.Load(filepath.Join(deployDir, "proxy", id+".yaml"))
+		if err != nil {
+			t.Errorf("load the config for %s: %v", id, err)
+			continue
+		}
+		allowed := cfg.Auth.Target.EphemeralAccount.Platforms
+		if len(allowed) == 0 {
+			// Empty means every driver this build ships, so nothing to check.
+			continue
+		}
+		for platform := range platforms {
+			if !slices.Contains(allowed, platform) {
+				t.Errorf("a route served by %s names platform %q, but %s.yaml's "+
+					"auth.target.ephemeral_account.platforms is %v — the proxy will refuse the "+
+					"session as an outage (D13: an unregistered platform is never the nearest driver)",
+					id, platform, id, allowed)
+			}
+		}
+	}
+}
+
+// TestTheFakeDeviceServesEveryPortTheFixturesRoute is the other half of the
+// same class: a route can name a platform the proxy serves and still point at
+// a port nothing listens on.
+func TestTheFakeDeviceServesEveryPortTheFixturesRoute(t *testing.T) {
+	t.Parallel()
+
+	compose, err := os.ReadFile(filepath.Join(deployDir, "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose.yaml: %v", err)
+	}
+	for _, listener := range []string{"0.0.0.0:22", "0.0.0.0:2222", "0.0.0.0:2223"} {
+		if !bytes.Contains(compose, []byte(`"`+listener+`"`)) {
+			t.Errorf("the device node no longer serves %s; a fixture route points at it", listener)
+		}
+	}
 }
