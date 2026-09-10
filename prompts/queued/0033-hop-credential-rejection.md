@@ -2,7 +2,7 @@
 
 > **New prompt, added by phase 0025.** It is the same defect 0025 fixed on the
 > proxy→target leg, still live on the proxy→proxy leg. It is inserted **before**
-> the contract collapse (now `prompts/queued/0034-…`) because that one must stay
+> the contract collapse (now `prompts/queued/0035-…`) because that one must stay
 > the highest-numbered queued prompt; the mapping is in the newest run-order note
 > at the end of `docs/PLAN.md` §10. Nothing in 0026–0032 depends on this, and it
 > depends on nothing they change — pull it forward if a fleet hits it first.

@@ -89,6 +89,34 @@ Re-running `TestTopology/target_credential_rejection` against a rig that has
 already run it needs `make e2e-down && make e2e-up` first — the first two
 sessions it expects to reach the target would otherwise be withheld.
 
+## Password + MFA, and why the `user` image has an askpass program
+
+`proxy-direct` is the only proxy offering `password-mfa` beside `cert`
+(`proxy/proxy-direct.yaml`), and `bob` and `mallory` in the fixtures are the only
+logins that can use it — neither has a key, so neither has another way in.
+
+Driving it needs a client option set of its own, and one piece of machinery.
+OpenSSH will not take a keyboard-interactive answer from stdin: `read_passphrase`
+opens `/dev/tty`, and `docker compose exec -T` gives the client none.
+`user/askpass.sh` answers the prompt instead, and it is reached through
+`SSH_ASKPASS` plus **`SSH_ASKPASS_REQUIRE=force`** — the second is what makes
+OpenSSH ≥ 8.4 use an askpass program with no X11 display present. `BatchMode`
+must also be **off**: under `BatchMode=yes` the client never offers
+keyboard-interactive at all, because batch mode means "never ask a person
+anything" and that is exactly what this method does.
+
+The scenarios' shared options live in `mfaBaseArgs` in
+`test/e2e/harness_test.go`, deliberately **beside** `sshBaseArgs` rather than
+replacing it: `sshBaseArgs` pins `PreferredAuthentications=publickey`, which is
+what keeps every other scenario on the certificate path now that a second method
+exists on this proxy. Changing it would re-aim the whole suite at once.
+
+The MFA pacing in `proxy/proxy-direct.yaml` is scaled to a test rather than to a
+person: `pending_polls: 3` in the fixtures plus a 200ms progress interval is what
+makes the "still waiting" line appear at all inside a sub-second approval. At the
+shipped default of 5s it never would, and the scenario asserting on it would pass
+against a proxy that had no such line to print.
+
 ## Four things the target image must not change
 
 - **`UsePAM yes`.** `useradd` leaves a new account with a locked password, and

@@ -121,6 +121,77 @@ func TestContainmentSettingsTheScenariosDependOn(t *testing.T) {
 	}
 }
 
+// TestPasswordMFASettingsTheScenariosDependOn pins what makes the password+MFA
+// scenarios (phase 0026) able to see what they assert on.
+//
+// Three settings, each of which turns a scenario into one that passes for the
+// wrong reason — or fails minutes into the e2e job — if it moves:
+//
+//   - `proxy-direct` must offer BOTH methods, or there is no fallback to drive;
+//   - the other two proxies must offer NEITHER password method, because the
+//     fallback ORDER (PLAN §4.1) is only observable while a proxy exists that
+//     gives a client with no acceptable key no second chance;
+//   - the progress interval must be short enough that the "still waiting" line
+//     appears inside a sub-second approval. At the shipped 5s default it never
+//     would, and the scenario asserting on it — the whole reason the flow is
+//     keyboard-interactive rather than plain password auth (PLAN §4.3) — would
+//     pass against a proxy that had no such line to print.
+func TestPasswordMFASettingsTheScenariosDependOn(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		file       string
+		wantMethod bool
+	}{
+		{"proxy-direct.yaml", true},
+		{"proxy-nexthop.yaml", false},
+		{"proxy-zone.yaml", false},
+	} {
+		cfg, err := config.Load(filepath.Join(deployDir, "proxy", tc.file))
+		if err != nil {
+			t.Fatalf("load %s: %v", tc.file, err)
+		}
+		if got := contains(cfg.Auth.User.Methods, "password-mfa"); got != tc.wantMethod {
+			t.Errorf("%s: auth.user.methods = %v; password-mfa enabled = %v, want %v",
+				tc.file, cfg.Auth.User.Methods, got, tc.wantMethod)
+		}
+		if !contains(cfg.Auth.User.Methods, "cert") {
+			t.Errorf("%s: auth.user.methods = %v, want cert on every proxy", tc.file, cfg.Auth.User.Methods)
+		}
+	}
+
+	cfg, err := config.Load(filepath.Join(deployDir, "proxy", "proxy-direct.yaml"))
+	if err != nil {
+		t.Fatalf("load proxy-direct.yaml: %v", err)
+	}
+	if d := cfg.Auth.User.MFA.ProgressInterval; d <= 0 || d > time.Second {
+		t.Errorf("auth.user.mfa.progress_interval = %s, want a positive value no longer than 1s "+
+			"(zero means the 5s package default, which no scenario's approval lasts)", d)
+	}
+}
+
+// TestTheReaperLeavesAHeldSessionAlone pins the other half of what the
+// concurrency scenarios (phase 0026) rest on.
+//
+// Those scenarios hold two sessions open on one target for fifteen seconds and
+// then assert on the accounts the target is carrying. The reaper never sweeps an
+// account it knows is live, so this is belt and braces — but the grace period is
+// exactly what protects a session the proxy does not know about yet (PLAN §5.1),
+// and a grace shorter than a held session would make the scenarios flaky in a
+// way that reads as a provisioning bug rather than as a setting.
+func TestTheReaperLeavesAHeldSessionAlone(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(filepath.Join(deployDir, "proxy", "proxy-direct.yaml"))
+	if err != nil {
+		t.Fatalf("load proxy-direct.yaml: %v", err)
+	}
+	if g := cfg.Auth.Target.EphemeralUser.Reaper.Grace; g < time.Minute {
+		t.Errorf("auth.target.ephemeral_user.reaper.grace = %s, want at least 1m so it outlives "+
+			"a held session in test/e2e", g)
+	}
+}
+
 // TestTheRefusedRouteNamesACredentialNothingElseUses is the property that keeps
 // the containment scenarios from breaking every route after them: they leave a
 // breaker OPEN for the rest of the run, and that is safe only while exactly one
@@ -153,4 +224,14 @@ func TestTheRefusedRouteNamesACredentialNothingElseUses(t *testing.T) {
 	if bytes.Contains(entrypoint, []byte("stale_key")) {
 		t.Error("the target installs the stale credential; the route it backs must be refused")
 	}
+}
+
+// contains reports whether list holds want.
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

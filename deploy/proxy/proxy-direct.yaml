@@ -49,10 +49,28 @@ chain:
 
 auth:
   user:
-    # Certificate only. There is no password/MFA scenario in this topology, and
-    # offering a method no fixture can satisfy would just prompt for a secret
-    # that can never work.
-    methods: ["cert"]
+    # Both methods, and this is the ONLY proxy that offers the second one
+    # (phase 0026). Every other scenario in the suite stays on the certificate
+    # path because the client asks for `publickey` and nothing else
+    # (`sshBaseArgs` in test/e2e/harness_test.go); the MFA scenarios ask for
+    # keyboard-interactive instead. Enabling it on one proxy is what keeps the
+    # fallback ORDER (PLAN §4.1) observable: the other two are still
+    # certificate-only, so a client with no acceptable key gets no second
+    # chance there.
+    methods: ["cert", "password-mfa"]
+    # Tuned so a scenario can SEE the wait it is asserting on. The engine's
+    # defaults (500ms floor, a progress line every 5s) are right for a human
+    # waiting on a phone and wrong for a test: with the fixtures' `pending_polls`
+    # the challenge resolves in well under a second, so a 5-second progress
+    # interval would mean the "still waiting" line — the whole reason MFA rides
+    # keyboard-interactive (PLAN §4.3) — never appears at all.
+    #
+    # These are the same knobs an operator turns; only the values are scaled to
+    # a run that must finish in a suite rather than in a coffee break.
+    mfa:
+      min_poll_interval: 200ms
+      progress_interval: 200ms
+      max_wait: 30s
   target:
     # The FALLBACK only: every route in the fixtures names its own target_auth,
     # which is the server's choice per route (D6a). Both production methods are
