@@ -262,12 +262,37 @@ so the precedent exists — it just does not solve this.
 **Why Control is the right home, and why it is not here.** Control is the only
 party that sees every proxy for a target, so it closes the restart case, the
 replaced-proxy case and the multi-proxy case at once, and it is already the trust
-anchor for policy (D2), host-key decisions (D7) and the audit trail. The shape
-that fits the existing contract is 0023's, not a new synchronous call: the floor
-arrives as a **hint on the authorize response**, and the allocation is reported
-asynchronously like `POST /v1/capabilities/report`, so nothing is added to the
-per-connection round-trip budget that 0022 and 0023 spent two phases reducing
-(3.17 → 1.17 calls).
+anchor for policy (D2), host-key decisions (D7) and the audit trail.
+
+**The floor must NOT be a field on the authorize response, and this is the trap
+to write down.** That was the first shape proposed in review, by analogy with
+0023's host-key cache hint, and it is wrong: `CachingClient` serves a cached
+authorize decision while Control is unreachable (bounded by `StreamStale` /
+`StaleAfter`), and 0022 and 0023 exist to make cache hits the *common* case. A
+floor carried on a cacheable decision is therefore replayed from whenever it was
+cached — and a stale floor is a LOWERED floor, which is exactly the reuse this
+phase closes. Anything cacheable is disqualified for the same reason.
+
+**A LEASE is the shape that survives all of it.** Control grants a proxy an
+exclusive block of uids for a target — `[from, to)`, with a term — and the proxy
+allocates inside its own block locally. That gets every property at once:
+
+- exclusivity means two proxies can never collide, so the multi-proxy case is
+  closed by construction rather than by both of them reading one counter;
+- it is safe to hold across a Control outage, because a block granted to this
+  proxy cannot be granted to another — the availability objection below mostly
+  dissolves, and what is left is "what happens when the block runs out during an
+  outage", which is the same fail-closed refusal the range exhaustion already has;
+- it costs one call per BLOCK rather than one per session, so the per-connection
+  budget 0022 and 0023 spent two phases reducing is untouched;
+- Control's storage requirement is a per-target allocation cursor it advances on
+  grant — no per-session write, and no read-modify-write on the session path.
+
+The target-side mark should survive even then, demoted to a floor that may only
+*raise* the lease's starting point — the same "the server informs, the proxy
+re-checks against the live target" relationship `probeCache` and 0023's host-key
+hint already have. It is what keeps a lost lease record from being the moment the
+invariant quietly weakens.
 
 Three things stop it being part of this phase, and the prompt's own out-of-scope
 section anticipated the first ("`api/control.yaml`. This is proxy-local. If you
@@ -276,21 +301,16 @@ think the server must choose the range, stop and ask"):
 1. It is a **contract change**, so it carries a cross-repo obligation
    (`docs/CROSS-REPO-PROTOCOL.md` §5): upstream merges first, then a sync PR in
    Hoplock Control.
-2. It needs an **availability decision** made deliberately. A floor fetched from
-   Control couples provisioning to Control's availability, and the rest of the
+2. It needs an **availability decision** made deliberately. Any floor fetched per
+   session couples provisioning to Control's availability, and the rest of the
    system is built the other way on purpose — §5.1 keeps teardown and sweeps
    independent of the policy service, and 0024 enforces the session deadline
-   locally precisely so it holds when Control does not. Fail-closed is the
-   posture consistent with this phase, but it turns a Control outage into an
-   ephemeral-provisioning outage fleet-wide, which is an operator's call.
-3. Control needs a per-target **monotonic counter with atomic increment** —
-   real server-side storage, correct under concurrent proxies.
-
-**A note for whoever picks this up:** the target-side mark should probably survive
-even then, demoted to a floor that may only raise Control's answer — the same
-"the server informs, the proxy re-checks" relationship `probeCache` and 0023's
-host-key hint already have. It is what keeps a Control outage from being the
-moment the invariant quietly weakens.
+   locally precisely so it holds when Control does not. A lease is what makes
+   this answerable rather than a trade-off, which is why it is the recommended
+   shape; the decision that remains is the lease TERM and what happens when a
+   block is exhausted mid-outage.
+3. Control needs a per-target **allocation cursor** it advances on grant — real
+   server-side storage, correct under concurrent proxies.
 
 ### Tests, and the one that fails without the fix
 

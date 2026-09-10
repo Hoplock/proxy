@@ -993,11 +993,13 @@ The residual is a **proxy restart**, which empties the in-process record and
 leaves a fresh process with only the target's word for the floor. Closing that
 needs the floor held where neither the target nor any single proxy owns it —
 which is Hoplock Control, and which is a **contract change** with a cross-repo
-obligation (D3) and an availability decision to make first: a floor fetched from
-Control couples provisioning to Control's availability, and §5.1's teardown, §6.5's
-rungs and D16's deadline are all deliberately built the other way. It is
-therefore a phase of its own rather than part of 0027, and phase 0027's learnings
-carry the design sketch.
+obligation (D3). It is therefore a phase of its own rather than part of 0027, and
+phase 0027's learnings carry the design sketch. Two things that sketch settles and
+a future session must not re-derive: the floor may **not** ride on the authorize
+response, because that decision is cacheable and a replayed floor is a lowered
+one; and a **uid-block lease** per proxy per target is what keeps the invariant
+without coupling provisioning to Control's availability or adding a call per
+session.
 
 Phase **0019**'s filesystem confinement is the other half: with a home mounted
 `noexec` and nothing writable outside it there is nothing left to inherit, and
