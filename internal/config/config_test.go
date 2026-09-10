@@ -656,6 +656,49 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 			wantCause: ErrInvalid,
 		},
 		{
+			// Below 1000 is the system uid range, and an ephemeral session
+			// allocated into it would wear a service account's numeric identity
+			// (phase 0027).
+			name: "an ephemeral uid range reaching into the system uids",
+			mutate: func(c *Config) {
+				c.Auth.Target.EphemeralUser = EphemeralUserAuth{
+					ManagementKeyPath: "/etc/hoplock/management_key",
+					ProvisioningUser:  "hoplock-admin",
+					UIDMin:            500,
+				}
+			},
+			wantField: "auth.target.ephemeral_user.uid_min",
+			wantCause: ErrInvalid,
+		},
+		{
+			name: "an ephemeral uid range with no uids in it",
+			mutate: func(c *Config) {
+				c.Auth.Target.EphemeralUser = EphemeralUserAuth{
+					ManagementKeyPath: "/etc/hoplock/management_key",
+					ProvisioningUser:  "hoplock-admin",
+					UIDMin:            3000000,
+					UIDMax:            2000000,
+				}
+			},
+			wantField: "auth.target.ephemeral_user.uid_max",
+			wantCause: ErrInvalid,
+		},
+		{
+			// A uid_min above the default uid_max is the same mistake wearing one
+			// field instead of two: the operator raised the floor and left the
+			// ceiling at its default, which leaves nothing to allocate.
+			name: "an ephemeral uid_min above the default ceiling",
+			mutate: func(c *Config) {
+				c.Auth.Target.EphemeralUser = EphemeralUserAuth{
+					ManagementKeyPath: "/etc/hoplock/management_key",
+					ProvisioningUser:  "hoplock-admin",
+					UIDMin:            DefaultEphemeralUIDMax + 1,
+				}
+			},
+			wantField: "auth.target.ephemeral_user.uid_max",
+			wantCause: ErrInvalid,
+		},
+		{
 			name: "brokered with an unknown source",
 			mutate: func(c *Config) {
 				c.Auth.Target.BrokeredKey = BrokeredKeyAuth{Source: "vault"}

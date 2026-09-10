@@ -458,7 +458,12 @@ func (r egressRule) render() (string, error) {
 //     gets that uid next — an egress boundary quietly transplanted onto an
 //     unrelated session, or an allow-list transplanted onto one that was
 //     supposed to have none. This ordering is the whole of that fix on this
-//     side; phase 0027's non-reusing range is the other half;
+//     side; phase 0027's non-reusing range (uid.go) is the other half, and it
+//     has landed — the proxy now allocates the uid itself, so nothing this
+//     proxy provisions is handed a departed account's number. This ordering
+//     stays load-bearing anyway: it is what holds if the range is ever
+//     widened onto uids something else has held, and it is the only defence
+//     for a rule left by a session that died mid-rung;
 //  4. the mount goes before the home is removed, because rm -rf on a mount
 //     point empties the mounted filesystem and leaves the directory;
 //  5. everything is VERIFIED, and a verification failure is loud. A teardown

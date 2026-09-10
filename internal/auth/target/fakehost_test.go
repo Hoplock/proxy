@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,15 +38,16 @@ import (
 // mistake turns a provisioning script into something else — which are the only
 // questions worth asking about code that runs as root on a customer's fleet.
 type fakeHost struct {
-	root   string
-	bin    string
-	home   string
-	passwd string
-	log    string
-	mounts string
-	rules4 string
-	rules6 string
-	target *sshtest.Target
+	root    string
+	bin     string
+	home    string
+	enforce string
+	passwd  string
+	log     string
+	mounts  string
+	rules4  string
+	rules6  string
+	target  *sshtest.Target
 
 	mu       sync.Mutex
 	env      map[string]string
@@ -69,15 +72,21 @@ func startFakeHost(t *testing.T) *fakeHost {
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 
 	h := &fakeHost{
-		root:   root,
-		bin:    filepath.Join(root, "bin"),
-		home:   filepath.Join(root, "home"),
-		passwd: filepath.Join(root, "passwd"),
-		log:    filepath.Join(root, "commands.log"),
-		mounts: filepath.Join(root, "mounts"),
-		rules4: filepath.Join(root, "rules4"),
-		rules6: filepath.Join(root, "rules6"),
-		env:    map[string]string{},
+		root: root,
+		bin:  filepath.Join(root, "bin"),
+		home: filepath.Join(root, "home"),
+		// The enforcement base is inside the temporary root, and every test that
+		// builds an authenticator points at it: it is where phase 0019's
+		// confinement material goes AND where phase 0027's uid watermark lives, so
+		// a default of /var/lib/hoplock would have unit tests writing to the
+		// machine that ran them and sharing a watermark between them.
+		enforce: filepath.Join(root, "enforce"),
+		passwd:  filepath.Join(root, "passwd"),
+		log:     filepath.Join(root, "commands.log"),
+		mounts:  filepath.Join(root, "mounts"),
+		rules4:  filepath.Join(root, "rules4"),
+		rules6:  filepath.Join(root, "rules6"),
+		env:     map[string]string{},
 	}
 	for _, dir := range []string{h.bin, h.home} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -310,6 +319,90 @@ func (h *fakeHost) lines(t *testing.T, path string) []string {
 	return lines
 }
 
+// uidFor is the uid the fake passwd database holds for an account, or -1.
+func (h *fakeHost) uidFor(t *testing.T, name string) int {
+	t.Helper()
+	data, err := os.ReadFile(h.passwd)
+	if err != nil {
+		t.Fatalf("read passwd: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 3 && fields[0] == name {
+			uid, err := strconv.Atoi(fields[2])
+			if err != nil {
+				t.Fatalf("account %s has uid %q: %v", name, fields[2], err)
+			}
+			return uid
+		}
+	}
+	return -1
+}
+
+// addAccountWithUID writes an account holding a specific uid, standing in for
+// something already occupying part of the ephemeral range.
+func (h *fakeHost) addAccountWithUID(t *testing.T, name string, uid int) {
+	t.Helper()
+	data, err := os.ReadFile(h.passwd)
+	if err != nil {
+		t.Fatalf("read passwd: %v", err)
+	}
+	line := fmt.Sprintf("%s:x:%d:%d::%s:/bin/sh\n", name, uid, uid, filepath.Join(h.home, name))
+	if err := os.WriteFile(h.passwd, append(data, line...), 0o644); err != nil {
+		t.Fatalf("write passwd: %v", err)
+	}
+}
+
+// watermark is the highest uid the host records as ever allocated, or -1 when
+// nothing has been recorded. It is the durable half of the 0027 invariant — the
+// part that survives teardown — and it is read the way the discovery script reads
+// it: the largest entry name in the mark directory.
+func (h *fakeHost) watermark(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(h.enforce, uidWatermarkName))
+	if errors.Is(err, os.ErrNotExist) {
+		return -1
+	}
+	if err != nil {
+		t.Fatalf("read the uid mark directory: %v", err)
+	}
+	high := -1
+	for _, entry := range entries {
+		uid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			t.Fatalf("the uid mark directory holds %q, which is not a uid", entry.Name())
+		}
+		if uid > high {
+			high = uid
+		}
+	}
+	return high
+}
+
+// marks is every entry the mark directory holds. One test asserts on the whole
+// set rather than the maximum: pruning must never remove a mark ABOVE the one
+// being written, and a maximum cannot show that it did not.
+func (h *fakeHost) marks(t *testing.T) []int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(h.enforce, uidWatermarkName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read the uid mark directory: %v", err)
+	}
+	var uids []int
+	for _, entry := range entries {
+		uid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			t.Fatalf("the uid mark directory holds %q, which is not a uid", entry.Name())
+		}
+		uids = append(uids, uid)
+	}
+	sort.Ints(uids)
+	return uids
+}
+
 // shellFor is the login shell the fake passwd database holds for an account.
 func (h *fakeHost) shellFor(t *testing.T, name string) string {
 	t.Helper()
@@ -372,14 +465,20 @@ grep -q "^$name:" "$FAKEHOST_PASSWD" || exit 1
 awk -F: -v n="$name" '$1==n {print $3}' "$FAKEHOST_PASSWD"
 exit 0
 `,
+	// -u and its exit statuses are the fake's most load-bearing detail since
+	// phase 0027: the proxy allocates the uid and the script branches on
+	// "UID is not unique" (4) as distinct from "user already exists" (9). Both
+	// numbers, and the fact that -u accepts a uid far above login.defs' UID_MAX,
+	// were verified against shadow 4.13 before being written down here.
 	"useradd": `#!/bin/sh
 echo "useradd $*" >> "$FAKEHOST_LOG"
-home=""; shell=""; name=""
+home=""; shell=""; name=""; uid=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -m) ;;
     -d) home=$2; shift ;;
     -s) shell=$2; shift ;;
+    -u) uid=$2; shift ;;
     *) name=$1 ;;
   esac
   shift
@@ -389,13 +488,21 @@ if grep -q "^$name:" "$FAKEHOST_PASSWD"; then
   echo "useradd: user '$name' already exists" >&2
   exit 9
 fi
+if [ -n "$uid" ] && awk -F: -v u="$uid" '$3==u {found=1} END {exit !found}' "$FAKEHOST_PASSWD"; then
+  echo "useradd: UID $uid is not unique" >&2
+  exit 4
+fi
 if [ -n "$FAKEHOST_USERADD_FAILS" ]; then
   echo "useradd: cannot create home directory (simulated)" >&2
   exit 12
 fi
 [ -n "$home" ] || home="$FAKEHOST_HOME/$name"
 mkdir -p "$home" || exit 12
-echo "$name:x:1001:1001::$home:$shell" >> "$FAKEHOST_PASSWD"
+# No -u means the target's own allocator, which is what this fake models with a
+# fixed number: every account it hands out lands on the same uid, so a
+# provisioning path that forgot -u fails the reuse assertions immediately.
+[ -n "$uid" ] || uid=1001
+echo "$name:x:$uid:$uid::$home:$shell" >> "$FAKEHOST_PASSWD"
 if [ -n "$FAKEHOST_FAILS_AFTER_USERADD" ]; then
   echo "useradd: failed after creating the account (simulated)" >&2
   exit 1
@@ -516,8 +623,10 @@ exit 0
 // It exists because the uid hazard PLAN §6.5 records — a rule that outlives its
 // account attaches to whoever gets that uid next — is only testable against
 // something that really holds rules and really removes them. The fake useradd
-// hands out the same uid every time, which makes the reuse case the DEFAULT
-// here rather than something a test has to contrive.
+// hands out the same uid every time it is called WITHOUT `-u`, which is what the
+// target's own allocator does; since phase 0027 the provisioning path always
+// passes `-u`, so a test that sees the reuse case has caught the path forgetting
+// to.
 func fakeNetfilter(file string) string {
 	return `#!/bin/sh
 echo "` + file + ` $*" >> "$FAKEHOST_LOG"

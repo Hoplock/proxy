@@ -126,6 +126,42 @@ target, never on the user or the route: a different credential to the same
 target keeps working throughout. See `auth.target.rejection` in
 [`config.example.yaml`](config.example.yaml).
 
+### What `ephemeral-user` needs on a target
+
+Two things beyond the provisioning account itself, both because of how an
+ephemeral account's **uid** is chosen.
+
+The proxy allocates the uid rather than letting `useradd` do it. Left to itself,
+`useradd` hands a torn-down account's uid straight back to the next caller, and
+teardown deliberately does not walk the filesystem — so every file a session
+wrote **outside its home** keeps the bare number, and the next session, belonging
+to a different person, would own it. So:
+
+- **`enforcement_base`** (default `/var/lib/hoplock`) must exist or be creatable
+  by the provisioning account, and be writable by it, on **every** target — not
+  only on the ones that render an enforcement rung. It holds the uid high-water
+  mark, which is what makes the guarantee survive a teardown, a proxy restart,
+  and a second proxy on the same fleet. A target where the mark cannot be written
+  refuses the session as an outage rather than provisioning an account whose uid
+  nothing has recorded. The proxy sets that directory root-owned and mode `700`
+  on every provisioning, and treats what it reads there as evidence that may only
+  ever **raise** the next uid — so a tampered mark costs uids out of the range,
+  loudly, and can never hand a session a uid a previous one held.
+
+  Note the shape this rules out: a host with a **read-only root filesystem** can
+  run `useradd -m` and hold an `authorized_keys` in a writable `/home`, but cannot
+  take `/var/lib`. Point `enforcement_base` at a writable path on such a fleet.
+  Appliances reached with `ephemeral-account` — firewalls, switches — are
+  unaffected: the proxy allocates no uid and writes no files there.
+- **The uid range** (`auth.target.ephemeral_user.uid_min`/`uid_max`, default
+  `2000000-2999999`) must be free on the fleet. It sits above every
+  distribution's own `UID_MAX`, so the target's allocator never enters it; move
+  it only for a fleet that already allocates there, and keep it wide.
+  **Allocation does not wrap** — reaching the top refuses every ephemeral session
+  on that target until `uid_max` is raised, and the proxy warns on every
+  allocation past nine tenths of the range so that raising it is still a cheap
+  change when it matters.
+
 ## The end-to-end topology
 
 The whole system runs in containers — Hoplock Control, an SSH client, three

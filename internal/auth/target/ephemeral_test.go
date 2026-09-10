@@ -23,11 +23,16 @@ import (
 func newTestEphemeral(t *testing.T, h *fakeHost, proxyID string, adjust ...func(*EphemeralOptions)) *EphemeralAuthenticator {
 	t.Helper()
 	opts := EphemeralOptions{
-		ProxyID:        proxyID,
-		Dialer:         h.dialer(t),
-		HomeBase:       h.home,
-		KeyExpiry:      true,
-		ReaperInterval: -1,
+		ProxyID:  proxyID,
+		Dialer:   h.dialer(t),
+		HomeBase: h.home,
+		// Inside the fake host's temporary root, never the real
+		// /var/lib/hoplock: it holds phase 0019's confinement material and phase
+		// 0027's uid watermark, and a shared default would make every test in
+		// this package write to the machine running it.
+		EnforcementBase: h.enforce,
+		KeyExpiry:       true,
+		ReaperInterval:  -1,
 	}
 	for _, f := range adjust {
 		f(&opts)
@@ -319,7 +324,7 @@ func TestEphemeralToleratesALeftoverAccount(t *testing.T) {
 	h.addAccount(t, name, time.Hour)
 	script, err := auth.provisionScript(
 		&confinement{principal: name, home: h.homeFor(name), base: auth.enforceBase},
-		"ssh-ed25519 AAAAnew")
+		"ssh-ed25519 AAAAnew", []int{DefaultUIDMin})
 	if err != nil {
 		t.Fatalf("provisionScript: %v", err)
 	}
@@ -569,5 +574,338 @@ func assertOrder(t *testing.T, h *fakeHost, first, second string) {
 		t.Errorf("%s never ran", second)
 	case i > j:
 		t.Errorf("%s ran after %s", first, second)
+	}
+}
+
+// --- uid allocation against a real shell (phase 0027) ------------------------
+
+// uidOf is the uid the fake host holds for the account an access connected as.
+func uidOf(t *testing.T, h *fakeHost, access *ProvisionedAccess) int {
+	t.Helper()
+	return h.uidFor(t, access.ClientConfig.User)
+}
+
+// TestEphemeralAllocatesFromTheDedicatedRange covers the two claims that
+// together are the phase: the uid comes from the configured range rather than
+// from the target's own allocator, and the account it reports is the account the
+// target really holds.
+func TestEphemeralAllocatesFromTheDedicatedRange(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	access, err := auth.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	defer func() { _ = access.Close(ctx) }()
+
+	uid := uidOf(t, h, access)
+	if uid < DefaultUIDMin || uid > DefaultUIDMax {
+		t.Errorf("the account holds uid %d, want one inside the dedicated range %d-%d",
+			uid, DefaultUIDMin, DefaultUIDMax)
+	}
+	if access.AccountUID != uid {
+		t.Errorf("the access reports uid %d and the target holds %d", access.AccountUID, uid)
+	}
+	if got := h.watermark(t); got != uid {
+		t.Errorf("the target's uid mark is %d, want the allocated %d — a mark that is not written is reuse next time", got, uid)
+	}
+}
+
+// TestTwoSequentialSessionsDoNotShareAUID is the defect, stated as a test.
+//
+// The first account is fully torn down before the second is provisioned, so
+// its uid is FREE — and every allocator that picks a free uid, including the
+// target's own, would hand it straight back. This is the acceptance criterion of
+// prompt 0027, and it fails against the pre-0027 provisioning path.
+func TestTwoSequentialSessionsDoNotShareAUID(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	var uids []int
+	for i := 0; i < 4; i++ {
+		access, err := auth.Provision(ctx, testIdentity(), tgt)
+		if err != nil {
+			t.Fatalf("Provision %d: %v", i, err)
+		}
+		uid := uidOf(t, h, access)
+		if err := access.Close(ctx); err != nil {
+			t.Fatalf("teardown %d: %v", i, err)
+		}
+		for _, seen := range uids {
+			if seen == uid {
+				t.Fatalf("session %d was handed uid %d again after it had been torn down (saw %v)", i, uid, uids)
+			}
+		}
+		if i > 0 && uid <= uids[i-1] {
+			t.Errorf("session %d got uid %d, which is not above the previous %d", i, uid, uids[i-1])
+		}
+		uids = append(uids, uid)
+	}
+	if got := h.watermark(t); got != uids[len(uids)-1] {
+		t.Errorf("the uid mark is %d after four sessions, want the highest allocated %d", got, uids[len(uids)-1])
+	}
+	// The mark directory converges to one entry: it is pruned by every
+	// allocation, and a mark per session on a long-lived target would grow
+	// without bound.
+	if marks := h.marks(t); len(marks) != 1 {
+		t.Errorf("the mark directory holds %v, want only the highest", marks)
+	}
+}
+
+// TestANewProxyProcessDoesNotRepeatTheLastOneUID is why the mark lives on the
+// TARGET. A restarted proxy — or a second proxy serving the same fleet — has no
+// memory of what it allocated, and the invariant has to survive that: the number
+// is a property of the host, not of a process.
+func TestANewProxyProcessDoesNotRepeatTheLastOneUID(t *testing.T) {
+	h := startFakeHost(t)
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	first := newTestEphemeral(t, h, "proxy-a")
+	access, err := first.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	before := uidOf(t, h, access)
+	if err := access.Close(ctx); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+
+	// A different process, with a fresh allocator and no in-memory history.
+	second := newTestEphemeral(t, h, "proxy-a")
+	access, err = second.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision after a restart: %v", err)
+	}
+	defer func() { _ = access.Close(ctx) }()
+	if after := uidOf(t, h, access); after <= before {
+		t.Errorf("a restarted proxy allocated uid %d after %d; the mark on the target is what has to prevent that", after, before)
+	}
+}
+
+// TestConcurrentSessionsDoNotShareAUID is the same claim under the concurrency
+// PLAN §5.1 requires. Two censuses taken a microsecond apart cannot mention an
+// account that does not exist yet, which is what the allocator's own per-target
+// state is for.
+func TestConcurrentSessionsDoNotShareAUID(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	const sessions = 4
+	type outcome struct {
+		access *ProvisionedAccess
+		err    error
+	}
+	results := make(chan outcome, sessions)
+	for i := 0; i < sessions; i++ {
+		go func() {
+			access, err := auth.Provision(ctx, testIdentity(), tgt)
+			results <- outcome{access, err}
+		}()
+	}
+
+	seen := map[int]string{}
+	var held []*ProvisionedAccess
+	for i := 0; i < sessions; i++ {
+		got := <-results
+		if got.err != nil {
+			t.Errorf("concurrent Provision: %v", got.err)
+			continue
+		}
+		held = append(held, got.access)
+		uid := uidOf(t, h, got.access)
+		if other, ok := seen[uid]; ok {
+			t.Errorf("%s and %s are both uid %d at the same instant",
+				other, got.access.ClientConfig.User, uid)
+		}
+		seen[uid] = got.access.ClientConfig.User
+	}
+	for _, access := range held {
+		if err := access.Close(ctx); err != nil {
+			t.Errorf("teardown: %v", err)
+		}
+	}
+}
+
+// TestEphemeralRefusesRatherThanWrapping is the fail-closed half (prompt 0027
+// §2), end to end: a range with two uids in it serves two sessions and then
+// refuses, with nothing created on the target.
+func TestEphemeralRefusesRatherThanWrapping(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a", func(o *EphemeralOptions) {
+		o.UIDMin = 4000
+		o.UIDMax = 4001
+	})
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	for i := 0; i < 2; i++ {
+		access, err := auth.Provision(ctx, testIdentity(), tgt)
+		if err != nil {
+			t.Fatalf("Provision %d: %v", i, err)
+		}
+		if err := access.Close(ctx); err != nil {
+			t.Fatalf("teardown %d: %v", i, err)
+		}
+	}
+
+	// Both uids are free now. Wrapping would serve this session; refusing is the
+	// decision, because a uid the range has already handed out may own files a
+	// previous session wrote outside its home.
+	if _, err := auth.Provision(ctx, testIdentity(), tgt); !errors.Is(err, ErrUIDUnavailable) {
+		t.Fatalf("Provision past the top of the range = %v, want ErrUIDUnavailable", err)
+	}
+	if accounts := h.ephemeralAccounts(t); len(accounts) != 0 {
+		t.Errorf("a refused session left %v on the target; a uid refusal must provision nothing", accounts)
+	}
+}
+
+// TestARecycledUIDIsRefusedRatherThanReported keeps the report honest for the
+// one case where the target chooses the uid: an account adopted from a crashed
+// session keeps the uid it already had, and the record has to name THAT.
+func TestAnAdoptedAccountReportsTheUIDItAlreadyHad(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+
+	name := auth.prefix + "alice-deadbeef"
+	h.addAccount(t, name, time.Hour) // addAccount writes uid 1001
+	script, err := auth.provisionScript(
+		&confinement{principal: name, home: h.homeFor(name), base: auth.enforceBase},
+		"ssh-ed25519 AAAAnew", []int{DefaultUIDMin})
+	if err != nil {
+		t.Fatalf("provisionScript: %v", err)
+	}
+	admin, err := auth.dialer.Dial(context.Background(), h.tgt())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+	out, err := admin.Run(context.Background(), script)
+	if err != nil {
+		t.Fatalf("provisioning over a leftover account: %v", err)
+	}
+	uid, err := parseProvisionedUID(out)
+	if err != nil {
+		t.Fatalf("parseProvisionedUID: %v", err)
+	}
+	if uid != 1001 {
+		t.Errorf("the script reported uid %d for an adopted account holding 1001", uid)
+	}
+}
+
+// TestAUIDTheTargetRefusesFallsThroughToTheNextCandidate covers the race the
+// candidate list exists for: another provisioner took the allocation between the
+// census and the useradd. It must cost a retry inside one script, not a refused
+// session.
+func TestAUIDTheTargetRefusesFallsThroughToTheNextCandidate(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+
+	// Something else already holds the first two candidates.
+	h.addAccountWithUID(t, "someone-else", 5000)
+	h.addAccountWithUID(t, "someone-later", 5001)
+
+	name := auth.prefix + "alice-abcd1234"
+	script, err := auth.provisionScript(
+		&confinement{principal: name, home: h.homeFor(name), base: auth.enforceBase},
+		"ssh-ed25519 AAAA", []int{5000, 5001, 5002})
+	if err != nil {
+		t.Fatalf("provisionScript: %v", err)
+	}
+	admin, err := auth.dialer.Dial(context.Background(), h.tgt())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+	out, err := admin.Run(context.Background(), script)
+	if err != nil {
+		t.Fatalf("provisioning against two taken uids: %v", err)
+	}
+	uid, err := parseProvisionedUID(out)
+	if err != nil {
+		t.Fatalf("parseProvisionedUID: %v", err)
+	}
+	if uid != 5002 {
+		t.Errorf("the account holds uid %d, want the first free candidate 5002", uid)
+	}
+}
+
+// TestAUIDTheTargetCannotRecordFailsTheSession covers the other fail-closed
+// path: the account exists and its uid could not be written down, so the next
+// allocation on that target would have nothing to allocate above it.
+func TestAUIDTheTargetCannotRecordFailsTheSession(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	// A mark directory that cannot be created, because a FILE is in its place.
+	if err := os.MkdirAll(h.enforce, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(h.enforce, uidWatermarkName), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := auth.Provision(ctx, testIdentity(), tgt)
+	if !errors.Is(err, ErrUIDUnavailable) {
+		t.Fatalf("Provision with an unwritable uid mark = %v, want ErrUIDUnavailable", err)
+	}
+	if accounts := h.ephemeralAccounts(t); len(accounts) != 0 {
+		t.Errorf("the failed provisioning left %v behind", accounts)
+	}
+}
+
+// TestTheUIDMarkIsNotWritableByASession is the other half of the trust boundary,
+// on the target side.
+//
+// Lowering the mark is the one way to make this proxy reissue a uid it has
+// already used, so the directory holding it must not be writable by anything but
+// the provisioner — the same rule phase 0019 applies to the dispatcher sitting
+// beside it, for the same reason. `mkdir -p` leaves an existing directory's mode
+// alone, so this asserts the mode is SET rather than inherited.
+func TestTheUIDMarkIsNotWritableByASession(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	// Pre-created world-writable, standing in for a base an operator pointed
+	// somewhere permissive — or a provisioning shell with an odd umask.
+	mark := filepath.Join(h.enforce, uidWatermarkName)
+	if err := os.MkdirAll(mark, 0o777); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Chmod(mark, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	access, err := auth.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	defer func() { _ = access.Close(ctx) }()
+
+	info, err := os.Stat(mark)
+	if err != nil {
+		t.Fatalf("stat the uid mark: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("the uid mark directory is mode %#o; a session that can delete the mark can "+
+			"make the next one reuse its uid", mode)
 	}
 }

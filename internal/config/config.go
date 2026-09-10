@@ -64,6 +64,29 @@ const (
 	DefaultBrokeredEnvPrefix = "HOPLOCK_BROKERED_"
 )
 
+// The dedicated uid range ephemeral accounts are allocated from (phase 0027).
+//
+// The numbers live here, on the bootstrap surface an operator actually edits,
+// and `internal/auth/target` takes its own defaults from them so there is one
+// source of truth for a range that both a validator and an allocator have to
+// agree about. WHY these numbers, and why allocation does not wrap, is in
+// `internal/auth/target/uid.go`.
+const (
+	// DefaultEphemeralUIDMin is the bottom of the default range: above every
+	// distribution's own UID_MAX, so an ephemeral account can never be handed a
+	// uid the fleet's own allocator would also hand out.
+	DefaultEphemeralUIDMin = 2000000
+	// DefaultEphemeralUIDMax is the top of it — one million uids.
+	DefaultEphemeralUIDMax = 2999999
+	// MinEphemeralUID is the lowest uid an operator may configure: below 1000 is
+	// the system range, and an ephemeral session must never wear a service
+	// account's numeric identity.
+	MinEphemeralUID = 1000
+	// MaxEphemeralUID keeps every allocated uid inside a positive int32, which
+	// is what NFSv3 and `iptables --uid-owner` can carry.
+	MaxEphemeralUID = 1<<31 - 2
+)
+
 // Config is the proxy's bootstrap configuration. It holds only what the
 // proxy needs to start and reach Hoplock Control; every policy decision
 // is made remotely (D2), so nothing policy-related belongs here.
@@ -445,6 +468,25 @@ type EphemeralUserAuth struct {
 	// living in it could not be executed at all — and a dispatcher the account
 	// could write would not be an allow-list.
 	EnforcementBase string `yaml:"enforcement_base"`
+	// UIDMin and UIDMax bound the DEDICATED uid range ephemeral accounts are
+	// allocated from (phase 0027). Zero on both means the package defaults,
+	// 2000000-2999999.
+	//
+	// The range is not tuning. `useradd` with no `-u` hands a torn-down account's
+	// uid straight back to the next caller, so a fresh session inherits ownership
+	// of every file the previous one wrote outside its home — a different person,
+	// reading and rewriting those files. Allocation here is strictly above
+	// everything the target has ever handed out, and a target where that cannot
+	// be established REFUSES the session rather than serving it with a recycled
+	// uid.
+	//
+	// The defaults sit above every distribution's own UID_MAX so an ephemeral
+	// account can never collide with one of the fleet's own; move them only for a
+	// fleet that already allocates there, and keep the range wide — allocation
+	// does NOT wrap, so exhausting it refuses every ephemeral session on that
+	// target until uid_max is raised.
+	UIDMin int `yaml:"uid_min"`
+	UIDMax int `yaml:"uid_max"`
 	// KeyExpiry writes OpenSSH's expiry-time restriction into the ephemeral
 	// authorized_keys entry when a route asks for a lifetime. Defaults to true.
 	// Set it to false only for a fleet whose sshd predates 8.2 — a route that
@@ -890,6 +932,7 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 		if t.EphemeralUser.Reaper.Grace < 0 {
 			v.add("auth.target.ephemeral_user.reaper.grace", ErrInvalid, "must not be negative")
 		}
+		validateEphemeralUIDRange(v, t.EphemeralUser)
 	}
 	if t.Method == TargetAuthMethodEphemeralAccount || deviceAccountConfigured(t.EphemeralAccount) {
 		if t.EphemeralAccount.AdminUser == "" {
@@ -948,6 +991,34 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 
 // ephemeralConfigured reports whether the operator wrote anything about the
 // ephemeral method.
+// validateEphemeralUIDRange checks the dedicated uid range (phase 0027).
+//
+// The floor is not a preference: below 1000 is the system range on every
+// distribution this method serves, and an ephemeral session allocated into it
+// would wear a service account's numeric identity. The ceiling keeps every uid a
+// positive int32, which is what NFSv3 and `iptables --uid-owner` can carry.
+func validateEphemeralUIDRange(v *ValidationError, e EphemeralUserAuth) {
+	if e.UIDMin != 0 && e.UIDMin < MinEphemeralUID {
+		v.add("auth.target.ephemeral_user.uid_min", ErrInvalid,
+			fmt.Sprintf("must be at least %d, which is above the system uid range", MinEphemeralUID))
+	}
+	if e.UIDMax != 0 && e.UIDMax > MaxEphemeralUID {
+		v.add("auth.target.ephemeral_user.uid_max", ErrInvalid,
+			fmt.Sprintf("must not be above %d", MaxEphemeralUID))
+	}
+	min, max := e.UIDMin, e.UIDMax
+	if min == 0 {
+		min = DefaultEphemeralUIDMin
+	}
+	if max == 0 {
+		max = DefaultEphemeralUIDMax
+	}
+	if max <= min {
+		v.add("auth.target.ephemeral_user.uid_max", ErrInvalid,
+			fmt.Sprintf("must be above uid_min (%d)", min))
+	}
+}
+
 func ephemeralConfigured(e EphemeralUserAuth) bool {
 	return e.ManagementKeyPath != "" || e.ManagementCertPath != "" || e.ProvisioningUser != "" ||
 		e.Shell != "" || e.HomeBase != "" || e.TargetShell != "" || e.KeyExpiry != nil ||

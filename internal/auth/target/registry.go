@@ -228,6 +228,8 @@ func newEphemeralFromConfig(cfg config.EphemeralUserAuth, opts Options) (*Epheme
 	return NewEphemeralAuthenticator(EphemeralOptions{
 		ProxyID:         opts.ProxyID,
 		EnforcementBase: cfg.EnforcementBase,
+		UIDMin:          cfg.UIDMin,
+		UIDMax:          cfg.UIDMax,
 		Reporter:        opts.Reporter,
 		Dialer:          dialer,
 		HomeBase:        cfg.HomeBase,

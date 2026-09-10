@@ -192,6 +192,50 @@ func TestTheReaperLeavesAHeldSessionAlone(t *testing.T) {
 	}
 }
 
+// TestTheUIDRangeTheScenariosDependOn pins what phase 0027's scenarios read.
+//
+// The uid scenarios assert that a session's uid lands inside the DEDICATED range
+// and that consecutive sessions never share one. Both are only observable while
+// the topology leaves the range at its default: a proxy configured onto the
+// fleet's own range would still allocate non-reusing uids, and the scenario
+// asserting they are outside the fleet's range would fail for a reason that is
+// nothing to do with allocation.
+//
+// It also pins the route the cross-login scenario needs. That claim is about TWO
+// PEOPLE on one target, so a second login has to reach it — and with no
+// enforcement rung, because a confined session cannot write the file the first
+// half of the scenario leaves behind.
+func TestTheUIDRangeTheScenariosDependOn(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(filepath.Join(deployDir, "proxy", "proxy-direct.yaml"))
+	if err != nil {
+		t.Fatalf("load proxy-direct.yaml: %v", err)
+	}
+	e := cfg.Auth.Target.EphemeralUser
+	if e.UIDMin != 0 || e.UIDMax != 0 {
+		t.Errorf("auth.target.ephemeral_user.uid_min/uid_max = %d/%d, want the defaults (0/0): "+
+			"test/e2e asserts a session's uid is inside %d-%d",
+			e.UIDMin, e.UIDMax, config.DefaultEphemeralUIDMin, config.DefaultEphemeralUIDMax)
+	}
+	// The mark that makes allocation non-reusing lives under this directory, so
+	// a session's uid outliving its account depends on it being somewhere the
+	// provisioning account can write on the target image.
+	if base := e.EnforcementBase; base != "" && base != "/var/lib/hoplock" {
+		t.Errorf("auth.target.ephemeral_user.enforcement_base = %q; the uid mark lives there and "+
+			"deploy/target must be able to write it", base)
+	}
+
+	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	if !bytes.Contains(body, []byte("target: inherit.company.com")) {
+		t.Error("the fixtures no longer carry the inherit.company.com route, which is the second " +
+			"login the cross-login uid scenario needs")
+	}
+}
+
 // TestTheRefusedRouteNamesACredentialNothingElseUses is the property that keeps
 // the containment scenarios from breaking every route after them: they leave a
 // breaker OPEN for the rest of the run, and that is safe only while exactly one

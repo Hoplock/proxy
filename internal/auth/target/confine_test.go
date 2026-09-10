@@ -440,8 +440,16 @@ func TestTeardownFailsLoudlyWhenARuleSurvives(t *testing.T) {
 }
 
 // TestANewSessionInheritsNothingFromAReusedUID is the failure that is silent in
-// every other test. The fake useradd hands out the same uid every time, which
-// makes this the default case rather than a contrivance.
+// every other test: a rung's state outliving the account it was rendered for.
+//
+// Its title names a reused uid because that was the hazard when it was written —
+// the fake useradd handed out the same uid every time, which made it the default
+// case. Since phase 0027 the proxy allocates the uid and consecutive accounts
+// never share one, so the inheritance this asserts against is no longer
+// REACHABLE by that route. It is kept, and kept named, because the claim it makes
+// is the independent one: teardown removes every artefact whether or not the uid
+// is recycled, which is what has to hold if the range is ever misconfigured or
+// widened onto uids something else has held.
 func TestANewSessionInheritsNothingFromAReusedUID(t *testing.T) {
 	h := startFakeHost(t)
 	auth := enforcedEphemeral(t, h, "proxy-a")

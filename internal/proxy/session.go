@@ -329,6 +329,13 @@ func (s *session) provisionError(err error) error {
 		s.recordCredentialWithheld(withheld)
 		return &setupError{stage: stageTargetWithheld, err: err}
 	}
+	if errors.Is(err, target.ErrUIDUnavailable) {
+		// The other exception, and the same shape (phase 0027): nothing failed to
+		// be produced. The proxy refused to provision an account it could not
+		// guarantee inherits nothing from a torn-down one, which is an estate
+		// fact and not a fault of this session's credentials.
+		return &setupError{stage: stageProvisionUID, err: err}
+	}
 	return &setupError{stage: stageProvision, err: err}
 }
 

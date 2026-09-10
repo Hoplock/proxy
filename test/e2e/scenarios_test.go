@@ -36,6 +36,13 @@ func TestTopology(t *testing.T) {
 	// the leak check, which is what proves neither of its overlapping teardowns
 	// took the other's account with it.
 	t.Run("concurrent provisioning", testConcurrentProvisioning)
+	// Next to the credential scenarios for the same reason, and after the
+	// concurrency one because both read the target's own account database: this
+	// is what the numeric half of an ephemeral account's identity is worth
+	// (PLAN §5.1, phase 0027). Before the outage scenario, which stops Hoplock
+	// Control — nothing can be provisioned without it — and before the leak
+	// check, whose claim is about the accounts these scenarios leave behind.
+	t.Run("uid allocation", testUIDAllocation)
 	// Before the outage scenario, which stops Hoplock Control: these read the
 	// records they produced. They also OPEN a breaker on one credential and
 	// leave it open for the rest of the run, which is safe only because
@@ -431,6 +438,162 @@ func testTargetCredentials(t *testing.T) {
 		if after.stdout != before.stdout {
 			t.Errorf("brokered-key modified the target:\n--- before ---\n%s\n--- after ---\n%s",
 				before.stdout, after.stdout)
+		}
+	})
+}
+
+// --- uid allocation (PLAN §5.1, phase 0027) ----------------------------------
+
+// inheritProbe is the file one session writes OUTSIDE its home so the next
+// session can be asked whether it owns it.
+//
+// /tmp is the point: it is world-writable, it is not the account's home, and
+// teardown deliberately does not walk the filesystem — so the file SURVIVES the
+// session that wrote it. What must not survive is the inheritance.
+const inheritProbe = "/tmp/hoplock-uid-inherit-probe"
+
+// uidOfSession runs one session and returns the uid the target ran it as.
+func uidOfSession(t *testing.T, s session) (int, string) {
+	t.Helper()
+	s.command = "/usr/bin/id -u; /usr/bin/id -un"
+	r := ssh(t, s)
+	wantExit(t, r, "uid allocation", 0)
+	fields := strings.Fields(r.stdout)
+	if len(fields) != 2 {
+		t.Fatalf("uid allocation: the session printed %q, want a uid and an account name\n%s", r.stdout, r)
+	}
+	uid, err := strconv.Atoi(fields[0])
+	if err != nil {
+		t.Fatalf("uid allocation: the session printed uid %q: %v", fields[0], err)
+	}
+	return uid, fields[1]
+}
+
+// waitForNoEphemeralAccounts waits until the target holds none of this proxy's
+// accounts.
+//
+// Teardown runs as the session closes, asynchronously. A scenario that provisions
+// again without waiting would be asserting about two accounts that overlapped —
+// which is a different claim, already covered by the concurrency scenario, and it
+// would make "the uid was not reused" pass for the wrong reason: a uid held by a
+// live account could not be reused by anything.
+func waitForNoEphemeralAccounts(t *testing.T, what string) {
+	t.Helper()
+	waitFor(t, what, func() bool {
+		return !strings.Contains(execIn(t, nodeTarget, "getent", "passwd").stdout, "hl-")
+	})
+}
+
+func testUIDAllocation(t *testing.T) {
+	// Two sequential sessions, each fully torn down before the next. Every uid is
+	// FREE by the time the next one is provisioned, which is the exact state in
+	// which a target's own allocator hands the last one straight back.
+	t.Run("two sequential sessions do not share a uid", func(t *testing.T) {
+		waitForNoEphemeralAccounts(t, "the target to hold no ephemeral account before the first session")
+
+		first, firstAccount := uidOfSession(t, aliceOn(proxyDirect, "host.company.com"))
+		waitForNoEphemeralAccounts(t, "the first session's account to be removed")
+		second, secondAccount := uidOfSession(t, aliceOn(proxyDirect, "host.company.com"))
+
+		if first == second {
+			t.Errorf("two sequential sessions both ran as uid %d (%s then %s); a torn-down "+
+				"account's uid must not come back", first, firstAccount, secondAccount)
+		}
+		for _, uid := range []int{first, second} {
+			// The dedicated range, above every distribution's own UID_MAX. A uid
+			// the fleet's allocator could also hand out is not a dedicated range,
+			// whatever else is true of it.
+			if uid < 2000000 || uid > 2999999 {
+				t.Errorf("a session ran as uid %d, want one inside the dedicated range 2000000-2999999", uid)
+			}
+		}
+		if second < first {
+			t.Errorf("the second session's uid %d is below the first's %d; allocation is meant to "+
+				"be strictly above the high-water mark", second, first)
+		}
+	})
+
+	// The real one. A file written outside the home survives its session — that
+	// is expected and is not what is being asserted. What must not survive is
+	// somebody ELSE inheriting ownership of it.
+	t.Run("a second login does not inherit the first's files", func(t *testing.T) {
+		// Removed as root first, so a re-run against a topology left up by
+		// `make e2e-up` starts from nothing. Without this the probe would be
+		// owned by an earlier session's uid, the write below would be refused,
+		// and the scenario would fail for a reason that is not the claim.
+		execIn(t, nodeTarget, "rm", "-f", inheritProbe)
+		waitForNoEphemeralAccounts(t, "the target to hold no ephemeral account before the first session")
+
+		// Session A: alice writes the probe and reports the uid that owns it.
+		a := aliceOn(proxyDirect, "host.company.com")
+		a.command = "/usr/bin/id -u > " + inheritProbe + "; /usr/bin/id -u"
+		ra := ssh(t, a)
+		wantExit(t, ra, "uid allocation", 0)
+		writer, err := strconv.Atoi(strings.TrimSpace(ra.stdout))
+		if err != nil {
+			t.Fatalf("session A printed uid %q: %v\n%s", ra.stdout, err, ra)
+		}
+		waitForNoEphemeralAccounts(t, "session A's account to be removed")
+
+		// The file is still there, owned by a uid that no longer names anybody.
+		// Asserting on its ABSENCE would be asserting that the proxy sweeps the
+		// filesystem, which it deliberately does not (PLAN §5.1).
+		owner := execIn(t, nodeTarget, "stat", "-c", "%u", inheritProbe)
+		if owner.code != 0 {
+			t.Fatalf("the probe did not survive session A, so there is nothing to inherit: %v", owner)
+		}
+		if got := strings.TrimSpace(owner.stdout); got != strconv.Itoa(writer) {
+			t.Fatalf("the probe is owned by uid %s and session A ran as %d", got, writer)
+		}
+
+		// Session B: a DIFFERENT PERSON on the same target.
+		reader, account := uidOfSession(t, svcOn(proxyDirect, "inherit.company.com"))
+		if reader == writer {
+			t.Errorf("svc-deploy's session ran as uid %d, the same uid alice's session left files "+
+				"under; %s now owns %s", reader, account, inheritProbe)
+		}
+
+		// Asserted from the target's own side too, because that is where
+		// ownership actually is: the file's uid must not be the account B holds.
+		after := strings.TrimSpace(execIn(t, nodeTarget, "stat", "-c", "%u", inheritProbe).stdout)
+		if after != strconv.Itoa(writer) {
+			t.Errorf("the probe's owner changed from %d to %s across the two sessions", writer, after)
+		}
+		if after == strconv.Itoa(reader) {
+			t.Errorf("the probe is owned by uid %s, which is the second session's own uid", after)
+		}
+		execIn(t, nodeTarget, "rm", "-f", inheritProbe)
+	})
+
+	// The audit half (prompt 0027 §3). The account NAME is deleted at teardown,
+	// so a record holding only the name leaves an incident responder with a join
+	// key that names nothing.
+	t.Run("the provisioning record carries the uid", func(t *testing.T) {
+		s := aliceOn(proxyDirect, "host.company.com")
+		s.command = "/usr/bin/id -u"
+		r := ssh(t, s)
+		wantExit(t, r, "uid allocation", 0)
+		uid := strings.TrimSpace(r.stdout)
+		id := sessionIDOf(r)
+		if id == "" {
+			t.Fatalf("uid allocation: no session id in the proxy's banner\n%s", r)
+		}
+
+		var found bool
+		waitFor(t, "the provisioning record for this session to be delivered", func() bool {
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.SessionID != id || rec.Kind != "provisioning" {
+					continue
+				}
+				if rec.Attributes["target_account_uid"] == uid {
+					found = true
+					return true
+				}
+			}
+			return false
+		})
+		if !found {
+			t.Errorf("no provisioning record for %s carried target_account_uid=%s", id, uid)
 		}
 	})
 }
@@ -1293,7 +1456,7 @@ func testPasswordMFA(t *testing.T) {
 		// out-of-band approval at all, it is decided by Hoplock Control rather
 		// than by the proxy, and it is not something this phase may quietly fix
 		// under the heading of a test. It is written up in
-		// prompts/queued/0035-mfa-challenge-first-factor-oracle.md.
+		// prompts/queued/0034-mfa-challenge-first-factor-oracle.md.
 	})
 
 	// The audit trail is where the estate sees which method let someone in, and
@@ -1733,10 +1896,13 @@ func testNoEphemeralLeak(t *testing.T) {
 
 	// The artefacts an ENFORCEMENT RUNG leaves (PLAN §6.5, phase 0019). A
 	// packet filter rule that outlives its account is the worst of these by a
-	// distance: useradd reuses freed uids, so the rule silently attaches to
+	// distance: `useradd` reuses freed uids, so the rule silently attaches to
 	// whoever gets that uid next — an egress boundary transplanted onto an
 	// unrelated session, or an allow-list transplanted onto one that was
-	// supposed to have none.
+	// supposed to have none. Since phase 0027 the proxy allocates the uid and
+	// never reuses one, which closes the way that happens to a session this proxy
+	// provisioned; the rule still has to go, because nothing else would remove it
+	// and a range an operator widens later would reopen it.
 	for _, check := range []struct{ what, script string }{
 		{"packet filter rules", "iptables -S OUTPUT; ip6tables -S OUTPUT"},
 		{"confinement directories", "ls -a /var/lib/hoplock 2>/dev/null || true"},
@@ -1745,6 +1911,28 @@ func testNoEphemeralLeak(t *testing.T) {
 		r := execIn(t, nodeTarget, "sh", "-c", check.script)
 		if strings.Contains(r.stdout, "hl-") {
 			t.Errorf("enforcement residue left on the target (%s):\n%s", check.what, r.stdout)
+		}
+	}
+
+	// ONE thing is deliberately left behind, and it is asserted rather than
+	// tolerated: the uid high-water mark (phase 0027). It is what makes a
+	// torn-down account's uid unavailable to the next session, so it has to
+	// outlive every account here — a mark swept away with the accounts would hand
+	// the whole range back on the next provisioning.
+	mark := execIn(t, nodeTarget, "sh", "-c", "ls /var/lib/hoplock/uid-watermark 2>/dev/null || true")
+	marks := strings.Fields(mark.stdout)
+	if len(marks) == 0 {
+		t.Error("the uid high-water mark is gone from the target; the next session could be handed " +
+			"a uid this suite's accounts already held")
+	}
+	for _, name := range marks {
+		uid, err := strconv.Atoi(name)
+		if err != nil {
+			t.Errorf("the uid mark directory holds %q, which is not a uid", name)
+			continue
+		}
+		if uid < 2000000 || uid > 2999999 {
+			t.Errorf("the uid mark records %d, outside the dedicated range 2000000-2999999", uid)
 		}
 	}
 
