@@ -1,5 +1,17 @@
 # 0029 — FortiLink FortiSwitch driver — Learnings
 
+> **Pointer, added by phase 0030 (this file is otherwise unchanged).** Every
+> reference below to 0030 as queued work is now historical: **0030 was withdrawn
+> and its number retired.** The estate this phase named as the one it does not
+> serve — switches deliberately kept unroutable from the proxy — is answered by
+> a deployment (route a proxy to the switch, or administer it from an ordinary
+> FortiGate session) rather than by the nested reach 0030 was queued to build.
+> The hazard this phase "recorded in 0030 as a hazard that phase has to answer"
+> was answered by not taking it on: the proxy provisions nothing on a device it
+> has no route to. See `docs/PLAN.md` §5.3, "As settled (phase 0030)", and
+> `docs/learnings/0030-fortilink-mediated-administration-learnings.md`. This
+> phase's own shipped behaviour is unchanged.
+
 ## Summary
 - **The prompt's premise was wrong, and correcting it is this phase's main
   deliverable.** 0029 assumed a FortiLink-managed switch "has no independent

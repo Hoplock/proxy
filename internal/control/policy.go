@@ -358,12 +358,20 @@ const (
 	//
 	// It exists because some devices are not one target. A FortiGate running
 	// virtual domains is one unit partitioned into many, and an administrator
-	// on it is either global or scoped to one VDOM; a FortiLink-managed
-	// FortiSwitch is administered THROUGH the FortiGate in front of it. The
-	// route has to be able to say which of them a session is for, and the
-	// endpoint cannot: host and port are what DNS resolves, what the host key
-	// is pinned to, and what the audit record names, so overloading them would
-	// make one device look like several hosts that do not exist.
+	// on it is either global or scoped to one VDOM. The route has to be able to
+	// say which partition a session is for, and the endpoint cannot: host and
+	// port are what DNS resolves, what the host key is pinned to, and what the
+	// audit record names, so overloading them would make one device look like
+	// several hosts that do not exist.
+	//
+	// A PARTITION is the whole of it. This comment used to add "a
+	// FortiLink-managed FortiSwitch is administered THROUGH the FortiGate in
+	// front of it", which phase 0029 disproved: such a switch keeps its own SSH
+	// administrative plane and is its own endpoint, with its own host key and
+	// its own administrator table (PLAN §5.3). A field here never names a
+	// different DEVICE behind the endpoint — see device.CreateRequest.Fields for
+	// what that would cost the reaper, and PLAN §5.3's "As settled (phase 0030)"
+	// for the phase that was withdrawn rather than introduce one.
 	//
 	// The contract owns the SHAPE of these keys and nothing else. Which fields
 	// a platform has is the driver's to declare (device.Capabilities.Fields),

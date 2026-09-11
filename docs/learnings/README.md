@@ -14,8 +14,8 @@ A file here does **not** always have a matching prompt in `prompts/implemented/`
 A phase whose prompt made it conditional can end in a reasoned decision **not**
 to build it, and that decision is exactly the kind of thing a future session must
 not have to re-derive — so it is written up here and the prompt is deleted rather
-than moved. `0021` is the one such file today. Its number stays retired: the
-uniqueness rule in `docs/PROTOCOL.md` §6 covers a withdrawn phase like any
+than moved. `0021` and `0030` are those files today. Their numbers stay retired:
+the uniqueness rule in `docs/PROTOCOL.md` §6 covers a withdrawn phase like any
 other.
 
 ## A note on the Hoplock rename

@@ -885,7 +885,18 @@ prerequisite and is stated in `Capabilities.AuthorizationCaveat` rather than
 left to a mid-sequence refusal.
 Source: [Administrators, FortiSwitchOS 7.6.5 administration guide](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortiswitchos-administration-guide/288914/administrators)
 
-## FortiLink facts, for phase 0030 as much as for this one
+## FortiLink facts, which now record a phase that was NOT built
+
+These were gathered for phase 0029 and written forward for phase **0030**, which
+was queued to administer an unroutable managed switch *through* its FortiGate.
+**0030 was withdrawn** (`docs/PLAN.md` §5.3, "As settled (phase 0030)"): that
+estate is served by a deployment — put a proxy where it can reach the switch, or
+administer the switch from an ordinary FortiGate session — rather than by a
+mechanism in the product. The facts below are unchanged and still sourced; what
+changed is their job. They are no longer a brief for work to come, they are the
+**evidence for the withdrawal**, and the three costs that decided it are the
+three that follow.
+
 
 **The FortiGate has no view of a managed switch's administrator table.**
 `config switch-controller managed-switch` carries no administrator fields at
@@ -914,7 +925,10 @@ recovery.
 Source: [Discovering, authorizing, and deauthorizing FortiSwitch units, FortiLink Guide 7.6.5](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortilink-guide/173266/discovering-authorizing-and-deauthorizing-fortiswitch-units)
 
 **Reaching a switch CLI *through* its FortiGate, and what it costs.** Two
-documented mechanisms, and phase 0030 has to choose between them:
+documented mechanisms. Phase 0030 was queued to choose between them and neither
+survived the comparison — `custom-command` cannot support a reaper at all, and
+`execute switch-controller ssh` needs a credential on the switch that the
+FortiGate cannot mint:
 
 - `execute switch-controller ssh <user> <switch>` — "SSH to FortiSwitch." It
   reaches the switch's own CLI, and it needs **the switch's own credentials**:
@@ -942,14 +956,15 @@ identity file, a client key store, or local/remote forwarding, so **every hop
 that leaves a Fortinet unit is password-only** and a switch-initiated reverse
 tunnel is not expressible. (`execute ssh-regen-keys` on both platforms
 regenerates the unit's own **inbound host** keys.) That is what makes phase
-0030's nested hop password-only, and it is also why connecting to the switch
-directly is what keeps `set ssh-public-key1` usable as a session credential at
-all.
+0030's nested hop password-only — and it is the second cost that withdrew the
+phase, because connecting to the switch directly is what keeps
+`set ssh-public-key1`, the stronger of the two credential kinds, usable as a
+session credential at all.
 Sources: [`execute ssh`, FortiOS 7.6.6 CLI reference](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/989928731/execute-ssh),
 [`execute ssh-options`](https://docs.fortinet.com/document/fortigate/7.6.6/cli-reference/278689109/execute-ssh-options),
 [Using SSH and the Telnet client, FortiSwitchOS 7.6.5 administration guide](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortiswitchos-administration-guide/296990/using-ssh-and-the-telnet-client)
 
-**A standing instruction worth knowing before phase 0030 designs anything.**
+**A standing instruction, and where each option stands against it.**
 The FortiLink Guide says: "Use the FortiGate GUI or CLI to configure the
 FortiSwitch units unless this manual specifically says to directly configure
 the FortiSwitch units. If you make configuration changes directly on the
@@ -957,8 +972,16 @@ FortiSwitch units, the FortiGate device will not be aware of the changes,
 resulting in missing configurations when the FortiSwitch units are restarted."
 It is general guidance about switch configuration rather than a statement about
 the administrator table, which the FortiGate does not manage at all (above) —
-but it is the vendor's stated posture and any phase administering a managed
-switch should say why it is departing from it.
+but it is the vendor's stated posture, so it is worth saying plainly which of
+this product's paths departs from it. **0029's direct administration does**: it
+creates and removes an administrator on the switch itself, and the justification
+is the paragraph above — the FortiGate has no view of that table, so there is no
+FortiGate-side state for the change to diverge from, and the objection the Guide
+raises (a restart restoring a configuration the FortiGate holds) does not reach
+it. The withdrawn 0030's second deployment — an operator reaching the switch
+from an ordinary FortiGate session — is the vendor's posture unmodified, and
+gets its properties and its one real limitation from `docs/PLAN.md` §5.3 rather
+than from here.
 Source: [FortiSwitch management, FortiLink Guide 7.6.5](https://docs.fortinet.com/document/fortiswitch/7.6.5/fortilink-guide/173270/fortiswitch-management)
 
 ## The hardware list this section adds
@@ -972,4 +995,8 @@ Source: [FortiSwitch management, FortiLink Guide 7.6.5](https://docs.fortinet.co
    `internal/sshtest` currently agree on 35 so that a correction moves both.
 3. **Deauthorization.** Confirm that deauthorizing a switch really does leave
    its `config system admin` table intact, which is what makes the stranding
-   hazard above real rather than inferred.
+   hazard above real rather than inferred. **Lower value than it was.** The
+   hazard only bites a proxy administering a switch it cannot reach directly,
+   which is the phase 0030 withdrew; on 0029's direct path the reaper sweeps a
+   deauthorized switch exactly as it swept it before. Worth confirming on a unit
+   if one is in front of you, but nothing in the tree turns on the answer.
