@@ -79,6 +79,21 @@ func (s *session) recordAuthorize(route *routing.Route, deadline *time.Time) {
 	if deadline != nil {
 		attrs.Set(logging.AttrSessionDeadline, deadline.UTC().Format(time.RFC3339))
 	}
+	// The other three bounds (D16). The caps and the capture requirement are
+	// recorded whether or not they refuse anything: a session that ran under a
+	// ceiling of two is a different fact from a session that ran under none, and
+	// an auditor must be able to see that this route would have been refused
+	// unrecorded. The grant context is not here — it is stamped on EVERY record
+	// this session makes, by the recorder (internal/logging/grant.go).
+	if route.RequireSessionCapture {
+		attrs.SetBool(logging.AttrCaptureRequired, true)
+	}
+	if n := route.MaxSessionsPerSubject(); n > 0 {
+		attrs.SetInt(logging.AttrConcurrencyLimitSubject, n)
+	}
+	if n := route.MaxSessionsPerTarget(); n > 0 {
+		attrs.SetInt(logging.AttrConcurrencyLimitTarget, n)
+	}
 	if route.TargetAuth != nil {
 		attrs.Set(logging.AttrCredentialMethod, string(route.TargetAuth.Method))
 	}
@@ -337,6 +352,30 @@ func (s *session) recordKill(reason string) {
 	s.rec.Denied("session terminated", logging.Attrs{}.
 		Set(logging.AttrReason, reason).
 		Set(logging.AttrAction, string(control.FilterActionKillSession)))
+}
+
+// recordConcurrencyDenied captures a session refused by a concurrency ceiling
+// (contract v4, D16, bounds.go).
+//
+// It is a POLICY DECISION and it is critical, which puts it on D8's priority
+// path beside every other refusal: a ceiling being hit is a fact a security team
+// watches for, and it is also the only place the cap exists at all — the user is
+// told nothing but "access denied" (PLAN §4.3), so a record that named no cap
+// would leave nobody able to answer "why was I refused".
+//
+// It is recorded BEFORE failSetup's own failure record rather than instead of
+// it: that one says a session did not start and at which stage, this one says
+// which ceiling decided.
+func (s *session) recordConcurrencyDenied(err error) {
+	var exceeded *capExceeded
+	if !errors.As(err, &exceeded) {
+		return
+	}
+	s.rec.Denied("session refused by a concurrency ceiling", logging.Attrs{}.
+		Set(logging.AttrEvent, "session.concurrency_exceeded").
+		Set(logging.AttrConcurrencyScope, string(exceeded.scope)).
+		SetInt(logging.AttrConcurrencyLimit, exceeded.limit).
+		SetInt(logging.AttrConcurrencyLive, exceeded.live))
 }
 
 // recordDeadlineExpiry captures a session ending at the route's session

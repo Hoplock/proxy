@@ -2384,6 +2384,43 @@ learnings, because they are what make the field's *shape* the right one:
   an absolute instant was chosen to avoid, and one that is invisible until a
   session crosses three proxies.
 
+#### The other three bounds, as enforced (phase 0031)
+
+The three fields beside the deadline are enforced by `internal/proxy/bounds.go`,
+both checks **before the target leg is dialled and before anything is
+provisioned** — a session that reached the target and then failed one of them has
+already happened. What each one is, in the class §4.3 assigns it:
+
+| Bound | Where | Class | Absent |
+| --- | --- | --- | --- |
+| `require_session_capture` | Before the target leg, against the telemetry pipeline's own `Deliverable()` — **a disk buffer is a logging path**, so only a proxy with no path at all refuses | **Outage**, naming the session id: the estate cannot record, nothing the user has would help | Capture happens if configured, and its absence stops nothing |
+| `concurrency` | Against the proxy's own live-session registry, counted and admitted in **one critical section** so two arrivals cannot both take the last slot | **Policy denial**, deliberately vague: the cap, the live count and the session id are all withheld and live only on the audit record | Uncapped, on both scopes independently |
+| `grant_context` | Stamped by the session recorder onto every record the session makes after the decision | Refuses nothing | No external grant context |
+
+Two properties belong here rather than only in that phase's learnings, because
+they are what the bounds mean rather than how they were coded:
+
+- **A concurrency cap is PER PROXY, and a chained session occupies one slot on
+  every proxy it crosses.** The live count is knowable only to a proxy's own
+  registry (§6.4) — that is why the field exists at all rather than Control
+  deciding from `ConnMeta` — so what a cap of *N* bounds is *N* sessions **here**.
+  It is not an estate-wide ceiling: a three-hop route under a cap of one is three
+  proxies each holding one session, counted under the same subject and the same
+  requested target on each. An estate-wide count would have to be asked of
+  Hoplock Control per connection, which is the round trip D2's decision cache
+  exists to avoid. The cap also bounds live sessions and not connection *rate*:
+  sessions that end as fast as they start never reach one.
+- **The grant context is carried in a form that cannot be read.** D16 says it is
+  recorded and never consulted, and 0018 made that structural with an AST walk
+  over which packages may name the type at all. Rather than widen that list, the
+  telemetry pipeline extracts what a record needs **from the authorize response
+  itself** (`logging.GrantFrom`), and `routing.Route` carries a `*logging.Grant`
+  — a handle with no exported field and no exported method. So between the
+  contract and the recorder there is nothing to decide from, which is the rule
+  expressed in the type system rather than in a comment. `additional_context`'s
+  two forms stay two things: a string is one attribute, an object becomes one
+  attribute per field, never flattened into one string.
+
 ## 7. Logging & telemetry (`internal/logging`, D8)
 
 - **What**: session metadata (session id, user identity + source, target, route
@@ -2448,6 +2485,19 @@ password: the user authenticator returns an identity, never a credential. The
 end-to-end test asserts it against every stored record *and* every byte in the
 disk buffer, so the property stays structural rather than becoming a filter
 somebody has to remember to apply.
+
+**Every record says why access was granted, where anything said so.** A route
+carrying D16's `grant_context` stamps it onto every record the session makes from
+the authorize decision onward — the records before it, a handshake's and an
+authentication's, carry less because nothing knew it yet. It is stamped in the one
+function that builds a record rather than at the capture points, so "every record
+for the session carries it" is a property of the recorder and not of thirty call
+sites. The two events the DEVICE sink emits (`device.go`) are the exception and
+not an oversight: an account-mapping event carries its session id as a field and a
+sweep failure belongs to no session at all, so neither is built by a session
+recorder, and the alternative — teaching `internal/auth/target` to carry the grant
+— would put a policy payload in the credential plane, which is exactly what §6.5
+keeps it out of.
 
 **Every session says how it ended.** The `session_end` record carries
 `end_reason`, and it takes exactly one of four values — `client_close`,
@@ -2996,7 +3046,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013). **Delivered:** `username` is required on `brokered-key` too (**contract v4.2**, a break; `policy_version` stays 4, because it declares what a proxy can *read* and a tightening is not expressible through it), which makes it required on every method the contract defines; each of the three remaining call sites resolves the account in a fixed order ending in a refusal — `brokered-key`: route → `auth.target.brokered_key.username` → refuse; `static-key`: route → `auth.target.static_key.username` → refuse, and it now **reads the route at all**, which it never did, so the document requiring a `username` and the proxy using something else no longer disagree and an unknown parameter is refused like everywhere else; `ephemeral-user`: route → **`identity.Principals`** → refuse, taking exactly one principal and refusing none or several. Refusals are outage-class (§4.3) with nothing provisioned and no target leg dialled. `brokered-key` deliberately does not read `Principals` (its account is standing and shared, §5.2) and nothing cross-checks a route-named account against them (that would be the proxy originating policy, D2). The `Principals` doc comment, false since it was written, now describes what actually draws from it. Contract change — carried a cross-repo obligation |
 | 0029 | FortiSwitchOS driver                    | the FortiSwitch driver, and the target-identity question the phase was queued to answer (deferred from 0014). **Delivered, and the answer is not the one the prompt expected:** a FortiLink-managed switch keeps its own SSH administrative plane — `config switch-controller security-policy local-access` has `ssh` in the default allowaccess for both its interfaces — so the switch is **its own endpoint** and FortiLink is a deployment fact, not a target identity. 0016's answer is left intact rather than stretched, and **no device field is declared**: `fortios.SwitchDriver` is a separate type from the FortiGate driver (so it is not a `device.ResidueSweeper` for a schedule table FortiSwitchOS does not have), reusing 0014's CLI state machine and value validation through helpers moved onto `cliSession`. `EnforcesExpiry` is **false** on a documentation contradiction (`set schedule` names a `config firewall schedule` table the platform lacks); the one built-in profile is `super_admin`, so the FortiOS built-ins are refused before dialling; the unit's identity is confirmed from `get system status` because the two platforms accept the same administrator commands. **No contract change** — `api/` untouched, so no cross-repo obligation. §5.3 carries the reasoning |
 | 0030 | FortiLink-mediated administration       | **Withdrawn — decided, not built.** The estate 0029 does not serve — switches deliberately unroutable from the proxy — is served by a **deployment** rather than by a mechanism: put a proxy where it can reach the switch (0029's `fortiswitchos` then works unchanged), or administer the switch from an ordinary `fortigate` session, accepting that the switch login is then a standing credential Hoplock does not broker. Building it would have put a second ephemeral account on a customer's firewall per switch session, made the user's hop password-only, taken on a strand-with-no-sweep leak class, and put a per-channel reach preamble in front of every session — to reach a device a proxy could simply be routed to. `device.CreateRequest.Fields` therefore still ride on creation only. The number **0030 is retired and must never be reused**. Reasoning: §5.3 "As settled (phase 0030)" and `docs/learnings/0030-fortilink-mediated-administration-learnings.md` |
-| 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |
+| 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since had enforced (`session_deadline` is 0024's). The row this table was missing; the prompt had been queued since phase 0019. **Delivered:** all three in `internal/proxy/bounds.go`, checked before the target leg is dialled and before anything is provisioned — required capture as an **outage** on its own `capture` stage, turning on the telemetry pipeline's existing `Deliverable()` so a proxy spooling to its disk buffer still satisfies it (PLAN §7; the same predicate §5.3's device attribution uses); the caps as a **policy denial** counted against the proxy's own live-session registry in one critical section, per-proxy by construction and recorded with the ceiling that was hit, which the user is never told; and the grant context stamped by the session recorder onto every record after the decision, carried from the response in a handle with no readable surface (`logging.GrantFrom`, `routing.Route.Grant`) so 0018's AST walk needed no new package and `additional_context`'s object form reaches the record as fields rather than as one string. Plus `POST /debug/logs/sink` on the mock, which is what lets the e2e take the log destination down while authorize keeps answering. **No contract change** — every field shipped in v4, `api/` is untouched, so no cross-repo obligation |
 | 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reports a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. Classifies it as its own stage, discloses it on §4.3's terms, and records it critically with the key's fingerprint — reusing 0025's single copy of x/crypto's wording rather than adding a second. **Conditional in one part:** whether it should also be *contained* is a question this phase must answer and write down, because the blast radius that justified 0025's breaker (an OpenSSH target penalising the proxy's source address) does not exist when the far end is another Hoplock proxy. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Conditional — it asks a question and may answer "no", as 0032 does.** Phase 0026 drove `password-mfa` with a real client and found that the denial discloses nothing but the *flow* does: a correct password is answered with an MFA challenge and a wrong one never is, so the challenge's presence is a first-factor oracle, and its duration says the same thing more quietly. The proxy cannot fix it alone — Control decides when a challenge is issued (D2) — so the phase decides whose problem it is, whether a decoy challenge is worth what it costs in Control load and in an unclosable timing channel, and whether it belongs to the prototype at all (§12 puts a real IdP, where enumeration defences usually live, out of scope). A "yes" closes it in `api/`, `cmd/mock-control` and a scenario; a "no" is written up and the prompt deleted, as 0021 was. Added by 0026 |

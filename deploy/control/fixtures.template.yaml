@@ -453,6 +453,176 @@ routes:
     filter_policy:
       mode: blacklist
 
+  # ------------------------------------- the other session bounds (0031) ---
+  # D16's fourth bound is the deadline above; these are the other three. Each
+  # route carries exactly one of them, so a scenario that fails names the bound
+  # it was about rather than "the bounded route".
+
+  # A route that may only run if the session is RECORDED (D16). Scenario: it
+  # runs, and goes on running while the mock's log destination is refusing
+  # records — the proxy spools them to its disk buffer and they arrive when the
+  # destination does (PLAN §7, `POST /debug/logs/sink`). Being REFUSED needs a
+  # proxy with no logging path at all, which no proxy in this topology is and
+  # none should be; that half is a unit test (internal/proxy/bounds_test.go).
+  #
+  # `brokered-key` on purpose: nothing here is about provisioning, and a route
+  # that creates no account cannot confuse the suite's leak check.
+  - login: alice
+    target: recorded.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    require_session_capture: true
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # A ceiling of one live session FOR THE SUBJECT, across every target (D16).
+  # Scenarios: a second session for alice is denied while the first is live, the
+  # denial is vague and carries no session id, and the slot comes back when the
+  # first session ends.
+  #
+  # `ephemeral-user` on purpose: the account the first session creates on the
+  # target is how a scenario knows it is live, which a denial must be raced
+  # against to mean anything.
+  - login: alice
+    target: capped.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    concurrency:
+      max_sessions_per_subject: 1
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: alice
+        key_type: ed25519
+        lifetime_seconds: "900"
+    filter_policy:
+      mode: blacklist
+
+  # The other scope: a ceiling of one live session TO THE TARGET, across every
+  # subject. Two routes, one per login, because the cap is the target's and the
+  # scenario is about a second SUBJECT being refused — one that is under its own
+  # per-subject ceiling, since neither route sets one.
+  - login: alice
+    target: capped-target.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    concurrency:
+      max_sessions_per_target: 1
+    target_auth:
+      method: ephemeral-user
+      params:
+        username: alice
+        key_type: ed25519
+        lifetime_seconds: "900"
+    filter_policy:
+      mode: blacklist
+
+  - login: svc-deploy
+    target: capped-target.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: deployGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    concurrency:
+      max_sessions_per_target: 1
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # WHY access was granted, as an external system asserted it (D16, §13 UC3).
+  # The proxy copies every field of it onto the session's log records, reads none
+  # of it, and tells the user nothing about it. Scenario: the records carry it
+  # verbatim and the client's output carries none of it.
+  - login: alice
+    target: granted.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    grant_context:
+      system: change-management
+      reference: CHG-1234
+      window_start: "2026-03-01T09:00:00Z"
+      window_end: "2026-03-01T17:00:00Z"
+      additional_context_text: "approved by the Tuesday CAB"
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # The same bound with additional_context in its OBJECT form, which is a
+  # different thing and not a different spelling: each field reaches the record
+  # as its own attribute, so "every session this scan authorised" stays a query
+  # (setting both forms on one route is a fixture error — the field is one or the
+  # other on the wire).
+  - login: alice
+    target: granted-fields.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    grant_context:
+      system: vuln-scanner
+      reference: scan-7781
+      additional_context_fields:
+        scan_id: s-99
+        requested_by: secops
+    target_auth:
+      method: brokered-key
+      params:
+        username: netadmin
+        credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
   # Axis 2, the other way round: commands are allowed and a terminal is not.
   # Scenario: `ssh -tt host cmd` is refused, `ssh host cmd` succeeds.
   - login: alice

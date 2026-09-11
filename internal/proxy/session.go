@@ -219,6 +219,12 @@ func (s *session) setup() {
 	}
 	s.route = route
 
+	// Before the first record that could carry it: the grant context is why an
+	// external system says this access was granted, and from here on every
+	// record the session makes carries it (D16). The recorder is the only thing
+	// that can read it — see routing.Route.Grant.
+	s.rec.SetGrant(route.Grant)
+
 	// The deadline in force is the chain's, not this hop's answer alone: a hop
 	// may only ever shorten it (routing.ShortenDeadline, deadline.go). It is
 	// resolved here so the audit record and the timer cannot disagree about
@@ -230,6 +236,26 @@ func (s *session) setup() {
 	// types: a chained session is bounded at every hop, and a session that died
 	// between here and the target leg still had a deadline while it existed.
 	s.armDeadline(deadline)
+
+	// The other two bounds, in this order and both before the route types
+	// diverge — a chained session is bounded on every hop it crosses, exactly
+	// like the deadline above (bounds.go).
+	//
+	// Capture first, and deliberately: if this session cannot be recorded at
+	// all, every answer below it is one the audit trail would not contain, and a
+	// refusal nobody can read afterwards is the outcome D16's capture bound
+	// exists to prevent.
+	if err := s.requireCapture(route); err != nil {
+		s.failSetup(&setupError{stage: stageCapture, err: err})
+		return
+	}
+	if err := s.enforceConcurrency(route); err != nil {
+		// Recorded with the cap that was hit, which is the only place that
+		// detail exists: what the user hears is the generic denial (PLAN §4.3).
+		s.recordConcurrencyDenied(err)
+		s.failSetup(&setupError{stage: stageConcurrency, err: err})
+		return
+	}
 
 	// Command policy belongs to this connection, not to the proxy: the engine
 	// is compiled from this route's filter policy and attached to this

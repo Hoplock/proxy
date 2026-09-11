@@ -150,6 +150,12 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+	// live is every session past the concurrency admission check, by id (D16,
+	// bounds.go). It is a second map rather than a flag on the session because
+	// the count is taken under this lock and the flag would be behind the
+	// session's own — and because what a cap is counted against is exactly this:
+	// the sessions this proxy is holding right now.
+	live map[string]liveSession
 
 	conns sync.WaitGroup
 }
@@ -196,6 +202,7 @@ func New(opts Options) (*Server, error) {
 		now:             opts.Now,
 		newSessionID:    opts.NewSessionID,
 		sessions:        make(map[string]*session),
+		live:            make(map[string]liveSession),
 	}
 	if s.dialTimeout <= 0 {
 		s.dialTimeout = DefaultDialTimeout
@@ -367,6 +374,10 @@ func (s *Server) add(sess *session) {
 }
 
 func (s *Server) remove(sess *session) {
+	// The concurrency slot goes with it: a session that has ended is not live,
+	// and the next connection for that subject or target must find the room
+	// (D16, bounds.go).
+	s.release(sess.id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sess.id)

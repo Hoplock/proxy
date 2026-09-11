@@ -331,7 +331,8 @@ type AuthorizeResponse struct {
 	// privileged one.
 	SessionDeadline *time.Time `json:"session_deadline,omitempty"`
 	// RequireSessionCapture says this route may only run if the session is
-	// recorded (contract v4, D16). False — the absent value — is today's
+	// recorded (contract v4, D16; enforced by phase 0031). False — the absent
+	// value — is today's
 	// behaviour: capture happens if the proxy is configured for it, and its
 	// absence stops nothing.
 	//
@@ -346,16 +347,21 @@ type AuthorizeResponse struct {
 	// scrub its traces; it cannot touch a session captured in the proxy.
 	RequireSessionCapture bool `json:"require_session_capture,omitempty"`
 	// GrantContext is WHY access was granted, as an external system asserted it
-	// (contract v4, D16). Nil means no external grant context, which is today's
-	// behaviour.
+	// (contract v4, D16; recorded by phase 0031). Nil means no external grant
+	// context, which is today's behaviour.
 	//
 	// THE PROXY TREATS IT AS OPAQUE: copied to every log record for the session,
 	// never parsed, never matched against, never the basis of a proxy-side
 	// decision (D2), and never shown to the user.
 	GrantContext *GrantContext `json:"grant_context,omitempty"`
 	// Concurrency caps how many sessions may be live at once (contract v4,
-	// PLAN §13 UC2). Nil means uncapped, which is today's behaviour. Exceeding
-	// a cap is a POLICY DENIAL — vague, PLAN §4.3 — and never an outage.
+	// PLAN §13 UC2; enforced by phase 0031). Nil means uncapped, which is
+	// today's behaviour. Exceeding a cap is a POLICY DENIAL — vague,
+	// PLAN §4.3 — and never an outage.
+	//
+	// It is a PER-PROXY ceiling, because the live count is knowable only to a
+	// proxy's own registry: a chained session occupies one slot on every proxy it
+	// crosses, and a cap of N bounds N sessions on each (PLAN §6.5).
 	Concurrency *ConcurrencyLimits `json:"concurrency,omitempty"`
 	// Hop is set when RouteType is RouteTypeNextHop.
 	Hop *HopMetadata `json:"hop,omitempty"`
