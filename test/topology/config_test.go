@@ -434,3 +434,43 @@ func TestTheFakeDeviceServesEveryPortTheFixturesRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestTheSessionBoundRoutesTheScenariosDependOn pins the fixture routes phase
+// 0031's scenarios are written against (D16, docs/PLAN.md §6.5).
+//
+// Each one carries exactly one bound, and two of them carry a ceiling of ONE —
+// which is load-bearing rather than tidy: a scenario holds one session open and
+// asserts the next is refused, so a cap of two would pass for the wrong reason
+// and a missing route would fail minutes into the e2e job with a denial nobody
+// can attribute.
+func TestTheSessionBoundRoutesTheScenariosDependOn(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	for _, want := range []string{
+		"target: recorded.company.com",
+		"require_session_capture: true",
+		"target: capped.company.com",
+		"max_sessions_per_subject: 1",
+		"target: granted.company.com",
+		"additional_context_text:",
+		"target: granted-fields.company.com",
+		"additional_context_fields:",
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("the fixtures no longer carry %q, which a session-bounds scenario needs", want)
+		}
+	}
+	// Two routes to the capped target, one per login: the per-target ceiling is
+	// only being tested if the second session belongs to a DIFFERENT subject,
+	// and that subject needs a route of its own to be refused on.
+	if got := bytes.Count(body, []byte("target: capped-target.company.com")); got != 2 {
+		t.Errorf("%d routes name capped-target.company.com, want 2 (one per login)", got)
+	}
+	if got := bytes.Count(body, []byte("max_sessions_per_target: 1")); got != 2 {
+		t.Errorf("%d routes cap capped-target.company.com at one live session, want 2", got)
+	}
+}

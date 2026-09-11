@@ -5,9 +5,11 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,7 +29,12 @@ const (
 	testSessionID = "sess-testsession"
 	testProxyID   = "proxy-test"
 	testLogin     = "alice"
-	testSubject   = "alice@example.com"
+	// subjectDomain is what a login is resolved to a subject with, so that the
+	// two are never the same string: a cap, a revocation and a record all key on
+	// the subject, and a test that used the typed login for both could not tell
+	// a passing assertion from a regression.
+	subjectDomain = "@example.com"
+	testSubject   = testLogin + subjectDomain
 	// testTargetAccount is the account on the TARGET, and it is deliberately
 	// not testLogin: since phase 0028 no account name may come from the login
 	// the user typed at their SSH client, so a fixture that used one string for
@@ -44,6 +51,12 @@ type fakeClient struct {
 	authorize func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error)
 	hostKey   func(*control.HostKeyReportRequest) (*control.HostKeyReportResponse, error)
 
+	// ingestDown refuses both log endpoints, which is what a Hoplock Control
+	// outage looks like to the shipper: records go to the disk buffer instead
+	// (PLAN §7). It is what the capture bound's "the network is down but the
+	// buffer is accepting" case is driven with (D16).
+	ingestDown atomic.Bool
+
 	mu             sync.Mutex
 	authorizeCalls []control.AuthorizeRequest
 	hostKeyCalls   []control.HostKeyReportRequest
@@ -57,7 +70,11 @@ func (c *fakeClient) AuthenticateCert(_ context.Context, req *control.Authentica
 	return &control.AuthenticateResponse{
 		Status: control.AuthStatusAuthenticated,
 		Identity: &control.Identity{
-			Subject:    testSubject,
+			// Derived from the login so that two logins are two SUBJECTS, which
+			// is what a per-subject concurrency cap is counted against (D16).
+			// testLogin still resolves to testSubject, so nothing that asserts on
+			// one particular identity changed.
+			Subject:    req.Login + subjectDomain,
 			Login:      req.Login,
 			Source:     "fixture",
 			Groups:     []string{"engineering"},
@@ -92,6 +109,9 @@ func (c *fakeClient) ReportHostKey(_ context.Context, req *control.HostKeyReport
 }
 
 func (c *fakeClient) IngestLogBatch(_ context.Context, req *control.LogBatchRequest) (*control.LogBatchResponse, error) {
+	if c.ingestDown.Load() {
+		return nil, outageError("IngestLogBatch")
+	}
 	c.mu.Lock()
 	c.batchRecords = append(c.batchRecords, req.Records...)
 	c.mu.Unlock()
@@ -99,6 +119,9 @@ func (c *fakeClient) IngestLogBatch(_ context.Context, req *control.LogBatchRequ
 }
 
 func (c *fakeClient) IngestPriorityLog(_ context.Context, req *control.LogPriorityRequest) (*control.LogPriorityResponse, error) {
+	if c.ingestDown.Load() {
+		return nil, outageError("IngestPriorityLog")
+	}
 	c.mu.Lock()
 	c.prioRecords = append(c.prioRecords, req.Record)
 	c.mu.Unlock()
@@ -165,6 +188,16 @@ type harnessOptions struct {
 	// filterPolicy is the connection's command policy (PLAN §6.3). Nil means
 	// an empty blacklist, which filters nothing.
 	filterPolicy *control.FilterPolicy
+	// requireSessionCapture makes the route refuse to run unless the session can
+	// be recorded (contract v4, D16). False is what every route before phase
+	// 0031 meant, and it must stay a no-op.
+	requireSessionCapture bool
+	// concurrency caps live sessions per subject and/or per target (D16). Nil is
+	// uncapped.
+	concurrency *control.ConcurrencyLimits
+	// grantContext is why an external system says access was granted (D16). The
+	// proxy copies it onto records and reads it for nothing.
+	grantContext *control.GrantContext
 	// sessionDeadline, when non-zero, gives the route a session deadline that
 	// far ahead of the moment authorize is answered (contract v4, D16). It is a
 	// duration here only because a test cannot know that instant in advance;
@@ -256,6 +289,9 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 				PermittedGlobalRequests: opts.permittedGlobalRequests,
 				FilterPolicy:            filterPolicy,
 				SessionDeadline:         deadline,
+				RequireSessionCapture:   opts.requireSessionCapture,
+				Concurrency:             opts.concurrency,
+				GrantContext:            opts.grantContext,
 				DecisionID:              "decision-1",
 			}, nil
 		}
@@ -455,6 +491,18 @@ func (h *harness) targetName() string {
 		return "127.0.0.1"
 	}
 	return h.target.Host()
+}
+
+// uniqueSessionIDs replaces the engine's fixed test session id with a counter.
+//
+// Every other test wants the fixed one: assertions on the support reference in a
+// failure message are exact. A test with two sessions live at once cannot have
+// it — the engine's registry is keyed by session id, and two sessions sharing one
+// would be one session as far as a concurrency cap is concerned, which is the
+// thing under test.
+func uniqueSessionIDs(o *Options) {
+	var n atomic.Uint64
+	o.NewSessionID = func() string { return fmt.Sprintf("%s-%d", testSessionID, n.Add(1)) }
 }
 
 // syncBuffer collects log output from concurrent sessions.

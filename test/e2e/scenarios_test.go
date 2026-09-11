@@ -58,6 +58,12 @@ func TestTopology(t *testing.T) {
 	// Control has to be up both to decide the second factor and to receive it.
 	t.Run("password and out-of-band MFA", testPasswordMFA)
 	t.Run("telemetry", testTelemetry)
+	// The other three session bounds (D16). It is before both scenarios that
+	// stop Hoplock Control, for two reasons: it reads the records its own
+	// sessions produced, and one subtest takes the mock's LOG DESTINATION down
+	// and brings it back — which is only a different thing from stopping the
+	// server while the server is up.
+	t.Run("session bounds", testSessionBounds)
 	// Before the outage scenario, and it stops Hoplock Control itself for one
 	// of its subtests — the whole claim of a locally enforced deadline is that
 	// it holds when the policy service does not. It restarts it and waits for
@@ -1738,6 +1744,315 @@ func mentionedIn(records []logRecord, text string) bool {
 		}
 	}
 	return false
+}
+
+// --- the other session bounds (D16, phase 0031) ------------------------------
+
+// The fixture routes, one per bound (deploy/control/fixtures.template.yaml).
+const (
+	// recordedTarget may only run if the session is recorded.
+	recordedTarget = "recorded.company.com"
+	// cappedSubjectTarget allows one live session per SUBJECT.
+	cappedSubjectTarget = "capped.company.com"
+	// cappedPerTarget allows one live session TO THE TARGET, across subjects.
+	cappedPerTarget = "capped-target.company.com"
+	// grantedTarget and grantedFieldsTarget carry a grant context, in the two
+	// forms additional_context takes.
+	grantedTarget       = "granted.company.com"
+	grantedFieldsTarget = "granted-fields.company.com"
+)
+
+// testSessionBounds is the acceptance evidence for the three session bounds the
+// proxy enforces that are not the deadline (docs/PLAN.md §6.5, D16).
+//
+// Each subtest asserts the bound AND the class PLAN §4.3 puts its refusal in,
+// because the class is half the feature: a capture refusal that read as a denial
+// would send a user to ask for permissions they already have, and a full ceiling
+// that read as an outage would tell them the estate is broken when it is busy.
+func testSessionBounds(t *testing.T) {
+	t.Run("a route that must be recorded runs while the log destination is down", func(t *testing.T) {
+		// The proxy's disk buffer is a logging path (PLAN §7), so a proxy
+		// spooling to it satisfies the bound. Refusing these sessions would turn
+		// every log-destination outage into an outage of the estate, for exactly
+		// the routes that are watched most closely.
+		const marker = "capture-while-buffering"
+		t.Cleanup(func() { setLogSink(t, true) })
+		setLogSink(t, false)
+
+		s := aliceOn(proxyDirect, recordedTarget)
+		s.command = "/bin/echo " + marker
+		r := ssh(t, s)
+
+		wantExit(t, r, "a recorded route while the log destination is down", 0)
+		wantContains(t, r, "a recorded route while the log destination is down", marker)
+		wantNotContains(t, r, "a recorded route while the log destination is down", "could not be recorded")
+		wantNotContains(t, r, "a recorded route while the log destination is down", "Access denied.")
+
+		// And the records were not lost: they were owed, and they arrive when
+		// the destination does.
+		setLogSink(t, true)
+		var sessionID string
+		waitFor(t, "the buffered records of the recorded session to drain", func() bool {
+			sessionID = sessionOfRecord(t, marker)
+			return sessionID != ""
+		})
+		// The bound is on the decision, so it is on the record of the decision:
+		// an auditor reading a session that ran has to be able to see that this
+		// one would have been refused unrecorded.
+		if !recordAttrIs(recordsOfSession(t, sessionID), "authorize", "session_capture_required", "true") {
+			t.Errorf("session %s has no authorize record saying capture was required:\n%s",
+				sessionID, formatRecords(recordsOfSession(t, sessionID)))
+		}
+	})
+
+	t.Run("a subject at its ceiling is denied, and the slot comes back", func(t *testing.T) {
+		// An earlier scenario's account is removed as its session closes, and
+		// that teardown is asynchronous: counting accounts before it finished
+		// would count somebody else's session as this ceiling's.
+		waitFor(t, "the target to be free of ephemeral accounts before the ceiling", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+
+		hold := aliceOn(proxyDirect, cappedSubjectTarget)
+		hold.command = holdingCommand()
+		collect := overlapping(t, hold)
+		// The ceiling is only being tested if the first session is LIVE when the
+		// second arrives, and the account on the target is what says so: the
+		// admission check runs before anything is provisioned.
+		waitUpTo(t, concurrentHold, "the first capped session to hold an account on the target", func() bool {
+			return len(ephemeralAccountsOn(t)) == 1
+		})
+
+		second := aliceOn(proxyDirect, cappedSubjectTarget)
+		second.command = "/bin/true"
+		r := ssh(t, second)
+
+		wantFailure(t, r, "a second session at the subject's ceiling")
+		wantContains(t, r, "a second session at the subject's ceiling", "Access denied.")
+		// A DENIAL, not an outage: the estate is healthy and the answer is no.
+		wantNotContains(t, r, "a second session at the subject's ceiling", "not a permissions problem")
+		// And a vague one: not the cap, not how many sessions are live, not
+		// whose, and nothing about the target. The session id is NOT on this
+		// list — every session is given its own in the pre-auth banner
+		// (user.BannerMessage), so it is not something a denial discloses.
+		for _, leak := range []string{"ceiling", "concurren", "limit", cappedSubjectTarget} {
+			wantNotContains(t, r, "a second session at the subject's ceiling", leak)
+		}
+
+		results := collect()
+		if len(results) == 1 {
+			wantExit(t, results[0], "the session that held the only slot", 0)
+		}
+
+		// The cap that was hit exists only on the audit record, and it is a
+		// POLICY DECISION there rather than a fault.
+		var refusal logRecord
+		waitFor(t, "the refusal record naming the subject ceiling", func() bool {
+			refusal = findRecord(t, func(rec logRecord) bool {
+				return rec.Attributes["concurrency_scope"] == "subject"
+			})
+			return refusal.SessionID != ""
+		})
+		for key, want := range map[string]string{
+			"concurrency_limit": "1",
+			"concurrency_live":  "1",
+		} {
+			if got := refusal.Attributes[key]; got != want {
+				t.Errorf("the refusal record carries %s=%q, want %q", key, got, want)
+			}
+		}
+		if refusal.Kind != "policy_decision" || refusal.Severity != "critical" {
+			t.Errorf("the refusal was recorded as %s/%s, want policy_decision/critical",
+				refusal.Kind, refusal.Severity)
+		}
+
+		// The slot comes back. A cap that did not give one up would turn the
+		// first session of a proxy's life into its only one.
+		waitFor(t, "the capped session's account to be removed", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+		third := aliceOn(proxyDirect, cappedSubjectTarget)
+		third.command = "/bin/true"
+		wantExit(t, ssh(t, third), "the next session after the slot was freed", 0)
+	})
+
+	t.Run("a target at its ceiling refuses a second subject", func(t *testing.T) {
+		// The scope that is not reachable through the other one: the subject
+		// refused here has no session anywhere and no per-subject cap at all.
+		waitFor(t, "the target to be free of ephemeral accounts before the target ceiling", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+
+		hold := aliceOn(proxyDirect, cappedPerTarget)
+		hold.command = holdingCommand()
+		collect := overlapping(t, hold)
+		waitUpTo(t, concurrentHold, "the first session to hold the target's only slot", func() bool {
+			return len(ephemeralAccountsOn(t)) == 1
+		})
+
+		other := svcOn(proxyDirect, cappedPerTarget)
+		other.command = "/bin/true"
+		r := ssh(t, other)
+
+		wantFailure(t, r, "a second subject at the target's ceiling")
+		wantContains(t, r, "a second subject at the target's ceiling", "Access denied.")
+		wantNotContains(t, r, "a second subject at the target's ceiling", "not a permissions problem")
+
+		results := collect()
+		if len(results) == 1 {
+			wantExit(t, results[0], "the session that held the target's only slot", 0)
+		}
+
+		var refusal logRecord
+		waitFor(t, "the refusal record naming the target ceiling", func() bool {
+			refusal = findRecord(t, func(rec logRecord) bool {
+				return rec.Attributes["concurrency_scope"] == "target"
+			})
+			return refusal.SessionID != ""
+		})
+		if refusal.Login != "svc-deploy" {
+			t.Errorf("the refusal is attributed to %q, want the subject that was refused", refusal.Login)
+		}
+		if got := refusal.Attributes["concurrency_limit"]; got != "1" {
+			t.Errorf("the refusal record carries a limit of %q, want 1", got)
+		}
+		waitFor(t, "the capped target's account to be removed", func() bool {
+			return len(ephemeralAccountsOn(t)) == 0
+		})
+	})
+
+	t.Run("a grant context is on every record of the session and nowhere else", func(t *testing.T) {
+		const marker = "grant-context-text"
+		s := aliceOn(proxyDirect, grantedTarget)
+		s.command = "/bin/echo " + marker
+		r := ssh(t, s)
+		wantExit(t, r, "a route carrying a grant context", 0)
+
+		// The user is told nothing about it, on any path: the grant context is
+		// about the estate's reasons, not about the user's own request.
+		for _, secret := range []string{"change-management", "CHG-1234", "Tuesday CAB", "2026-03-01"} {
+			wantNotContains(t, r, "a route carrying a grant context", secret)
+		}
+
+		var records []logRecord
+		waitFor(t, "the granted session's records to arrive", func() bool {
+			id := sessionOfRecord(t, marker)
+			if id == "" {
+				return false
+			}
+			records = recordsOfSession(t, id)
+			return hasKind(records, "session_end")
+		})
+		// Verbatim, on every record the session produced after the decision. The
+		// two before it — the handshake's and the authentication's — carry less,
+		// because nothing knew it yet.
+		want := map[string]string{
+			"grant_system":             "change-management",
+			"grant_reference":          "CHG-1234",
+			"grant_window_start":       "2026-03-01T09:00:00Z",
+			"grant_window_end":         "2026-03-01T17:00:00Z",
+			"grant_additional_context": "approved by the Tuesday CAB",
+		}
+		checked := 0
+		for _, rec := range records {
+			if rec.Kind == "session_start" || rec.Kind == "auth" {
+				continue
+			}
+			checked++
+			for key, value := range want {
+				if got := rec.Attributes[key]; got != value {
+					t.Errorf("%s record carries %s=%q, want %q", rec.Kind, key, got, value)
+				}
+			}
+		}
+		if checked == 0 {
+			t.Errorf("no record of the granted session was checked:\n%s", formatRecords(records))
+		}
+	})
+
+	t.Run("the object form of additional context arrives as fields", func(t *testing.T) {
+		// Not a different spelling of the string form but a different thing:
+		// each field is its own attribute, so "every session this scan
+		// authorised" stays a query rather than a substring search.
+		const marker = "grant-context-fields"
+		s := aliceOn(proxyDirect, grantedFieldsTarget)
+		s.command = "/bin/echo " + marker
+		r := ssh(t, s)
+		wantExit(t, r, "a route carrying an object grant context", 0)
+		for _, secret := range []string{"vuln-scanner", "scan-7781", "s-99", "secops"} {
+			wantNotContains(t, r, "a route carrying an object grant context", secret)
+		}
+
+		var records []logRecord
+		waitFor(t, "the scanner session's records to arrive", func() bool {
+			id := sessionOfRecord(t, marker)
+			if id == "" {
+				return false
+			}
+			records = recordsOfSession(t, id)
+			return hasKind(records, "session_end")
+		})
+		for key, value := range map[string]string{
+			"grant_system":                          "vuln-scanner",
+			"grant_additional_context.scan_id":      "s-99",
+			"grant_additional_context.requested_by": "secops",
+		} {
+			if !recordAttrIs(records, "session_end", key, value) {
+				t.Errorf("the session_end record does not carry %s=%q:\n%s",
+					key, value, formatRecords(records))
+			}
+		}
+		for _, rec := range records {
+			if _, ok := rec.Attributes["grant_additional_context"]; ok {
+				t.Errorf("%s record also carries the object form as one string: %v",
+					rec.Kind, rec.Attributes["grant_additional_context"])
+			}
+		}
+	})
+}
+
+// findRecord is the first delivered record matching want, on either path, or the
+// zero record.
+func findRecord(t *testing.T, want func(logRecord) bool) logRecord {
+	t.Helper()
+	logs := fetchLogs(t)
+	for _, rec := range append(append([]logRecord{}, logs.Priority...), logs.Batched...) {
+		if want(rec) {
+			return rec
+		}
+	}
+	return logRecord{}
+}
+
+// recordAttrIs reports whether some record of a kind carries the attribute.
+func recordAttrIs(records []logRecord, kind, key, want string) bool {
+	for _, rec := range records {
+		if rec.Kind == kind && rec.Attributes[key] == want {
+			return true
+		}
+	}
+	return false
+}
+
+// hasKind reports whether a record of this kind is among them.
+func hasKind(records []logRecord, kind string) bool {
+	for _, rec := range records {
+		if rec.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// formatRecords renders records for a failure message: a scenario that fails on
+// an attribute is usually failing because a different record than expected
+// arrived.
+func formatRecords(records []logRecord) string {
+	var b strings.Builder
+	for _, rec := range records {
+		fmt.Fprintf(&b, "  %s/%s %v\n", rec.Kind, rec.Severity, rec.Attributes)
+	}
+	return b.String()
 }
 
 // --- session deadline (D16, phase 0024) --------------------------------------

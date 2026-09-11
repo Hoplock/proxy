@@ -542,3 +542,77 @@ func TestResolveAdvertisesTheProxysCapabilities(t *testing.T) {
 		t.Error("the request shares the resolver's capability slice")
 	}
 }
+
+// TestResolveCarriesTheOtherSessionBounds: the three bounds of D16 that are not
+// the deadline reach the route (contract v4, enforced by phase 0031).
+//
+// The grant context is asserted by its ABSENCE of surface rather than by its
+// contents: the route carries an opaque handle the telemetry pipeline made, and
+// reading what is in it is what nothing on this side may do (D2, D16). Its
+// contents are asserted where they are legitimately readable, in
+// internal/logging's own tests.
+func TestResolveCarriesTheOtherSessionBounds(t *testing.T) {
+	client := &fakeClient{resp: &control.AuthorizeResponse{
+		RouteType:             control.RouteTypeDirect,
+		Target:                "db-1",
+		TargetPort:            22,
+		PermittedChannels:     []string{"session"},
+		RequireSessionCapture: true,
+		Concurrency:           &control.ConcurrencyLimits{PerSubject: 2, PerTarget: 5},
+		GrantContext:          &control.GrantContext{System: "change-management", Reference: "CHG-1234"},
+	}}
+	resolver, err := NewResolver(ResolverOptions{Client: client})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	route, err := resolver.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "db-1"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !route.RequireSessionCapture {
+		t.Error("the route does not require capture; the server said it must")
+	}
+	if got := route.MaxSessionsPerSubject(); got != 2 {
+		t.Errorf("per-subject ceiling = %d, want 2", got)
+	}
+	if got := route.MaxSessionsPerTarget(); got != 5 {
+		t.Errorf("per-target ceiling = %d, want 5", got)
+	}
+	if route.Grant == nil {
+		t.Error("the route carries no grant context; it is what every record for this session says why")
+	}
+
+	// Deep-copied like every other policy field: the decision may be a cached
+	// one shared with other sessions (PLAN §6.4).
+	route.Concurrency.PerSubject = 99
+	if client.resp.Concurrency.PerSubject != 2 {
+		t.Error("the route shares its concurrency limits with the authorize response")
+	}
+}
+
+// TestRouteWithoutTheSessionBoundsIsUnbounded: the absent-value defaults, which
+// are what every v3 server meant — no required capture, no ceilings, no grant
+// context — and what the engine must not change behaviour over.
+func TestRouteWithoutTheSessionBoundsIsUnbounded(t *testing.T) {
+	client := &fakeClient{resp: &control.AuthorizeResponse{
+		RouteType: control.RouteTypeDirect, Target: "db-1", TargetPort: 22,
+	}}
+	resolver, err := NewResolver(ResolverOptions{Client: client})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	route, err := resolver.Resolve(context.Background(), Request{Identity: testIdentity(), Target: "db-1"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	switch {
+	case route.RequireSessionCapture:
+		t.Error("an absent capture bound reads as required")
+	case route.MaxSessionsPerSubject() != 0:
+		t.Errorf("an absent per-subject ceiling reads as %d, want uncapped", route.MaxSessionsPerSubject())
+	case route.MaxSessionsPerTarget() != 0:
+		t.Errorf("an absent per-target ceiling reads as %d, want uncapped", route.MaxSessionsPerTarget())
+	case route.Grant != nil:
+		t.Error("an absent grant context produced one")
+	}
+}

@@ -15,10 +15,12 @@ import (
 // a session exists under (D16, PLAN §13 UC3).
 //
 // Nothing here is enforced by this package. Phase 0019 renders an enforcement
-// rung onto an account; phase 0024 closes a session at its deadline. Each type
-// names the phase that consumes it, and the absent-value default of every field
-// is stated on the field — a policy field whose default is unwritten is a
-// policy field that will eventually be guessed at.
+// rung onto an account; phase 0024 closes a session at its deadline; phase 0031
+// enforces the other three session bounds (internal/proxy/bounds.go) and records
+// the grant context (internal/logging/grant.go). Each type names the phase that
+// consumes it, and the absent-value default of every field is stated on the field
+// — a policy field whose default is unwritten is a policy field that will
+// eventually be guessed at.
 
 // ExecutionRung says WHERE the limit on what a session may EXECUTE is enforced
 // (PLAN §6.5, axis 1). It is named after what it GUARANTEES and never after its
@@ -267,7 +269,8 @@ type Attestation struct {
 // (D16, PLAN §13 UC3).
 //
 // THE PROXY TREATS ALL OF IT AS OPAQUE. It is copied to every log record for the
-// session, never parsed, never matched against, and never the basis of a
+// session — by the session recorder, from a handle with no readable surface
+// (phase 0031) — never parsed, never matched against, and never the basis of a
 // proxy-side decision — the next reader's instinct will be to make policy out of
 // it, and D2 says that decision was already made upstream, by the PDP, before
 // this response was written. It is also never shown to the user: a denial stays
@@ -345,7 +348,9 @@ func (c AdditionalContext) MarshalJSON() ([]byte, error) {
 //
 // It is a field here rather than something Control decides alone from ConnMeta
 // because the live session count is knowable ONLY to the proxy, which holds the
-// SessionRegistry. Exceeding a cap is a POLICY DENIAL and is disclosed as one —
+// SessionRegistry. That is also what makes it a PER-PROXY ceiling: a chained
+// session is counted on every proxy it traverses, one slot each (phase 0031,
+// PLAN §6.5). Exceeding a cap is a POLICY DENIAL and is disclosed as one —
 // deliberately vague (PLAN §4.3) — never an outage: the estate is healthy and
 // the answer is "no", which is exactly what a denial means.
 //

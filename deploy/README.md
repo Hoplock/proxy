@@ -198,6 +198,21 @@ docker compose -p hoplock-e2e -f deploy/compose.yaml exec device \
 `http://127.0.0.1:18080` is the mock's debug view, published on loopback for the
 scenario driver. Nothing in the topology reaches Hoplock Control that way.
 
+One debug endpoint **changes** the mock rather than reporting on it:
+
+```
+curl -sS -X POST http://127.0.0.1:18080/debug/logs/sink -d '{"accepting":false}'
+```
+
+That makes both log endpoints answer 503 while everything else stays up, which
+is how the session-bounds scenarios stage a proxy whose records are
+undeliverable and whose decisions still arrive — the condition D16's
+`require_session_capture` is satisfied by (the proxy spools to its disk buffer;
+`docs/PLAN.md` §6.5, §7). Stopping the whole server instead would stop the
+session being authorized at all, so the check under test would never run. Send
+`{"accepting":true}` to bring it back; a scenario that sets it always restores
+it, and so should you before asserting on anything a proxy shipped.
+
 The last one is the appliance's administrator table. It exists because an
 appliance has no account database to read the way `getent passwd` reads the
 target's — and asserting the proxy's cleanup by driving the same CLI the proxy
