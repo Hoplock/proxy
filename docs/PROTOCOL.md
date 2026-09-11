@@ -15,7 +15,9 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 ## 0. TL;DR of a session
 
 1. Read this protocol.
-2. Read `docs/PLAN.md` (the architecture source of truth).
+2. Navigate `docs/PLAN.md` (the architecture source of truth) — its section
+   index, then the sections and decisions your prompt names. Not front to back
+   (§1).
 3. Read the **summary block** of each file in `docs/learnings/` (read a full
    learnings file only if it's relevant to your prompt).
 4. Take the **lowest-numbered** prompt in `prompts/queued/` (unless the user
@@ -37,18 +39,46 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 
 Read in this order and **stop reading as soon as you have what you need**:
 
-1. `docs/PROTOCOL.md` — this file (always, in full).
-2. `docs/PLAN.md` — always. This is the architecture. Do not re-derive it.
+1. `docs/PROTOCOL.md` — this file, always, in full. It is the **only** file on
+   this list you read whole; it is short by design so that it can be.
+2. `docs/PLAN.md` — the architecture, and never re-derived. It is ~50k tokens,
+   so it is read by **navigation, not front to back**:
+   - `grep -n "^#\{1,3\} " docs/PLAN.md` prints the section index (~270 tokens).
+     Start there, every time.
+   - Read the sections and decisions your prompt's "Read first" names — a
+     decision by id (`grep -n '^- \*\*D13 ' docs/PLAN.md`), a section by range
+     (`sed -n '/^### 5.3/,/^## 6/p' docs/PLAN.md`).
+   - **Widen whenever you are about to make an architectural choice and cannot
+     find that the plan already made it.** Budget is never a reason to guess: a
+     re-derived decision is the exact failure this file exists to prevent, and
+     §9 makes the plan authoritative over your memory.
+   - A prompt that names no sections is a **defective prompt** (§7), not a
+     licence to read everything. Say so, and navigate from the index.
 3. `docs/learnings/*` — read **only the summary block** at the top of each file
    first. Open the full body of a learnings file **only** when its summary shows
    it's relevant to your prompt (e.g. you touch the same package or interface).
 4. Your target prompt in `prompts/queued/`.
 
-Do **not** read the whole codebase. Read the specific files your prompt names,
-plus what those files import. If you find yourself reading broadly, stop and
-re-scope — the prompt or a learnings file should already point you at the right
-places. Staying under ~60% context is a hard goal; if you're approaching it,
-prefer finishing a smaller, correct slice over reading more.
+**Why PLAN.md is navigated rather than read.** This said "always, in full"
+until the plan outgrew it. §5 alone is now ~12k tokens and §6 another ~12k, so
+obeying that literally spends most of a session's budget before the prompt is
+even opened, on sections the phase will never touch — and a session that has
+burned its budget reading is exactly the one that then does thin work. What the
+rule was protecting is the **authority** of the plan, not its page count, and
+that survives navigation intact: §7 already requires every prompt to name the
+sections it needs, and they do.
+
+Do **not** read the whole codebase either. Read the specific files your prompt
+names, plus what those files import. If you find yourself reading broadly, stop
+and re-scope — the prompt or a learnings file should already point you at the
+right places. Staying under ~60% context is a hard goal; if you're approaching
+it, prefer finishing a smaller, correct slice over reading more.
+
+**Know what step 3 costs you.** With PLAN.md navigated, the summary blocks are
+the largest fixed cost at startup — ~17k tokens across 30 files today, and one
+file longer every phase. They are still worth it (that is the whole hand-off
+channel, §5), but keep yours **tight**: a summary block that sprawls is charged
+to every session that follows, forever.
 
 ---
 
