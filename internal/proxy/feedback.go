@@ -73,11 +73,23 @@ const (
 	// estate, and only the second one explains why nothing appears in the
 	// target's logs.
 	stageTargetWithheld stage = "target-auth-withheld"
-	stageHop            stage = "hop"
-	stageHopDial        stage = "hop-dial"
-	stageRelay          stage = "relay"
-	stageHostKey        stage = "hostkey"
-	stageChannel        stage = "channel"
+	// stageCapture is a route that may only run if the session is recorded,
+	// reaching a proxy with no logging path at all (D16, bounds.go). It is
+	// outage-class: the estate cannot record, the user asked for nothing wrong,
+	// and no other credential of theirs would help.
+	stageCapture stage = "capture"
+	// stageConcurrency is a per-subject or per-target ceiling on live sessions
+	// being reached (D16). It is the one stage here whose message is a DENIAL —
+	// the estate is healthy and the answer is "no" — so outageDetail below has
+	// deliberately nothing to say about it: a user told "you are at your limit"
+	// learns how many of their colleagues are logged in, and a user told which
+	// target is busy learns that the target exists (PLAN §4.3).
+	stageConcurrency stage = "concurrency"
+	stageHop         stage = "hop"
+	stageHopDial     stage = "hop-dial"
+	stageRelay       stage = "relay"
+	stageHostKey     stage = "hostkey"
+	stageChannel     stage = "channel"
 )
 
 // setupError is a session-setup failure tagged with the stage it happened in.
@@ -120,6 +132,14 @@ func outageDetail(err error) string {
 		// session inherits nothing from the last one, which is the sentence a
 		// user reading it can understand and a ticket can carry.
 		return "the target could not be given an isolated account for this session"
+	case stageCapture:
+		// Says the one thing that is true and actionable — this connection may
+		// not run unrecorded and the recording is what failed — and nothing
+		// about the target or the policy. A user who reads it cannot fix it, and
+		// that is the point of the outage branch: they stop retrying
+		// credentials, and the session id turns the disconnect into a ticket
+		// whoever runs the telemetry pipeline can answer.
+		return "this session could not be recorded, and it may not run unrecorded"
 	case stageDial:
 		return "the target could not be reached"
 	case stageTargetAuth:

@@ -14,6 +14,7 @@ import (
 
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/logging"
 )
 
 // ErrUnsupportedRoute means Hoplock Control returned a route type this
@@ -100,6 +101,31 @@ type Route struct {
 	// lifetimes on a route that does — see internal/proxy/deadline.go, which
 	// holds the distinction and the timer that enforces it.
 	SessionDeadline *time.Time
+	// RequireSessionCapture says this route runs only if the session is
+	// recorded (contract v4, D16, enforced by phase 0031). False is what a v3
+	// server meant and what every route without the field means: capture
+	// happens if it is configured, and its absence stops nothing.
+	//
+	// Buffering to local disk COUNTS (PLAN §7): the refusal is outage-class and
+	// triggers only where there is no logging path at all — see
+	// internal/proxy/bounds.go, which holds the check and the predicate.
+	RequireSessionCapture bool
+	// Concurrency caps how many sessions may be live at once, per subject and
+	// per target (contract v4, D16, enforced by phase 0031). Nil — and a zero
+	// on either scope — means uncapped. Read it through MaxSessionsPerSubject
+	// and MaxSessionsPerTarget.
+	Concurrency *control.ConcurrencyLimits
+	// Grant is WHY an external system says this access was granted (contract
+	// v4, D16), in the only form anything on this side of the wire holds it:
+	// an opaque handle the telemetry pipeline made and nothing can read.
+	//
+	// THE TYPE IS THE RULE. D2 says the proxy originates no policy and D16 says
+	// this field is recorded and never consulted, and a *logging.Grant has no
+	// exported field and no exported method, so the only thing the route — or
+	// the engine it is handed to — can do with it is give it back to the
+	// recorder. 0018's TestGrantContextIsNotConsultedByAnyDecisionPath says in
+	// an AST walk what this field says in the type system.
+	Grant *logging.Grant
 	// Hop carries the chaining constraints of a next-hop route, connection
 	// direction included (D11, phase 0008).
 	Hop *control.HopMetadata
@@ -132,6 +158,27 @@ func (r *Route) FinalTarget() string {
 		return r.Host
 	}
 	return ""
+}
+
+// MaxSessionsPerSubject is the ceiling on live sessions for this route's
+// subject, or zero for uncapped (D16). Absent and zero are one answer here, and
+// deliberately: a cap of zero sessions would be a route that denies everyone,
+// which is what an empty allow-list is for.
+func (r *Route) MaxSessionsPerSubject() int {
+	if r.Concurrency == nil {
+		return 0
+	}
+	return r.Concurrency.PerSubject
+}
+
+// MaxSessionsPerTarget is the ceiling on live sessions to this route's target,
+// or zero for uncapped (D16). The two scopes are independent: either may be set
+// without the other.
+func (r *Route) MaxSessionsPerTarget() int {
+	if r.Concurrency == nil {
+		return 0
+	}
+	return r.Concurrency.PerTarget
 }
 
 // MaxHops is the chain cap Hoplock Control set on this route, or zero when
@@ -315,8 +362,15 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		Filter:                  resp.FilterPolicy.Clone(),
 		Enforcement:             resp.Enforcement.Clone(),
 		SessionDeadline:         cloneInstant(resp.SessionDeadline),
-		Hop:                     resp.Hop.Clone(),
-		DecisionID:              resp.DecisionID,
+		RequireSessionCapture:   resp.RequireSessionCapture,
+		Concurrency:             resp.Concurrency.Clone(),
+		// Rendered by the telemetry pipeline, from the response, for the reason
+		// on the field: every package between here and the recorder carries a
+		// handle it cannot read. It is built per call, so a cached decision
+		// shared with another session shares no map with this route either.
+		Grant:      logging.GrantFrom(resp),
+		Hop:        resp.Hop.Clone(),
+		DecisionID: resp.DecisionID,
 	}
 	// A v2 single object is a one-entry ladder, which is exactly D6a's original
 	// behaviour (control.AuthorizeResponse.Ladder says the same thing on the
@@ -335,11 +389,13 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		route.Port = r.defaultPort
 	}
 
-	r.logf("routing: session=%s subject=%s target=%s route=%s permissions=%s channels=%v exec=%s enforcement=%s/%s hop=%s deadline=%s decision=%s",
+	r.logf("routing: session=%s subject=%s target=%s route=%s permissions=%s channels=%v exec=%s enforcement=%s/%s hop=%s deadline=%s capture=%t caps=%d/%d decision=%s",
 		req.Conn.SessionID, req.Identity.Subject, req.Target, route.Type,
 		route.Permissions, route.PermittedChannels, route.ExecMode(),
 		route.EnforcedExecution(), route.EnforcedReach(),
-		route.HopDirection(), formatDeadline(route.SessionDeadline), route.DecisionID)
+		route.HopDirection(), formatDeadline(route.SessionDeadline),
+		route.RequireSessionCapture, route.MaxSessionsPerSubject(), route.MaxSessionsPerTarget(),
+		route.DecisionID)
 	return route, nil
 }
 

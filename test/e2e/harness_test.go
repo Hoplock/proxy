@@ -475,6 +475,66 @@ func tryFetchLogs() (debugLogs, error) {
 	return logs, json.NewDecoder(resp.Body).Decode(&logs)
 }
 
+// setLogSink takes the mock Hoplock Control's LOG DESTINATION down, or brings it
+// back, leaving the rest of the server up (cmd/mock-control, POST
+// /debug/logs/sink).
+//
+// It exists for D16's capture bound. "The network is down but the disk buffer is
+// accepting records" cannot be staged by stopping Hoplock Control: a session
+// cannot be authorized at all then, so the check under test never runs. What is
+// needed is a proxy whose records are undeliverable while its decisions still
+// arrive, which is also a real failure — the log destination and the policy
+// service are not the same service.
+func setLogSink(t *testing.T, accepting bool) {
+	t.Helper()
+	body := fmt.Sprintf(`{"accepting":%t}`, accepting)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+controlAddr+"/debug/logs/sink", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build the log-sink request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("set the log sink accepting=%t: %v", accepting, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("set the log sink accepting=%t: status %s", accepting, resp.Status)
+	}
+}
+
+// recordsOfSession is every delivered record for one session, on either path.
+func recordsOfSession(t *testing.T, sessionID string) []logRecord {
+	t.Helper()
+	logs := fetchLogs(t)
+	var out []logRecord
+	for _, rec := range append(append([]logRecord{}, logs.Batched...), logs.Priority...) {
+		if rec.SessionID == sessionID {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// sessionOfRecord finds the session that produced a record naming text, which is
+// how a scenario gets the id of a session that SUCCEEDED: the proxy quotes a
+// session id to the user only when something failed (PLAN §4.3), so a marker in
+// a command is the only handle a working session leaves.
+func sessionOfRecord(t *testing.T, text string) string {
+	t.Helper()
+	logs := fetchLogs(t)
+	for _, rec := range append(append([]logRecord{}, logs.Batched...), logs.Priority...) {
+		if rec.mentions(text) {
+			return rec.SessionID
+		}
+	}
+	return ""
+}
+
 // deviceAccounts reads the fake appliance's administrator table.
 //
 // It is the device half of what testNoEphemeralLeak reads off the target with

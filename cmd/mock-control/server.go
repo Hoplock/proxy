@@ -24,6 +24,14 @@ const (
 	pathDebugLogs   = "/debug/logs"
 	pathDebugReset  = "/debug/reset"
 	pathDebugRevoke = "/debug/revoke"
+	// pathDebugLogSink takes the LOG DESTINATION down and brings it back while
+	// the rest of the server stays up (phase 0031). It exists for one claim that
+	// cannot be made any other way: D16's require_session_capture is satisfied by
+	// a proxy spooling to its disk buffer (PLAN §7), and showing that needs a
+	// proxy whose records are undeliverable and whose authorize calls still work
+	// — stopping the whole server instead would stop the session being authorized
+	// at all, so the check under test would never run.
+	pathDebugLogSink = "/debug/logs/sink"
 )
 
 // serverOptions are the knobs main passes to the server.
@@ -55,7 +63,10 @@ type server struct {
 	capabilities map[string]*control.TargetCapabilities
 	batched      []control.LogRecord
 	priority     []control.LogRecord
-	seenLogs     map[string]bool // record_id -> stored, for de-duplication
+	// logSinkDown makes both log endpoints answer 503 (pathDebugLogSink). It is
+	// a property of the mock and of nothing in the contract.
+	logSinkDown bool
+	seenLogs    map[string]bool // record_id -> stored, for de-duplication
 	// subs are the open revocation streams; events are the retained history a
 	// reconnecting proxy replays from, trimmed to the fixture's buffer size.
 	subs           map[*subscriber]bool
@@ -153,6 +164,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET "+pathDebugLogs, s.handleDebugLogs)
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
+	mux.HandleFunc("POST "+pathDebugLogSink, s.handleDebugLogSink)
 	return mux
 }
 
@@ -461,6 +473,9 @@ func (s *server) handleIngestLogBatch(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProxy(w, r) {
 		return
 	}
+	if s.logSinkUnavailable(w) {
+		return
+	}
 	var req control.LogBatchRequest
 	if !decode(w, r, &req) {
 		return
@@ -495,6 +510,9 @@ func (s *server) handleIngestLogBatch(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleIngestPriorityLog(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProxy(w, r) {
+		return
+	}
+	if s.logSinkUnavailable(w) {
 		return
 	}
 	var req control.LogPriorityRequest
@@ -537,8 +555,43 @@ func (s *server) handleDebugLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleDebugLogSink takes the log destination down or brings it back.
+//
+// A 503 is deliberate: it is what an unavailable service answers, so the proxy's
+// shipper treats the records as owed and spools them rather than dropping them —
+// which is the behaviour a route requiring capture depends on (D16).
+func (s *server) handleDebugLogSink(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		// Accepting is whether the log endpoints take records. Absent means
+		// false, so a bodiless POST takes the sink down.
+		Accepting bool `json:"accepting"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.mu.Lock()
+	s.logSinkDown = !body.Accepting
+	s.mu.Unlock()
+	s.logger.Printf("mock-control: log sink accepting=%t", body.Accepting)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// logSinkUnavailable answers a log endpoint while the sink is down, and reports
+// whether it did.
+func (s *server) logSinkUnavailable(w http.ResponseWriter) bool {
+	s.mu.Lock()
+	down := s.logSinkDown
+	s.mu.Unlock()
+	if !down {
+		return false
+	}
+	writeError(w, http.StatusServiceUnavailable, "unavailable", "the log destination is not accepting records")
+	return true
+}
+
 func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
+	s.logSinkDown = false
 	s.batched = nil
 	s.priority = nil
 	s.authorizations = nil

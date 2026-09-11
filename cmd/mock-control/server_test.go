@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -962,6 +963,21 @@ func (m *mock) debugLogs(t *testing.T) debugLogs {
 	return out
 }
 
+// debugLogSink takes the mock's log destination down or brings it back
+// (pathDebugLogSink).
+func (m *mock) debugLogSink(t *testing.T, accepting bool) {
+	t.Helper()
+	body := strings.NewReader(`{"accepting":` + strconv.FormatBool(accepting) + `}`)
+	resp, err := http.Post(m.srv.URL+pathDebugLogSink, "application/json", body)
+	if err != nil {
+		t.Fatalf("POST %s: %v", pathDebugLogSink, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST %s: status %d", pathDebugLogSink, resp.StatusCode)
+	}
+}
+
 // debugReset clears the mock's stored state.
 func (m *mock) debugReset(t *testing.T) {
 	t.Helper()
@@ -1705,5 +1721,57 @@ func TestInvalidV4FixturesAreRefusedAtStartup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLogSinkCanGoDownWithoutTheServer is what the e2e topology needs of the
+// mock to demonstrate D16's capture bound: the log destination refuses records
+// while authorize keeps answering, so a proxy can be made to spool to its disk
+// buffer without being cut off from the decision it needs to start a session at
+// all.
+//
+// The refusal has to be a 503 rather than anything else, because that is what
+// makes the shipper treat the records as OWED — a rejection it read as permanent
+// would drop them, and the scenario would then be proving the opposite of what
+// it claims.
+func TestLogSinkCanGoDownWithoutTheServer(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	ctx := context.Background()
+	record := func(id string) *control.LogBatchRequest {
+		return &control.LogBatchRequest{Records: []control.LogRecord{{
+			RecordID: id, SessionID: "session-1", Timestamp: testConn().Timestamp,
+			Kind: control.LogKindSessionStart, Severity: control.SeverityInfo,
+		}}}
+	}
+
+	m.debugLogSink(t, false)
+	_, err := m.client.IngestLogBatch(ctx, record("r1"))
+	if err == nil {
+		t.Fatal("the log endpoint accepted a batch while the sink was down")
+	}
+	if control.IsUnauthorized(err) {
+		t.Errorf("the refusal reads as a denial (%v); an unavailable sink is an outage", err)
+	}
+	if _, err := m.client.IngestPriorityLog(ctx, &control.LogPriorityRequest{
+		Record: record("r2").Records[0],
+	}); err == nil {
+		t.Error("the priority endpoint accepted a record while the sink was down")
+	}
+
+	// Everything else still works, which is the whole point of the switch.
+	if _, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
+		Target:   "host.company.com",
+		Identity: &control.Identity{Subject: "alice@example.com", Login: "alice"},
+		Conn:     testConn(),
+	}); err != nil {
+		t.Errorf("Authorize failed while only the log sink was down: %v", err)
+	}
+
+	m.debugLogSink(t, true)
+	if _, err := m.client.IngestLogBatch(ctx, record("r3")); err != nil {
+		t.Fatalf("IngestLogBatch after the sink came back: %v", err)
+	}
+	if stored := m.debugLogs(t); len(stored.Batched) != 1 {
+		t.Errorf("stored %d records, want the one delivered after the sink came back", len(stored.Batched))
 	}
 }

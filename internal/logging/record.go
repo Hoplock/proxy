@@ -37,6 +37,43 @@ const (
 	AttrStage           = "stage"            // which part of setup failed
 	AttrError           = "error"            // the failure text, never a credential
 
+	// The other three session bounds (D16, contract v4, phase 0031). The
+	// deadline is AttrSessionDeadline above.
+	//
+	// AttrCaptureRequired marks a session whose route may only run if it is
+	// recorded. It is on the authorize record because the bound is a fact about
+	// the decision: an auditor reading a session that ran has to be able to see
+	// that this one would have been refused unrecorded.
+	AttrCaptureRequired = "session_capture_required"
+	// AttrConcurrencyLimitSubject and AttrConcurrencyLimitTarget are the two
+	// ceilings in force on a session that was admitted, on its authorize
+	// record. A session that ran under a cap of two is a different fact from one
+	// that ran under none, and only the record can say which.
+	AttrConcurrencyLimitSubject = "concurrency_limit_subject"
+	AttrConcurrencyLimitTarget  = "concurrency_limit_target"
+	// AttrConcurrencyScope, AttrConcurrencyLimit and AttrConcurrencyLive are the
+	// cap a REFUSED session hit: which ceiling (subject or target), what it was,
+	// and how many sessions this proxy already held. The user is told none of it
+	// — a concurrency refusal is a policy denial and stays vague (PLAN §4.3) —
+	// so the record is the only place the three exist.
+	AttrConcurrencyScope = "concurrency_scope"
+	AttrConcurrencyLimit = "concurrency_limit"
+	AttrConcurrencyLive  = "concurrency_live"
+	// The grant context (D16): WHY an external system says this access was
+	// granted, copied onto every record the session produces and read by
+	// nothing (D2, D15). See grant.go.
+	AttrGrantSystem      = "grant_system"
+	AttrGrantReference   = "grant_reference"
+	AttrGrantWindowStart = "grant_window_start"
+	AttrGrantWindowEnd   = "grant_window_end"
+	// AttrGrantAdditional carries additional_context's STRING form.
+	AttrGrantAdditional = "grant_additional_context"
+	// AttrGrantAdditionalPrefix namespaces additional_context's OBJECT form,
+	// one attribute per field — the AttrDeviceFieldPrefix pattern, for the same
+	// reason: "which sessions did this change authorise" is a question about a
+	// field, and a flattened object turns it into a substring search.
+	AttrGrantAdditionalPrefix = "grant_additional_context."
+
 	// Route and policy (the authorize record).
 	AttrRouteType        = "route_type"         // direct or nexthop
 	AttrPermissions      = "permissions"        // the opaque permission-set name
@@ -290,6 +327,10 @@ type SessionRecorder struct {
 
 	mu   sync.Mutex
 	info SessionInfo
+	// grant is the session's grant context (D16, grant.go). It arrives with the
+	// authorize decision rather than at construction, and from then on every
+	// record carries it.
+	grant *Grant
 
 	records atomic.Uint64
 }
@@ -334,6 +375,39 @@ func (r *SessionRecorder) Identify(subject, login, tgt string) {
 	}
 }
 
+// SetGrant records why an external system says this access was granted, so that
+// every record made from here on carries it (D16, grant.go).
+//
+// It is a separate call from Session rather than a field on SessionInfo because
+// the grant context arrives with the authorize decision, which is later than the
+// records the session has already produced — a handshake and an authentication
+// happen before any policy answer exists. Those records simply carry less, which
+// is the same rule Identify follows.
+func (r *SessionRecorder) SetGrant(g *Grant) {
+	if r == nil || g == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.grant = g
+}
+
+// Deliverable reports whether a record made now has somewhere to go — the
+// predicate D16's require_session_capture turns on (PLAN §6.5).
+//
+// It is Shipper.Deliverable's answer, deliberately: A DISK BUFFER IS A LOGGING
+// PATH, so a proxy spooling faithfully to disk during a Control outage still
+// satisfies a route that requires capture, and only a proxy with no path at all
+// — which includes one built without a pipeline, where this recorder is nil —
+// does not. Reusing it is also what keeps the capture bound and PLAN §5.3's
+// device-attribution rule answering the same question the same way.
+func (r *SessionRecorder) Deliverable() bool {
+	if r == nil {
+		return false
+	}
+	return r.shipper.Deliverable()
+}
+
 // Records is how many records this session has produced. It exists for tests
 // and for an operator asking how chatty a session was.
 func (r *SessionRecorder) Records() uint64 {
@@ -368,6 +442,7 @@ func (r *SessionRecorder) Record(ev Event) {
 func (r *SessionRecorder) build(ev Event) control.LogRecord {
 	r.mu.Lock()
 	info := r.info
+	grant := r.grant
 	r.mu.Unlock()
 
 	at := ev.At
@@ -379,6 +454,10 @@ func (r *SessionRecorder) build(ev Event) control.LogRecord {
 		attrs = Attrs{}
 	}
 	attrs.Set(AttrProxyID, info.ProxyID)
+	// Stamped here rather than at each capture point, so "every record for the
+	// session carries the grant context" is a property of the one function that
+	// builds a record and not of thirty call sites (D16).
+	attrs = grant.stamp(attrs)
 
 	sev := ev.Severity
 	if sev == "" {
