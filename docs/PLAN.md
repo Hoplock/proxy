@@ -1273,6 +1273,18 @@ key; FortiLink is a deployment fact, not a target identity. A managing FortiGate
 closing SSH on it is an ordinary unreachable device — a **retryable failure**,
 not a skipped rung.
 
+**The unit is asked what it is before anything is configured.** The two
+platforms accept the same `config system admin` / `set accprofile` /
+`set password` sequence, so a `fortiswitchos` route pointed at a FortiGate would
+otherwise create a privileged administrator on somebody's **firewall**, report
+success, and file an audit record naming a switch — nothing downstream catches
+it. The driver confirms the platform from `get system status` and refuses
+outage-class (`ErrNotAFortiSwitch`) when it does not answer as a FortiSwitch.
+Like the VDOM and unit-shape refusals this is deliberately **not**
+`ErrUnsupported`: the platform and the driver are both capable, and what is
+wrong is which device the route names — so skipping the rung would answer a
+misrouted route by serving the session on a credential the server ranked lower.
+
 **Known gaps, carried rather than closed.** The proxy-wide `access_profile` is
 one FortiOS-shaped string for every platform, so the switch driver runs with no
 default when the configured value is a FortiOS built-in — a route naming its own
