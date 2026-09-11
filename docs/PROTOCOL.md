@@ -48,6 +48,15 @@ Read in this order and **stop reading as soon as you have what you need**:
    - Read the sections and decisions your prompt's "Read first" names — a
      decision by id (`grep -n '^- \*\*D13 ' docs/PLAN.md`), a section by range
      (`sed -n '/^### 5.3/,/^## 6/p' docs/PLAN.md`).
+   - **Three indexes inside the plan answer most questions without the body**,
+     and each says what it does not cover. §2's **decision register** — what
+     each `D` settles, whether it still says that, and where it is rendered.
+     §5.3's **"What is true today"** — the composed current state of the device
+     seam, which is otherwise eight append-only layers deep. §10's **composed
+     mapping** — what an old prompt number resolves to, so you never compose
+     the renumbering notes by hand. Use them the way you use a learnings
+     summary: read the index, open the body only when you are changing that
+     area or need the reasoning.
    - **Widen whenever you are about to make an architectural choice and cannot
      find that the plan already made it.** Budget is never a reason to guess: a
      re-derived decision is the exact failure this file exists to prevent, and
@@ -220,8 +229,13 @@ prefix indicating implementation order.
   comments — so every revision records its old→new mapping as a **Renumbering
   note** at the end of `docs/PLAN.md` §10, says which live references it updated,
   and states that `docs/learnings/` and `prompts/implemented/` were **not**
-  rewritten and must be read through the mapping. The notes stack, newest first;
-  compose them when resolving an old reference.
+  rewritten and must be read through the mapping.
+  **Do not compose those notes by hand.** They stack, there are eleven, and the
+  chain is six deep — so §10 carries the **composed mapping** above them, and a
+  renumbering PR regenerates it as part of the same change. Resolve an old
+  reference by the phase's *subject* against that table, never by its digits
+  alone: 30 of the 37 numbers in use are simultaneously a live phase and a
+  historical alias of a different one.
 - **A withdrawn number is retired for good** — never reused, even though nothing
   occupies it (**0021** and **0030** today; see `docs/learnings/0021-…` and
   `docs/learnings/0030-…`). Those are the gaps the contiguity rule above does not
