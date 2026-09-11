@@ -38,8 +38,9 @@
 - **What the NEXT session must know:** 0030 was **rewritten in place**, not
   renumbered — it is now the FortiLink-*mediated* phase for estates that keep
   switches unroutable. Nothing else moved and no number was retired. And
-  `auth.target.ephemeral_account.access_profile` is now under-specified: it is
-  one FortiOS-shaped value for every platform.
+  `auth.target.ephemeral_account.access_profile` is under-specified — one
+  FortiOS-shaped value for every platform — and the fix is queued as **0036**,
+  which moved the contract collapse to **0037**.
 
 ## Details
 
@@ -219,10 +220,12 @@ written into 0030 as a hazard that phase has to answer.
 FortiSwitchOS driver … nearly the FortiGate driver under another platform
 name") is what this phase delivered. Its new content is the estate this
 phase's decision does *not* serve: switches deliberately unroutable from the
-proxy. No number moved, nothing was retired, the queue stays contiguous at
-**0030–0036**, and there is therefore **no mapping to compose** — a reference
-to "0030" resolves to whatever `prompts/queued/0030-…` says today. The queue
-note at the end of `docs/PLAN.md` §10 says the same.
+proxy. No number moved for it, nothing was retired, and there is therefore
+**no mapping to compose** for that half — a reference to "0030" resolves to
+whatever `prompts/queued/0030-…` says today. The queue note at the end of
+`docs/PLAN.md` §10 says the same. (The queue itself has since grown to
+**0030–0037**: the access-profile follow-up below *is* a renumbering, and it
+has its own note above that one.)
 
 That prompt carries this session's findings so its author does not re-derive
 them: both documented ways into a managed switch's CLI and what each costs;
@@ -236,12 +239,28 @@ field, the reaper must partition its bookkeeping on **declared** such fields
 only — partitioning on all of them would make a VDOM route's live account look
 like another route's orphan.
 
-Two smaller things, neither done here for scope:
+**The access-profile gap is queued as 0036**, on the user's instruction after
+review of this PR. Nothing in the queue touched
+`auth.target.ephemeral_account.access_profile`, so
+`prompts/queued/0036-per-platform-access-profile.md` is new, and the contract
+collapse moved **0036 → 0037** to stay last — one candidate answer (a
+route-named default decoupled from 0019's rung) revises `api/`. That prompt
+carries the three defensible answers, this phase's workaround and why it is a
+workaround, and the two alternatives already rejected so it does not
+re-litigate them. Mapping and updated live references are in the newest
+run-order note at the end of `docs/PLAN.md` §10.
 
-- `deploy/control/fixtures.template.yaml`'s first device route still says
-  "FortiOS has no per-administrator expiry field", which phase 0015 disproved
-  and 0017 acted on. The route's *choice* of `proxy-enforced` is fine; only the
-  stated reason is stale.
+Two smaller things:
+
+- **Fixed on the same instruction:** `deploy/control/fixtures.template.yaml`'s
+  first device route said "FortiOS has no per-administrator expiry field",
+  which phase 0015 disproved and 0017 acted on. The route's *choice* of
+  `proxy-enforced` was always fine; only the stated reason was stale. Writing
+  the correction surfaced something else worth knowing: **no** fixture route
+  asks for `target-enforced`, so the topology does not exercise 0017's schedule
+  path end to end at all. That is a pre-existing coverage gap and the comment
+  now names it rather than closing it — adding such a route is its own change,
+  not a comment fix.
 - The hardware list in `docs/FORTIOS-DOC-VERIFICATION.md` gained three items:
   the schedule contradiction, the name limit, and whether deauthorization
   really leaves `config system admin` intact.

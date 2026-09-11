@@ -2875,7 +2875,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 >
 > So: **0022** (the decision cache, **delivered**) → **0023** (host-key report
 > reuse, **delivered**) → **0024** (the session deadline), then the rest by
-> number, with **0036**, the contract collapse, last. The first three are
+> number, with **0037**, the contract collapse, last. The first three are
 > promoted because they make an argument this plan already relies on *true*
 > rather than merely written down: 0022 and 0023 are the cheaper answer that
 > replaced the withdrawn 0021 (D17) — now measured, not projected — and 0024
@@ -2918,12 +2918,35 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reports a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. Classifies it as its own stage, discloses it on §4.3's terms, and records it critically with the key's fingerprint — reusing 0025's single copy of x/crypto's wording rather than adding a second. **Conditional in one part:** whether it should also be *contained* is a question this phase must answer and write down, because the blast radius that justified 0025's breaker (an OpenSSH target penalising the proxy's source address) does not exist when the far end is another Hoplock proxy. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Conditional — it asks a question and may answer "no", as 0032 does.** Phase 0026 drove `password-mfa` with a real client and found that the denial discloses nothing but the *flow* does: a correct password is answered with an MFA challenge and a wrong one never is, so the challenge's presence is a first-factor oracle, and its duration says the same thing more quietly. The proxy cannot fix it alone — Control decides when a challenge is issued (D2) — so the phase decides whose problem it is, whether a decoy challenge is worth what it costs in Control load and in an unclosable timing channel, and whether it belongs to the prototype at all (§12 puts a real IdP, where enumeration defences usually live, out of scope). A "yes" closes it in `api/`, `cmd/mock-control` and a scenario; a "no" is written up and the prompt deleted, as 0021 was. Added by 0026 |
 | 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lives on the **target**, so a proxy RESTART — no attacker needed — leaves a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target has no continuity at all. Worse, a target that can store nothing (§5.3's devices; an ordinary Linux host with a read-only root filesystem) is refused outright by 0027 on a route that worked before it. Holds the floor at Hoplock Control as an **exclusive per-proxy uid-block lease** — which closes the multi-proxy case by construction, is safe to hold across a Control outage because the block cannot have been granted to anyone else, and costs one call per BLOCK rather than per session, so 0022 and 0023's 3.17 → 1.17 per-connection budget is untouched. The target-side mark is demoted to an optional signal that may only ever RAISE the floor, and its absence stops being an outage. **Two things it must not do, both settled in 0027's learnings:** put the floor on the authorize response (that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one), and assume the proxy can write anything on the target. Contract change — carries a cross-repo obligation |
-| 0036 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0035 to make room for 0027's follow-up |
+| 0036 | Per-platform access profile             | `auth.target.ephemeral_account.access_profile` is one string for every platform a proxy serves, and it is FortiOS-shaped: FortiOS documents three built-in profiles and FortiSwitchOS documents one, so a proxy fronting both estates cannot express a correct value. Phase 0029 worked around it — the switch driver is built with no default when the configured profile is a FortiOS built-in, so a route naming `enforcement.platform_role` is served and one relying on the default is refused outage-class — and queued the fix. The question is where a created administrator's scope comes from when the route names none: per-platform configuration (no contract change), a route-named default decoupled from 0019's rung (a contract change, weighed against D2), or driver-declared defaults (which 0015 explicitly refused). Must run before the collapse, because one candidate answer revises `api/` (new prompt, added by phase 0029 and raised by the user on its PR) |
+| 0037 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0036 to make room for 0029's follow-up |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
-> **Queue note (phase 0029), newest — this one is NOT a renumbering.** 0029
+> **Renumbering note (the per-platform access profile), newest — compose it
+> with the ones below.** Phase 0029 shipped a second device platform and found
+> that `auth.target.ephemeral_account.access_profile` — one string for every
+> platform — is FortiOS-shaped and simply wrong for a FortiSwitch, which
+> documents one built-in profile where FortiOS documents three. It worked
+> around that (§5.3, "A note on the proxy-wide access profile") and the user
+> asked on its PR for the fix to be queued. Because one of its two candidate
+> answers revises `api/` — a route-named default decoupled from 0019's rung —
+> it must run **before** the contract collapse, so it was inserted at **0036**
+> and the collapse moved **0036 → 0037**. That is the whole mapping —
+> **0036→0037**, one prompt — and the queue is contiguous at **0030–0037**.
+>
+> Live references updated in place: this section's phase table, the collapse
+> prompt's own title, number history, blocker list and hand-off paths, and the
+> stale FortiOS-expiry comment on the first device route in
+> `deploy/control/fixtures.template.yaml` (which phase 0015 disproved and 0017
+> acted on; it now also records that **no** fixture route asks for
+> `target-enforced`, so the topology does not exercise 0017's schedule path end
+> to end — a pre-existing coverage gap, named rather than closed).
+> `docs/learnings/` and `prompts/implemented/` were **not** rewritten and must
+> be read through this mapping.
+>
+> **Queue note (phase 0029) — this one is NOT a renumbering.** 0029
 > shipped the FortiSwitch driver its prompt asked for and settled the
 > target-identity question, but against the opposite premise (§5.3, "As decided
 > (phase 0029)"). That delivered what queued prompt **0030** — "Standalone

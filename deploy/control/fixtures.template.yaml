@@ -276,9 +276,21 @@ routes:
           # commands against the wrong parser (D13).
           platform: fortigate
           credential_kind: password
-          # FortiOS has no per-administrator expiry field, so the proxy holds
-          # the deadline. A route asking for target-enforced here would be a
-          # skipped rung rather than a session served on a promise nobody keeps.
+          # The proxy holds this route's deadline — by the route's CHOICE, not
+          # because the platform cannot. This comment used to say FortiOS "has
+          # no per-administrator expiry field", which phase 0015 disproved and
+          # phase 0017 acted on: `set schedule` names a `config firewall
+          # schedule onetime` entry with an absolute `set end`, the unit denies
+          # the login out of window, and the driver declares `EnforcesExpiry`
+          # and renders it. So `target-enforced` here would be SERVED, not
+          # skipped — at the cost of a second object on the unit per session,
+          # with its own teardown and its own orphan class (PLAN §5.3, "As
+          # taken (phase 0017)").
+          #
+          # NOTE: no route in this file asks for `target-enforced`, so the
+          # topology does not exercise 0017's schedule path end to end at all.
+          # That is a coverage gap rather than a decision, and it predates
+          # phase 0029, which only corrected the sentence above.
           expiry_posture: proxy-enforced
           lifetime_seconds: "900"
 
