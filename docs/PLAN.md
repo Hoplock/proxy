@@ -83,7 +83,7 @@ three times and you only learn that several hundred words in.
 | **D13** | Ephemeral **accounts on devices**, through a per-platform driver seam | new (0013), **amended three times**: 0014 (persistence may be declared), 0015 (declarations must be decisions), 0017 (a declaration carries its reasoning) | §5.3 |
 | **D14** | The server sends an ordered **ladder** of credential methods; first satisfiable wins | amends D6a (0013) | §4.2, §5.3 |
 | **D15** | External authorization context (tickets, incidents, scan windows) belongs to Control | new (0018) | §6.5 |
-| **D16** | Unbounded privilege is bounded by **time and the record**, not by command policy | new (0018) | §6.5, §4.3 |
+| **D16** | Unbounded privilege is bounded by **time and the record**, not by command policy | new (0018); **fully enforced**: `session_deadline` by 0024, the other three bounds by 0031 | §6.5, §4.3, §7 |
 | **D17** | Machine identities need a long-lived connection model | ⊘ **WITHDRAWN** (phase 0021, itself retired). **D2 is not amended.** Read the verdict at the head of the entry, not the argument | §9.1 |
 
 **Two reading rules this table encodes.** An entry that says *amends* replaces
@@ -3246,9 +3246,8 @@ and never reused (§6).
 
 **The name is the disambiguator, not the number.** Almost every number in this
 repository is *both* a live phase and a historical alias of a different one —
-**30 of 37** are, on today's queue. `0031` is the session-bounds prompt today
-and is what the decision cache (now `0022`) was called before the run-order
-revision; `0025` is target-credential rejection today and is what the session
+**29 of 37** are. `0031` is the session-bounds phase today and is what the
+decision cache (now `0022`) was called before the run-order revision; `0025` is target-credential rejection today and is what the session
 deadline (now `0024`) was called. So a bare number in a frozen document is
 genuinely ambiguous, and resolving it by number alone is guesswork.
 

@@ -41,8 +41,8 @@ Read in this order and **stop reading as soon as you have what you need**:
 
 1. `docs/PROTOCOL.md` — this file, always, in full. It is the **only** file on
    this list you read whole; it is short by design so that it can be.
-2. `docs/PLAN.md` — the architecture, and never re-derived. It is ~50k tokens,
-   so it is read by **navigation, not front to back**:
+2. `docs/PLAN.md` — the architecture, and never re-derived. It is ~56k tokens
+   and grows every phase, so it is read by **navigation, not front to back**:
    - `grep -n "^#\{1,3\} " docs/PLAN.md` prints the section index (~270 tokens).
      Start there, every time.
    - Read the sections and decisions your prompt's "Read first" names — a
@@ -69,7 +69,7 @@ Read in this order and **stop reading as soon as you have what you need**:
 4. Your target prompt in `prompts/queued/`.
 
 **Why PLAN.md is navigated rather than read.** This said "always, in full"
-until the plan outgrew it. §5 alone is now ~12k tokens and §6 another ~12k, so
+until the plan outgrew it. §5 alone is now ~13k tokens and §6 another ~12k, so
 obeying that literally spends most of a session's budget before the prompt is
 even opened, on sections the phase will never touch — and a session that has
 burned its budget reading is exactly the one that then does thin work. What the
@@ -84,10 +84,16 @@ right places. Staying under ~60% context is a hard goal; if you're approaching
 it, prefer finishing a smaller, correct slice over reading more.
 
 **Know what step 3 costs you.** With PLAN.md navigated, the summary blocks are
-the largest fixed cost at startup — ~17k tokens across 30 files today, and one
+the largest fixed cost at startup — ~18k tokens across 31 files today, and one
 file longer every phase. They are still worth it (that is the whole hand-off
 channel, §5), but keep yours **tight**: a summary block that sprawls is charged
 to every session that follows, forever.
+
+**Every figure in this section is a snapshot, last measured after phase 0031.**
+They are here because the argument needs a scale, not because the digits are
+load-bearing — so treat a drifted number as drift, not as a reason to doubt the
+rule. If you need the current one, measure it; if you are already editing this
+section, refresh it.
 
 ---
 
@@ -234,7 +240,7 @@ prefix indicating implementation order.
   chain is six deep — so §10 carries the **composed mapping** above them, and a
   renumbering PR regenerates it as part of the same change. Resolve an old
   reference by the phase's *subject* against that table, never by its digits
-  alone: 30 of the 37 numbers in use are simultaneously a live phase and a
+  alone: 29 of the 37 numbers in use are simultaneously a live phase and a
   historical alias of a different one.
 - **A withdrawn number is retired for good** — never reused, even though nothing
   occupies it (**0021** and **0030** today; see `docs/learnings/0021-…` and
