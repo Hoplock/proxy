@@ -61,7 +61,15 @@ var renumberings = []struct {
 	{"contract-v2", map[int]int{6: 7, 7: 8, 8: 9, 9: 10, 10: 11, 11: 12}, []int{6}},
 	{"privileged-access", map[int]int{13: 15, 14: 16}, []int{13, 14, 17, 18}},
 	{"fortios-corrections", map[int]int{15: 16, 16: 17, 17: 18, 18: 19, 19: 20, 20: 21, 21: 22, 22: 23, 23: 24, 24: 25, 25: 26}, []int{15}},
-	{"device-completion", map[int]int{16: 18, 17: 19, 18: 20, 19: 21, 20: 22, 21: 23, 22: 24, 23: 25, 24: 26, 25: 27, 26: 28}, []int{16, 17}},
+	// The two deferred phases were NOT created here: phase 0015's learnings
+	// queued multi-VDOM as 0027 and target-enforced expiry as 0028 (at the end
+	// of the queue), and this revision moved them to the head. The note's own
+	// resolution example says so — "0015's learnings, which queue multi-VDOM as
+	// '0027' (now 0016) and target-enforced expiry as '0028' (now 0017)" — so
+	// 27→16 and 28→17 belong in the mapping. Recording them as createdHere
+	// instead lost both aliases from §10's composed table, which is exactly the
+	// failure createdHere exists to prevent, in the other direction.
+	{"device-completion", map[int]int{16: 18, 17: 19, 18: 20, 19: 21, 20: 22, 21: 23, 22: 24, 23: 25, 24: 26, 25: 27, 26: 28, 27: 16, 28: 17}, nil},
 	{"run-order", map[int]int{31: 22, 32: 23, 25: 24, 22: 25, 23: 26, 24: 27, 26: 28, 27: 29, 28: 30, 30: 31, 33: 32}, nil},
 	{"admission-policy", map[int]int{32: 33}, []int{32}},
 	{"hop-cred-rejection", map[int]int{33: 34}, []int{33}},
@@ -144,6 +152,18 @@ func TestDecisionRegisterCoversEveryDecision(t *testing.T) {
 	}
 }
 
+// mustStateDecisionRange are the live summaries that tell a reader how many
+// decisions the plan carries without opening it. They are asserted to state the
+// range at all, not only to state it correctly: a test that checks "any range
+// you state must be current" cannot notice the range being DELETED rather than
+// updated, and a summary that quietly stops summarising is the same loss to the
+// reader as one that lies.
+//
+// docs/PLAN.md is deliberately not on this list — it is the thing being
+// summarised, and today it states no range — but it is still scanned below, so
+// a range added to it later has to be current like any other.
+var mustStateDecisionRange = []string{"docs/PROTOCOL.md", "README.md"}
+
 // TestDecisionRangeIsCurrent pins the "D1–Dn" range quoted in prose.
 //
 // Two live files summarise the decisions as a range, and both drifted: they said
@@ -161,27 +181,46 @@ func TestDecisionRangeIsCurrent(t *testing.T) {
 			}
 		}
 	}
+	if highest == 0 {
+		t.Fatal("docs/PLAN.md §2: parsed no decisions, so there is no range to pin")
+	}
 	want := fmt.Sprintf("D1–D%d", highest)
 
 	rangeRe := regexp.MustCompile(`D1–D(\d+)`)
+	stated := map[string]int{}
 	for _, f := range []string{"docs/PLAN.md", "docs/PROTOCOL.md", "README.md"} {
 		b, err := os.ReadFile(filepath.Join(repoRoot, f))
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		for _, m := range rangeRe.FindAllString(string(b), -1) {
+			stated[f]++
 			if m != want {
 				t.Errorf("%s says %q; the plan now carries %s", f, m, want)
 			}
 		}
 	}
+	for _, f := range mustStateDecisionRange {
+		if stated[f] == 0 {
+			t.Errorf("%s no longer states the decision range (%s) — it is one of the live summaries a "+
+				"reader uses instead of opening the plan, so dropping the range is a loss to them, not a "+
+				"tidy-up. Restate it, or take the file off mustStateDecisionRange and say why", f, want)
+		}
+	}
 }
 
 // phases parses §10's phase table: number -> name, plus which are withdrawn.
+//
+// It is scoped to §10 rather than run over the whole plan. phaseRowRe matches
+// any table row whose first cell is four digits, and the plan is full of
+// tables — §9.1's measurements alone carry several. None of them opens with a
+// bare four-digit column today, but one that did would become a phantom phase
+// that every test here then demands a prompt file for. Scoping costs nothing
+// and removes the coupling.
 func phases(t *testing.T, plan string) (map[int]string, map[int]bool) {
 	t.Helper()
 	names, withdrawn := map[int]string{}, map[int]bool{}
-	for _, l := range strings.Split(plan, "\n") {
+	for _, l := range section(t, plan, "## 10. Phased delivery", "## 11.") {
 		m := phaseRowRe.FindStringSubmatch(l)
 		if m == nil {
 			continue
@@ -240,7 +279,12 @@ func TestComposedMappingMatchesTheRenumberings(t *testing.T) {
 
 	got := map[int][]int{}
 	gotWithdrawn := map[int]bool{}
-	for _, l := range section(t, plan, "### Resolving a number", "> **Queue note") {
+	// The mapping runs from its heading to the first of the frozen notes, and
+	// every note is a blockquote — so "> " is the boundary, not the wording of
+	// whichever note happens to be newest. Ending at "> **Queue note" meant a
+	// renumbering note added at the top (notes are newest-first, so that is
+	// where the next one goes) would silently extend the parsed range over it.
+	for _, l := range section(t, plan, "### Resolving a number", "> ") {
 		m := mapRowRe.FindStringSubmatch(l)
 		if m == nil {
 			continue

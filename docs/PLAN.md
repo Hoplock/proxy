@@ -84,7 +84,7 @@ three times and you only learn that several hundred words in.
 | **D14** | The server sends an ordered **ladder** of credential methods; first satisfiable wins | amends D6a (0013) | §4.2, §5.3 |
 | **D15** | External authorization context (tickets, incidents, scan windows) belongs to Control | new (0018) | §6.5 |
 | **D16** | Unbounded privilege is bounded by **time and the record**, not by command policy | new (0018); **fully enforced**: `session_deadline` by 0024, the other three bounds by 0031 | §6.5, §4.3, §7 |
-| **D17** | Machine identities need a long-lived connection model | ⊘ **WITHDRAWN** (phase 0021, itself retired). **D2 is not amended.** Read the verdict at the head of the entry, not the argument | §9.1 |
+| **D17** | Machine identities need a long-lived connection model | ⊘ **WITHDRAWN** (phase 0021, itself retired). **D2 is not amended.** Read the verdict at the **end** of the entry, not the argument | §9.1 |
 
 **Two reading rules this table encodes.** An entry that says *amends* replaces
 part of what it names — read both, newest first. An entry marked ⊘ is kept
@@ -1235,13 +1235,20 @@ source address is refused rather than rendered into an IPv4 field.
 
 **Expiry is per route, and costs a second object where it is taken.** A driver
 receives a lifetime **only** under `target-enforced` where it declares
-`EnforcesExpiry`; every other route reaches it with zero. A route that asks and
-cannot be served **fails** — it is never quietly downgraded. On FortiOS the
-deadline is a `config firewall schedule onetime` object named after the
-administrator, computed from the **device's** clock (`execute date` / `execute
-time`; a unit that will not report its clock is refused), with
-`expiration-days 0`. Removal deletes the **administrator first**, the schedule
-second, and attempts both every time.
+`EnforcesExpiry`; every other route reaches it with zero. The two halves of the
+rule above apply here and are not interchangeable: a route asking for
+`target-enforced` where the driver declares **no** `EnforcesExpiry` is a
+**skipped rung** (D14) — that is the live case on `fortiswitchos` — while an
+*attempt* that then cannot be served **fails** the session. Neither is ever
+quietly downgraded. On FortiOS the deadline is a `config firewall schedule
+onetime` object named after the administrator, computed from the **device's**
+clock (`execute date` / `execute time`; a unit that will not report its clock is
+refused), with `expiration-days 0`. The schedule is created **before** the
+administrator references it, so a schedule written into a scope the
+administrator cannot see fails the reference rather than leaving an
+administrator whose deadline the device ignores. Removal reverses that: it
+deletes the **administrator first**, the schedule second, and attempts both
+every time.
 
 **Removal and sweeping.** Teardown is idempotent and unwinds exactly the nesting
 the session opened. The **reaper is the primary removal path**, not a backstop,
@@ -1266,12 +1273,26 @@ key; FortiLink is a deployment fact, not a target identity. A managing FortiGate
 closing SSH on it is an ordinary unreachable device — a **retryable failure**,
 not a skipped rung.
 
+**The unit is asked what it is before anything is configured.** The two
+platforms accept the same `config system admin` / `set accprofile` /
+`set password` sequence, so a `fortiswitchos` route pointed at a FortiGate would
+otherwise create a privileged administrator on somebody's **firewall**, report
+success, and file an audit record naming a switch — nothing downstream catches
+it. The driver confirms the platform from `get system status` and refuses
+outage-class (`ErrNotAFortiSwitch`) when it does not answer as a FortiSwitch.
+Like the VDOM and unit-shape refusals this is deliberately **not**
+`ErrUnsupported`: the platform and the driver are both capable, and what is
+wrong is which device the route names — so skipping the rung would answer a
+misrouted route by serving the session on a credential the server ranked lower.
+
 **Known gaps, carried rather than closed.** The proxy-wide `access_profile` is
 one FortiOS-shaped string for every platform, so the switch driver runs with no
-default when the configured value is a FortiOS built-in (phase **0036** owns the
-fix). Whether FortiOS's schedule covers an **SSH** login is an inference from the
-field's shape — Fortinet publishes only a GUI denial — and it is carried to the
-operator through `ExpiryMechanism`. Which scope the schedule table lives in on a
+default when the configured value is a FortiOS built-in — a route naming its own
+`enforcement.platform_role` is still served, and one relying on the proxy-wide
+default is **refused outage-class with nothing provisioned** (phase **0036**
+owns the fix). Whether FortiOS's schedule covers an **SSH** login is an
+inference from the field's shape — Fortinet publishes only a GUI denial — and it
+is carried to the operator through `ExpiryMechanism`. Which scope the schedule table lives in on a
 partitioned unit is undocumented; the failure names the assumption.
 
 A driver **declares its platform's constraints**, and the provisioner reads
@@ -3228,6 +3249,8 @@ and never reused (§6).
 | **0010** | `0009` | Command filtering + policy actions |
 | **0011** | `0010` | Logging & telemetry pipeline |
 | **0012** | `0011` | Full E2E topology + CI gate + hardening |
+| **0016** | `0027` | FortiOS multi-VDOM support |
+| **0017** | `0028` | FortiOS target-enforced expiry |
 | **0018** | `0013` → `0015` → `0016` | Enforcement points — contract v4 |
 | **0019** | `0014` → `0016` → `0017` | Target-side enforcement |
 | **0020** | `0017` → `0018` *(new at privileged-access)* | Scale harness & sizing evidence |
@@ -3264,9 +3287,14 @@ Resolve it this way instead:
 (`0037`) really did move to `0032` and back to `0033` — the run-order revision
 promoted it, and the admission-policy phase pushed it out again; that is churn,
 not a transcription error. And some pre-run-order documents call it **`0029`**,
-an alias no recorded renumbering explains, so it is listed here as attested by
-the run-order note rather than derived. Every other chain in the table was
-cross-checked against the notes' own explicit statements and agrees with them.
+an alias no recorded renumbering explains. It is attested by the run-order note
+rather than derived, and so it is recorded **in this paragraph and not in the
+table**: the table is generated mechanically from the notes' own mappings, and
+an alias nothing derives cannot be added to it without breaking that
+derivation. Read a pre-run-order "0029" that is plainly about the contract
+collapse as **0037**; a `0029` citation anywhere else is the live FortiSwitchOS
+phase. Every other chain in the table was cross-checked against the notes' own
+explicit statements and agrees with them.
 
 **When you renumber, regenerate this table in the same PR** — it is a live
 reference under §3, and a stale composed mapping is worse than none, because it

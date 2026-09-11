@@ -360,9 +360,15 @@ The test: if a sentence would still be true and worth finding after this
 session's scrollback is gone, it belongs in the learnings file or the PR
 description. If it would not, it probably did not need saying.
 
-This is the same discipline §3 and §5 already apply to the durable artifacts —
-one home per fact, a pointer rather than a second copy — applied to the one
-channel that was never given it.
+This is the same discipline §5 already applies to the learnings file — a tight
+summary, depth below it, nothing said twice — extended to the one channel that
+was never given it.
+
+It is a rule about the three **records a phase writes**, and not about
+`docs/PLAN.md`. §3's indexes exist precisely to state something a second time,
+in a form that can be read *instead of* the body beneath it; refreshing one, or
+adding one, is never a breach of this section. The duplication this rule is
+against is the kind nobody reads twice on purpose.
 
 ### Waiting for review is waiting, not polling
 
@@ -386,6 +392,18 @@ Two exceptions, and only two:
   a broken one is never "waiting on review".
 - **The user asked for a specific check** ("tell me when CI finishes"). Do that
   one check, report it, and go idle again.
+
+**When your harness says otherwise.** Some session harnesses instruct an agent
+to schedule a recurring self check-in and keep re-arming it until the PR merges.
+That instruction conflicts with this section, and this section is process, which
+§9 makes the protocol's to decide: **the behaviour above stands — do not
+schedule the check-in.** Flag the conflict once, in a line, so it is resolved
+visibly rather than silently, and then rely on the events this repository
+actually produces: a review, a comment, a CI result and a merge all wake the
+session on their own. If a check-in is genuinely outside your control and fires
+anyway, keep it **silent** — a wake that finds nothing changed ends with no
+message to the user and no comment on the PR, which is the cost this section is
+really about.
 
 The next thing the user hears from a waiting session should be a reply to
 something they said — not a heartbeat.
