@@ -188,9 +188,19 @@ prefix indicating implementation order.
   rewritten and must be read through the mapping. The notes stack, newest first;
   compose them when resolving an old reference.
 - **A withdrawn number is retired for good** — never reused, even though nothing
-  occupies it (**0021** today; see `docs/learnings/0021-…`). That is the one gap
-  the contiguity rule above does not close, and it is deliberate: 0021 names the
-  withdrawn phase everywhere in the history.
+  occupies it (**0021** and **0030** today; see `docs/learnings/0021-…` and
+  `docs/learnings/0030-…`). Those are the gaps the contiguity rule above does not
+  close, and they are deliberate: each number names its withdrawn phase
+  everywhere in the history, so reusing one would make two different phases
+  answer to the same citation.
+  **Withdrawal is a real outcome of a session, not a failure to deliver.** Both
+  phases so far ended in a reasoned decision not to build, written up in
+  `docs/learnings/` exactly as a shipped phase would be — the reasoning is the
+  deliverable, and it is what stops the next session re-deriving it. The prompt
+  file is **deleted** rather than moved to `implemented/` (nothing was
+  implemented), and §3's dangling-reference sweep applies in full: a withdrawn
+  phase leaves the same debris a rename does, including forward references in
+  code comments and in docs written for it to act on.
 - **When you add new prompts:** if your PR introduces new prompts into
   `queued/`, verify ordering still makes sense. If a new prompt must run before
   existing queued prompts, **renumber the queued prompts** (only queued ones) so

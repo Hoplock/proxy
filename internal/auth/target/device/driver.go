@@ -162,11 +162,24 @@ type CreateRequest struct {
 	// a statement about what these fields are for on the platforms this
 	// repository serves: a VDOM scopes the administrator being created, while
 	// removal, enumeration and credential installation address the same
-	// administrator table on the same unit whatever it was scoped to. A
-	// platform where the field selects a DIFFERENT MANAGED DEVICE — a
-	// FortiLink-attached switch behind its FortiGate — needs them on the rest
-	// too, and that is the phase that adds them, on the reaper's terms: it
-	// sweeps a device it reaches from an endpoint, not from a route.
+	// administrator table on the same unit whatever it was scoped to.
+	//
+	// A platform where the field selected a DIFFERENT MANAGED DEVICE would need
+	// them on the rest too, on the reaper's terms — it sweeps a device it
+	// reaches from an endpoint, not from a route — and would also need Field to
+	// declare WHICH fields select one, since a reaper that partitioned its
+	// bookkeeping on every field would see one route's live account as
+	// another's orphan (a VDOM does not select a different device: a FortiGate's
+	// administrator table is one global table whatever an account is scoped to).
+	//
+	// No such platform has arrived. Phase 0016 expected one in the
+	// FortiLink-managed switch; 0029 found that switch keeps its own SSH plane
+	// and made it its own endpoint, and phase 0030 — queued for the estates that
+	// keep such a switch unroutable — was WITHDRAWN in favour of a deployment
+	// answer (PLAN §5.3, "As settled (phase 0030)"). So this is a description of
+	// the platforms this repository serves and not a note about pending work:
+	// nothing is waiting on it, and the phase that introduces such a platform is
+	// the phase that carries the fields onto the other operations.
 	Fields map[string]string
 }
 
