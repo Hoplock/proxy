@@ -61,7 +61,15 @@ var renumberings = []struct {
 	{"contract-v2", map[int]int{6: 7, 7: 8, 8: 9, 9: 10, 10: 11, 11: 12}, []int{6}},
 	{"privileged-access", map[int]int{13: 15, 14: 16}, []int{13, 14, 17, 18}},
 	{"fortios-corrections", map[int]int{15: 16, 16: 17, 17: 18, 18: 19, 19: 20, 20: 21, 21: 22, 22: 23, 23: 24, 24: 25, 25: 26}, []int{15}},
-	{"device-completion", map[int]int{16: 18, 17: 19, 18: 20, 19: 21, 20: 22, 21: 23, 22: 24, 23: 25, 24: 26, 25: 27, 26: 28}, []int{16, 17}},
+	// The two deferred phases were NOT created here: phase 0015's learnings
+	// queued multi-VDOM as 0027 and target-enforced expiry as 0028 (at the end
+	// of the queue), and this revision moved them to the head. The note's own
+	// resolution example says so — "0015's learnings, which queue multi-VDOM as
+	// '0027' (now 0016) and target-enforced expiry as '0028' (now 0017)" — so
+	// 27→16 and 28→17 belong in the mapping. Recording them as createdHere
+	// instead lost both aliases from §10's composed table, which is exactly the
+	// failure createdHere exists to prevent, in the other direction.
+	{"device-completion", map[int]int{16: 18, 17: 19, 18: 20, 19: 21, 20: 22, 21: 23, 22: 24, 23: 25, 24: 26, 25: 27, 26: 28, 27: 16, 28: 17}, nil},
 	{"run-order", map[int]int{31: 22, 32: 23, 25: 24, 22: 25, 23: 26, 24: 27, 26: 28, 27: 29, 28: 30, 30: 31, 33: 32}, nil},
 	{"admission-policy", map[int]int{32: 33}, []int{32}},
 	{"hop-cred-rejection", map[int]int{33: 34}, []int{33}},
