@@ -27,7 +27,9 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 8. Write a learnings file to `docs/learnings/`.
 9. Open a PR. Iterate with the user until they are happy — and once it is green
    and mergeable, **go idle and wait** rather than polling it (§8).
-10. **The session ends when the PR is merged.**
+10. **The session ends when the PR is merged** — confirm it in a line and stop.
+    Say each thing once: the learnings file and the PR description are the
+    records, and chat is not a third copy of them (§8).
 
 ---
 
@@ -239,6 +241,37 @@ no prior context. It must:
   prompt in the same session.
 - Do not create a PR for work the user hasn't asked to be turned into a PR; the
   normal implementation flow above does open one.
+
+### Say each thing once
+
+A phase writes three records, and they have three different readers: the
+**learnings file** (the next session, forever), the **PR description** (the
+reviewer, for the life of the PR), and **what the session says in chat** (the
+user, once). Only the third is not a record, and it is the one that costs the
+most — every restatement is output the user pays for *and* input that every
+later turn in the session carries.
+
+So each fact goes in exactly **one** of the first two, and the session says only
+what neither can deliver. At the three moments a session is tempted to
+summarise:
+
+- **Opening the PR** — post the link and nothing the description already says.
+  Add only what it cannot carry: a decision you need, an assumption you took
+  that they might reject, something worth their attention before they read.
+- **Green and mergeable** — one line, then idle (below).
+- **Merged** — the session is over, and nothing downstream reads a closing
+  summary: the learnings file is the hand-off, not your last message. Say only
+  what the user must **act** on — the sync kickoff
+  `docs/CROSS-REPO-PROTOCOL.md` §4 owes them, a follow-up they agreed to — and
+  otherwise confirm the merge in one line and stop.
+
+The test: if a sentence would still be true and worth finding after this
+session's scrollback is gone, it belongs in the learnings file or the PR
+description. If it would not, it probably did not need saying.
+
+This is the same discipline §3 and §5 already apply to the durable artifacts —
+one home per fact, a pointer rather than a second copy — applied to the one
+channel that was never given it.
 
 ### Waiting for review is waiting, not polling
 
