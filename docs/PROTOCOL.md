@@ -52,7 +52,7 @@ Read in this order and **stop reading as soon as you have what you need**:
      and each says what it does not cover. §2's **decision register** — what
      each `D` settles, whether it still says that, and where it is rendered.
      §5.3's **"What is true today"** — the composed current state of the device
-     seam, which is otherwise eight append-only layers deep. §10's **composed
+     seam, which is otherwise many append-only layers deep. §10's **composed
      mapping** — what an old prompt number resolves to, so you never compose
      the renumbering notes by hand. Use them the way you use a learnings
      summary: read the index, open the body only when you are changing that
@@ -139,6 +139,27 @@ section, refresh it.
   sync kickoff it must hand the user for each affected repository (§4) — and the
   conventions for a sync PR. It lists the shared surfaces in its Section 1; if
   your change touches none of them, you do not need to read it.
+- **The plan's indexes are part of the plan, and go stale in the same PR that
+  makes them wrong.** `docs/PLAN.md` carries three indexes that exist so a
+  session can answer a question without reading the body beneath them (§1), and
+  each is read *instead of* what it summarises — so a stale one is worse than
+  none: it will be believed, by a reader who has by construction chosen not to
+  read the thing that would contradict it. If your change is one of these, the
+  refresh belongs in the same PR:
+
+  | You change | Refresh |
+  | --- | --- |
+  | A decision — new, amended, withdrawn, or newly rendered somewhere | Its row in §2's **register**, the **Status** column above all: that column is why the register exists |
+  | §5.3 — a new `As <verb> (phase N)` layer | §5.3's **"What is true today"**. Appending a layer without composing it in is how a phase's outcome goes silently missing |
+  | Prompt numbers — any renumber, or a withdrawal | §10's **composed mapping**, by adding your revision to `renumberings` in `test/docs/indexes_test.go`; the mapping is derived from it, not hand-kept (§6) |
+  | A prompt, added or modified | Its "Read first", naming the PLAN sections it needs (§7) |
+
+  **`test/docs/indexes_test.go` enforces all of this in `go test ./...`**, so a
+  stale index is a failing build rather than something a reviewer has to notice.
+  It is there because the rule alone was not enough: the phase that wrote these
+  indexes left one of them stale within a day, and got a figure in another wrong
+  by counting a printed list by eye. Read a failure from it as a prompt to
+  refresh the index, never as a reason to weaken the test.
 - **A rename is not done until nothing points at the old name.** Renaming or
   deleting a path, file, exported identifier, config key, or make target leaves
   dangling references that nothing fails to compile over. A queued prompt that
@@ -182,6 +203,9 @@ section, refresh it.
 - [ ] Every prompt this PR **adds or modifies** names the `docs/PLAN.md`
       sections and decisions it needs, by `§` and `D`, in its "Read first"
       (Section 7). §1's context budget depends on it.
+- [ ] `docs/PLAN.md`'s indexes still describe what they index — §2's register,
+      §5.3's "What is true today", §10's composed mapping (Section 3).
+      `go test ./test/docs/...` is the check.
 - [ ] CI is green on the PR.
 
 ---
