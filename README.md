@@ -26,7 +26,7 @@ owns.
 
 Hoplock Proxy never depends on Hoplock Control's code, and never on Enterprise.
 
-The architecture — end-to-end flow, decisions D1–D12, package layout, and the
+The architecture — end-to-end flow, decisions D1–D17, package layout, and the
 phased delivery plan — lives in **[`docs/PLAN.md`](docs/PLAN.md)**. Read it
 before reading the code.
 

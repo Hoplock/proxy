@@ -113,7 +113,7 @@ to every session that follows, forever.
   discover work that belongs to a later phase, do **not** do it here — note it in
   your learnings file and/or add a new queued prompt (Section 6).
 - **Follow the plan.** Match `docs/PLAN.md`: package layout, interfaces, naming,
-  decisions (D1–D12, including D5a and D6a). If reality forces a deviation,
+  decisions (D1–D17, including D5a and D6a). If reality forces a deviation,
   update `docs/PLAN.md` in the **same PR** and call it out in the PR description
   and learnings.
 - **Cross-repo changes follow `docs/CROSS-REPO-PROTOCOL.md`.** This repo owns
@@ -164,6 +164,9 @@ to every session that follows, forever.
       (same filename) in this PR.
 - [ ] A learnings file added to `docs/learnings/` (Section 5).
 - [ ] Prompt-numbering invariants still hold (Section 6).
+- [ ] Every prompt this PR **adds or modifies** names the `docs/PLAN.md`
+      sections and decisions it needs, by `§` and `D`, in its "Read first"
+      (Section 7). §1's context budget depends on it.
 - [ ] CI is green on the PR.
 
 ---
@@ -248,8 +251,22 @@ Any prompt (existing or newly added) must be runnable by a **fresh** session wit
 no prior context. It must:
 
 - State its objective, in-scope and out-of-scope items.
-- Reference `docs/PROTOCOL.md`, `docs/PLAN.md`, and the relevant
-  `docs/learnings/` summaries at the top ("Read first").
+- **Name the exact `docs/PLAN.md` sections and decisions the phase needs**, by
+  `§` number and `D` id, in a "Read first" block at the top — together with the
+  relevant `docs/learnings/` summaries and this file. Not "see `docs/PLAN.md`":
+  the plan is ~50k tokens and §1 has the session **navigate** it rather than
+  read it, so a prompt that names no sections leaves the next session choosing
+  between reading 50k tokens it mostly does not need and guessing at an
+  architecture the plan already settled. **Both outcomes are the failure §1's
+  budget exists to prevent, and this line is what makes that budget
+  achievable** — it is a load-bearing requirement, not a courtesy to the reader.
+  Name a section you are unsure about rather than omitting it; an unnecessary
+  section costs tokens once, a missing one costs a re-derived decision.
+- This applies to a prompt you **modify** exactly as it does to one you add. If
+  your PR changes what a queued prompt will have to read — you moved a decision,
+  renamed a section, added a `D`, or shifted work between phases — update that
+  prompt's "Read first" in the same PR, on §3's rule that a live reference is
+  updated rather than left to rot.
 - Name the exact packages/files to create or change.
 - Specify interfaces/types precisely enough to implement without guessing.
 - Define acceptance criteria and required tests.
