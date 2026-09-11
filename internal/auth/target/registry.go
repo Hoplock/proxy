@@ -193,6 +193,39 @@ func newDriverRegistry(cfg config.EphemeralAccountAuth, dialer device.ShellDiale
 			}); err != nil {
 				return nil, err
 			}
+		case fortios.PlatformFortiSwitch:
+			// The proxy-wide access profile is handed over only if this
+			// platform can hold it, and that needs saying because "drop it
+			// quietly" is normally the wrong answer.
+			//
+			// The setting is FortiOS-shaped: `super_admin_readonly` and
+			// `prof_admin` are FortiOS built-ins that FortiSwitchOS does not
+			// have at all (fortios.checkSwitchProfile), and a FortiGate estate
+			// acquiring its first switch will have one of them configured. The
+			// two alternatives are both worse than this. Passing it anyway
+			// means `set accprofile` refused half way through a sequence that
+			// has already created the administrator entry — a rollback on a
+			// customer's switch, per session. Refusing at STARTUP means every
+			// FortiGate-only deployment stops booting the day this driver
+			// ships, over a platform it does not serve.
+			//
+			// So the driver is built with NO default profile, which is a state
+			// it already supports: a route naming its own profile (0019's
+			// `enforcement.platform_role`) is served, and a route relying on
+			// the proxy-wide default is refused by CreateAccount — outage-class
+			// per PLAN §4.3, nothing provisioned, and the error names the
+			// platform and what to set. Nothing is weakened and nothing is
+			// substituted; what is lost is a default that was never valid here.
+			profile := cfg.AccessProfile
+			if fortios.SwitchAcceptsProfile(profile) != nil {
+				profile = ""
+			}
+			if err := fortios.RegisterSwitch(registry, fortios.SwitchOptions{
+				Dialer:        dialer,
+				AccessProfile: profile,
+			}); err != nil {
+				return nil, err
+			}
 		default:
 			// Unreachable while every shipped platform has a case. It is an
 			// error rather than a silent skip because the alternative is a

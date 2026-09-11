@@ -276,9 +276,21 @@ routes:
           # commands against the wrong parser (D13).
           platform: fortigate
           credential_kind: password
-          # FortiOS has no per-administrator expiry field, so the proxy holds
-          # the deadline. A route asking for target-enforced here would be a
-          # skipped rung rather than a session served on a promise nobody keeps.
+          # The proxy holds this route's deadline — by the route's CHOICE, not
+          # because the platform cannot. This comment used to say FortiOS "has
+          # no per-administrator expiry field", which phase 0015 disproved and
+          # phase 0017 acted on: `set schedule` names a `config firewall
+          # schedule onetime` entry with an absolute `set end`, the unit denies
+          # the login out of window, and the driver declares `EnforcesExpiry`
+          # and renders it. So `target-enforced` here would be SERVED, not
+          # skipped — at the cost of a second object on the unit per session,
+          # with its own teardown and its own orphan class (PLAN §5.3, "As
+          # taken (phase 0017)").
+          #
+          # NOTE: no route in this file asks for `target-enforced`, so the
+          # topology does not exercise 0017's schedule path end to end at all.
+          # That is a coverage gap rather than a decision, and it predates
+          # phase 0029, which only corrected the sentence above.
           expiry_posture: proxy-enforced
           lifetime_seconds: "900"
 
@@ -315,6 +327,67 @@ routes:
           # route would get a global administrator — the wider of the two — so
           # this line is a narrowing somebody wrote down.
           device_field.vdom: customer-a
+
+  # ------------------------------------ ephemeral-account, a FortiSwitch ---
+  # A DIFFERENT appliance, on a third listener on the device node (phase 0029).
+  # Unlike the two above it is not the same box in another configuration: a
+  # FortiSwitch is its own device with its own administrator table, its own
+  # host key and its own serial number.
+  #
+  # It is a target rather than a field on a FortiGate's route, and that is the
+  # decision this route exists to hold in place. Phase 0029 was written
+  # expecting the opposite — a FortiLink-managed switch administered THROUGH
+  # its managing FortiGate, as 0016's virtual domain is administered through
+  # its unit — and Fortinet's documentation does not support it: `config
+  # switch-controller security-policy local-access` configures the allowaccess
+  # list for a managed switch's mgmt and internal interfaces, and `ssh` is in
+  # the default for both. A managed switch keeps its own administrative plane,
+  # so FortiLink is a deployment fact and not a target identity (PLAN §5.3).
+  #
+  # No device_field, therefore: this platform is exactly one target and the
+  # driver declares no fields at all.
+  #
+  # Scenario: a session to a FortiSwitch.
+  - login: alice
+    target: fortiswitch.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: device
+    target_port: 2223
+    permissions: networkAdminGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    target_auth_ladder:
+      - method: ephemeral-account
+        params:
+          username: alice
+          platform: fortiswitchos
+          credential_kind: password
+          # proxy-enforced, and on this platform it is the only posture that
+          # can be served. FortiSwitchOS's `config system admin` does carry
+          # `set schedule`, but its own documentation says the entry is
+          # "Defined in config firewall schedule" — a table FortiSwitchOS does
+          # not have. A route asking for target-enforced here is a SKIPPED
+          # RUNG rather than a session served on a deadline nobody can vouch
+          # for.
+          expiry_posture: proxy-enforced
+          lifetime_seconds: "900"
+    # The route names the account's scope, and on this platform it has to.
+    # The proxy-wide `auth.target.ephemeral_account.access_profile` is
+    # FortiOS-shaped — this topology's is `prof_admin`, which FortiSwitchOS
+    # does not have — so the switch driver is built with no default at all and
+    # a route relying on one is refused rather than served with a profile the
+    # device will reject half way through the sequence (phase 0029).
+    #
+    # `super_admin` because it is the ONLY built-in FortiSwitchOS documents,
+    # not because an all-access profile is a good scope for a session: any
+    # narrower one here is a custom profile the customer builds on the switch,
+    # which is exactly what the driver's AuthorizationCaveat says.
+    enforcement:
+      execution: platform-authorized
+      platform_role: super_admin
 
   # The ladder's fall-through (D14). The first entry names a platform this proxy
   # has no driver for, so it is UNSATISFIABLE and skipped; the second is served.

@@ -67,6 +67,13 @@ const (
 	// box partitioned.
 	deviceVDOMDebugAddr = "127.0.0.1:8082"
 
+	// deviceSwitchDebugAddr is the same again, for the FortiSwitch the
+	// appliance node also serves (phase 0029). Unlike the partitioned unit
+	// this one is a DIFFERENT device rather than the same box in another
+	// configuration — it is a third listener only because the topology has one
+	// appliance node, not because a switch is part of a FortiGate.
+	deviceSwitchDebugAddr = "127.0.0.1:8083"
+
 	// SSH listener port inside every proxy container.
 	proxyPort = "2222"
 )

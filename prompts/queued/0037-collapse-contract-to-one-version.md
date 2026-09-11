@@ -1,4 +1,4 @@
-# 0036 — Drop the superseded contract vocabularies
+# 0037 — Drop the superseded contract vocabularies
 
 > **New prompt, and it must run LAST.** Every phase that revises the contract
 > adds a vocabulary generation and, with it, code and prose that keep the
@@ -16,13 +16,14 @@
 >
 > **This prompt must be the highest-numbered queued prompt when it runs.** If a
 > later session queues work after it, renumber under `docs/PROTOCOL.md` §6 so
-> this stays last. It has already moved four times for that reason — it was
+> this stays last. It has already moved five times for that reason — it was
 > queued as **0029**, was briefly **0033**, then **0032**, then **0033** again,
 > then **0034** once phase 0025 queued the hop-credential classification at
 > 0033, then **0035** once phase 0026 queued its MFA-disclosure question at
-> 0034, and is **0036** now that phase 0027 queued the Control-held uid floor at
-> 0035 — that one revises the contract, so it must run before this one. It is
-> still the top of a contiguous queue. Anything written before
+> 0034, then **0036** once phase 0027 queued the Control-held uid floor at
+> 0035, and is **0037** now that phase 0029 queued the per-platform access
+> profile at 0036 — both of those may revise the contract, so both must run
+> before this one. It is still the top of a contiguous queue. Anything written before
 > those moves calls it by an older number; the mapping is in the run-order notes
 > at the end of `docs/PLAN.md` §10, which stack newest first and compose.
 >
@@ -38,7 +39,9 @@
 > contract since: **0028** took it to **4.2** (`username` required on
 > `brokered-key`, so required on every method — a tightening, `policy_version`
 > still 4), and **0035**, still queued, revises it again for the Control-held
-> uid floor. So this phase's blocker is **not** cleared by the paragraph above:
+> uid floor. **0036** may revise it a third time — a route-named default access
+> profile is one of the two shapes that phase weighs. So this phase's blocker is
+> **not** cleared by the paragraph above:
 > re-derive it from `prompts/queued/` on `main`. Collapsing before the last
 > revising phase just means doing it twice.
 
@@ -385,9 +388,9 @@ that repository checked out. Upstream merges first: this PR, then the sync.
    with the versioning mechanism intact and tested.
 2. `docs/PLAN.md` updated, including the note recording the collapse and its
    boundary.
-3. `prompts/queued/0036-collapse-contract-to-one-version.md` moved to
+3. `prompts/queued/0037-collapse-contract-to-one-version.md` moved to
    `prompts/implemented/` (same filename) in this PR.
-4. `docs/learnings/0036-collapse-contract-to-one-version-learnings.md`, with the
+4. `docs/learnings/0037-collapse-contract-to-one-version-learnings.md`, with the
    summary block `docs/PROTOCOL.md` §5 requires. It must state, for the next
    session: **one live vocabulary from here on, and the next revision bumps
    `PolicyVersion` rather than keeping this one alive beside it.**

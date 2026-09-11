@@ -15,7 +15,8 @@
 > for the problem it studies — raise `control.cache.max_entries` — already
 > shipped in **0022**. It was inserted at **0032** by the revision that moved
 > the collapse to **0033**, which phase 0025 then moved to **0034** and phase
-> 0026 to **0035**, and phase 0027 to **0036**; every mapping is in the notes at
+> 0026 to **0035**, phase 0027 to **0036**, and phase 0029 to **0037**; every
+> mapping is in the notes at
 > the end of `docs/PLAN.md` §10.
 
 ## Read first

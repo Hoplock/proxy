@@ -363,6 +363,13 @@ auth:
       # it advertises to Hoplock Control. Empty means every driver this build
       # ships. A route naming a platform with no driver is an outage-class
       # denial, never the nearest driver.
+      #
+      # This build ships two: `fortigate` and `fortiswitchos`. A FortiSwitch is
+      # its OWN target at its own address, whether or not a FortiGate manages
+      # it over FortiLink — a managed switch keeps its own SSH administrative
+      # plane, and the FortiGate's role is that it can close it (phase 0029,
+      # PLAN §5.3). So there is no route field naming a switch behind a
+      # firewall, and nothing here to configure for FortiLink.
       platforms: []
       # The platform authorization scope created administrators are given.
       # REQUIRED: no driver in this build has a default, and the proxy refuses
@@ -385,6 +392,19 @@ auth:
       # vocabulary and phase 0019 applies; this proxy-wide setting is what that
       # replaces.
       access_profile: "super_admin_readonly"
+      #
+      # A SECOND consequence, and it is why this setting is under-specified
+      # (phase 0029): it is one value for every platform this proxy serves, and
+      # it is FortiOS-shaped. FortiSwitchOS documents exactly ONE built-in
+      # profile, `super_admin` — `prof_admin` and `super_admin_readonly` are
+      # FortiOS profiles and do not exist there at all. So when this names a
+      # FortiOS built-in, the FortiSwitch driver is built with NO default
+      # profile: a route naming its own scope (`enforcement.platform_role`) is
+      # served, and a route relying on the default is refused outage-class with
+      # nothing provisioned. It is not silently substituted, and the proxy does
+      # not refuse to start — a FortiGate-only deployment must not stop booting
+      # over a platform it does not serve. If you serve both estates, either
+      # name the profile per route or set a custom profile that exists on both.
       #
       # One consequence to know before choosing it (phase 0016): on a FortiGate
       # running virtual domains, a VDOM-SCOPED administrator may hold only

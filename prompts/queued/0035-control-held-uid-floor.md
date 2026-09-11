@@ -5,7 +5,7 @@
 > high-water mark **on the target**, which is the party this proxy does not trust,
 > and it left one case open that no attacker is needed to reach: a proxy restart.
 >
-> **It revises `api/control.yaml`, so it must run BEFORE 0036** (the contract
+> **It revises `api/control.yaml`, so it must run BEFORE 0037** (the contract
 > collapse, which must follow every phase that touches the contract) and it
 > carries a cross-repo obligation. Read `docs/CROSS-REPO-PROTOCOL.md` in full —
 > §1's shared surfaces, §4's downstream-impact check and the sync kickoff it owes,

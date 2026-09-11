@@ -148,7 +148,17 @@ func run() error {
 		vdomMode   = flag.String("vdom-mode", sshtest.FortiOSVDOMMultiple, "the virtual domain configuration that unit reports")
 		vdoms      = flag.String("vdoms", "", "comma-separated virtual domains that unit has; empty means the documented defaults for the mode")
 		vdomDebug  = flag.String("vdom-debug", "", "serve that unit's GET /debug/accounts on this address; empty disables it")
-		dump       = flag.String("dump", "", "client mode: fetch this device's administrator table from the given address and exit")
+		// The third unit: a FortiSwitch. It is a LISTENER on this node for the
+		// same reason the partitioned FortiGate is one — the estate has one
+		// kind of appliance node, and a switch is another unit on it rather
+		// than another kind of box (phase 0029, PLAN §5.3). It is its OWN
+		// endpoint, not something reached through the FortiGate above: a
+		// FortiLink-managed switch keeps its own SSH administrative plane, and
+		// that is the decision this scenario exists to hold in place.
+		switchListen = flag.String("switch-listen", "", "also serve a FortiSwitch on this address; empty disables it")
+		switchName   = flag.String("switch-hostname", "S248EPTF19000001", "the serial number that unit answers to")
+		switchDebug  = flag.String("switch-debug", "", "serve that unit's GET /debug/accounts on this address; empty disables it")
+		dump         = flag.String("dump", "", "client mode: fetch this device's administrator table from the given address and exit")
 	)
 	flag.Parse()
 
@@ -210,6 +220,33 @@ func run() error {
 			}
 			defer func() { _ = srv.Close() }()
 			logger.Printf("fake-device: serving that unit's /debug/accounts on %s", *vdomDebug)
+		}
+	}
+
+	if *switchListen != "" {
+		sw, err := sshtest.StartFortiOSOn(*switchListen, sshtest.FortiOSOptions{
+			Platform:      sshtest.FortiOSPlatformFortiSwitch,
+			Hostname:      *switchName,
+			AdminUser:     *admin,
+			AdminPassword: secret,
+			// The switch's own administrator, so the topology can assert the
+			// proxy only ever removes what it created. `super_admin` is the
+			// one profile FortiSwitchOS documents as built in.
+			Accounts: []sshtest.FortiOSAccount{{Name: "admin", Profile: "super_admin"}},
+			Faults:   sshtest.FortiOSFaults{PageEvery: *paging},
+		})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = sw.Close() }()
+		logger.Printf("fake-device: serving the FortiSwitch %s on %s", *switchName, sw.Addr())
+		if *switchDebug != "" {
+			srv, err := serveAccounts(*switchDebug, sw)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = srv.Close() }()
+			logger.Printf("fake-device: serving that unit's /debug/accounts on %s", *switchDebug)
 		}
 	}
 

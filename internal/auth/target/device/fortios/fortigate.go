@@ -372,7 +372,7 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		}
 	}
 
-	exists, err := d.accountExists(ctx, s, req.Name)
+	exists, err := s.accountExists(ctx, req.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +467,7 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	)
 	steps = append(steps, s.leaveAdminTable()...)
 
-	if err := d.run(ctx, s, steps); err != nil {
+	if err := s.run(ctx, steps); err != nil {
 		// `abort` leaves the configuration block WITHOUT applying it, so a
 		// sequence that failed before `next` commits nothing at all. The
 		// delete afterwards is for the case where it failed after: belt and
@@ -522,7 +522,7 @@ func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialReq
 		step{command: "next", label: "commit the credential"},
 	)
 	steps = append(steps, s.leaveAdminTable()...)
-	if err := d.run(ctx, s, steps); err != nil {
+	if err := s.run(ctx, steps); err != nil {
 		d.abandon(ctx, s, req.Name)
 		return err
 	}
@@ -551,7 +551,7 @@ func (d *Driver) RemoveAccount(ctx context.Context, req device.RemoveRequest) er
 	steps := append(s.enterAdminTable(),
 		step{command: "delete " + quote(req.Name), label: "remove the administrator", notFoundIsSuccess: true},
 	)
-	if err := d.run(ctx, s, append(steps, s.leaveAdminTable()...)); err != nil {
+	if err := s.run(ctx, append(steps, s.leaveAdminTable()...)); err != nil {
 		return err
 	}
 
@@ -598,7 +598,7 @@ func (d *Driver) ListAccounts(ctx context.Context, req device.ListRequest) ([]de
 	}
 	defer func() { _ = s.Close() }()
 
-	return d.listAccounts(ctx, s, req.Prefix)
+	return s.listAccounts(ctx, req.Prefix)
 }
 
 // ErrMultiVDOM means the unit would not say which shape it is.
@@ -919,7 +919,13 @@ func (d *Driver) open(ctx context.Context, ep device.Endpoint) (*cliSession, err
 }
 
 // run executes a sequence, stopping at the first step the device refused.
-func (d *Driver) run(ctx context.Context, s *cliSession, steps []step) error {
+//
+// It hangs off the SESSION rather than off a driver because it reads nothing
+// from one: the conversation, its nesting and its failure wording all belong to
+// the CLI, and phase 0029 needed the same machinery for a second platform that
+// is emphatically not this driver (see fortiswitch.go). A helper that took a
+// receiver it never used would have had to be copied to be reused.
+func (s *cliSession) run(ctx context.Context, steps []step) error {
 	for _, st := range steps {
 		out, err := s.send(ctx, st.command)
 		if err != nil {
@@ -980,8 +986,8 @@ func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) {
 }
 
 // accountExists reports whether an administrator of that name is on the device.
-func (d *Driver) accountExists(ctx context.Context, s *cliSession, name string) (bool, error) {
-	accounts, err := d.listAccounts(ctx, s, "")
+func (s *cliSession) accountExists(ctx context.Context, name string) (bool, error) {
+	accounts, err := s.listAccounts(ctx, "")
 	if err != nil {
 		return false, err
 	}
@@ -1002,8 +1008,8 @@ var accprofilePattern = regexp.MustCompile(`^\s*set\s+accprofile\s+"?([^"\s]+)"?
 // listAccounts reads the administrator table and returns the entries under a
 // prefix. An empty prefix returns everything, which is only ever used by the
 // non-existence check on the create path — the reaper always names one.
-func (d *Driver) listAccounts(ctx context.Context, s *cliSession, prefix string) ([]device.Account, error) {
-	out, err := d.showGlobal(ctx, s, adminShowCommand, "list administrators")
+func (s *cliSession) listAccounts(ctx context.Context, prefix string) ([]device.Account, error) {
+	out, err := s.showGlobal(ctx, adminShowCommand, "list administrators")
 	if err != nil {
 		return nil, err
 	}
@@ -1070,7 +1076,7 @@ const (
 // and leaving it is deferred rather than appended so that a read which fails
 // half way does not leave the session in `config global` — the state that makes
 // the NEXT command mean something other than what it says.
-func (d *Driver) showGlobal(ctx context.Context, s *cliSession, command, label string) (string, error) {
+func (s *cliSession) showGlobal(ctx context.Context, command, label string) (string, error) {
 	if s.vdomMode.partitioned() {
 		out, err := s.send(ctx, globalScopeCommand)
 		if err != nil {
@@ -1195,7 +1201,7 @@ func (d *Driver) checkVDOMExists(ctx context.Context, s *cliSession, vdom string
 // all, and this driver would then be unable to check a VDOM on exactly the
 // units whose management account is most tightly scoped.
 func (d *Driver) listVDOMs(ctx context.Context, s *cliSession) ([]string, error) {
-	out, err := d.showGlobal(ctx, s, vdomShowCommand, "list virtual domains")
+	out, err := s.showGlobal(ctx, vdomShowCommand, "list virtual domains")
 	if err != nil {
 		return nil, err
 	}

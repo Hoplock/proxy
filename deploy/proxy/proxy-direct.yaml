@@ -111,7 +111,12 @@ auth:
     ephemeral_account:
       admin_user: "hoplock-mgmt"
       password_env: "HOPLOCK_DEVICE_ADMIN_PASSWORD"
-      platforms: ["fortigate"]
+      # Both drivers this build ships. `fortiswitchos` is listed EXPLICITLY
+      # rather than by emptying this list, because the list is an allow-list
+      # and the topology's point is that a proxy serves what an operator chose
+      # — and because phase 0029's scenario failed in CI on exactly this line
+      # being one name short (`test/topology` now pins the two files together).
+      platforms: ["fortigate", "fortiswitchos"]
       # Named rather than left empty, because since phase 0015 there is no
       # driver default to leave it at: no FortiOS built-in is a safe default, so
       # the operator picks. Phase 0019 is what turns this into policy.

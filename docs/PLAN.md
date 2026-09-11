@@ -1463,6 +1463,137 @@ cannot see it fails the reference and fails the attempt, rather than leaving an
 administrator whose deadline the device ignores. And **whether the schedule
 covers an SSH login** is decision 1's inference, which needs a unit.
 
+**As decided (phase 0029): a FortiLink-managed FortiSwitch is its own target,
+and FortiLink is a deployment fact rather than a target identity.** This phase
+was written expecting the opposite, and the expectation did not survive reading
+Fortinet's documentation. Three decisions came out of it, settled with the user.
+
+1. **The premise was wrong, and the correction is the phase's main deliverable.**
+   Phase 0029's prompt stated that a FortiLink-managed switch "has no
+   independent administrative plane the proxy can SSH into: it is administered
+   *through* its managing FortiGate", and asked for 0016's answer stretched one
+   level further out — the FortiGate as endpoint, `device_field.switch` naming
+   the switch behind it. What the documentation says is that **`config
+   switch-controller security-policy local-access`** on the FortiGate
+   configures the "allowaccess list for mgmt and internal interfaces on managed
+   FortiSwitch units", and **`ssh` is in the default for both**
+   (`https ping ssh`). A managed switch keeps its own SSH administrative plane
+   and its own `config system admin` table; whether this proxy can reach that
+   address is a routing and firewall-policy question in the customer's
+   deployment, not a property of the platform.
+
+   So the endpoint is the **switch**, at its own `host:port`, with its own host
+   key — and the platform name (`fortiswitchos`) is one name for both
+   management modes. This does not stretch 0016's answer; it leaves it exactly
+   where it was. 0016's rule is that the endpoint stays the **device** and a
+   route field names a **partition** of one device. A FortiSwitch is not a
+   partition of its FortiGate: it is a separate device with its own
+   administrator table, configuration and serial number. Encoding it as a field
+   on another device's route would have made `host:port` name a unit the
+   account does not live on — the precise failure 0016 rejected `host/vdom`
+   for. **0029 therefore declares no device fields at all**, and 0016's
+   statement that "a platform where a field selects a genuinely different
+   managed device — 0029's switch — is the phase that carries them onto the
+   other operations" is left unspent: no such platform arrived. The reaper is
+   unchanged, `CreateRequest.Fields` still ride on creation only, and
+   `device.Field` needs no notion of a field that selects a subordinate device.
+
+   The alternatives, and why each was rejected:
+
+   - *the FortiGate as endpoint with `device_field.switch`* — the shape the
+     prompt asked for. Once the switch turned out to be reachable it buys
+     nothing and costs the audit record: every mapping event, host-key pin and
+     reaper sweep would address a device the administrator is not on.
+   - *the switch as target with a field naming its managing FortiGate* —
+     nothing in the driver needs to know the manager, so the field would be an
+     unverifiable fact in policy that goes stale the moment a switch is
+     re-homed.
+   - *a platform name encoding the relationship* (`fortiswitch-via-fortigate`)
+     — the management mode does not change the CLI the driver speaks, so a
+     switch moved between FortiGates, or out of FortiLink into standalone,
+     would change its **platform** in policy while remaining the same device
+     with the same administrator table.
+
+   **The one estate this does not serve** is a deployment that deliberately
+   keeps its switches unroutable from the proxy. That case is real and it is
+   queued as **0030**, which the old standalone-driver prompt was rewritten
+   into: it needs a nested reach through the FortiGate, and the two facts that
+   make it its own phase are recorded there — FortiOS's outbound SSH client is
+   documented as a "Simple SSH client" with no identity-file parameter and no
+   port forwarding, so that hop is **password-only**; and `ProvisionedAccess`
+   hands back an `ssh.ClientConfig` with no seam for driving `execute
+   switch-controller ssh` before the user's bytes flow.
+
+2. **What is genuinely FortiLink-specific is declared, not encoded in the
+   identity.** Three things, all sourced. FortiSwitchOS documents exactly **one**
+   built-in access profile, `super_admin`, which "cannot be deleted or
+   modified" and has access to everything including administrator management —
+   so FortiOS's `prof_admin` and `super_admin_readonly` do not exist here and
+   the driver refuses them before it dials, on the same reasoning as 0016's
+   `checkVDOMProfile`. A managing FortiGate can close SSH on the switch through
+   `local-access`, which this proxy sees as an ordinary unreachable device and
+   therefore a **retryable** failure rather than a skipped rung. And the
+   FortiGate has **no view of the switch's administrator table** — `config
+   switch-controller managed-switch` carries no administrator fields, and
+   `switch-profile`'s `login-passwd-override` overrides the built-in `admin`
+   account's password only — so nothing on the FortiGate will ever reconcile
+   away an account this proxy leaves behind.
+
+   Which yields the leak class this phase names and cannot close.
+   `execute switch-controller switch-action set-standalone` and
+   `execute switch-controller factory-reset` both return the switch to factory
+   defaults, which **destroys** an account this proxy created. Plain
+   **deauthorization does not**: it removes the switch from management without
+   touching its configuration. On a switch the proxy reaches directly that
+   changes nothing — the reaper still sweeps it. On one it could only reach
+   through its FortiGate it would strand the account beyond recovery, which is
+   a second argument for the switch being its own endpoint and is recorded in
+   0030 as a hazard that phase has to answer.
+
+3. **`EnforcesExpiry` is FALSE, and on a contradiction rather than an absence.**
+   FortiSwitchOS's `config system admin` *does* carry `set schedule
+   <schedule-name>`, described as "Restrict times that an administrator can log
+   in. Defined in config firewall schedule." But **FortiSwitchOS has no `config
+   firewall schedule`** — its CLI reference puts `config system schedule
+   onetime`, `... recurring` and `... group` under `config system`, and carries
+   no firewall schedule table anywhere. The field exists and the table its own
+   description names does not, and which table it resolves against is unstated.
+   Declaring true on that would claim a deadline the driver cannot establish the
+   device honours, which is the one thing phase 0017 said the bit must mean. So
+   a route asking for `target-enforced` on this platform is a **skipped ladder
+   rung** (D14), the reaper is the primary removal path here exactly as this
+   section describes for every platform that cannot expire an account, and
+   resolving the contradiction needs a real unit.
+
+   `PersistsAcrossReload` is **true**, for FortiOS's reason and with the same
+   evidence: `config system global` / `set cfg-save {automatic | manual |
+   revert}` exists here too, so `end` writes to flash under the default and the
+   alternatives are device-wide.
+
+   One figure is **not** documented and is flagged as an assumption:
+   FortiSwitchOS's CLI reference gives `config system admin`'s `<admin_name>`
+   no size at all. The driver declares **35** — the naming-rules KB's general
+   "most name fields accept 35 characters", which is the conservative reading
+   and is exactly the reasoning that made 35 *wrong* for FortiOS, used here for
+   the opposite reason. It clears this section's threshold of 32, so a switch
+   administrator gets the readable naming scheme and no behaviour turns on it.
+   `internal/sshtest`'s fake switch enforces the same number deliberately, so
+   the fake is exactly as strict as the claim.
+
+**A note on the proxy-wide access profile, which is now under-specified.**
+`auth.target.ephemeral_account.access_profile` is one value for every platform
+a proxy serves, and it is FortiOS-shaped: the built-ins most estates have
+configured do not exist on a FortiSwitch. The switch driver is therefore built
+with **no default profile** when the configured one is a FortiOS built-in — a
+state the driver already supports, in which a route naming its own scope
+(`enforcement.platform_role`, §6.5) is served and a route relying on the
+proxy-wide default is refused, outage-class, with nothing provisioned. The two
+alternatives were both worse: passing it anyway means `set accprofile` refused
+half way through a sequence that has already created the administrator, and
+refusing at startup means every FortiGate-only deployment stops booting the day
+this driver ships over a platform it does not serve. A per-platform default is
+the real answer and belongs to whichever phase next touches that setting.
+
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
 lets a PDP rank it above or below a standing credential. The Go half is
@@ -2744,7 +2875,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 >
 > So: **0022** (the decision cache, **delivered**) → **0023** (host-key report
 > reuse, **delivered**) → **0024** (the session deadline), then the rest by
-> number, with **0036**, the contract collapse, last. The first three are
+> number, with **0037**, the contract collapse, last. The first three are
 > promoted because they make an argument this plan already relies on *true*
 > rather than merely written down: 0022 and 0023 are the cheaper answer that
 > replaced the withdrawn 0021 (D17) — now measured, not projected — and 0024
@@ -2765,7 +2896,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
 | 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
-| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0029/0030 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016 |
+| 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0029/0030 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016. **That last premise did not survive phase 0029**, which found a managed switch keeps its own SSH plane and made it its own endpoint; read the 0029 row |
 | 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
 | 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0029's switch driver both build on rather than re-answer (deferred from 0015) |
 | 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
@@ -2780,19 +2911,57 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals. **Delivered:** `password-mfa` enabled on `proxy-direct` only and driven by a real OpenSSH client through `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` (the `user` image's `askpass.sh`), with `sshBaseArgs` untouched so every other scenario is still on the certificate path; an approval, its progress lines, a denial that ends exactly as a wrong password does, and `auth_method=password-mfa` in the audit trail; and two overlapping sessions on one login whose **overlap is observed** in the target's own account database — two accounts at one instant — then removed by two independent teardowns, with the `brokered-key` mirror leaving the target byte-identical. No production code changed. It queued **0034**: the challenge itself still discloses whether the first factor was right |
 | 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement). **Delivered:** the uid is the proxy's choice and travels as an explicit `useradd -u` — `-K UID_MIN=…` was measured and rejected, because it moves the range the target's own allocator searches and still hands a freed uid straight back — allocated strictly above the highest in-range uid in use **and** a high-water mark recorded on the target under `enforcement_base`, so the invariant survives a teardown, a restart and a second proxy. `auth.target.ephemeral_user.uid_min`/`uid_max` default to **2000000-2999999**, above every distribution's own `UID_MAX`. **Allocation does not wrap**: at the top of the range, on an unreadable census, or where the mark cannot be written, the route is refused as an outage on its own `provision-uid` stage with nothing provisioned, and every allocation past nine tenths of the range warns. The uid is on the provisioning record beside the account name. What is still inheritable until a route names one of 0019's confining rungs: anything a session wrote outside its home — and 0027 is what stops a *later* session inheriting it |
 | 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013). **Delivered:** `username` is required on `brokered-key` too (**contract v4.2**, a break; `policy_version` stays 4, because it declares what a proxy can *read* and a tightening is not expressible through it), which makes it required on every method the contract defines; each of the three remaining call sites resolves the account in a fixed order ending in a refusal — `brokered-key`: route → `auth.target.brokered_key.username` → refuse; `static-key`: route → `auth.target.static_key.username` → refuse, and it now **reads the route at all**, which it never did, so the document requiring a `username` and the proxy using something else no longer disagree and an unknown parameter is refused like everywhere else; `ephemeral-user`: route → **`identity.Principals`** → refuse, taking exactly one principal and refusing none or several. Refusals are outage-class (§4.3) with nothing provisioned and no target leg dialled. `brokered-key` deliberately does not read `Principals` (its account is standing and shared, §5.2) and nothing cross-checks a route-named account against them (that would be the proxy originating policy, D2). The `Principals` doc comment, false since it was written, now describes what actually draws from it. Contract change — carried a cross-repo obligation |
-| 0029 | FortiLink FortiSwitch driver            | a switch administered *through* its managing FortiGate: the harder shape of 0016's target-identity question, extending its answer rather than authoring a second one (deferred from 0014) |
-| 0030 | Standalone FortiSwitchOS driver         | a directly-managed switch, which is nearly the FortiGate driver under another platform name (deferred from 0014) |
+| 0029 | FortiSwitchOS driver                    | the FortiSwitch driver, and the target-identity question the phase was queued to answer (deferred from 0014). **Delivered, and the answer is not the one the prompt expected:** a FortiLink-managed switch keeps its own SSH administrative plane — `config switch-controller security-policy local-access` has `ssh` in the default allowaccess for both its interfaces — so the switch is **its own endpoint** and FortiLink is a deployment fact, not a target identity. 0016's answer is left intact rather than stretched, and **no device field is declared**: `fortios.SwitchDriver` is a separate type from the FortiGate driver (so it is not a `device.ResidueSweeper` for a schedule table FortiSwitchOS does not have), reusing 0014's CLI state machine and value validation through helpers moved onto `cliSession`. `EnforcesExpiry` is **false** on a documentation contradiction (`set schedule` names a `config firewall schedule` table the platform lacks); the one built-in profile is `super_admin`, so the FortiOS built-ins are refused before dialling; the unit's identity is confirmed from `get system status` because the two platforms accept the same administrator commands. **No contract change** — `api/` untouched, so no cross-repo obligation. §5.3 carries the reasoning |
+| 0030 | FortiLink-mediated administration       | the estate 0029 does *not* serve: switches deliberately unroutable from the proxy, administered through their managing FortiGate. Rewritten from the standalone-driver prompt, whose content 0029 delivered. Needs a nested reach through FortiOS's password-only "Simple SSH client", a second ephemeral account on the FortiGate, a `ProvisionedAccess` seam for driving `execute switch-controller ssh` before the user's bytes flow, and reaper bookkeeping per subordinate device |
 | 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since has enforced (`session_deadline` is 0024's). The row this table was missing; the prompt has been queued since phase 0019 |
 | 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reports a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. Classifies it as its own stage, discloses it on §4.3's terms, and records it critically with the key's fingerprint — reusing 0025's single copy of x/crypto's wording rather than adding a second. **Conditional in one part:** whether it should also be *contained* is a question this phase must answer and write down, because the blast radius that justified 0025's breaker (an OpenSSH target penalising the proxy's source address) does not exist when the far end is another Hoplock proxy. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Conditional — it asks a question and may answer "no", as 0032 does.** Phase 0026 drove `password-mfa` with a real client and found that the denial discloses nothing but the *flow* does: a correct password is answered with an MFA challenge and a wrong one never is, so the challenge's presence is a first-factor oracle, and its duration says the same thing more quietly. The proxy cannot fix it alone — Control decides when a challenge is issued (D2) — so the phase decides whose problem it is, whether a decoy challenge is worth what it costs in Control load and in an unclosable timing channel, and whether it belongs to the prototype at all (§12 puts a real IdP, where enumeration defences usually live, out of scope). A "yes" closes it in `api/`, `cmd/mock-control` and a scenario; a "no" is written up and the prompt deleted, as 0021 was. Added by 0026 |
 | 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lives on the **target**, so a proxy RESTART — no attacker needed — leaves a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target has no continuity at all. Worse, a target that can store nothing (§5.3's devices; an ordinary Linux host with a read-only root filesystem) is refused outright by 0027 on a route that worked before it. Holds the floor at Hoplock Control as an **exclusive per-proxy uid-block lease** — which closes the multi-proxy case by construction, is safe to hold across a Control outage because the block cannot have been granted to anyone else, and costs one call per BLOCK rather than per session, so 0022 and 0023's 3.17 → 1.17 per-connection budget is untouched. The target-side mark is demoted to an optional signal that may only ever RAISE the floor, and its absence stops being an outage. **Two things it must not do, both settled in 0027's learnings:** put the floor on the authorize response (that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one), and assume the proxy can write anything on the target. Contract change — carries a cross-repo obligation |
-| 0036 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0035 to make room for 0027's follow-up |
+| 0036 | Per-platform access profile             | `auth.target.ephemeral_account.access_profile` is one string for every platform a proxy serves, and it is FortiOS-shaped: FortiOS documents three built-in profiles and FortiSwitchOS documents one, so a proxy fronting both estates cannot express a correct value. Phase 0029 worked around it — the switch driver is built with no default when the configured profile is a FortiOS built-in, so a route naming `enforcement.platform_role` is served and one relying on the default is refused outage-class — and queued the fix. The question is where a created administrator's scope comes from when the route names none: per-platform configuration (no contract change), a route-named default decoupled from 0019's rung (a contract change, weighed against D2), or driver-declared defaults (which 0015 explicitly refused). Must run before the collapse, because one candidate answer revises `api/` (new prompt, added by phase 0029 and raised by the user on its PR) |
+| 0037 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0036 to make room for 0029's follow-up |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
 
-> **Renumbering note (the Control-held uid floor), newest — compose it with the
+> **Renumbering note (the per-platform access profile), newest — compose it
+> with the ones below.** Phase 0029 shipped a second device platform and found
+> that `auth.target.ephemeral_account.access_profile` — one string for every
+> platform — is FortiOS-shaped and simply wrong for a FortiSwitch, which
+> documents one built-in profile where FortiOS documents three. It worked
+> around that (§5.3, "A note on the proxy-wide access profile") and the user
+> asked on its PR for the fix to be queued. Because one of its two candidate
+> answers revises `api/` — a route-named default decoupled from 0019's rung —
+> it must run **before** the contract collapse, so it was inserted at **0036**
+> and the collapse moved **0036 → 0037**. That is the whole mapping —
+> **0036→0037**, one prompt — and the queue is contiguous at **0030–0037**.
+>
+> Live references updated in place: this section's phase table, the collapse
+> prompt's own title, number history, blocker list and hand-off paths, and the
+> stale FortiOS-expiry comment on the first device route in
+> `deploy/control/fixtures.template.yaml` (which phase 0015 disproved and 0017
+> acted on; it now also records that **no** fixture route asks for
+> `target-enforced`, so the topology does not exercise 0017's schedule path end
+> to end — a pre-existing coverage gap, named rather than closed).
+> `docs/learnings/` and `prompts/implemented/` were **not** rewritten and must
+> be read through this mapping.
+>
+> **Queue note (phase 0029) — this one is NOT a renumbering.** 0029
+> shipped the FortiSwitch driver its prompt asked for and settled the
+> target-identity question, but against the opposite premise (§5.3, "As decided
+> (phase 0029)"). That delivered what queued prompt **0030** — "Standalone
+> FortiSwitchOS driver … nearly the FortiGate driver under another platform
+> name" — was for, while leaving a real gap its own decision opens: estates
+> that keep their switches unroutable from the proxy. So **0030 was rewritten
+> in place** as the FortiLink-mediated phase rather than withdrawn or
+> renumbered. **No number moved, nothing was retired, and the queue stays
+> contiguous at 0030–0036** — so there is no mapping to compose here, and a
+> reference to "0030" resolves to whatever `prompts/queued/0030-…` says today,
+> which is the mediated path and no longer the standalone driver. Live
+> references updated in place: this section's phase table and run-order
+> paragraph, and §5.3.
+>
+> **Renumbering note (the Control-held uid floor) — compose it with the
 > ones below.** Phase 0027 made uid allocation non-reusing and left the
 > high-water mark on the target. Review of its PR asked why security state sits
 > on the untrusted side; the answer is that the restart case, the replaced-proxy

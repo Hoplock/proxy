@@ -113,6 +113,19 @@ services:
       - "root,customer-a"
       - "-vdom-debug"
       - "127.0.0.1:8082"
+      # A FortiSwitch, on a third listener in the same container (phase 0029).
+      # It is its OWN endpoint and not something reached through either
+      # FortiGate above: a FortiLink-managed switch keeps its own SSH
+      # administrative plane — `config switch-controller security-policy
+      # local-access` has `ssh` in the default allowaccess for both its
+      # interfaces — so the switch is a target, and FortiLink is a deployment
+      # fact rather than a target identity (PLAN §5.3).
+      - "-switch-listen"
+      - "0.0.0.0:2223"
+      - "-switch-hostname"
+      - "S248EPTF19000001"
+      - "-switch-debug"
+      - "127.0.0.1:8083"
     environment:
       HOPLOCK_DEVICE_ADMIN_PASSWORD: "e2e-device-admin"
     networks: [core]
