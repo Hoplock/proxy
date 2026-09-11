@@ -15,7 +15,9 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 ## 0. TL;DR of a session
 
 1. Read this protocol.
-2. Read `docs/PLAN.md` (the architecture source of truth).
+2. Navigate `docs/PLAN.md` (the architecture source of truth) — its section
+   index, then the sections and decisions your prompt names. Not front to back
+   (§1).
 3. Read the **summary block** of each file in `docs/learnings/` (read a full
    learnings file only if it's relevant to your prompt).
 4. Take the **lowest-numbered** prompt in `prompts/queued/` (unless the user
@@ -27,7 +29,9 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 8. Write a learnings file to `docs/learnings/`.
 9. Open a PR. Iterate with the user until they are happy — and once it is green
    and mergeable, **go idle and wait** rather than polling it (§8).
-10. **The session ends when the PR is merged.**
+10. **The session ends when the PR is merged** — confirm it in a line and stop.
+    Say each thing once: the learnings file and the PR description are the
+    records, and chat is not a third copy of them (§8).
 
 ---
 
@@ -35,18 +39,61 @@ To start a session, see `docs/KICKOFF.md` for the exact kickoff prompt to paste.
 
 Read in this order and **stop reading as soon as you have what you need**:
 
-1. `docs/PROTOCOL.md` — this file (always, in full).
-2. `docs/PLAN.md` — always. This is the architecture. Do not re-derive it.
+1. `docs/PROTOCOL.md` — this file, always, in full. It is the **only** file on
+   this list you read whole; it is short by design so that it can be.
+2. `docs/PLAN.md` — the architecture, and never re-derived. It is ~56k tokens
+   and grows every phase, so it is read by **navigation, not front to back**:
+   - `grep -n "^#\{1,3\} " docs/PLAN.md` prints the section index (~270 tokens).
+     Start there, every time.
+   - Read the sections and decisions your prompt's "Read first" names — a
+     decision by id (`grep -n '^- \*\*D13 ' docs/PLAN.md`), a section by range
+     (`sed -n '/^### 5.3/,/^## 6/p' docs/PLAN.md`).
+   - **Three indexes inside the plan answer most questions without the body**,
+     and each says what it does not cover. §2's **decision register** — what
+     each `D` settles, whether it still says that, and where it is rendered.
+     §5.3's **"What is true today"** — the composed current state of the device
+     seam, which is otherwise many append-only layers deep. §10's **composed
+     mapping** — what an old prompt number resolves to, so you never compose
+     the renumbering notes by hand. Use them the way you use a learnings
+     summary: read the index, open the body only when you are changing that
+     area or need the reasoning.
+   - **Widen whenever you are about to make an architectural choice and cannot
+     find that the plan already made it.** Budget is never a reason to guess: a
+     re-derived decision is the exact failure this file exists to prevent, and
+     §9 makes the plan authoritative over your memory.
+   - A prompt that names no sections is a **defective prompt** (§7), not a
+     licence to read everything. Say so, and navigate from the index.
 3. `docs/learnings/*` — read **only the summary block** at the top of each file
    first. Open the full body of a learnings file **only** when its summary shows
    it's relevant to your prompt (e.g. you touch the same package or interface).
 4. Your target prompt in `prompts/queued/`.
 
-Do **not** read the whole codebase. Read the specific files your prompt names,
-plus what those files import. If you find yourself reading broadly, stop and
-re-scope — the prompt or a learnings file should already point you at the right
-places. Staying under ~60% context is a hard goal; if you're approaching it,
-prefer finishing a smaller, correct slice over reading more.
+**Why PLAN.md is navigated rather than read.** This said "always, in full"
+until the plan outgrew it. §5 alone is now ~13k tokens and §6 another ~12k, so
+obeying that literally spends most of a session's budget before the prompt is
+even opened, on sections the phase will never touch — and a session that has
+burned its budget reading is exactly the one that then does thin work. What the
+rule was protecting is the **authority** of the plan, not its page count, and
+that survives navigation intact: §7 already requires every prompt to name the
+sections it needs, and they do.
+
+Do **not** read the whole codebase either. Read the specific files your prompt
+names, plus what those files import. If you find yourself reading broadly, stop
+and re-scope — the prompt or a learnings file should already point you at the
+right places. Staying under ~60% context is a hard goal; if you're approaching
+it, prefer finishing a smaller, correct slice over reading more.
+
+**Know what step 3 costs you.** With PLAN.md navigated, the summary blocks are
+the largest fixed cost at startup — ~18k tokens across 31 files today, and one
+file longer every phase. They are still worth it (that is the whole hand-off
+channel, §5), but keep yours **tight**: a summary block that sprawls is charged
+to every session that follows, forever.
+
+**Every figure in this section is a snapshot, last measured after phase 0031.**
+They are here because the argument needs a scale, not because the digits are
+load-bearing — so treat a drifted number as drift, not as a reason to doubt the
+rule. If you need the current one, measure it; if you are already editing this
+section, refresh it.
 
 ---
 
@@ -81,7 +128,7 @@ prefer finishing a smaller, correct slice over reading more.
   discover work that belongs to a later phase, do **not** do it here — note it in
   your learnings file and/or add a new queued prompt (Section 6).
 - **Follow the plan.** Match `docs/PLAN.md`: package layout, interfaces, naming,
-  decisions (D1–D12, including D5a and D6a). If reality forces a deviation,
+  decisions (D1–D17, including D5a and D6a). If reality forces a deviation,
   update `docs/PLAN.md` in the **same PR** and call it out in the PR description
   and learnings.
 - **Cross-repo changes follow `docs/CROSS-REPO-PROTOCOL.md`.** This repo owns
@@ -92,6 +139,27 @@ prefer finishing a smaller, correct slice over reading more.
   sync kickoff it must hand the user for each affected repository (§4) — and the
   conventions for a sync PR. It lists the shared surfaces in its Section 1; if
   your change touches none of them, you do not need to read it.
+- **The plan's indexes are part of the plan, and go stale in the same PR that
+  makes them wrong.** `docs/PLAN.md` carries three indexes that exist so a
+  session can answer a question without reading the body beneath them (§1), and
+  each is read *instead of* what it summarises — so a stale one is worse than
+  none: it will be believed, by a reader who has by construction chosen not to
+  read the thing that would contradict it. If your change is one of these, the
+  refresh belongs in the same PR:
+
+  | You change | Refresh |
+  | --- | --- |
+  | A decision — new, amended, withdrawn, or newly rendered somewhere | Its row in §2's **register**, the **Status** column above all: that column is why the register exists |
+  | §5.3 — a new `As <verb> (phase N)` layer | §5.3's **"What is true today"**. Appending a layer without composing it in is how a phase's outcome goes silently missing |
+  | Prompt numbers — any renumber, or a withdrawal | §10's **composed mapping**, by adding your revision to `renumberings` in `test/docs/indexes_test.go`; the mapping is derived from it, not hand-kept (§6) |
+  | A prompt, added or modified | Its "Read first", naming the PLAN sections it needs (§7) |
+
+  **`test/docs/indexes_test.go` enforces all of this in `go test ./...`**, so a
+  stale index is a failing build rather than something a reviewer has to notice.
+  It is there because the rule alone was not enough: the phase that wrote these
+  indexes left one of them stale within a day, and got a figure in another wrong
+  by counting a printed list by eye. Read a failure from it as a prompt to
+  refresh the index, never as a reason to weaken the test.
 - **A rename is not done until nothing points at the old name.** Renaming or
   deleting a path, file, exported identifier, config key, or make target leaves
   dangling references that nothing fails to compile over. A queued prompt that
@@ -132,6 +200,12 @@ prefer finishing a smaller, correct slice over reading more.
       (same filename) in this PR.
 - [ ] A learnings file added to `docs/learnings/` (Section 5).
 - [ ] Prompt-numbering invariants still hold (Section 6).
+- [ ] Every prompt this PR **adds or modifies** names the `docs/PLAN.md`
+      sections and decisions it needs, by `§` and `D`, in its "Read first"
+      (Section 7). §1's context budget depends on it.
+- [ ] `docs/PLAN.md`'s indexes still describe what they index — §2's register,
+      §5.3's "What is true today", §10's composed mapping (Section 3).
+      `go test ./test/docs/...` is the check.
 - [ ] CI is green on the PR.
 
 ---
@@ -185,8 +259,13 @@ prefix indicating implementation order.
   comments — so every revision records its old→new mapping as a **Renumbering
   note** at the end of `docs/PLAN.md` §10, says which live references it updated,
   and states that `docs/learnings/` and `prompts/implemented/` were **not**
-  rewritten and must be read through the mapping. The notes stack, newest first;
-  compose them when resolving an old reference.
+  rewritten and must be read through the mapping.
+  **Do not compose those notes by hand.** They stack, there are eleven, and the
+  chain is six deep — so §10 carries the **composed mapping** above them, and a
+  renumbering PR regenerates it as part of the same change. Resolve an old
+  reference by the phase's *subject* against that table, never by its digits
+  alone: 29 of the 37 numbers in use are simultaneously a live phase and a
+  historical alias of a different one.
 - **A withdrawn number is retired for good** — never reused, even though nothing
   occupies it (**0021** and **0030** today; see `docs/learnings/0021-…` and
   `docs/learnings/0030-…`). Those are the gaps the contiguity rule above does not
@@ -216,8 +295,22 @@ Any prompt (existing or newly added) must be runnable by a **fresh** session wit
 no prior context. It must:
 
 - State its objective, in-scope and out-of-scope items.
-- Reference `docs/PROTOCOL.md`, `docs/PLAN.md`, and the relevant
-  `docs/learnings/` summaries at the top ("Read first").
+- **Name the exact `docs/PLAN.md` sections and decisions the phase needs**, by
+  `§` number and `D` id, in a "Read first" block at the top — together with the
+  relevant `docs/learnings/` summaries and this file. Not "see `docs/PLAN.md`":
+  the plan is ~50k tokens and §1 has the session **navigate** it rather than
+  read it, so a prompt that names no sections leaves the next session choosing
+  between reading 50k tokens it mostly does not need and guessing at an
+  architecture the plan already settled. **Both outcomes are the failure §1's
+  budget exists to prevent, and this line is what makes that budget
+  achievable** — it is a load-bearing requirement, not a courtesy to the reader.
+  Name a section you are unsure about rather than omitting it; an unnecessary
+  section costs tokens once, a missing one costs a re-derived decision.
+- This applies to a prompt you **modify** exactly as it does to one you add. If
+  your PR changes what a queued prompt will have to read — you moved a decision,
+  renamed a section, added a `D`, or shifted work between phases — update that
+  prompt's "Read first" in the same PR, on §3's rule that a live reference is
+  updated rather than left to rot.
 - Name the exact packages/files to create or change.
 - Specify interfaces/types precisely enough to implement without guessing.
 - Define acceptance criteria and required tests.
@@ -239,6 +332,37 @@ no prior context. It must:
   prompt in the same session.
 - Do not create a PR for work the user hasn't asked to be turned into a PR; the
   normal implementation flow above does open one.
+
+### Say each thing once
+
+A phase writes three records, and they have three different readers: the
+**learnings file** (the next session, forever), the **PR description** (the
+reviewer, for the life of the PR), and **what the session says in chat** (the
+user, once). Only the third is not a record, and it is the one that costs the
+most — every restatement is output the user pays for *and* input that every
+later turn in the session carries.
+
+So each fact goes in exactly **one** of the first two, and the session says only
+what neither can deliver. At the three moments a session is tempted to
+summarise:
+
+- **Opening the PR** — post the link and nothing the description already says.
+  Add only what it cannot carry: a decision you need, an assumption you took
+  that they might reject, something worth their attention before they read.
+- **Green and mergeable** — one line, then idle (below).
+- **Merged** — the session is over, and nothing downstream reads a closing
+  summary: the learnings file is the hand-off, not your last message. Say only
+  what the user must **act** on — the sync kickoff
+  `docs/CROSS-REPO-PROTOCOL.md` §4 owes them, a follow-up they agreed to — and
+  otherwise confirm the merge in one line and stop.
+
+The test: if a sentence would still be true and worth finding after this
+session's scrollback is gone, it belongs in the learnings file or the PR
+description. If it would not, it probably did not need saying.
+
+This is the same discipline §3 and §5 already apply to the durable artifacts —
+one home per fact, a pointer rather than a second copy — applied to the one
+channel that was never given it.
 
 ### Waiting for review is waiting, not polling
 

@@ -52,6 +52,49 @@ Policy Decision Point (PDP).
 Each decision has an ID so prompts and learnings can reference it. Decisions
 marked **(confirm)** are recommendations pending explicit user confirmation.
 
+### The register — read this first
+
+This section is ~7k tokens and most phases need two or three of its entries.
+The register says what each decision settles, **whether it still says that**,
+and roughly where the plan renders it, so you can open the two that matter
+instead of reading nineteen. It is an index, not a substitute: a decision you
+are about to build on, argue with, or amend is read in full below.
+
+The **Status** column is the part that is expensive to discover by reading,
+because an amendment lives *inside* the entry it amends — D13 has been amended
+three times and you only learn that several hundred words in.
+
+| D | Settles | Status | Mainly in |
+| --- | --- | --- | --- |
+| **D1** | Target is encoded in the SSH username (`alice#host`); ProxyJump rejected, with reasons | confirmed | §6.1 |
+| **D2** | The proxy originates no policy: Control decides, once per connection, enforced locally | live — **D17 proposed amending it and was withdrawn** | §6.4 |
+| **D3** | Control is a separate component; this repo owns the contract and ships a mock | live | §3, `api/` |
+| **D4** | Both auth planes are pluggable interfaces over an identity/claims model | live | §4.1, §4.2 |
+| **D5** | Generic channel passthrough first, inspection pipeline later | live, **widened by D5a** | §6.2 |
+| **D5a** | Policy has three axes (channel types, in-channel ops, destinations), not one | amends D5 (0006) | §6.2, §6.3 |
+| **D6** | Ephemeral just-in-time target users, created and removed per session | live | §5.1 |
+| **D6a** | Two credential methods, chosen by the **server** per route | amends D6 (0006), **amended by D14** | §5.1, §5.2 |
+| **D7** | Host-key policy comes from the server; TOFU in the prototype, every new key reported | live | §6.4 |
+| **D8** | Logs batch to Control; security events go on a **priority path**; disk is a buffer only | live | §7 |
+| **D9** | Go ≥1.26, `x/crypto/ssh`, YAML bootstrap, JSON/HTTPS API | live | §8 |
+| **D10** | Proprietary, all rights reserved; per-file SPDX headers | live | §8 |
+| **D11** | A hop is reached over a connection the **downstream** proxy opened | new (0008) | §6.1 |
+| **D12** | "Enforced" is a claim about the **boundary**, not about interception | new (0010), **amended by 0018** — §6.5 is where it landed | §6.3, §6.5 |
+| **D13** | Ephemeral **accounts on devices**, through a per-platform driver seam | new (0013), **amended three times**: 0014 (persistence may be declared), 0015 (declarations must be decisions), 0017 (a declaration carries its reasoning) | §5.3 |
+| **D14** | The server sends an ordered **ladder** of credential methods; first satisfiable wins | amends D6a (0013) | §4.2, §5.3 |
+| **D15** | External authorization context (tickets, incidents, scan windows) belongs to Control | new (0018) | §6.5 |
+| **D16** | Unbounded privilege is bounded by **time and the record**, not by command policy | new (0018); **fully enforced**: `session_deadline` by 0024, the other three bounds by 0031 | §6.5, §4.3, §7 |
+| **D17** | Machine identities need a long-lived connection model | ⊘ **WITHDRAWN** (phase 0021, itself retired). **D2 is not amended.** Read the verdict at the head of the entry, not the argument | §9.1 |
+
+**Two reading rules this table encodes.** An entry that says *amends* replaces
+part of what it names — read both, newest first. An entry marked ⊘ is kept
+because the reasoning is worth having and because other documents cite it;
+nothing in the code depends on it.
+
+**Keep this register current in the same PR that changes a decision** — it is a
+live reference under `docs/PROTOCOL.md` §3, and an index that lies about a
+decision's status is worse than no index.
+
 - **D1 — Target identity transport (confirmed).** SSH has no SNI/Host header, so
   the target hostname the user typed is not on the wire after DNS resolution.
   The target is therefore **encoded in the SSH username** using a configurable
@@ -1125,6 +1168,111 @@ The lifecycle mirrors §5.1 exactly — log in privileged, create the account,
 install the credential, connect, remove it on teardown — and every step is
 executed by a **driver** for the named platform rather than by POSIX commands.
 The route names the platform; nothing is inferred from a banner.
+
+#### What is true today — read this before the layers below
+
+The rest of this section is **append-only**: eight `As <verb> (phase N)` blocks
+recording what each phase established, several of which supersede parts of
+earlier ones. Composing them costs ~8k tokens and is how a session ends up
+building against a rule that was overturned two phases later. This block is the
+composed answer. **It states outcomes, not reasoning** — when you need to know
+*why*, or you are about to change one of these, the layer that decided it is
+below and is still the authority.
+
+**The model.** The route names the `platform`; nothing is sniffed. A driver
+performs create / install-credential / remove / enumerate, and **declares** its
+platform's limits as data (`device.Capabilities`) which the provisioner reads to
+decide naming, posture, and refuse-or-serve in one place. An unregistered
+platform is an outage-class denial, never the nearest driver.
+
+**A limitation and a failure are not the same thing**, and the distinction is
+load-bearing in both directions: *this platform cannot* (`ErrUnsupported`) makes
+the ladder rung unsatisfiable and the proxy walks to the next one (D14), while
+*this attempt failed* fails the session rather than degrading to a rung the
+server ranked lower. Getting it backwards turns a device outage into a silent
+downgrade, or a permanent limitation into a session that never connects.
+
+**An unsupported unit shape is a denial, never a best-effort attempt.** On
+FortiOS the served shapes are `disable`, `multiple` and `split-task`; a unit
+whose virtual-domain line cannot be read **at all**, or that reports anything
+else, is refused outage-class — and refused rather than skipped, because
+skipping would answer the shape of one unit with a credential the server ranked
+lower.
+
+**Naming.** Limit ≥32 → `hl-<tag>-<login>-<token>`; 11–31 → the **login segment**
+is dropped, never the reaper prefix or the uniqueness token; <11 → the route is
+refused. Base36 throughout. The longest name is exactly **31** characters, which
+is exactly the FortiOS schedule-name limit — an invariant with a test, because
+one more character would break every device-enforced FortiOS route.
+
+**Collisions are never adopted.** Non-existence is verified; a collision retries
+with a fresh token, on a small budget, then refuses. This differs from §5.1
+deliberately.
+
+**Attribution is the log.** On a constrained platform the name carries no login,
+so the account-mapping event on D8's **priority path** is the only attribution
+there is — and a route whose driver declares a constrained limit is **refused**
+if the proxy has no logging path at all, including its disk buffer. Route fields
+and the declared caveats ride on that record too.
+
+**Scope, and what a route may name.** A `device_field.<name>` names a
+**partition** of the endpoint device (contract v3.1) — never a different device
+behind it. Fields are declared per driver; an undeclared one is a **skipped
+rung** (D14), never a dropped field. They ride on **creation only**: removal,
+enumeration and credential installation address the same administrator table.
+On FortiOS, no `device_field.vdom` means a **global** account; one means a
+VDOM-scoped account, and an unknown VDOM is refused before anything is created.
+
+**The account's authorization scope** comes from the route's
+`enforcement.platform_role` on a `platform-authorized` route, and otherwise from
+`auth.target.ephemeral_account.access_profile`, which is required and checked at
+startup. A route naming that rung with no role is **refused**, not silently given
+the proxy-wide default. The rung is satisfiable only where the driver declares
+`CommandAuthorization`, and a shipped driver declaring one must also declare
+`AuthorizationCaveat`. **Source-address pinning has no rung name** — it is
+applied unconditionally wherever declared, on both IPv4 and IPv6, and an IPv6
+source address is refused rather than rendered into an IPv4 field.
+
+**Expiry is per route, and costs a second object where it is taken.** A driver
+receives a lifetime **only** under `target-enforced` where it declares
+`EnforcesExpiry`; every other route reaches it with zero. A route that asks and
+cannot be served **fails** — it is never quietly downgraded. On FortiOS the
+deadline is a `config firewall schedule onetime` object named after the
+administrator, computed from the **device's** clock (`execute date` / `execute
+time`; a unit that will not report its clock is refused), with
+`expiration-days 0`. Removal deletes the **administrator first**, the schedule
+second, and attempts both every time.
+
+**Removal and sweeping.** Teardown is idempotent and unwinds exactly the nesting
+the session opened. The **reaper is the primary removal path**, not a backstop,
+wherever a platform persists accounts and cannot expire them — and a failed
+sweep is an event on D8's priority path. `device.ResidueSweeper` is an
+**optional** driver interface for the second object, swept after the account
+pass under the same prefix scoping and first-seen grace period. The reaper
+sweeps a device it reaches from an **endpoint**, keyed on `host:port`.
+
+**Shipped platforms.**
+
+| | `fortios` (FortiGate) | `fortiswitchos` (FortiSwitch) |
+| --- | --- | --- |
+| Name limit | **64** (documented) | **35** (assumed — undocumented) |
+| `EnforcesExpiry` | **true**, `set schedule` | **false**, on a documentation *contradiction* |
+| `PersistsAcrossReload` | true (`cfg-save` is device-wide) | true, same mechanism |
+| Built-in profiles | three; none read-only usable by a VDOM-scoped account | **one**, `super_admin` |
+| Device fields | `vdom` | **none** — the switch is its own endpoint |
+
+A FortiSwitch is reached **directly**, at its own `host:port` with its own host
+key; FortiLink is a deployment fact, not a target identity. A managing FortiGate
+closing SSH on it is an ordinary unreachable device — a **retryable failure**,
+not a skipped rung.
+
+**Known gaps, carried rather than closed.** The proxy-wide `access_profile` is
+one FortiOS-shaped string for every platform, so the switch driver runs with no
+default when the configured value is a FortiOS built-in (phase **0036** owns the
+fix). Whether FortiOS's schedule covers an **SSH** login is an inference from the
+field's shape — Fortinet publishes only a GUI denial — and it is carried to the
+operator through `ExpiryMechanism`. Which scope the schedule table lives in on a
+partitioned unit is undocumented; the failure names the assumption.
 
 A driver **declares its platform's constraints**, and the provisioner reads
 those declarations rather than assuming Linux:
@@ -3056,6 +3204,75 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
+
+### Resolving a number: the composed mapping
+
+**Read this instead of composing the notes below.** Every renumbering note in
+this section is a frozen record of *one* revision, and §6 of
+`docs/PROTOCOL.md` asks you to compose them when resolving an old reference.
+There are now **eleven**, the chain is up to six deep, and composing it by hand
+is both expensive and the kind of task nobody gets right twice. So it is
+composed **here, once**, mechanically, from the mappings those notes state.
+The notes stay as the record of *why* each move happened; this table is the
+record of *what resolves to what*.
+
+Only phases whose number has ever moved appear. Anything absent has held its
+number since it was written. **⊘ marks a withdrawn number**, retired for good
+and never reused (§6).
+
+| Today | Previously (oldest → newest) | Phase |
+| --- | --- | --- |
+| **0007** | `0006` | Target credentials |
+| **0008** | `0007` | Multi-hop / next-hop routing |
+| **0009** | `0008` | Channel allow-list + inspection pipeline |
+| **0010** | `0009` | Command filtering + policy actions |
+| **0011** | `0010` | Logging & telemetry pipeline |
+| **0012** | `0011` | Full E2E topology + CI gate + hardening |
+| **0018** | `0013` → `0015` → `0016` | Enforcement points — contract v4 |
+| **0019** | `0014` → `0016` → `0017` | Target-side enforcement |
+| **0020** | `0017` → `0018` *(new at privileged-access)* | Scale harness & sizing evidence |
+| **0021** ⊘ | `0018` → `0019` *(new at privileged-access)* | Machine-identity connection model |
+| **0022** | `0031` | The decision cache under fan-out |
+| **0023** | `0032` | Host-key report reuse |
+| **0024** | `0022` → `0023` → `0025` | Session deadline & lifetime |
+| **0025** | `0019` → `0020` → `0022` | Target credential rejection |
+| **0026** | `0020` → `0021` → `0023` | e2e coverage: MFA & concurrency |
+| **0027** | `0021` → `0022` → `0024` | Ephemeral UID allocation |
+| **0028** | `0023` → `0024` → `0026` | Close the login fallback |
+| **0029** | `0024` → `0025` → `0027` | FortiSwitchOS driver |
+| **0030** ⊘ | `0025` → `0026` → `0028` | FortiLink-mediated administration |
+| **0031** | `0030` | The other three session bounds |
+| **0037** | `0033` → `0032` → `0033` → `0034` → `0035` → `0036` | Drop the superseded contract vocabularies |
+
+**The name is the disambiguator, not the number.** Almost every number in this
+repository is *both* a live phase and a historical alias of a different one —
+**29 of 37** are. `0031` is the session-bounds phase today and is what the
+decision cache (now `0022`) was called before the run-order revision; `0025` is target-credential rejection today and is what the session
+deadline (now `0024`) was called. So a bare number in a frozen document is
+genuinely ambiguous, and resolving it by number alone is guesswork.
+
+Resolve it this way instead:
+
+1. Take **what the citation says the phase is about**, not its digits.
+2. Find that phase in the table above, or in the phase table at the top of this
+   section — which remains the only current statement of what a number means.
+3. Use the `Previously` column to confirm the cited number is one this phase
+   actually held. If it is not, the citation means the *live* phase of that
+   number.
+
+**Two caveats, stated rather than smoothed over.** The contract collapse
+(`0037`) really did move to `0032` and back to `0033` — the run-order revision
+promoted it, and the admission-policy phase pushed it out again; that is churn,
+not a transcription error. And some pre-run-order documents call it **`0029`**,
+an alias no recorded renumbering explains, so it is listed here as attested by
+the run-order note rather than derived. Every other chain in the table was
+cross-checked against the notes' own explicit statements and agrees with them.
+
+**When you renumber, regenerate this table in the same PR** — it is a live
+reference under §3, and a stale composed mapping is worse than none, because it
+will be believed.
+
+---
 
 > **Queue note (phase 0030), newest — this one is NOT a renumbering, and
 > nothing below needs recomposing for it.** Phase 0030 was **withdrawn**: the
