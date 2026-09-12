@@ -1,5 +1,16 @@
 # 0026 — e2e coverage: password+MFA and concurrent provisioning — Learnings
 
+> **Pointer note (added by 0034).** The MFA question this phase queued —
+> `prompts/queued/0034-mfa-challenge-first-factor-oracle.md`, cited below and in
+> the Details — has been **answered NO and withdrawn**, so that file no longer
+> exists and **0034 is retired**. The finding this phase recorded stands exactly
+> as written; what changed is that it is now an accepted limit rather than an
+> open question. Read `docs/PLAN.md` §4.3 and
+> `docs/learnings/0034-mfa-challenge-first-factor-oracle-learnings.md` for the
+> decision. (The note below is also out of date on one path: the contract
+> collapse is now `prompts/queued/0037-collapse-contract-to-one-version.md`.)
+> Nothing else in this file changed.
+
 > **Pointer note (added by 0027).** The renumbering this file records — the
 > contract collapse moved to **0035** — has been superseded: phase 0027 queued the
 > Control-held uid floor at 0035, so the collapse is now
