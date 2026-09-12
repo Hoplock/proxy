@@ -2992,6 +2992,37 @@ working set larger than the cache is to size the cache, which before 0022 was
 not something an operator could do. `CacheStats.Evicted` is how a running proxy
 says the bound is too small; `Expired` says the TTLs are too short.
 
+#### Does the cliff need an admission policy? Asked and answered: no (phase 0032)
+
+**The question above is closed, and this is here so nobody re-opens it from the
+same standing start.** Phase 0032 asked whether that step should be a slope —
+whether a scan-resistant admission policy (TinyLFU-style: admit a candidate only
+if it looks hotter than the victim it would displace) earns its place in
+`internal/control/cache.go`. It compared five policies offline against criteria
+written before the numbers, and answered **no**.
+
+The evidence is `internal/control/admission_sim_test.go`, kept deliberately:
+a later session asking this again should **re-run it, not re-derive it**
+(`go test ./internal/control -run AdmissionSimulation -v`). It is calibrated
+against the two measured points in this section — `freeze` ≈ 59% and `lru` ≈ 0%
+at N = 8,192 against a 4,096-entry bound — and those assertions run on every
+`go test ./...`.
+
+What decided it: **the cliff is a property of a strict uniform cycle, and the
+estate this product is sized for is not one.** Asked in the session, the
+operator answered that the traffic is mixed rather than a fixed sweep, and that
+membership churns hard on cloud and barely at all on-prem. On traces with that
+shape LRU already holds 82–96%, the best candidate beats it by **1.6 points of
+hit rate — ~18 Hoplock Control req/s out of 2,715 at the five-minute row, 0.7%**
+— and at high churn LRU **wins**, because every policy that produces a slope
+does it by protecting incumbents, which is the wrong instinct for a working set
+that has legitimately turned over. Sizing remains the fix, `Evicted` remains the
+signal, and the one thing that would reopen this is an estate that sweeps its
+whole fleet in a strict cycle *and* cannot size its cache — where the same
+simulator measures the policy as worth ~570 req/s (15% of PDP load) rather than
+18. Full matrix and criteria:
+`docs/learnings/0032-decision-cache-admission-policy-learnings.md`.
+
 #### What `ephemeral-user` costs a target (§5.1)
 
 This is the one measurement here that is not per proxy. `useradd` and `userdel`
@@ -3216,7 +3247,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0029 | FortiSwitchOS driver                    | the FortiSwitch driver, and the target-identity question the phase was queued to answer (deferred from 0014). **Delivered, and the answer is not the one the prompt expected:** a FortiLink-managed switch keeps its own SSH administrative plane — `config switch-controller security-policy local-access` has `ssh` in the default allowaccess for both its interfaces — so the switch is **its own endpoint** and FortiLink is a deployment fact, not a target identity. 0016's answer is left intact rather than stretched, and **no device field is declared**: `fortios.SwitchDriver` is a separate type from the FortiGate driver (so it is not a `device.ResidueSweeper` for a schedule table FortiSwitchOS does not have), reusing 0014's CLI state machine and value validation through helpers moved onto `cliSession`. `EnforcesExpiry` is **false** on a documentation contradiction (`set schedule` names a `config firewall schedule` table the platform lacks); the one built-in profile is `super_admin`, so the FortiOS built-ins are refused before dialling; the unit's identity is confirmed from `get system status` because the two platforms accept the same administrator commands. **No contract change** — `api/` untouched, so no cross-repo obligation. §5.3 carries the reasoning |
 | 0030 | FortiLink-mediated administration       | **Withdrawn — decided, not built.** The estate 0029 does not serve — switches deliberately unroutable from the proxy — is served by a **deployment** rather than by a mechanism: put a proxy where it can reach the switch (0029's `fortiswitchos` then works unchanged), or administer the switch from an ordinary `fortigate` session, accepting that the switch login is then a standing credential Hoplock does not broker. Building it would have put a second ephemeral account on a customer's firewall per switch session, made the user's hop password-only, taken on a strand-with-no-sweep leak class, and put a per-channel reach preamble in front of every session — to reach a device a proxy could simply be routed to. `device.CreateRequest.Fields` therefore still ride on creation only. The number **0030 is retired and must never be reused**. Reasoning: §5.3 "As settled (phase 0030)" and `docs/learnings/0030-fortilink-mediated-administration-learnings.md` |
 | 0031 | The other three session bounds          | required capture, the concurrency caps, and the grant context on the audit record — D16's remaining three bounds, which 0018 defined and no phase since had enforced (`session_deadline` is 0024's). The row this table was missing; the prompt had been queued since phase 0019. **Delivered:** all three in `internal/proxy/bounds.go`, checked before the target leg is dialled and before anything is provisioned — required capture as an **outage** on its own `capture` stage, turning on the telemetry pipeline's existing `Deliverable()` so a proxy spooling to its disk buffer still satisfies it (PLAN §7; the same predicate §5.3's device attribution uses); the caps as a **policy denial** counted against the proxy's own live-session registry in one critical section, per-proxy by construction and recorded with the ceiling that was hit, which the user is never told; and the grant context stamped by the session recorder onto every record after the decision, carried from the response in a handle with no readable surface (`logging.GrantFrom`, `routing.Route.Grant`) so 0018's AST walk needed no new package and `additional_context`'s object form reaches the record as fields rather than as one string. Plus `POST /debug/logs/sink` on the mock, which is what lets the e2e take the log destination down while authorize keeps answering. **No contract change** — every field shipped in v4, `api/` is untouched, so no cross-repo obligation |
-| 0032 | Does the decision cache need an admission policy? | **Conditional — it asks a question and may answer "no".** 0022 left the cache with a cliff rather than a slope: past `control.cache.max_entries` a strict poll cycle is LRU's worst case (measured 100% at the bound, **0%** just past it, where the pre-0022 freeze gave 59%), so a fleet outgrowing its cache by 1% costs 46% more Control calls. This phase asks the four deployment questions that decide whether that matters, builds an offline policy simulator — freeze, LRU, sampled-random, SLRU, TinyLFU over uniform-cycle, hot-set, Zipf and churn traces — validated against the two measured points, and decides against criteria written before the numbers. It changes no policy: a "yes" queues the implementation, a "no" is written up and the prompt deleted (as 0021 was) |
+| 0032 | Does the decision cache need an admission policy? | **Withdrawn — evaluated, not built.** The four deployment questions were asked and answered: operators can *usually* size `control.cache.max_entries` to the estate, the traffic is mixed rather than a strict sweep, and churn is high on cloud and low on-prem. `internal/control/admission_sim_test.go` compares freeze, LRU, sampled-random, SLRU and TinyLFU over uniform-cycle, hot-set, Zipf, churn and Zipf-over-churn traces, calibrated against both measured points (`freeze` 59%, `lru` 0% at N=8,192/M=4,096). On the traces matching those answers the best candidate beats LRU by **1.6 points of hit rate — ~18 Hoplock Control req/s of 2,715, or 0.7%** — and loses to it outright at high churn, so criteria 2 and 4 fail; sampled-random additionally fails criterion 3 on the hot-set traces. The cliff is real but it is a property of a *strict uniform cycle*, which this estate is not. LRU stands; the number **0032 is retired and must never be reused**. The simulator is kept as the evidence. Reasoning: §9.1 "Does the cliff need an admission policy?" and `docs/learnings/0032-decision-cache-admission-policy-learnings.md` |
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reports a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. Classifies it as its own stage, discloses it on §4.3's terms, and records it critically with the key's fingerprint — reusing 0025's single copy of x/crypto's wording rather than adding a second. **Conditional in one part:** whether it should also be *contained* is a question this phase must answer and write down, because the blast radius that justified 0025's breaker (an OpenSSH target penalising the proxy's source address) does not exist when the far end is another Hoplock proxy. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Conditional — it asks a question and may answer "no", as 0032 does.** Phase 0026 drove `password-mfa` with a real client and found that the denial discloses nothing but the *flow* does: a correct password is answered with an MFA challenge and a wrong one never is, so the challenge's presence is a first-factor oracle, and its duration says the same thing more quietly. The proxy cannot fix it alone — Control decides when a challenge is issued (D2) — so the phase decides whose problem it is, whether a decoy challenge is worth what it costs in Control load and in an unclosable timing channel, and whether it belongs to the prototype at all (§12 puts a real IdP, where enumeration defences usually live, out of scope). A "yes" closes it in `api/`, `cmd/mock-control` and a scenario; a "no" is written up and the prompt deleted, as 0021 was. Added by 0026 |
 | 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lives on the **target**, so a proxy RESTART — no attacker needed — leaves a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target has no continuity at all. Worse, a target that can store nothing (§5.3's devices; an ordinary Linux host with a read-only root filesystem) is refused outright by 0027 on a route that worked before it. Holds the floor at Hoplock Control as an **exclusive per-proxy uid-block lease** — which closes the multi-proxy case by construction, is safe to hold across a Control outage because the block cannot have been granted to anyone else, and costs one call per BLOCK rather than per session, so 0022 and 0023's 3.17 → 1.17 per-connection budget is untouched. The target-side mark is demoted to an optional signal that may only ever RAISE the floor, and its absence stops being an outage. **Two things it must not do, both settled in 0027's learnings:** put the floor on the authorize response (that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one), and assume the proxy can write anything on the target. Contract change — carries a cross-repo obligation |
@@ -3237,9 +3268,11 @@ composed **here, once**, mechanically, from the mappings those notes state.
 The notes stay as the record of *why* each move happened; this table is the
 record of *what resolves to what*.
 
-Only phases whose number has ever moved appear. Anything absent has held its
-number since it was written. **⊘ marks a withdrawn number**, retired for good
-and never reused (§6).
+Only phases whose number has ever moved appear — plus any withdrawn number,
+which is listed even if it never moved, because the one thing a reader must not
+conclude from a number's absence is that it is free. Anything else absent has
+held its number since it was written. **⊘ marks a withdrawn number**, retired
+for good and never reused (§6).
 
 | Today | Previously (oldest → newest) | Phase |
 | --- | --- | --- |
@@ -3265,6 +3298,7 @@ and never reused (§6).
 | **0029** | `0024` → `0025` → `0027` | FortiSwitchOS driver |
 | **0030** ⊘ | `0025` → `0026` → `0028` | FortiLink-mediated administration |
 | **0031** | `0030` | The other three session bounds |
+| **0032** ⊘ | *(never renumbered)* | Does the decision cache need an admission policy? |
 | **0037** | `0033` → `0032` → `0033` → `0034` → `0035` → `0036` | Drop the superseded contract vocabularies |
 
 **The name is the disambiguator, not the number.** Almost every number in this
@@ -3301,6 +3335,40 @@ reference under §3, and a stale composed mapping is worse than none, because it
 will be believed.
 
 ---
+
+> **Queue note (phase 0032), newest — this one is NOT a renumbering, and
+> nothing below needs recomposing for it.** Phase 0032 was **withdrawn**: it
+> asked whether the decision cache's eviction cliff needs a scan-resistant
+> admission policy, built the evidence, and answered **no**. §9.1 ("Does the
+> cliff need an admission policy? Asked and answered: no") carries the reasoning
+> and the number that decided it. Nothing was built beyond a test-only
+> simulator, no production code changed, and `api/` is untouched.
+>
+> **No prompt was renumbered**, so there is no mapping to compose. **0032 is
+> retired** and must never be reused (`docs/PROTOCOL.md` §6), which makes it the
+> *third* such gap after 0021 and 0030; the queue is otherwise contiguous and
+> now runs **0033–0037**.
+>
+> One statement in the note below was true when written and is superseded here
+> rather than rewritten, on §3's rule for a historical record: the phase-0030
+> queue note says the queue "runs **0031–0037**"; 0031 has since shipped and
+> 0032 is retired, so it is now 0033–0037.
+>
+> **The simulator is kept, and that is deliberate.** A later session asking this
+> question again should re-run `internal/control/admission_sim_test.go` rather
+> than re-derive it — `go test ./internal/control -run AdmissionSimulation -v` —
+> and its calibration against §9.1's two measured points runs in ordinary
+> `go test ./...`. This is the one thing a withdrawal here leaves behind on
+> purpose, where 0021 and 0030 left only prose.
+>
+> Live references updated in place: this section's phase table (the 0032 row)
+> and its composed mapping above (0032 is listed with ⊘ although it never moved,
+> so that nobody reads its absence as "free"), §9.1's new subsection,
+> `docs/PROTOCOL.md` §6 and `docs/learnings/README.md` (both named 0021 and 0030
+> as the only retired numbers). `prompts/queued/0032-…` was **deleted**;
+> `docs/learnings/` and `prompts/implemented/` were not rewritten, and
+> `docs/learnings/0022-…` — which queued the question and pointed at the prompt
+> file — carries a one-line pointer instead.
 
 > **Queue note (phase 0030), newest — this one is NOT a renumbering, and
 > nothing below needs recomposing for it.** Phase 0030 was **withdrawn**: the

@@ -24,7 +24,7 @@
   measures **0%** at 8,192 targets where the pre-0022 code gave 59%. Eviction
   buys a *changing* working set; **sizing** buys a fan-out. Both statements are
   in `docs/PLAN.md` §9.1, and whether that cliff needs an admission policy is
-  the question queued as **0032** (see "Follow-up" below).
+  the question queued as **0032** — since **answered "no"** and withdrawn (see "Follow-up" below).
 - **Key files:** `internal/control/cache.go` (+`cache_test.go`,
   new `cache_bench_test.go`), `internal/config/config.go` (+test),
   `cmd/proxy/main.go`, `config.example.yaml`, `cmd/loadgen/{scenario,proxyproc,connrun,report}.go`,
@@ -128,6 +128,14 @@ That trade was made with eyes open and is the phase's one real caveat:
 - `CacheStats.Evicted` is how a running proxy says which case it is in.
 
 ### Follow-up: the question, queued as 0032
+
+> **Answered: no, and 0032 is withdrawn.** The prompt this section points at
+> no longer exists — a conditional phase that decides not to build deletes it
+> (`docs/learnings/README.md`). The reasoning, the four questions with the
+> operator's answers, and the comparison matrix are in
+> `docs/learnings/0032-decision-cache-admission-policy-learnings.md`; the
+> simulator it is drawn from is `internal/control/admission_sim_test.go` and is
+> kept to be re-run. The section below is left as this phase wrote it.
 
 A scan-resistant **admission** policy (TinyLFU-style: admit a candidate only
 when it looks hotter than the victim) would get both behaviours — LRU's
