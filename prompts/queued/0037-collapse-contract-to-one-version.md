@@ -1,49 +1,35 @@
 # 0037 — Drop the superseded contract vocabularies
 
-> **New prompt, and it must run LAST.** Every phase that revises the contract
-> adds a vocabulary generation and, with it, code and prose that keep the
-> *previous* generation working. That is correct while building in phases: each
-> revision has to leave the one before it functioning so the phases already
-> merged keep passing. It stops being correct at release. Proxy and Hoplock
-> Control ship together, and nothing older than that release has ever been
-> deployed — so every line that exists to keep a v1, v2 or v3 peer working is
-> describing a peer that does not exist and never will.
+> **This prompt runs LAST**, after every phase that revises the contract.
+> Each such phase adds a vocabulary generation and, with it, the code and prose
+> that keep the *previous* generation working. That is correct while building in
+> phases: a revision has to leave the one before it functioning so the phases
+> already merged keep passing. It stops being correct at release. Proxy and
+> Hoplock Control ship together and nothing older than that release has ever
+> been deployed, so every line that keeps a v1, v2 or v3 peer working describes
+> a peer that does not exist and never will.
 >
-> **Read the next section before anything else.** This phase removes support for
-> *superseded* versions. It does **not** remove the versioning mechanism, and
-> getting that backwards would break the product's ability to evolve after
-> release.
+> **Removing superseded *versions* is not removing *versioning*.** The next
+> section draws that line, and the whole prompt turns on it — getting it
+> backwards would take away the product's ability to evolve after release. Read
+> it before you edit anything.
 >
-> **This prompt must be the highest-numbered queued prompt when it runs.** If a
-> later session queues work after it, renumber under `docs/PROTOCOL.md` §6 so
-> this stays last. It has already moved five times for that reason — it was
-> queued as **0029**, was briefly **0033**, then **0032**, then **0033** again,
-> then **0034** once phase 0025 queued the hop-credential classification at
-> 0033, then **0035** once phase 0026 queued its MFA-disclosure question at
-> 0034, then **0036** once phase 0027 queued the Control-held uid floor at
-> 0035, and is **0037** now that phase 0029 queued the per-platform access
-> profile at 0036 — both of those may revise the contract, so both must run
-> before this one. It is still the top of a contiguous queue. Anything written before
-> those moves calls it by an older number; the mapping is in the run-order notes
-> at the end of `docs/PLAN.md` §10, which stack newest first and compose.
+> **Derive the blocker yourself, from `prompts/queued/` on `main`.** This phase
+> may only start once nothing queued still revises the contract, and the queue
+> has outlived every written-down statement of what that means — so check it
+> rather than trusting this one. When last checked: **0035** revises `api/`
+> (the Control-held uid floor, contract `4.2` → `4.3`) and **0036** may (a
+> route-named default access profile is one of the two shapes it weighs).
+> `grep -rln "api/control.yaml" prompts/queued/` is the starting point; each
+> prompt's own header says whether it touches the contract. Collapsing before
+> the last revising phase just means doing it twice.
 >
-> In particular it **cannot start before 0018 (contract v4) has merged**, and
-> before **0023**'s host-key cache hint. **Both have now merged**: 0023 landed
-> the hint as **contract 4.1** (`docs/learnings/0023-host-key-report-reuse-learnings.md`),
-> and with phase 0021 withdrawn
-> (`docs/learnings/0021-machine-identity-connection-model-learnings.md`) it was
-> the last queued phase that revises the contract *at the time this was written*.
->
-> **That sentence is no longer true, and it is why the paragraph ends by telling
-> you to check the queue rather than to trust it.** Two phases have revised the
-> contract since: **0028** took it to **4.2** (`username` required on
-> `brokered-key`, so required on every method — a tightening, `policy_version`
-> still 4), and **0035**, still queued, revises it again for the Control-held
-> uid floor. **0036** may revise it a third time — a route-named default access
-> profile is one of the two shapes that phase weighs. So this phase's blocker is
-> **not** cleared by the paragraph above:
-> re-derive it from `prompts/queued/` on `main`. Collapsing before the last
-> revising phase just means doing it twice.
+> **Keep this the highest-numbered queued prompt.** If a later session queues
+> work after it, renumber under `docs/PROTOCOL.md` §6 so this stays last. That
+> has happened repeatedly, which is why older documents cite this phase by other
+> numbers — **do not reconstruct that history by hand.** `docs/PLAN.md` §10's
+> composed mapping resolves any number to a phase, and the renumbering notes
+> beneath it record why each move happened.
 
 ## What this phase removes, and what it must keep
 
@@ -82,9 +68,12 @@ would be a regression, not a simplification:
    estates, not a statement about this contract's history.
 
 ## Read first
-- `docs/PROTOCOL.md` — session workflow, and **§3's rename rule** (nothing may
-  point at a name you deleted). This phase deletes more names than any phase so
-  far; that rule is much of the work.
+- `docs/PROTOCOL.md` — session workflow, and two things in **§3**. Its **rename
+  rule** (nothing may point at a name you deleted): this phase deletes more
+  names than any phase so far, and that rule is much of the work. And its
+  **index-refresh table**, because this phase edits §5.3 and several decision
+  renderings, and `test/docs/indexes_test.go` turns a stale index into a failing
+  build — "The plan's indexes" below says which of the three are in play.
 - `docs/CROSS-REPO-PROTOCOL.md` — **in full**. This touches `api/`, the shared
   surface `hoplock/control` vendors (D3), so §2 (upstream merges first), §4 (the
   `## Cross-repo impact` section and the ready-to-run sync kickoff you owe) and
@@ -92,11 +81,14 @@ would be a regression, not a simplification:
 - `docs/PLAN.md` — D2, D3, D5a, D6a, D11, D12, D13, D14, §5.3, §10, §11.
 - `api/control.yaml` and `api/README.md` — **as they stand on `main` when you
   start**, not as described below. The inventory in this prompt was taken when
-  `main` was at phase 0016; phases 0017–0030 will have added to it.
+  `main` was at phase 0016; every phase since has added to it.
 - `docs/learnings/` summaries: **0002** (the contract and mock), **0006**
   (vocabulary v2 and the `policy_version` pattern), **0013** (v3, the ladder,
-  the one deliberate break), **0016** (v3.1 and `device_field.<name>`), plus
-  whatever 0018 left behind for v4.
+  the one deliberate break), **0016** (v3.1 and `device_field.<name>`), **0018**
+  (v4), **0023** (4.1, the host-key cache hint), **0028** (4.2, the tightening
+  that was announced as a break rather than gated) and **0031** (the session
+  bounds, which added v4 response fields). **0023** and **0028** are where the
+  reasons this phase must *keep* are written down.
 
 ## Objective
 
@@ -196,8 +188,9 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
   a default whose only documented reason is "that is what a v2 server produced"
   is the thing this phase exists to remove — restate the reason or remove the
   default.
-- **`info.version`** — set to the release vocabulary settled above (e.g.
-  `4.0.0`), and keep it meaningful: it moves again when v5 lands.
+- **`info.version`** — set to the release vocabulary settled above, and keep it
+  meaningful: it moves again at the next revision. Do not copy a number out of
+  this prompt; read the one on `main`.
 
 ### 2. `internal/control`
 
@@ -221,17 +214,19 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 ### 3. `internal/routing` and `internal/auth/target`
 
 - `internal/routing/resolve.go`: `Route.TargetAuth` and the normalisation block
-  that mirrors the singular field into a one-entry ladder and back (~lines
-  271–289 as of 0016). One shape in, one shape stored.
+  that mirrors the singular field into a one-entry ladder and back, just below
+  where the route is built from the response. One shape in, one shape stored.
 - `internal/auth/target/selector.go`: `rungs()` currently falls back to
   `tgt.Auth` when there is no ladder. That fallback goes with the field.
 - Anything else reading the singular form — sweep, do not guess.
 
 ### 4. `cmd/mock-control` and the fixtures
 
-- `fixtures.go`: `vocabularyVersion()` currently tiers response fields into
-  versions 3, 2 and 1. **Keep the function and the `500` it drives in
-  `server.go`** — that is the server half of the mechanism, and it is what a
+- `fixtures.go`: `vocabularyVersion()` tiers response fields into a version per
+  contract revision — 4, 3, 2 and 1 as of 0033, and one more for each revision
+  that lands before this phase runs. **Keep the function and the `500` it
+  drives in `server.go`** — that is the server half of the mechanism, and it is
+  what a
   v5-aware Control will need. Collapse its tiers to the single release baseline
   and leave a comment saying where a future version's fields get tiered above
   it.
@@ -270,18 +265,45 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
   vocabularies removed, mechanism retained — so a future session reading an
   older learnings file does not reintroduce the pattern, and does not conclude
   the versioning was abandoned.
-- `README.md`: the "since contract v3" reference (~line 43).
+- `README.md`: the "since contract v3" reference in the target-credentials
+  paragraph.
 - `config.example.yaml` and any Go comment dating a behaviour to a superseded
   contract version.
+
+#### The plan's indexes
+
+`docs/PLAN.md` carries three indexes that are read *instead of* the body beneath
+them, so `docs/PROTOCOL.md` §3 requires the refresh in the same PR and
+`test/docs/indexes_test.go` fails the build when one goes stale. This phase
+touches them unevenly, so take them one at a time rather than sweeping:
+
+- **§5.3's "What is true today"** — in play. You are editing §5.3's layers, and
+  a composed view that still describes an older generation as live is exactly
+  the failure the index exists to prevent.
+- **§2's decision register** — check the **Status** and **Mainly in** columns for
+  D5a, D6a, D13 and D14. Rewriting a decision's *prose* does not by itself
+  change a row; moving or removing where it is rendered does. Leave the row
+  alone if neither moved, and say in the PR that you checked.
+- **§10's composed mapping** — **not** in play. This phase renumbers nothing, so
+  `renumberings` in `test/docs/indexes_test.go` gains no entry and the table is
+  regenerated by nobody. Do not add a row for this phase.
+
+`go test ./test/docs/...` is the check, and a failure from it is an instruction
+to refresh the index, never a reason to weaken the test.
 
 ### 6. What is NOT rewritten
 
 `docs/learnings/` and `prompts/implemented/` are **frozen historical records**
-(`docs/PROTOCOL.md` §3). 0006, 0013 and 0016's learnings describe contracts that
-really did exist here, and they stay true to what their phase shipped. Give the
-affected learnings files a **one-line pointer** — "the superseded vocabularies
-described here were removed in 0032; the versioning mechanism was kept" — and
-change nothing else. Do not rename a file in `prompts/implemented/`.
+(`docs/PROTOCOL.md` §3). The learnings of every phase that revised the contract
+describe contracts that really did exist here, and they stay true to what their
+phase shipped. Give each of those files a **one-line pointer** — "the superseded
+vocabularies described here were removed in **0037**; the versioning mechanism
+was kept" — and change nothing else. Do not rename a file in
+`prompts/implemented/`.
+
+**Derive that list, do not take it from here.** As of 0033 it is 0006, 0013,
+0016, 0018, 0023 and 0028, and it grows with every contract revision queued
+ahead of this phase — the `policy_version` grep below finds them.
 
 ## Out of scope
 
@@ -340,6 +362,10 @@ reviewer cannot re-derive "I looked carefully"
       the same policy.
 - [ ] The affected learnings files carry a one-line pointer and are otherwise
       unchanged.
+- [ ] `docs/PLAN.md`'s indexes still describe what they index, and
+      `go test ./test/docs/...` passes — §5.3's "What is true today" recomposed,
+      §2's register checked, §10's mapping deliberately untouched
+      (`docs/PROTOCOL.md` §3).
 
 ## Required tests
 
