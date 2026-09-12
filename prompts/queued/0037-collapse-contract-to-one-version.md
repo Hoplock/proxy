@@ -223,7 +223,7 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 ### 4. `cmd/mock-control` and the fixtures
 
 - `fixtures.go`: `vocabularyVersion()` tiers response fields into a version per
-  contract revision — 4, 3, 2 and 1 as of 0031, and one more for each revision
+  contract revision — 4, 3, 2 and 1 as of 0033, and one more for each revision
   that lands before this phase runs. **Keep the function and the `500` it
   drives in `server.go`** — that is the server half of the mechanism, and it is
   what a
@@ -301,7 +301,7 @@ vocabularies described here were removed in **0037**; the versioning mechanism
 was kept" — and change nothing else. Do not rename a file in
 `prompts/implemented/`.
 
-**Derive that list, do not take it from here.** As of 0031 it is 0006, 0013,
+**Derive that list, do not take it from here.** As of 0033 it is 0006, 0013,
 0016, 0018, 0023 and 0028, and it grows with every contract revision queued
 ahead of this phase — the `policy_version` grep below finds them.
 
