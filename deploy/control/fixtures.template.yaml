@@ -855,6 +855,33 @@ routes:
     filter_policy:
       mode: blacklist
 
+  # A chain leg the far hop REFUSES (phase 0033). `proxy-stranger` presents
+  # `chain_proxy_stranger`, whose fingerprint is deliberately absent from the
+  # `proxies:` list above, so proxy-direct's answer to the authenticate call is a
+  # 401 and the leg is refused at authentication.
+  #
+  # The next proxy here is genuinely reachable and would serve the session
+  # happily for any registered proxy — which is what makes the scenario evidence
+  # of a CLASSIFICATION rather than of a broken route: a proxy that reported this
+  # as "the next proxy could not be reached" would send the operator to the one
+  # part of the estate that is working.
+  #
+  # Scenarios: the chain-identity rejection suite. Nothing else may use
+  # proxy-stranger, and nothing may register its key.
+  - login: alice
+    target: stranger.company.com
+    proxy_id: proxy-stranger
+    route_type: nexthop
+    next_hop: proxy-direct
+    target_port: 2222
+    hop_connection: dial
+    next_proxy_id: proxy-direct
+    max_hops: 3
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    filter_policy:
+      mode: blacklist
+
   # The hop cap: one hop is all this route allows, and extending the chain
   # would need two.
   - login: alice

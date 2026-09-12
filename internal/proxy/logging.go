@@ -210,6 +210,35 @@ func (s *session) recordCredentialWithheld(err *target.WithheldError) {
 	s.rec.CriticalFailure("the proxy is not attempting this target with this credential", attrs)
 }
 
+// recordChainIdentityRejected captures the NEXT PROXY refusing this proxy's
+// chain identity key (D11, prompt 0033).
+//
+// It is the chain leg's counterpart to recordCredentialRejected above, and it
+// is critical for the same reason: this is a security-relevant fact about the
+// fleet's own key material that an operator has to see now, and the sessions
+// that produce it are exactly the ones that keep producing it. A run of these
+// waiting ten minutes in a batch is a run nobody stopped.
+//
+// The handle is the SHA256 FINGERPRINT of this proxy's chain identity public
+// key — never the key, never the path it was read from. A fingerprint is what
+// an operator already reads in `ssh-keygen -lf` output and what the far hop's
+// own logs will show them, so it is the value that lets the two sides of one
+// refusal be joined. The other two attributes are already audit facts on this
+// session's other records: which proxy the leg was going to, and which
+// direction it travelled.
+func (s *session) recordChainIdentityRejected(plan *routing.HopPlan, err error) {
+	attrs := logging.Attrs{}.
+		Set(logging.AttrEvent, "chain.identity_rejected").
+		Set(logging.AttrStage, string(stageHopAuth)).
+		Set(logging.AttrHopNextProxy, plan.NextProxyID).
+		Set(logging.AttrHopConnection, string(plan.Direction)).
+		Set(logging.AttrError, err.Error())
+	if s.srv.hopSigner != nil {
+		attrs.Set(logging.AttrCredentialHandle, ssh.FingerprintSHA256(s.srv.hopSigner.PublicKey()))
+	}
+	s.rec.CriticalFailure("the next proxy refused this proxy's chain identity", attrs)
+}
+
 // recordEnforcement captures the enforcement rung the session actually stood
 // on, per axis (contract v4, PLAN §6.5).
 //

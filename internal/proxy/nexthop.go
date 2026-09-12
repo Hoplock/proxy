@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/hoplock/proxy/internal/auth/target"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/routing"
 )
@@ -134,8 +135,24 @@ func (s *session) handshakeNextHop(conn net.Conn, plan *routing.HopPlan) (ssh.Co
 	_ = conn.SetDeadline(s.srv.now().Add(s.srv.dialTimeout))
 	legConn, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
+		// Order matters, exactly as it does in dialTarget. A host key this
+		// proxy would not accept also surfaces as a handshake error, it is a
+		// different failure with a different fix, and nothing about OUR
+		// credential was refused — so the host-key branch is asked first and
+		// the classifier below never sees it.
 		if hostKeyErr := s.takeHostKeyErr(); hostKeyErr != nil {
 			return nil, nil, nil, &setupError{stage: stageHostKey, err: hostKeyErr}
+		}
+		// The next hop answered and refused the key this proxy offered it: a
+		// fingerprint its Hoplock Control does not recognise as one of its
+		// proxies, a key rotated here and not registered there, a certificate
+		// whose principals do not name this proxy id (D11). That is a different
+		// fact from "the next proxy could not be reached", and the classifier
+		// is internal/auth/target's because x/crypto's wording has exactly one
+		// copy in this tree (prompt 0033).
+		if target.IsAuthRejection(err) {
+			s.recordChainIdentityRejected(plan, err)
+			return nil, nil, nil, &setupError{stage: stageHopAuth, err: err}
 		}
 		return nil, nil, nil, &setupError{stage: stageHopDial, err: err}
 	}

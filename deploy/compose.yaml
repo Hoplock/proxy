@@ -12,6 +12,8 @@
 #   proxy-zone     a proxy in a protected zone: it accepts NO inbound
 #                  connection from any network and reaches its upstream over an
 #                  outbound relay registration (D11)
+#   proxy-stranger a proxy whose chain identity Hoplock Control does not
+#                  recognise, so the next hop it dials refuses it (phase 0033)
 #   target         a real sshd, with the prerequisites both credential methods
 #                  need (D6, D6a)
 #   device         a fake FortiOS appliance (cmd/fake-device): a CLI over SSH
@@ -19,7 +21,7 @@
 #                  ephemeral-account method exists for (D13)
 #
 # Networks, and what each one is load-bearing for:
-#   edge   user ↔ the two reachable proxies ↔ control
+#   edge   user ↔ the reachable proxies ↔ control
 #   core   the proxies that may reach the target ↔ target ↔ control. It is
 #          `internal`, and the user node is NOT on it: the target is reachable
 #          only through a proxy, which is the claim the whole topology exists
@@ -175,6 +177,25 @@ services:
     # container (proxy/proxy-zone.yaml). Nothing on any network can open a
     # connection to it; sessions arrive only over the registration it opened.
     networks: [core, relay]
+
+  # A proxy of the fleet whose CHAIN IDENTITY the fleet does not recognise
+  # (phase 0033). Users authenticate to it normally; the next hop it dials
+  # refuses the key it presents, because `chain_proxy_stranger`'s fingerprint is
+  # deliberately absent from the fixtures' `proxies:` list.
+  #
+  # `edge` only, and that is load-bearing twice over: it is how the user node
+  # reaches it and how it reaches proxy-direct, and it means the node can reach
+  # no target at all — a session that got anywhere from here provably went
+  # through a chain leg.
+  proxy-stranger:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    command: ["-config", "/etc/hoplock/config.yaml"]
+    volumes:
+      - ./proxy/proxy-stranger.yaml:/etc/hoplock/config.yaml:ro
+      - ./keys:/material:ro
+    networks: [edge]
 
   user:
     build:

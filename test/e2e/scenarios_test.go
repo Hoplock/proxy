@@ -48,6 +48,12 @@ func TestTopology(t *testing.T) {
 	// leave it open for the rest of the run, which is safe only because
 	// `stale-fleet` is named by exactly one route in the fixtures.
 	t.Run("target credential rejection", testCredentialRejection)
+	// The same defect on the other leg (phase 0033), so it sits beside the
+	// scenario it mirrors. Before the outage scenario for the same reason that
+	// one is: it reads the priority record its own session produced, and
+	// Hoplock Control has to be up both to refuse the chain key and to receive
+	// the record. It opens no breaker and leaves nothing behind.
+	t.Run("chain identity rejection", testChainIdentityRejection)
 	t.Run("device credentials", testDeviceCredentials)
 	t.Run("target-side enforcement", testEnforcement)
 	t.Run("denial disclosure", testDenialDisclosure)
@@ -965,6 +971,126 @@ func testCredentialRejection(t *testing.T) {
 		wantExit(t, r, "another credential to the same target", 0)
 		wantContains(t, r, "another credential to the same target", "still-working")
 	})
+}
+
+// --- chain identity rejection (phase 0033) -----------------------------------
+
+// strangerTarget is reached from `proxy-stranger`, whose chain identity the
+// fixtures deliberately do not register (deploy/gen-material.sh). It is the one
+// route that proxy exists to serve, and it can never succeed.
+const strangerTarget = "stranger.company.com"
+
+// testChainIdentityRejection is the acceptance evidence for phase 0033: the
+// next proxy is up and answering, and what it refuses is the chain identity key
+// the PROXY holds.
+//
+// Phase 0025 found and fixed this on the proxy→target leg and left it live one
+// function away on the proxy→proxy one, where `handshakeNextHop` reported every
+// non-host-key handshake failure as "the next proxy in the chain could not be
+// reached". The next proxy here is genuinely reachable — it serves
+// `deep.company.com` over the very same leg for a proxy the fleet recognises —
+// so a run that reports it unreachable is reporting the one part of the estate
+// that is working.
+//
+// The refusal itself is the trust model working (PLAN §6.1): no hop takes an
+// upstream's word for who is connecting, and a fingerprint Hoplock Control does
+// not know is not one of its proxies. Nothing here asserts otherwise; what is
+// asserted is how this proxy reports it.
+func testChainIdentityRejection(t *testing.T) {
+	t.Run("the user is told this proxy was not accepted, not that the next one is unreachable", func(t *testing.T) {
+		s := aliceOn(proxyStranger, strangerTarget)
+		s.command = "/bin/echo must-not-run"
+		r := ssh(t, s)
+
+		wantFailure(t, r, "refused chain identity")
+		wantNotContains(t, r, "refused chain identity", "must-not-run")
+
+		// It is an OUTAGE: the chain identity is the proxy's own credential, and
+		// no key of the user's would get them any further.
+		wantContains(t, r, "refused chain identity", "not a permissions problem")
+		wantNotContains(t, r, "refused chain identity", "Access denied.")
+		wantContains(t, r, "refused chain identity", "not accepted by the next proxy in the chain")
+		// The classification this phase exists to correct.
+		wantNotContains(t, r, "refused chain identity", "could not be reached")
+		if sessionIDOf(r) == "" {
+			t.Errorf("the outage carries no session id as a support reference (PLAN §4.3)\n%s", r)
+		}
+
+		// It discloses nothing about the chain: not which proxy refused us, not
+		// where it lives, not the key, and not how far along the session got.
+		// Neither the target's name nor the proxy the user connected to is on
+		// this list — the user typed both, and repeating them back reveals
+		// nothing (§4.3); the OpenSSH client prints the latter itself.
+		for _, leak := range []string{proxyDirect, "SHA256:", "chain_proxy_stranger", "hop-auth"} {
+			wantNotContains(t, r, "refused chain identity", leak)
+		}
+	})
+
+	t.Run("a critical record names the hop, the direction and the key's fingerprint", func(t *testing.T) {
+		rec := waitForPriorityRecord(t, "chain.identity_rejected")
+
+		if rec.Severity != "critical" {
+			t.Errorf("the record is %s; a refused chain identity must not wait in a batch (D8)", rec.Severity)
+		}
+		if rec.Attributes["hop_next_proxy"] != proxyDirect {
+			t.Errorf("the record names next proxy %q, want %q", rec.Attributes["hop_next_proxy"], proxyDirect)
+		}
+		if rec.Attributes["hop_connection"] != "dial" {
+			t.Errorf("the record names direction %q, want dial", rec.Attributes["hop_connection"])
+		}
+		if rec.Attributes["stage"] != "hop-auth" {
+			t.Errorf("the record names stage %q, want hop-auth", rec.Attributes["stage"])
+		}
+
+		// The handle is what joins the two sides of one refusal: it is what
+		// `ssh-keygen -lf` prints for the key this proxy offered, and what the
+		// far hop's own logs will show for the key it turned away. It is never
+		// the key, and never a path that would let a reader find one.
+		handle := rec.Attributes["credential_handle"]
+		if !strings.HasPrefix(handle, "SHA256:") {
+			t.Errorf("the record's credential handle = %q, want a key fingerprint", handle)
+		}
+		if want := chainKeyFingerprint(t, "chain_proxy_stranger"); handle != want {
+			t.Errorf("the record's credential handle = %q, want %q — the fingerprint of the key "+
+				"proxy-stranger presents", handle, want)
+		}
+		for key, value := range rec.Attributes {
+			if strings.Contains(value, "PRIVATE KEY") || strings.Contains(value, "BEGIN OPENSSH") {
+				t.Errorf("record attribute %s carries key material", key)
+			}
+		}
+	})
+
+	// The assertion that keeps the one above from passing for the wrong reason.
+	// The leg proxy-stranger was refused on is the SAME leg proxy-nexthop uses
+	// successfully, to the same next proxy in the same direction — so the
+	// refusal is about the key and about nothing else in the topology.
+	t.Run("the same leg still works for a proxy the fleet recognises", func(t *testing.T) {
+		s := aliceOn(proxyNextHop, "deep.company.com")
+		s.command = "/bin/echo chain-still-working"
+		r := ssh(t, s)
+		wantExit(t, r, "a registered proxy on the same leg", 0)
+		wantContains(t, r, "a registered proxy on the same leg", "chain-still-working")
+	})
+}
+
+// chainKeyFingerprint reads a generated chain key's SHA256 fingerprint the way
+// an operator would, with ssh-keygen inside a node that mounts the material.
+//
+// It is read rather than hard-coded because the keys are generated per run:
+// nothing in this repository can know the value in advance, which is the same
+// reason the fixtures are rendered rather than committed.
+func chainKeyFingerprint(t *testing.T, name string) string {
+	t.Helper()
+	r := execIn(t, nodeUser, "ssh-keygen", "-lf", "/material/"+name+".pub")
+	if r.code != 0 {
+		t.Fatalf("read %s's fingerprint: %v", name, r)
+	}
+	fields := strings.Fields(r.stdout)
+	if len(fields) < 2 {
+		t.Fatalf("ssh-keygen -lf printed %q, want \"<bits> <fingerprint> ...\"", r.stdout)
+	}
+	return fields[1]
 }
 
 // targetRefusedLogins counts the logins the target's own sshd saw reach

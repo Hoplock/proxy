@@ -34,6 +34,20 @@ gen chain_proxy_direct
 gen chain_proxy_nexthop
 gen chain_proxy_zone
 
+# proxy-stranger: a proxy of the fleet whose CHAIN IDENTITY the fleet does not
+# recognise. Its host key is ordinary — users authenticate to it normally — but
+# chain_proxy_stranger's fingerprint is DELIBERATELY absent from the `proxies:`
+# list in the fixtures, so the next hop it dials refuses the key it presents.
+#
+# That is the everyday operational fault phase 0033's scenarios are about: a
+# chain key rotated on one proxy and never registered, or a proxy brought up
+# before anyone added it to Hoplock Control. Nothing else in the topology may
+# reference this key, and NOTHING may register it: registering it would turn
+# `stranger.company.com` into a working chain route and the scenario asserting a
+# refusal into one that fails for a reason nobody reads.
+gen hostkey_proxy_stranger
+gen chain_proxy_stranger
+
 # proxy → target material: the management certificate's key (ephemeral-user,
 # D6) and the brokered credentials (brokered-key, D6a) — one the target accepts
 # and one it does not.
