@@ -267,13 +267,13 @@ prefix indicating implementation order.
   alone: 29 of the 37 numbers in use are simultaneously a live phase and a
   historical alias of a different one.
 - **A withdrawn number is retired for good** — never reused, even though nothing
-  occupies it (**0021** and **0030** today; see `docs/learnings/0021-…` and
-  `docs/learnings/0030-…`). Those are the gaps the contiguity rule above does not
+  occupies it (**0021**, **0030** and **0032** today; see `docs/learnings/0021-…`,
+  `docs/learnings/0030-…` and `docs/learnings/0032-…`). Those are the gaps the contiguity rule above does not
   close, and they are deliberate: each number names its withdrawn phase
   everywhere in the history, so reusing one would make two different phases
   answer to the same citation.
-  **Withdrawal is a real outcome of a session, not a failure to deliver.** Both
-  phases so far ended in a reasoned decision not to build, written up in
+  **Withdrawal is a real outcome of a session, not a failure to deliver.** All
+  three so far ended in a reasoned decision not to build, written up in
   `docs/learnings/` exactly as a shipped phase would be — the reasoning is the
   deliverable, and it is what stops the next session re-deriving it. The prompt
   file is **deleted** rather than moved to `implemented/` (nothing was
