@@ -1,49 +1,35 @@
 # 0037 — Drop the superseded contract vocabularies
 
-> **New prompt, and it must run LAST.** Every phase that revises the contract
-> adds a vocabulary generation and, with it, code and prose that keep the
-> *previous* generation working. That is correct while building in phases: each
-> revision has to leave the one before it functioning so the phases already
-> merged keep passing. It stops being correct at release. Proxy and Hoplock
-> Control ship together, and nothing older than that release has ever been
-> deployed — so every line that exists to keep a v1, v2 or v3 peer working is
-> describing a peer that does not exist and never will.
+> **This prompt runs LAST**, after every phase that revises the contract.
+> Each such phase adds a vocabulary generation and, with it, the code and prose
+> that keep the *previous* generation working. That is correct while building in
+> phases: a revision has to leave the one before it functioning so the phases
+> already merged keep passing. It stops being correct at release. Proxy and
+> Hoplock Control ship together and nothing older than that release has ever
+> been deployed, so every line that keeps a v1, v2 or v3 peer working describes
+> a peer that does not exist and never will.
 >
-> **Read the next section before anything else.** This phase removes support for
-> *superseded* versions. It does **not** remove the versioning mechanism, and
-> getting that backwards would break the product's ability to evolve after
-> release.
+> **Removing superseded *versions* is not removing *versioning*.** The next
+> section draws that line, and the whole prompt turns on it — getting it
+> backwards would take away the product's ability to evolve after release. Read
+> it before you edit anything.
 >
-> **This prompt must be the highest-numbered queued prompt when it runs.** If a
-> later session queues work after it, renumber under `docs/PROTOCOL.md` §6 so
-> this stays last. It has already moved five times for that reason — it was
-> queued as **0029**, was briefly **0033**, then **0032**, then **0033** again,
-> then **0034** once phase 0025 queued the hop-credential classification at
-> 0033, then **0035** once phase 0026 queued its MFA-disclosure question at
-> 0034, then **0036** once phase 0027 queued the Control-held uid floor at
-> 0035, and is **0037** now that phase 0029 queued the per-platform access
-> profile at 0036 — both of those may revise the contract, so both must run
-> before this one. It is still the top of a contiguous queue. Anything written before
-> those moves calls it by an older number; the mapping is in the run-order notes
-> at the end of `docs/PLAN.md` §10, which stack newest first and compose.
+> **Derive the blocker yourself, from `prompts/queued/` on `main`.** This phase
+> may only start once nothing queued still revises the contract, and the queue
+> has outlived every written-down statement of what that means — so check it
+> rather than trusting this one. When last checked: **0035** revises `api/`
+> (the Control-held uid floor, contract `4.2` → `4.3`) and **0036** may (a
+> route-named default access profile is one of the two shapes it weighs).
+> `grep -rln "api/control.yaml" prompts/queued/` is the starting point; each
+> prompt's own header says whether it touches the contract. Collapsing before
+> the last revising phase just means doing it twice.
 >
-> In particular it **cannot start before 0018 (contract v4) has merged**, and
-> before **0023**'s host-key cache hint. **Both have now merged**: 0023 landed
-> the hint as **contract 4.1** (`docs/learnings/0023-host-key-report-reuse-learnings.md`),
-> and with phase 0021 withdrawn
-> (`docs/learnings/0021-machine-identity-connection-model-learnings.md`) it was
-> the last queued phase that revises the contract *at the time this was written*.
->
-> **That sentence is no longer true, and it is why the paragraph ends by telling
-> you to check the queue rather than to trust it.** Two phases have revised the
-> contract since: **0028** took it to **4.2** (`username` required on
-> `brokered-key`, so required on every method — a tightening, `policy_version`
-> still 4), and **0035**, still queued, revises it again for the Control-held
-> uid floor. **0036** may revise it a third time — a route-named default access
-> profile is one of the two shapes that phase weighs. So this phase's blocker is
-> **not** cleared by the paragraph above:
-> re-derive it from `prompts/queued/` on `main`. Collapsing before the last
-> revising phase just means doing it twice.
+> **Keep this the highest-numbered queued prompt.** If a later session queues
+> work after it, renumber under `docs/PROTOCOL.md` §6 so this stays last. That
+> has happened repeatedly, which is why older documents cite this phase by other
+> numbers — **do not reconstruct that history by hand.** `docs/PLAN.md` §10's
+> composed mapping resolves any number to a phase, and the renumbering notes
+> beneath it record why each move happened.
 
 ## What this phase removes, and what it must keep
 
