@@ -650,6 +650,97 @@ func testUIDAllocation(t *testing.T) {
 			t.Errorf("no provisioning record for %s carried target_account_uid=%s", id, uid)
 		}
 	})
+
+	// The lease half (phase 0035). Two proxies serving one target allocate from
+	// two blocks, so the uid alone no longer says whose allocation it was — and
+	// "which proxy's block did this uid come from" is a question an incident
+	// asks and the account name cannot answer, because teardown deletes it.
+	t.Run("the provisioning record carries the uid lease", func(t *testing.T) {
+		s := aliceOn(proxyDirect, "host.company.com")
+		s.command = "/usr/bin/id -u"
+		r := ssh(t, s)
+		wantExit(t, r, "uid lease", 0)
+		id := sessionIDOf(r)
+		if id == "" {
+			t.Fatalf("uid lease: no session id in the proxy's banner\n%s", r)
+		}
+
+		var lease, marked string
+		waitFor(t, "the provisioning record for this session to be delivered", func() bool {
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.SessionID != id || rec.Kind != "provisioning" {
+					continue
+				}
+				if rec.Attributes["target_account_uid"] == "" {
+					continue
+				}
+				lease = rec.Attributes["target_uid_lease"]
+				marked = rec.Attributes["target_uid_marked"]
+				return true
+			}
+			return false
+		})
+		if lease == "" {
+			t.Errorf("the provisioning record for %s carries no target_uid_lease; "+
+				"an incident cannot tell which proxy's block the uid came from", id)
+		}
+		if marked != "true" {
+			t.Errorf("target_uid_marked = %q on a target that can hold the mark, want true", marked)
+		}
+	})
+
+	// Phase 0035's first-class requirement, end to end: a target the proxy can
+	// write NOTHING to under enforcement_base is SERVED, on the lease alone.
+	//
+	// Phase 0027 refused it — which narrowed the method to targets writable at
+	// /var/lib/hoplock, and an ordinary hardened Linux host with a read-only root
+	// filesystem is not one, even though it can run `useradd -m` and hold an
+	// authorized_keys in a writable /home. The mark is put beyond reach here by
+	// standing a FILE where the directory goes, which is the same thing to every
+	// mkdir the script can make.
+	t.Run("a target that cannot record the uid is served", func(t *testing.T) {
+		const mark = "/var/lib/hoplock/uid-watermark"
+		waitForNoEphemeralAccounts(t, "the target to hold no ephemeral account before the mark is blocked")
+		execIn(t, nodeTarget, "rm", "-rf", mark)
+		execIn(t, nodeTarget, "sh", "-c", "printf 'not a directory\n' > "+mark)
+		defer func() {
+			execIn(t, nodeTarget, "rm", "-f", mark)
+		}()
+
+		s := aliceOn(proxyDirect, "host.company.com")
+		s.command = "/usr/bin/id -u"
+		r := ssh(t, s)
+		wantExit(t, r, "uid allocation with no mark", 0)
+		uid, err := strconv.Atoi(strings.TrimSpace(r.stdout))
+		if err != nil {
+			t.Fatalf("the session printed uid %q: %v\n%s", r.stdout, err, r)
+		}
+		if uid < 2000000 || uid > 2999999 {
+			t.Errorf("the session ran as uid %d, want one inside the dedicated range", uid)
+		}
+
+		// Served is half the claim; the other half is that the absence REACHES
+		// THE RECORD. A fleet that silently stopped corroborating would be a
+		// fleet relying on one floor instead of two, with nothing saying so.
+		id := sessionIDOf(r)
+		var marked string
+		waitFor(t, "the provisioning record for the unmarked session", func() bool {
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.SessionID != id || rec.Kind != "provisioning" {
+					continue
+				}
+				if rec.Attributes["target_account_uid"] == "" {
+					continue
+				}
+				marked = rec.Attributes["target_uid_marked"]
+				return true
+			}
+			return false
+		})
+		if marked != "false" {
+			t.Errorf("target_uid_marked = %q on a target that could not take the mark, want false", marked)
+		}
+	})
 }
 
 // --- concurrent provisioning (PLAN §5.1) -------------------------------------

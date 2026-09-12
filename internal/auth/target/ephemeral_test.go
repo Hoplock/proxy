@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -739,7 +740,9 @@ func TestEphemeralAllocatesFromTheDedicatedRange(t *testing.T) {
 		t.Errorf("the access reports uid %d and the target holds %d", access.AccountUID, uid)
 	}
 	if got := h.watermark(t); got != uid {
-		t.Errorf("the target's uid mark is %d, want the allocated %d — a mark that is not written is reuse next time", got, uid)
+		t.Errorf("the target's uid mark is %d, want the allocated %d — the mark corroborates the "+
+			"leased floor (0035), and a target that can write one and does not is a target that "+
+			"stops corroborating without saying so", got, uid)
 	}
 }
 
@@ -970,17 +973,32 @@ func TestAUIDTheTargetRefusesFallsThroughToTheNextCandidate(t *testing.T) {
 	}
 }
 
-// TestAUIDTheTargetCannotRecordFailsTheSession covers the other fail-closed
-// path: the account exists and its uid could not be written down, so the next
-// allocation on that target would have nothing to allocate above it.
-func TestAUIDTheTargetCannotRecordFailsTheSession(t *testing.T) {
+// TestATargetThatCannotRecordTheUIDIsStillServed is phase 0035's first-class
+// requirement, and it is the direct inversion of a phase 0027 test that stood
+// here: `TestAUIDTheTargetCannotRecordFailsTheSession`.
+//
+// 0027 made the mark load-bearing, so a target that could not hold it was
+// refused — and that narrowed the method to targets writable at
+// <enforcement_base>, which an ordinary hardened Linux host with a read-only
+// root filesystem is not, even though it can run `useradd -m` and hold an
+// authorized_keys in a writable /home. The floor now lives in the block Hoplock
+// Control leased, where neither the target nor this process can lower it, so the
+// mark corroborates and its absence is a recorded fact.
+//
+// The claim being asserted is therefore SERVED, not tolerated: a session, a real
+// account, a uid inside the block, and UIDMarked false.
+func TestATargetThatCannotRecordTheUIDIsStillServed(t *testing.T) {
 	h := startFakeHost(t)
 	auth := newTestEphemeral(t, h, "proxy-a")
+	auth.leases = &fakeUIDLeases{from: 5000, to: 5100}
 	ctx := context.Background()
 	tgt := h.tgt()
 	tgt.Auth = ephemeralRoute(nil)
 
 	// A mark directory that cannot be created, because a FILE is in its place.
+	// This stands for every target that can hold no mark: a read-only root
+	// filesystem, a base nobody made writable, a device with no filesystem at
+	// all.
 	if err := os.MkdirAll(h.enforce, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -988,12 +1006,50 @@ func TestAUIDTheTargetCannotRecordFailsTheSession(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err := auth.Provision(ctx, testIdentity(), tgt)
-	if !errors.Is(err, ErrUIDUnavailable) {
-		t.Fatalf("Provision with an unwritable uid mark = %v, want ErrUIDUnavailable", err)
+	access, err := auth.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision on a target that cannot hold the uid mark: %v", err)
 	}
-	if accounts := h.ephemeralAccounts(t); len(accounts) != 0 {
-		t.Errorf("the failed provisioning left %v behind", accounts)
+	defer func() { _ = access.Teardown(ctx) }()
+
+	if access.AccountUID < 5000 || access.AccountUID >= 5100 {
+		t.Errorf("uid %d is outside the leased block [5000,5100)", access.AccountUID)
+	}
+	if access.UIDLease != "lease-test-1" {
+		t.Errorf("UIDLease = %q, want the block the uid came from", access.UIDLease)
+	}
+	if access.UIDMarked {
+		t.Error("UIDMarked is true on a target that could not take the mark; " +
+			"the absence has to reach the audit record, or nothing distinguishes " +
+			"a target that corroborates from one that cannot")
+	}
+	if accounts := h.ephemeralAccounts(t); len(accounts) != 1 {
+		t.Errorf("the target holds %v, want exactly the provisioned account", accounts)
+	}
+}
+
+// TestAMarkedTargetSaysSo is the other side of the same record: where the mark
+// CAN be written it still is, and the audit record says so. The mark did not
+// become optional to write, only optional to have.
+func TestAMarkedTargetSaysSo(t *testing.T) {
+	h := startFakeHost(t)
+	auth := newTestEphemeral(t, h, "proxy-a")
+	auth.leases = &fakeUIDLeases{from: 5000, to: 5100}
+	ctx := context.Background()
+	tgt := h.tgt()
+	tgt.Auth = ephemeralRoute(nil)
+
+	access, err := auth.Provision(ctx, testIdentity(), tgt)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	defer func() { _ = access.Teardown(ctx) }()
+
+	if !access.UIDMarked {
+		t.Error("UIDMarked is false on a target that can hold the mark")
+	}
+	if _, err := os.Stat(filepath.Join(h.enforce, uidWatermarkName, strconv.Itoa(access.AccountUID))); err != nil {
+		t.Errorf("the mark for uid %d was not written: %v", access.AccountUID, err)
 	}
 }
 

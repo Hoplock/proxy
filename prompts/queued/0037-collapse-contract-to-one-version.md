@@ -17,9 +17,11 @@
 > **Derive the blocker yourself, from `prompts/queued/` on `main`.** This phase
 > may only start once nothing queued still revises the contract, and the queue
 > has outlived every written-down statement of what that means — so check it
-> rather than trusting this one. When last checked: **0035** revises `api/`
-> (the Control-held uid floor, contract `4.2` → `4.3`) and **0036** may (a
-> route-named default access profile is one of the two shapes it weighs).
+> rather than trusting this one. When last checked: **0035 has landed** — it
+> took the contract to **4.3** with `POST /v1/uids/lease`, so the version history
+> this phase collapses now has a `v4.2→v4.3` section in `api/README.md` and one
+> more endpoint to keep — and **0036** may still revise `api/` (a route-named
+> default access profile is one of the two shapes it weighs).
 > `grep -rln "api/control.yaml" prompts/queued/` is the starting point; each
 > prompt's own header says whether it touches the contract. Collapsing before
 > the last revising phase just means doing it twice.
@@ -86,9 +88,10 @@ would be a regression, not a simplification:
   (vocabulary v2 and the `policy_version` pattern), **0013** (v3, the ladder,
   the one deliberate break), **0016** (v3.1 and `device_field.<name>`), **0018**
   (v4), **0023** (4.1, the host-key cache hint), **0028** (4.2, the tightening
-  that was announced as a break rather than gated) and **0031** (the session
-  bounds, which added v4 response fields). **0023** and **0028** are where the
-  reasons this phase must *keep* are written down.
+  that was announced as a break rather than gated), **0035** (4.3, the uid-block
+  lease) and **0031** (the session bounds, which added v4 response fields).
+  **0023**, **0028** and **0035** are where the reasons this phase must *keep*
+  are written down.
 
 ## Objective
 
@@ -134,8 +137,19 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 
 - **`info.description`** — delete the "Policy vocabulary v2 (phase 0006)" and
   "Policy vocabulary v3 (phase 0013)" sections, v4's (from 0018),
-  "Contract 4.1 (phase 0023)" and "Contract 4.2 (phase 0028)". Rewrite it as a
-  single statement of what the contract is.
+  "Contract 4.1 (phase 0023)", "Contract 4.2 (phase 0028)" and "Contract 4.3
+  (phase 0035)". Rewrite it as a single statement of what the contract is.
+
+  **4.3 carries the most load-bearing live reason of the three, so read it
+  before deleting anything of it.** The `v4.2→v4.3` section states the one
+  invariant a server implementing `POST /v1/uids/lease` must keep — **the
+  per-target allocation cursor only ever advances** — and why the uid floor is
+  NOT a field on the authorize response (that decision is cacheable, so a
+  replayed floor is a lowered one). Neither is history: a server author who
+  reclaims an unused block, or a future contract author who "simplifies" the
+  lease onto the authorize response, reintroduces cross-user file inheritance on
+  every target. Keep both statements beside the endpoint; only the narrative of
+  which phase added it goes.
 
   **4.2 carries a live reason too**, on the same footing as 4.1 below: it is
   where the contract says why a *tightening* — `username` becoming required on
@@ -246,12 +260,15 @@ sweep in "How to find all of it", and say in your PR what you found beyond this.
 
 ### 5. Docs
 
-- `api/README.md`: delete the "v4.1→v4.2", "v4→v4.1", "v3.1→v4", "v3→v3.1",
+- `api/README.md`: delete the "v4.2→v4.3", "v4.1→v4.2", "v4→v4.1", "v3.1→v4", "v3→v3.1",
   "v2→v3" and
   "v1→v2 rename" revision sections, and the version rows/columns in the field
   tables that date a field to a generation — including the "(4.1)" markers on
   the host-key reuse text, whose substance (the fingerprint-keyed shape, the two
-  answers never reused, the subject-invalidation rule) all **stays**. **Keep and rewrite** the `policy_version`
+  answers never reused, the subject-invalidation rule) all **stays** — and
+  including the "(4.3)" markers on the uid-lease text, whose substance (the
+  monotonic cursor, the one-call-per-block budget row, why the floor is not on
+  the authorize response) all **stays** for the reasons above. **Keep and rewrite** the `policy_version`
   negotiation paragraphs — they document a live mechanism, and they currently
   explain it through its history.
 - `api/README.md` **"Changing the contract"** — this recipe stays, and step 4's

@@ -149,6 +149,15 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 		// the join key PLAN §5.1 promises between a target's own audit trail and
 		// a session id is a name that no longer exists anywhere (phase 0027).
 		attrs = attrs.SetInt(logging.AttrTargetAccountUID, access.AccountUID)
+		// Which proxy's block that uid came out of, and whether the target
+		// corroborated it (phase 0035). Two proxies serving one target allocate
+		// from two blocks, so the uid alone no longer says whose allocation it
+		// was; and a target that recorded nothing is a target whose own
+		// high-water mark will not confirm this session later.
+		if access.UIDLease != "" {
+			attrs = attrs.Set(logging.AttrTargetUIDLease, access.UIDLease)
+		}
+		attrs = attrs.Set(logging.AttrTargetUIDMarked, strconv.FormatBool(access.UIDMarked))
 	}
 	if access.Rung > 0 {
 		// The rung in force is an AUDIT fact and never a user-facing one (D14):

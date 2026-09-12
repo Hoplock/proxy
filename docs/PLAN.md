@@ -1059,44 +1059,115 @@ straight back. So the uid is chosen **off-target** and passed as an explicit
 `-u`, from a dedicated range (`auth.target.ephemeral_user.uid_min`/`uid_max`,
 default `2000000-2999999`, above every distribution's own `UID_MAX`), **strictly
 above everything the target has ever handed out**: the highest in-range uid any
-account holds now, and a high-water mark recorded on the target itself under
-`enforcement_base`, so the guarantee survives a teardown, a proxy restart, and a
-second proxy on the same fleet.
+account holds now, a high-water mark recorded on the target itself under
+`enforcement_base`, and — since phase **0035** — the floor of the exclusive uid
+block Hoplock Control leased this proxy for that target, which is what carries
+the guarantee through a teardown, a proxy restart, a replaced proxy, and a second
+proxy on the same fleet. See *Who is trusted with the floor* below: the mark
+became corroboration when the lease took over.
 
 **It does not wrap, and it fails closed.** At the top of the range allocation
 refuses rather than returning to the bottom, because wrapping is the one moment
 reuse becomes possible again and a warning in a log is not a boundary; the
 operator's remedy is to raise `uid_max`, and every allocation past nine tenths of
 the range warns so the refusal is never the first anyone hears of it. A target
-whose census cannot be read, or that cannot record the uid it allocated, refuses
-the session the same way — as an **outage** (§4.3, its own `provision-uid` stage),
-never a denial, and with nothing provisioned. The uid is on the provisioning
+whose census cannot be read, and one for which no block can be leased or whose
+block is spent with Control unreachable, refuse the session the same way — as an
+**outage** (§4.3, its own `provision-uid` stage), never a denial, and with
+nothing provisioned. A target that cannot *record* the uid it allocated used to
+be a third such refusal and is not any more (0035): the mark corroborates a floor
+the lease already holds, so its absence is logged and audited rather than
+refused. The uid is on the provisioning
 audit record beside the account name, because the name is deleted at teardown and
 the number is what a `find -uid` and the target's own auditd actually speak.
 
 **Who is trusted with the floor, and who is not.** The census and the mark are
 both read off the **target**, which is the party this proxy does not trust, so
 everything the target says may only ever **raise** the next uid and never lower
-it: the allocator takes the maximum of the mark, the census, and its own record
-of what it has handed out. A target that under-reports — a mark an attacker with
-root has deleted, a census missing an account — can therefore only make the proxy
-SKIP uids, which is loud (the pressure warning, then the refusal), and never make
-it reuse one. The mark directory is root-owned and mode 700, re-established on
-every provisioning rather than inherited, so nothing short of root on the target
-can lower it at all; and a root attacker there defeats this guarantee more
-directly by `chown`ing the files they want inherited.
+it: the allocator takes the maximum of the block's floor, the mark, the census,
+and its own record of what it has handed out. A target that under-reports — a
+mark an attacker with root has deleted, a census missing an account, a target
+that can hold no mark at all — can therefore only make the proxy SKIP uids, which
+is loud (the pressure warning, then the refusal), and never make it reuse one.
+The mark directory is root-owned and mode 700, re-established on every
+provisioning rather than inherited, so nothing short of root on the target can
+lower it at all; and a root attacker there defeats this guarantee more directly
+by `chown`ing the files they want inherited.
 
-The residual is a **proxy restart**, which empties the in-process record and
-leaves a fresh process with only the target's word for the floor. Closing that
-needs the floor held where neither the target nor any single proxy owns it —
-which is Hoplock Control, and which is a **contract change** with a cross-repo
-obligation (D3). It is therefore a phase of its own rather than part of 0027, and
-phase 0027's learnings carry the design sketch. Two things that sketch settles and
-a future session must not re-derive: the floor may **not** ride on the authorize
-response, because that decision is cacheable and a replayed floor is a lowered
-one; and a **uid-block lease** per proxy per target is what keeps the invariant
-without coupling provisioning to Control's availability or adding a call per
-session.
+**The floor itself is no longer the target's, and no longer any single proxy's
+(phase 0035).** Hoplock Control leases this proxy an **exclusive block of uids
+for a target** — `[from, to)`, with a term — and allocation happens inside the
+block (`POST /v1/uids/lease`, contract **4.3**). Every property that 0027 could
+not have follows from exclusivity:
+
+- **The restart, the replacement, and two proxies on one target are all closed at
+  once.** A fresh process leases a fresh block above the server's cursor, so it
+  allocates above everything the target was ever given without needing the
+  target's word for it; two proxies holding two blocks cannot collide, so nothing
+  reads a shared counter on the session path.
+- **A granted block is safe to hold across a Control outage**, because it cannot
+  have been granted to anybody else. That is what keeps provisioning uncoupled
+  from Control's availability, the way teardown above and D16's deadline are
+  deliberately uncoupled.
+- **It costs one call per BLOCK, not per session**, so the per-connection budget
+  0022 and 0023 spent two phases reducing (§9.1) is untouched. The proxy renews
+  in the background, off the session path, before a block is spent or expires.
+- **Control's whole storage requirement is a per-target allocation cursor** it
+  advances on grant. No per-session write, no read-modify-write on the session
+  path.
+
+**The one thing a server must guarantee is that the cursor only ever advances.**
+A uid inside a granted block is never inside another grant again — used,
+abandoned or expired alike — so a lease needs no release call and a block is
+never reclaimed. Everything above rests on that, and a server "reclaiming" an
+unused block to save uids would silently reintroduce the inheritance this section
+exists to close.
+
+**The floor may NOT ride on the authorize response**, and that is worth stating
+where it will be read rather than only in a learnings file: `/v1/authorize` is
+cacheable (§6.4) and a cached decision is served while Control is unreachable, so
+a floor carried on one is replayed from whenever it was cached — and **a stale
+floor is a lowered floor**. Anything cacheable is disqualified the same way. A
+lease is not, because replaying it grants the same block to the same proxy.
+
+**What the term buys, and what it costs.** The term is not what makes a uid
+non-reusable — the cursor is — so an expired block is one this proxy stops
+allocating from, never one the server hands to somebody else. A block therefore
+ends in one of two ways, and **both fail closed while Control is unreachable**:
+it is exhausted, or its term runs out. A Control outage plus a busy target is
+then a provisioning outage for that target (§4.3, its own `provision-uid` stage,
+nothing provisioned). That is deliberate and is the same posture as every other
+refusal here; `auth.target.ephemeral_user.uid_lease.uid_count` is how many
+sessions an outage can cover and the server's term is how long, so an operator
+sizes both against their own outages rather than discovering the trade-off.
+
+**The target-side mark survives, demoted.** It is a corroborating signal that may
+only ever **raise** the leased floor — the same "the server informs, the proxy
+re-checks against the live target" relationship `probeCache` and 0023's host-key
+hint already have — and it is what stops a lost lease record, a cursor reset at
+the server, or a range an operator moved from being the moment the invariant
+quietly weakens. Its absence, and its failure to be written, are a **logged fact
+and an audit field** (`target_uid_marked`), never an outage.
+
+**Which is what makes the method work on a target that stores nothing.** 0027
+made the mark load-bearing and so required `<enforcement_base>` to be writable on
+every ephemeral provisioning — narrowing a route that worked before it, because
+an ordinary hardened Linux host with a **read-only root filesystem** can run
+`useradd -m` and hold an `authorized_keys` in a writable `/home` and cannot take
+`/var/lib/hoplock`. The lease alone is now sufficient, so such a target is
+**served**, with the absence recorded. §5.3's devices were never affected: a
+firewall or a switch has no uid this proxy allocates, its administrators are
+name-keyed with a per-session random token, and its per-session objects are keyed
+on that name and removed by its teardown — so `ephemeral-account` inherits
+nothing numeric from a torn-down administrator and touches none of this.
+
+`auth.target.ephemeral_user.uid_min`/`uid_max` stayed in proxy config and changed
+meaning: they are the range this proxy will **accept a block from**, sent on the
+lease request so a server with no range of its own can allocate from them, and
+enforced on the grant — a block outside them is refused rather than clamped,
+because those numbers encode fleet facts (above every distribution's `UID_MAX`,
+above systemd's dynamic-user range, below 2^31) that the server has no way to
+know, and a block below them would collide with the target's own accounts.
 
 Phase **0019**'s filesystem confinement is the other half: with a home mounted
 `noexec` and nothing writable outside it there is nothing left to inherit, and
@@ -3165,6 +3236,17 @@ both decisions makes each connection cost **two** lookup paths. UC2's
 300,000-target estate needs 600,000 entries, ~600 MiB at the measured ~1.0 KiB
 each, to hold both — twice what the 0022 row above implies.
 
+**Phase 0035's uid-block lease does not move this figure, and that is by
+design.** `POST /v1/uids/lease` is called once per **block** — a block of
+thousands of uids, renewed in the background before it is spent — so a proxy
+holding one makes the same calls per connection it made before. A floor fetched
+per session would have added a fourth, giving back most of what 0022 and 0023
+bought, which is why the lease is the shape §5.1 settles on rather than a field
+on a per-session response. It is asserted rather than reasoned about:
+`TestOneCallPerBlockNotPerSession` and the credential plane's own outage test,
+and `cmd/loadgen`'s control server instruments the endpoint like every other so
+a run reports its rate.
+
 #### What these numbers cannot say
 
 - **The generator, the target and the proxy share four cores.** Every achieved
@@ -3281,7 +3363,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0024 | Session deadline & lifetime            | enforce 0018's deadline locally, warn before it and explain it at expiry (neither a denial nor an outage), and record in §5.1 that detached work does not outlive a session. **Delivered:** a local timer armed at authorize from the instant the chain resolved (`routing.ShortenDeadline` — a hop may only ever shorten it, and the resolved instant travels on the hop-trail request), expiry through the engine's ordinary teardown, the two messages and exit status **253** in §4.3, `end_reason` on every session_end record, and the detached-work consequence in §5.1. No contract change |
 | 0025 | Target credential rejection             | classify a refused proxy→target credential as its own stage, contain it with a per-credential circuit breaker, disclose and record it honestly, and document the target prerequisites a single-source-address proxy implies. **Delivered:** `target.IsAuthRejection` (the one place that knows x/crypto's wording, with a tripwire test that drives a real rejection), the `target-auth` and `target-auth-withheld` stages and their §4.3 wording, a breaker keyed on (target, method, credential handle) consulted *before* provisioning through `Selector`/`ProvisionedAccess.DialOutcome` — the seam the device drivers adopt — `auth.target.rejection` in config, two critical `error` records naming the credential's handle and never its material, and §5's/README's target prerequisites. It also queued **0033**, the same defect on the proxy→proxy leg, which it found and scoped out. No contract change |
 | 0026 | e2e coverage: MFA & concurrency         | end-to-end coverage for the password+MFA flow and for two concurrent sessions provisioning on one target — the two gaps in 0012's list that are not `docs/PLAN.md` §12 deferrals. **Delivered:** `password-mfa` enabled on `proxy-direct` only and driven by a real OpenSSH client through `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` (the `user` image's `askpass.sh`), with `sshBaseArgs` untouched so every other scenario is still on the certificate path; an approval, its progress lines, a denial that ends exactly as a wrong password does, and `auth_method=password-mfa` in the audit trail; and two overlapping sessions on one login whose **overlap is observed** in the target's own account database — two accounts at one instant — then removed by two independent teardowns, with the `brokered-key` mirror leaving the target byte-identical. No production code changed. It queued **0034**: the challenge itself still discloses whether the first factor was right |
-| 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement). **Delivered:** the uid is the proxy's choice and travels as an explicit `useradd -u` — `-K UID_MIN=…` was measured and rejected, because it moves the range the target's own allocator searches and still hands a freed uid straight back — allocated strictly above the highest in-range uid in use **and** a high-water mark recorded on the target under `enforcement_base`, so the invariant survives a teardown, a restart and a second proxy. `auth.target.ephemeral_user.uid_min`/`uid_max` default to **2000000-2999999**, above every distribution's own `UID_MAX`. **Allocation does not wrap**: at the top of the range, on an unreadable census, or where the mark cannot be written, the route is refused as an outage on its own `provision-uid` stage with nothing provisioned, and every allocation past nine tenths of the range warns. The uid is on the provisioning record beside the account name. What is still inheritable until a route names one of 0019's confining rungs: anything a session wrote outside its home — and 0027 is what stops a *later* session inheriting it |
+| 0027 | Ephemeral UID allocation                | a dedicated, non-reusing UID range so a fresh ephemeral account never inherits a torn-down one's files; fail closed when it cannot be guaranteed (pairs with 0019's confinement). **Delivered:** the uid is the proxy's choice and travels as an explicit `useradd -u` — `-K UID_MIN=…` was measured and rejected, because it moves the range the target's own allocator searches and still hands a freed uid straight back — allocated strictly above the highest in-range uid in use **and** a high-water mark recorded on the target under `enforcement_base`, so the invariant survives a teardown, a restart and a second proxy. `auth.target.ephemeral_user.uid_min`/`uid_max` default to **2000000-2999999**, above every distribution's own `UID_MAX`. **Allocation does not wrap**: at the top of the range, on an unreadable census, or where the mark cannot be written, the route is refused as an outage on its own `provision-uid` stage with nothing provisioned, and every allocation past nine tenths of the range warns. The uid is on the provisioning record beside the account name. What is still inheritable until a route names one of 0019's confining rungs: anything a session wrote outside its home — and 0027 is what stops a *later* session inheriting it. **Phase 0035 moved the floor off the target** — read that row: the mark is corroboration now, an unwritable one no longer refuses the session, and the sentence above about refusing where the mark cannot be written describes 0027 as it shipped rather than the system today |
 | 0028 | Close the login fallback                | remove every remaining use of `identity.Login` as an account name, on all methods and all paths (the row this table was missing; the prompt has been queued since phase 0013). **Delivered:** `username` is required on `brokered-key` too (**contract v4.2**, a break; `policy_version` stays 4, because it declares what a proxy can *read* and a tightening is not expressible through it), which makes it required on every method the contract defines; each of the three remaining call sites resolves the account in a fixed order ending in a refusal — `brokered-key`: route → `auth.target.brokered_key.username` → refuse; `static-key`: route → `auth.target.static_key.username` → refuse, and it now **reads the route at all**, which it never did, so the document requiring a `username` and the proxy using something else no longer disagree and an unknown parameter is refused like everywhere else; `ephemeral-user`: route → **`identity.Principals`** → refuse, taking exactly one principal and refusing none or several. Refusals are outage-class (§4.3) with nothing provisioned and no target leg dialled. `brokered-key` deliberately does not read `Principals` (its account is standing and shared, §5.2) and nothing cross-checks a route-named account against them (that would be the proxy originating policy, D2). The `Principals` doc comment, false since it was written, now describes what actually draws from it. Contract change — carried a cross-repo obligation |
 | 0029 | FortiSwitchOS driver                    | the FortiSwitch driver, and the target-identity question the phase was queued to answer (deferred from 0014). **Delivered, and the answer is not the one the prompt expected:** a FortiLink-managed switch keeps its own SSH administrative plane — `config switch-controller security-policy local-access` has `ssh` in the default allowaccess for both its interfaces — so the switch is **its own endpoint** and FortiLink is a deployment fact, not a target identity. 0016's answer is left intact rather than stretched, and **no device field is declared**: `fortios.SwitchDriver` is a separate type from the FortiGate driver (so it is not a `device.ResidueSweeper` for a schedule table FortiSwitchOS does not have), reusing 0014's CLI state machine and value validation through helpers moved onto `cliSession`. `EnforcesExpiry` is **false** on a documentation contradiction (`set schedule` names a `config firewall schedule` table the platform lacks); the one built-in profile is `super_admin`, so the FortiOS built-ins are refused before dialling; the unit's identity is confirmed from `get system status` because the two platforms accept the same administrator commands. **No contract change** — `api/` untouched, so no cross-repo obligation. §5.3 carries the reasoning |
 | 0030 | FortiLink-mediated administration       | **Withdrawn — decided, not built.** The estate 0029 does not serve — switches deliberately unroutable from the proxy — is served by a **deployment** rather than by a mechanism: put a proxy where it can reach the switch (0029's `fortiswitchos` then works unchanged), or administer the switch from an ordinary `fortigate` session, accepting that the switch login is then a standing credential Hoplock does not broker. Building it would have put a second ephemeral account on a customer's firewall per switch session, made the user's hop password-only, taken on a strand-with-no-sweep leak class, and put a per-channel reach preamble in front of every session — to reach a device a proxy could simply be routed to. `device.CreateRequest.Fields` therefore still ride on creation only. The number **0030 is retired and must never be reused**. Reasoning: §5.3 "As settled (phase 0030)" and `docs/learnings/0030-fortilink-mediated-administration-learnings.md` |
@@ -3289,7 +3371,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0032 | Does the decision cache need an admission policy? | **Withdrawn — evaluated, not built.** The four deployment questions were asked and answered: operators can *usually* size `control.cache.max_entries` to the estate, the traffic is mixed rather than a strict sweep, and churn is high on cloud and low on-prem. `internal/control/admission_sim_test.go` compares freeze, LRU, sampled-random, SLRU and TinyLFU over uniform-cycle, hot-set, Zipf, churn and Zipf-over-churn traces, calibrated against both measured points (`freeze` 59%, `lru` 0% at N=8,192/M=4,096). On the traces matching those answers the best candidate beats LRU by **1.6 points of hit rate — ~18 Hoplock Control req/s of 2,715, or 0.7%** — and loses to it outright at high churn, so criteria 2 and 4 fail; sampled-random additionally fails criterion 3 on the hot-set traces. The cliff is real but it is a property of a *strict uniform cycle*, which this estate is not. LRU stands; the number **0032 is retired and must never be reused**. The simulator is kept as the evidence. Reasoning: §9.1 "Does the cliff need an admission policy?" and `docs/learnings/0032-decision-cache-admission-policy-learnings.md` |
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reported a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. **Delivered:** the `hop-auth` stage and its §4.3 wording — *"this proxy was not accepted by the next proxy in the chain"*, the third member of the hop family beside `hop-dial` and `relay` — classified with `target.IsAuthRejection`, which stays the tree's **single** copy of x/crypto's wording (its doc now says "far side", its tripwire test did not move), ordered after `takeHostKeyErr` exactly as `dialTarget` is; plus a critical `chain.identity_rejected` record naming the next proxy id, the hop direction, and the **SHA256 fingerprint** of the chain key — never the key, never its path. **Containment was the question, and the answer is NO**, with the reasoning in the learnings: the blast radius that justified 0025's breaker is a property of an OpenSSH *target* (`PerSourcePenalties` scoring the proxy's source address), the far end here is another Hoplock proxy on `x/crypto/ssh` which has no such defence, a `relay` hop opens no connection to withhold in the first place, and a refused chain key is permanent until an operator registers it — so a cooldown would stack a second outage on top of the first, between their fix and service returning. Nothing is withheld; `RejectionBreaker` is untouched and the `chain.` config gains nothing. No contract change. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Withdrawn — evaluated, not built.** The signal is real and is now an accepted limit of the deny branch (§4.3): a correct password is answered with a challenge and a wrong one is not, so its presence confirms the first factor without any message saying so. Three findings closed it. **It is not the proxy's to fix and not an accident of the mock** — the contract *requires* it, because a `200` on `POST /v1/auth/password` is documented as "the password was accepted", so a decoy would be a contract violation; the proxy meanwhile needs nothing either way, which was confirmed rather than assumed on the two paths a decoy would take (poll → `401`, and `awaitMFA`'s expiry branch), both already driven by the e2e scenario. **The mitigation is an amplifier handed to the attacker:** a decoy takes one failed guess from **1 Control call to ~121** (derived at the shipped 500ms floor over a 60s challenge; §9.1 measures a whole successful connection at 3.17, or 1.17 after 0023) and from a stateless rejection to a connection held for the challenge's life — ~170 guesses/s fills the descriptor ceiling §9.1 measures. It is safe only behind the rate limiting this prompt scoped out, which is also what blunts enumeration directly. **And it would not close the channel:** a decoy narrows a single-probe one-bit oracle to a statistical one, because resolution timing still separates a human on a phone from a synthetic draw and a decoy must never approve. §12's argument holds — the IdP verifies the password in production and is where this defence lives — but the *contract* is not a prototype artifact, so the learnings names the exact sentence a reversal must relax first. No production code, no `api/` change, no cross-repo obligation. The number **0034 is retired and must never be reused**. Reasoning: §4.3 and `docs/learnings/0034-mfa-challenge-first-factor-oracle-learnings.md`. Added by 0026 |
-| 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lives on the **target**, so a proxy RESTART — no attacker needed — leaves a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target has no continuity at all. Worse, a target that can store nothing (§5.3's devices; an ordinary Linux host with a read-only root filesystem) is refused outright by 0027 on a route that worked before it. Holds the floor at Hoplock Control as an **exclusive per-proxy uid-block lease** — which closes the multi-proxy case by construction, is safe to hold across a Control outage because the block cannot have been granted to anyone else, and costs one call per BLOCK rather than per session, so 0022 and 0023's 3.17 → 1.17 per-connection budget is untouched. The target-side mark is demoted to an optional signal that may only ever RAISE the floor, and its absence stops being an outage. **Two things it must not do, both settled in 0027's learnings:** put the floor on the authorize response (that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one), and assume the proxy can write anything on the target. Contract change — carries a cross-repo obligation |
+| 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lived on the **target**, so a proxy RESTART — no attacker needed — left a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target had no continuity at all; and a target that can store nothing (an ordinary Linux host with a read-only root filesystem) was refused outright on a route that worked before 0027. **Delivered:** `POST /v1/uids/lease` (**contract 4.3**; `policy_version` stays 4 — a new endpoint is not in the vocabulary it gates) grants a proxy an **exclusive block** `[uid_from, uid_to)` with a term, out of a per-target allocation cursor that **only ever advances** — which is the whole server-side requirement and the one invariant everything else rests on: a uid inside a granted block is never inside another grant, used, abandoned or expired alike, so a lease needs no release call and two proxies cannot collide. Allocation happens inside the block, so the call is **one per block, not per session** (asserted, because that is the claim the shape is justified by — 0022 and 0023's 3.17 → 1.17 budget is untouched), renewal is background work off the session path, and a held block needs no server at all, so **provisioning rides out a Control outage**. A block ends when it is exhausted or when its term runs out, and **both fail closed** while Control is unreachable — stated rather than hidden, with `uid_lease.uid_count` and the server's term as the knobs an operator sizes against their own outages. The **target-side mark is demoted, not deleted**: it corroborates, may only ever RAISE the leased floor, and its absence is a logged fact and an audit field (`target_uid_marked`) instead of an outage — which is what makes an unwritable `<enforcement_base>` a **served** target rather than a refused one. `uid_min`/`uid_max` **stayed in proxy config** and changed meaning: the range a block is accepted from, sent on the request and enforced on the grant, refused rather than clamped. `target_uid_lease` joins `target_account_uid` on the provisioning record, because with two proxies on one target the uid alone no longer says whose block it came from. **The floor is NOT on the authorize response**, deliberately and structurally: that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one — `CachingClient` implements no `UIDLeaser`, so wiring one in is a compile error. The **device question** (§3 of the prompt) is answered **NO** and checked rather than assumed: a device account is name-keyed with a per-session random token and every object the drivers create is `edit "<name>"`, never a numbered slot, so a fresh administrator inherits nothing from a torn-down one — and `ephemeral-account` needs no lease, so a device route is unaffected by a Control outage. Contract change — carried a cross-repo obligation |
 | 0036 | Per-platform access profile             | `auth.target.ephemeral_account.access_profile` is one string for every platform a proxy serves, and it is FortiOS-shaped: FortiOS documents three built-in profiles and FortiSwitchOS documents one, so a proxy fronting both estates cannot express a correct value. Phase 0029 worked around it — the switch driver is built with no default when the configured profile is a FortiOS built-in, so a route naming `enforcement.platform_role` is served and one relying on the default is refused outage-class — and queued the fix. The question is where a created administrator's scope comes from when the route names none: per-platform configuration (no contract change), a route-named default decoupled from 0019's rung (a contract change, weighed against D2), or driver-declared defaults (which 0015 explicitly refused). Must run before the collapse, because one candidate answer revises `api/` (new prompt, added by phase 0029 and raised by the user on its PR) |
 | 0037 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0036 to make room for 0029's follow-up |
 

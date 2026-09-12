@@ -47,6 +47,12 @@ type controlServer struct {
 	hostKeys sync.Map
 
 	eventSeq atomic.Uint64
+
+	// uidCursors is the per-target allocation cursor a uid-block lease advances
+	// (contract 4.3). It is instrumented like every other endpoint because the
+	// claim that justifies the lease shape is a RATE — one call per block, not
+	// per session — and a rate is exactly what this harness measures.
+	uidCursors sync.Map
 }
 
 // callStat accumulates what one control endpoint cost.
@@ -90,6 +96,7 @@ func (c *controlServer) start() error {
 	mux.HandleFunc("POST "+control.PathIngestLogBatch, c.instrument(control.PathIngestLogBatch, c.handleLogBatch))
 	mux.HandleFunc("POST "+control.PathIngestPriorityLog, c.instrument(control.PathIngestPriorityLog, c.handleLogPriority))
 	mux.HandleFunc("POST "+control.PathReportCapabilities, c.instrument(control.PathReportCapabilities, c.handleCapabilities))
+	mux.HandleFunc("POST "+control.PathLeaseUIDs, c.instrument(control.PathLeaseUIDs, c.handleUIDLease))
 	mux.HandleFunc("GET "+control.PathProxyEvents, c.handleEvents)
 
 	c.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -295,6 +302,51 @@ func (c *controlServer) handleCapabilities(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, control.CapabilityReportResponse{Accepted: true})
+}
+
+// handleUIDLease grants an exclusive block of ephemeral uids for a target
+// (contract 4.3, phase 0035).
+//
+// The cursor only ever advances, which is the whole server-side requirement.
+// The block is deliberately LARGE relative to a run: this endpoint appearing at
+// anything like one call per connection in a report is the shape failing, not
+// the harness.
+func (c *controlServer) handleUIDLease(w http.ResponseWriter, r *http.Request) {
+	var req control.UIDLeaseRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	min, max := req.RangeMin, req.RangeMax
+	if min <= 0 {
+		min = 2000000
+	}
+	if max <= min {
+		max = min + 999999
+	}
+	count := req.UIDCount
+	if count <= 0 {
+		count = 4096
+	}
+	key := req.Target
+	cur, _ := c.uidCursors.LoadOrStore(key, new(atomic.Int64))
+	cursor := cur.(*atomic.Int64)
+	// The first grant for a target starts at the bottom of the range; every
+	// later one continues from where the last left off.
+	cursor.CompareAndSwap(0, int64(min))
+	to := cursor.Add(int64(count))
+	from := to - int64(count)
+	if to > int64(max)+1 {
+		to = int64(max) + 1
+	}
+	if from >= to {
+		http.Error(w, "uid range exhausted", http.StatusConflict)
+		return
+	}
+	writeJSON(w, control.UIDLeaseResponse{
+		LeaseID: fmt.Sprintf("lease-%s-%d", req.Target, from),
+		UIDFrom: int(from),
+		UIDTo:   int(to),
+	})
 }
 
 // handleEvents serves the revocation stream. It carries nothing but heartbeats:

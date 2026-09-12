@@ -77,6 +77,7 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 		PathIngestLogBatch:       "202",
 		PathIngestPriorityLog:    "200",
 		PathReportCapabilities:   "200",
+		PathLeaseUIDs:            "200",
 	}
 
 	for path, success := range wantStatus {

@@ -573,3 +573,32 @@ host_keys:
   cache:
     ttl_seconds: 300
     # key: hostkey:host.company.com   # optional: widen the INVALIDATION scope
+
+# Exclusive uid blocks, leased per proxy per target (contract 4.3, phase 0035).
+#
+# This is where the floor under an `ephemeral-user` account's uid lives. The
+# proxy allocates INSIDE the block it is granted, so it calls the endpoint once
+# per BLOCK rather than once per session — and a block it already holds needs no
+# server at all, which is what lets provisioning ride out a Control outage.
+#
+# THE ONE INVARIANT A REAL CONTROL MUST KEEP: the per-target cursor only ever
+# advances. A uid inside a granted block is never inside another grant, for this
+# proxy or any other, ever again — used, abandoned or expired alike. Reclaiming
+# an unused block to save uids would silently hand a torn-down session's uid to
+# the next person on that target.
+uid_leases:
+  # How many uids per block. Together with term_seconds this is how long
+  # provisioning survives a Control outage on a busy target: a block ends when it
+  # is exhausted or when its term runs out, and both then refuse the session.
+  uid_count: 4096
+  # How long a proxy may keep allocating from a block. 0 leaves it to the
+  # proxy's own default (a day). It is not what makes the uids non-reusable —
+  # the cursor above is — so a short term costs availability and buys nothing.
+  term_seconds: 0
+  # The range to allocate from. 0 on either takes that bound from the proxy's own
+  # request, which is the right default: uid_min/uid_max in the proxy's config
+  # encode facts about the fleet (above every distribution's UID_MAX, below 2^31)
+  # that this server has no way to know, and the proxy refuses a block outside
+  # them rather than clamping it.
+  range_min: 0
+  range_max: 0

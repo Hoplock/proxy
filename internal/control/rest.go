@@ -251,6 +251,24 @@ func (c *RESTClient) ReportCapabilities(ctx context.Context, req *CapabilityRepo
 	return resp, nil
 }
 
+// LeaseUIDs implements UIDLeaser (contract 4.3, phase 0035).
+//
+// It is not on Client for the reason ReportCapabilities is not: one caller, one
+// path. What is more deliberate is that CachingClient does NOT forward it — a
+// lease answered from memory is a replayed floor, which is the trap lease.go
+// names, so the interfaces make that a compile error rather than a review
+// comment.
+func (c *RESTClient) LeaseUIDs(ctx context.Context, req *UIDLeaseRequest) (*UIDLeaseResponse, error) {
+	const op = "LeaseUIDs"
+	if req.Target == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: target is required", ErrBadRequest)}
+	}
+	if req.ProxyID == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: proxy_id is required", ErrBadRequest)}
+	}
+	return post[UIDLeaseResponse](ctx, c, op, PathLeaseUIDs, req, http.StatusOK)
+}
+
 // IngestLogBatch implements Client.
 func (c *RESTClient) IngestLogBatch(ctx context.Context, req *LogBatchRequest) (*LogBatchResponse, error) {
 	const op = "IngestLogBatch"

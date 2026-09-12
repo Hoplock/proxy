@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/hoplock/proxy/internal/control"
 )
 
 // census is a uidCensus a test can write in one line. The `read` flag is set,
@@ -17,6 +19,14 @@ func census(watermark int, inUse ...int) uidCensus {
 		c.inUse[uid] = true
 	}
 	return c
+}
+
+// wholeRange is the block a proxy with no lease source allocates from: the
+// configured range, entire and never expiring (phase 0035). Every test that is
+// about the ALLOCATION RULE rather than about the lease uses it, so those tests
+// go on asserting exactly what phase 0027 wrote them to assert.
+func wholeRange(a *uidAllocator) control.UIDBlock {
+	return control.UIDBlock{From: a.min, To: a.max + 1}
 }
 
 func testAllocator(t *testing.T, min, max int) *uidAllocator {
@@ -54,7 +64,7 @@ func TestUIDAllocatorAllocatesAboveTheHighWaterMark(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := testAllocator(t, 2000, 2999)
-			plan, err := a.allocate("target:22", tc.census)
+			plan, err := a.allocate("target:22", tc.census, wholeRange(a))
 			if err != nil {
 				t.Fatalf("allocate: %v", err)
 			}
@@ -79,7 +89,7 @@ func TestUIDAllocatorAllocatesAboveTheHighWaterMark(t *testing.T) {
 func TestUIDAllocatorRefusesAtWrapAround(t *testing.T) {
 	a := testAllocator(t, 2000, 2002)
 
-	plan, err := a.allocate("target:22", census(2001))
+	plan, err := a.allocate("target:22", census(2001), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate below the top of the range: %v", err)
 	}
@@ -89,7 +99,7 @@ func TestUIDAllocatorRefusesAtWrapAround(t *testing.T) {
 
 	// Nothing is in use at all now, so 2000, 2001 and 2002 are every one of them
 	// free. The mark says all three have been handed out.
-	_, err = a.allocate("target:22", census(2002))
+	_, err = a.allocate("target:22", census(2002), wholeRange(a))
 	if !errors.Is(err, ErrUIDUnavailable) {
 		t.Fatalf("allocate past the top of the range = %v, want ErrUIDUnavailable", err)
 	}
@@ -105,7 +115,7 @@ func TestUIDAllocatorRefusesAtWrapAround(t *testing.T) {
 func TestUIDAllocatorWarnsBeforeItRefuses(t *testing.T) {
 	a := testAllocator(t, 1000, 1999)
 
-	plan, err := a.allocate("target:22", census(1800))
+	plan, err := a.allocate("target:22", census(1800), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -116,7 +126,7 @@ func TestUIDAllocatorWarnsBeforeItRefuses(t *testing.T) {
 		t.Errorf("remaining = %d, want %d", plan.remaining, 1999-1801)
 	}
 
-	plan, err = a.allocate("target:22", census(1950))
+	plan, err = a.allocate("target:22", census(1950), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -130,7 +140,7 @@ func TestUIDAllocatorWarnsBeforeItRefuses(t *testing.T) {
 // assuming that is precisely how a fresh account lands on a departed one's uid.
 func TestUIDAllocatorRefusesWithoutACensus(t *testing.T) {
 	a := testAllocator(t, 2000, 2999)
-	if _, err := a.allocate("target:22", uidCensus{inUse: map[int]bool{}}); !errors.Is(err, ErrUIDUnavailable) {
+	if _, err := a.allocate("target:22", uidCensus{inUse: map[int]bool{}}, wholeRange(a)); !errors.Is(err, ErrUIDUnavailable) {
 		t.Fatalf("allocate with no census = %v, want ErrUIDUnavailable", err)
 	}
 }
@@ -140,7 +150,7 @@ func TestUIDAllocatorRefusesWithoutACensus(t *testing.T) {
 // account an operator put there. It is not available, whatever its name.
 func TestUIDAllocatorSkipsWhatIsInUse(t *testing.T) {
 	a := testAllocator(t, 2000, 2999)
-	plan, err := a.allocate("target:22", census(2000, 2001, 2002))
+	plan, err := a.allocate("target:22", census(2000, 2001, 2002), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -161,11 +171,11 @@ func TestUIDAllocatorSkipsWhatIsInUse(t *testing.T) {
 // exist yet — so without this the two would be handed the same uid.
 func TestUIDAllocatorDoesNotRepeatWithinTheProcess(t *testing.T) {
 	a := testAllocator(t, 2000, 2999)
-	first, err := a.allocate("target:22", census(0))
+	first, err := a.allocate("target:22", census(0), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
-	second, err := a.allocate("target:22", census(0))
+	second, err := a.allocate("target:22", census(0), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -175,7 +185,7 @@ func TestUIDAllocatorDoesNotRepeatWithinTheProcess(t *testing.T) {
 
 	// A different target is a different range: they share no account database,
 	// so the second target starts at the bottom.
-	other, err := a.allocate("other:22", census(0))
+	other, err := a.allocate("other:22", census(0), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -190,12 +200,12 @@ func TestUIDAllocatorDoesNotRepeatWithinTheProcess(t *testing.T) {
 // next allocation has to be above what happened, not above what was asked for.
 func TestUIDAllocatorObservesWhatTheTargetActuallyGave(t *testing.T) {
 	a := testAllocator(t, 2000, 2999)
-	if _, err := a.allocate("target:22", census(0)); err != nil {
+	if _, err := a.allocate("target:22", census(0), wholeRange(a)); err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
 	a.observe("target:22", 2500)
 
-	plan, err := a.allocate("target:22", census(0))
+	plan, err := a.allocate("target:22", census(0), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -293,7 +303,7 @@ func TestParseProvisionedUIDFailsClosed(t *testing.T) {
 func TestATamperedMarkCannotLowerAnAllocation(t *testing.T) {
 	a := testAllocator(t, 2000, 2999)
 
-	first, err := a.allocate("target:22", census(2500))
+	first, err := a.allocate("target:22", census(2500), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -304,7 +314,7 @@ func TestATamperedMarkCannotLowerAnAllocation(t *testing.T) {
 	// The mark is now gone, and the account that held 2501 is gone with it: the
 	// target reports an empty range, which is what a wiped mark directory looks
 	// like from here.
-	second, err := a.allocate("target:22", census(0))
+	second, err := a.allocate("target:22", census(0), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate after the mark was wiped: %v", err)
 	}
@@ -328,12 +338,12 @@ func TestATamperedMarkCannotLowerAnAllocation(t *testing.T) {
 func TestAnUnderReportedCensusCannotLowerAnAllocation(t *testing.T) {
 	a := testAllocator(t, 2000, 2999)
 
-	if _, err := a.allocate("target:22", census(0, 2000, 2001, 2002)); err != nil {
+	if _, err := a.allocate("target:22", census(0, 2000, 2001, 2002), wholeRange(a)); err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
 	// The same target now claims nothing at all is in use and nothing was ever
 	// allocated.
-	next, err := a.allocate("target:22", census(0))
+	next, err := a.allocate("target:22", census(0), wholeRange(a))
 	if err != nil {
 		t.Fatalf("allocate against an under-reported census: %v", err)
 	}

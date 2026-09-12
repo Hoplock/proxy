@@ -36,12 +36,15 @@ const (
 	// differently from a useradd that failed: the range, not the account, is
 	// what has to change.
 	exitUIDExhausted = 96
-	// exitUIDMarkFailed means the account was created but the target could not
-	// record its uid, so the next allocation there would have nothing to
-	// allocate above. It fails the session on purpose: an unrecorded uid is a
-	// uid the next session may be handed, which is the defect 0027 closes.
-	exitUIDMarkFailed = 97
 )
+
+// 97 was exitUIDMarkFailed: a target that could not record the allocated uid
+// failed the session (phase 0027). Phase 0035 moved the floor to a lease held at
+// Hoplock Control, so the mark corroborates rather than carries it, and a target
+// that cannot hold one is SERVED with the absence recorded. The number is not
+// reused: a status a deployed target may still return must keep meaning what it
+// meant, and this proxy now treats an unknown provisioning status as the
+// ordinary failure it is.
 
 // The keys the discovery script prints its uid census under (phase 0027).
 // parseUIDCensus reads them; the reaper's parseDiscovery ignores them, because
@@ -49,6 +52,10 @@ const (
 const (
 	uidKeyInUse     = "uid"
 	uidKeyWatermark = "uidmark"
+	// uidKeyMarked is the provisioning script's answer to "did the target take
+	// the mark" (phase 0035). It is reported rather than enforced: the floor is
+	// the lease, and a target that can store nothing is served.
+	uidKeyMarked = "uidmarked"
 )
 
 // uidInUseFailed is the exit status for a useradd that refused a uid because
@@ -141,12 +148,19 @@ func (a *EphemeralAuthenticator) provisionScript(c *confinement, authorizedKey s
 	// target actually holds.
 	fmt.Fprintf(&b, "uid=$(id -u \"$p\") || exit %d\n", exitCreateFailed)
 	fmt.Fprintf(&b, "printf '%s\\t%%s\\n' \"$uid\"\n", uidKeyInUse)
-	// The watermark is what makes the invariant survive this session, this
-	// process, and this proxy: the next allocation on this target allocates
-	// strictly above it. A uid that could not be recorded is a uid the next
-	// session may be handed, so this failing FAILS THE SESSION — the account is
-	// removed by the caller's cleanup, and the operator is told a directory is
-	// not writable rather than silently getting reuse back.
+	// The watermark CORROBORATES the floor; it no longer carries it (phase
+	// 0035). The floor is the block Hoplock Control leased this proxy, which is
+	// held where neither the target nor any single proxy can lower it, so a
+	// target that cannot take the mark is SERVED and the absence is recorded —
+	// an ordinary Linux host with a read-only root filesystem can run
+	// `useradd -m` and hold an authorized_keys in a writable /home, and phase
+	// 0027 refused it. What the mark still buys is the case a lease record
+	// cannot cover on its own: a cursor lost at the server, or a range an
+	// operator moved. It may only ever RAISE the next allocation.
+	//
+	// So every step of it is best-effort and the script says which way it went.
+	// Nothing here is allowed to fail the session, and `set -eu` is why the
+	// whole sequence is a condition rather than a run of commands.
 	//
 	// The mark is a directory whose FILENAMES are the uids, and that shape is
 	// load-bearing: two provisioners on one target run at the same time (PLAN
@@ -166,20 +180,24 @@ func (a *EphemeralAuthenticator) provisionScript(c *confinement, authorizedKey s
 	// operator pointed somewhere permissive, and a provisioning shell with an
 	// unusual umask. It is 700 rather than the dispatcher's 755 because nothing
 	// but the provisioner ever reads it.
-	fmt.Fprintf(&b, "mkdir -p \"$w\" || exit %d\n", exitUIDMarkFailed)
-	fmt.Fprintf(&b, "chown 0:0 \"${w%%/*}\" \"$w\" || exit %d\n", exitUIDMarkFailed)
-	fmt.Fprintf(&b, "chmod 755 \"${w%%/*}\" || exit %d\n", exitUIDMarkFailed)
-	fmt.Fprintf(&b, "chmod 700 \"$w\" || exit %d\n", exitUIDMarkFailed)
-	fmt.Fprintf(&b, ": > \"$w/$uid\" || exit %d\n", exitUIDMarkFailed)
+	b.WriteString("m=no\n")
+	b.WriteString(`if mkdir -p "$w" 2>/dev/null &&` + "\n")
+	b.WriteString(`   chown 0:0 "${w%/*}" "$w" 2>/dev/null &&` + "\n")
+	b.WriteString(`   chmod 755 "${w%/*}" 2>/dev/null &&` + "\n")
+	b.WriteString(`   chmod 700 "$w" 2>/dev/null &&` + "\n")
+	b.WriteString(`   : > "$w/$uid" 2>/dev/null; then` + "\n")
+	b.WriteString("  m=yes\n")
 	// Pruning keeps the directory at one entry without ever removing a mark
 	// ABOVE this one, so a concurrent provisioner that allocated higher is never
 	// erased. A lower mark left behind by a racer is harmless: the maximum is
 	// what is read.
-	b.WriteString(`for f in "$w"/*; do` + "\n")
-	b.WriteString(`  n=${f##*/}` + "\n")
-	b.WriteString(`  case "$n" in ''|*[!0-9]*) continue ;; esac` + "\n")
-	b.WriteString(`  if [ "$n" -lt "$uid" ]; then rm -f "$f" || true; fi` + "\n")
-	b.WriteString("done\n")
+	b.WriteString(`  for f in "$w"/*; do` + "\n")
+	b.WriteString(`    n=${f##*/}` + "\n")
+	b.WriteString(`    case "$n" in ''|*[!0-9]*) continue ;; esac` + "\n")
+	b.WriteString(`    if [ "$n" -lt "$uid" ]; then rm -f "$f" || true; fi` + "\n")
+	b.WriteString("  done\n")
+	b.WriteString("fi\n")
+	fmt.Fprintf(&b, "printf '%s\\t%%s\\n' \"$m\"\n", uidKeyMarked)
 	if c.dispatcher {
 		// A leftover account from another session's crash must end up on THIS
 		// session's terms, and the login shell is one of them: an adopted
@@ -382,6 +400,22 @@ func parseProvisionedUID(out []byte) (int, error) {
 		return uid, nil
 	}
 	return 0, fmt.Errorf("%w: the target reported no uid for the account it created", ErrUIDUnavailable)
+}
+
+// parseUIDMark reads whether the target took the high-water mark (phase 0035).
+//
+// A script that says nothing reads as NOT MARKED, which is the safe direction:
+// the mark only ever raises a floor, so believing it absent costs a log line and
+// believing it present when it is not would quietly retire the corroboration.
+func parseUIDMark(out []byte) bool {
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if !ok || strings.TrimSpace(key) != uidKeyMarked {
+			continue
+		}
+		return strings.TrimSpace(value) == "yes"
+	}
+	return false
 }
 
 // validatePath accepts an absolute path made of characters that mean themselves

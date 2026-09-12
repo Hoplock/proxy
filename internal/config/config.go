@@ -485,8 +485,23 @@ type EphemeralUserAuth struct {
 	// fleet that already allocates there, and keep the range wide — allocation
 	// does NOT wrap, so exhausting it refuses every ephemeral session on that
 	// target until uid_max is raised.
+	//
+	// SINCE PHASE 0035 THEY BOUND THE BLOCK RATHER THAN THE ALLOCATION. Hoplock
+	// Control leases this proxy an exclusive block per target and allocation
+	// happens inside it; these two are the range this proxy will ACCEPT a block
+	// from, sent on the lease request so a server with no range of its own can
+	// allocate from them, and enforced on the grant — a block outside them is
+	// refused rather than clamped, because the numbers encode fleet facts the
+	// server has no way to know. They stayed here rather than moving to the
+	// server for that reason, and because removing them would be a breaking
+	// config change (strict decoding, phase 0001) that bought nothing.
 	UIDMin int `yaml:"uid_min"`
 	UIDMax int `yaml:"uid_max"`
+	// UIDLease tunes the uid-block lease Hoplock Control grants this proxy for
+	// each target (contract 4.3, phase 0035). That lease, and not the range
+	// above, is what holds the non-reuse floor where neither the target nor any
+	// single proxy owns it.
+	UIDLease UIDLeaseAuth `yaml:"uid_lease"`
 	// KeyExpiry writes OpenSSH's expiry-time restriction into the ephemeral
 	// authorized_keys entry when a route asks for a lifetime. Defaults to true.
 	// Set it to false only for a fleet whose sshd predates 8.2 — a route that
@@ -512,6 +527,29 @@ type ReaperAuth struct {
 	// longer than a provisioning takes: it is what protects a session this
 	// process does not know about yet.
 	Grace time.Duration `yaml:"grace"`
+}
+
+// UIDLeaseAuth tunes the uid-block lease (contract 4.3, phase 0035).
+//
+// Both knobs buy the same thing — HOW LONG PROVISIONING SURVIVES A CONTROL
+// OUTAGE on a busy target — and the trade-off is stated rather than hidden: a
+// block ends when it is exhausted or when its term runs out, and both refuse the
+// session while Control is unreachable (PLAN §4.3, outage-class, nothing
+// provisioned). uid_count is how many sessions that outage can cover; the term
+// is how long, and the term is the server's to set.
+type UIDLeaseAuth struct {
+	// UIDCount is how many uids to ask for per block. Zero asks for the
+	// server's choice, which is what a proxy should normally do: Control sees
+	// every proxy for the target and this one sees its own load.
+	//
+	// It is a REQUEST. The server grants what it chooses and this proxy uses
+	// what it is granted, refusing only a block outside uid_min/uid_max.
+	UIDCount int `yaml:"uid_count"`
+	// RenewBefore is how far ahead of a block's term the proxy takes a fresh
+	// one, in the background and off the session path. Zero means the package
+	// default. It is pure headroom: an outage has to start inside this window,
+	// on a target whose block is nearly spent, to be felt at all.
+	RenewBefore time.Duration `yaml:"renew_before"`
 }
 
 // BrokeredKeyAuth is the local material for session-scoped credentials (D6a,
@@ -936,6 +974,7 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 			v.add("auth.target.ephemeral_user.reaper.grace", ErrInvalid, "must not be negative")
 		}
 		validateEphemeralUIDRange(v, t.EphemeralUser)
+		validateEphemeralUIDLease(v, t.EphemeralUser)
 	}
 	if t.Method == TargetAuthMethodEphemeralAccount || deviceAccountConfigured(t.EphemeralAccount) {
 		if t.EphemeralAccount.AdminUser == "" {
@@ -1022,10 +1061,24 @@ func validateEphemeralUIDRange(v *ValidationError, e EphemeralUserAuth) {
 	}
 }
 
+// validateEphemeralUIDLease checks the lease knobs (phase 0035).
+//
+// Neither can be negative and there is nothing else to check here: the block's
+// size and term are the SERVER's to decide, and a proxy that validated them
+// would be originating policy (D2).
+func validateEphemeralUIDLease(v *ValidationError, e EphemeralUserAuth) {
+	if e.UIDLease.UIDCount < 0 {
+		v.add("auth.target.ephemeral_user.uid_lease.uid_count", ErrInvalid, "must not be negative")
+	}
+	if e.UIDLease.RenewBefore < 0 {
+		v.add("auth.target.ephemeral_user.uid_lease.renew_before", ErrInvalid, "must not be negative")
+	}
+}
+
 func ephemeralConfigured(e EphemeralUserAuth) bool {
 	return e.ManagementKeyPath != "" || e.ManagementCertPath != "" || e.ProvisioningUser != "" ||
 		e.Shell != "" || e.HomeBase != "" || e.TargetShell != "" || e.KeyExpiry != nil ||
-		e.Timeout != 0 || e.Reaper != (ReaperAuth{})
+		e.Timeout != 0 || e.Reaper != (ReaperAuth{}) || e.UIDLease != (UIDLeaseAuth{})
 }
 
 // deviceAccountConfigured reports whether the operator wrote anything about the

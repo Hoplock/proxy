@@ -157,6 +157,19 @@ func run(configPath string, logger *log.Logger) error {
 		// report is an observation, and a decorator answering it from memory
 		// would be reporting the past.
 		Reporter: rest,
+		// The floor under an ephemeral account's uid is held by Hoplock Control
+		// as an exclusive block leased per target (contract 4.3, PLAN §5.1),
+		// because the target is the party this proxy does not trust and a single
+		// proxy forgets everything when it restarts.
+		//
+		// REST and not the caching client, and for a sharper reason than the
+		// capability report above: an authorize decision is cacheable and is
+		// served while Control is unreachable, so a floor that could be answered
+		// from memory would be replayed from whenever it was cached — and a
+		// stale floor is a LOWERED floor, which is the uid reuse the lease
+		// exists to prevent. CachingClient implements no UIDLeaser, so this is
+		// a compile-time property rather than a convention.
+		Leaser: rest,
 	})
 	if err != nil {
 		return err

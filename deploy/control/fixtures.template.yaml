@@ -1225,3 +1225,18 @@ host_keys:
   # Trust-on-first-use (D7): the target's host key is generated per container
   # start, so there is nothing to pre-seed.
   decision: accept
+
+# The exclusive uid blocks this Control grants per target (contract 4.3, phase
+# 0035). It is the whole server-side requirement: one cursor per target, advanced
+# on grant, NEVER REWOUND — a uid inside a granted block is never inside another
+# grant, for this proxy or any other, ever again.
+#
+# The range is left to the proxy's own request, which is what a Control with no
+# opinion about a fleet's uid conventions should do and is what keeps this
+# template working against any proxy config.
+uid_leases:
+  # Large enough that the e2e suite makes ONE lease call for the whole run: the
+  # claim that justifies this shape over a per-session floor is "one call per
+  # block", and a fixture that granted a block per session would hide its own
+  # failure.
+  uid_count: 4096
