@@ -1,5 +1,13 @@
 # 0025 — Target credential rejection: classify, contain, disclose — Learnings
 
+> **Pointer (phase 0033).** The follow-up this file queued as
+> `prompts/queued/0033-hop-credential-rejection.md` has shipped and now lives at
+> `prompts/implemented/0033-hop-credential-rejection.md`; read it with
+> `docs/learnings/0033-hop-credential-rejection-learnings.md`, which answers the
+> containment question this file left open — **the chain leg is not contained**,
+> and why. Everything below describes what phase 0025 shipped and is left as it
+> was written.
+
 ## Summary
 - What shipped: a refused proxy→target credential is now its own classified
   failure instead of a network fault. `target.IsAuthRejection` is the single

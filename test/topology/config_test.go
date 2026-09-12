@@ -41,6 +41,11 @@ func TestProxyConfigsLoad(t *testing.T) {
 		// the scenario suite: a config change that quietly published the
 		// listener would make that scenario pass for the wrong reason.
 		"proxy-zone.yaml": {id: "proxy-zone", listenAddr: "127.0.0.1:2222", registers: true},
+		// The proxy whose chain identity the fleet does not recognise
+		// (phase 0033). It neither registers nor accepts registrations: its one
+		// route is a `dial` hop, which is the direction where a refused chain
+		// key costs a connection at all.
+		"proxy-stranger.yaml": {id: "proxy-stranger", listenAddr: "0.0.0.0:2222"},
 	}
 
 	for name, w := range want {
@@ -147,6 +152,7 @@ func TestPasswordMFASettingsTheScenariosDependOn(t *testing.T) {
 		{"proxy-direct.yaml", true},
 		{"proxy-nexthop.yaml", false},
 		{"proxy-zone.yaml", false},
+		{"proxy-stranger.yaml", false},
 	} {
 		cfg, err := config.Load(filepath.Join(deployDir, "proxy", tc.file))
 		if err != nil {
@@ -472,5 +478,41 @@ func TestTheSessionBoundRoutesTheScenariosDependOn(t *testing.T) {
 	}
 	if got := bytes.Count(body, []byte("max_sessions_per_target: 1")); got != 2 {
 		t.Errorf("%d routes cap capped-target.company.com at one live session, want 2", got)
+	}
+}
+
+// TestTheStrangerProxysChainKeyIsNeverRegistered is the one thing phase 0033's
+// chain scenarios rest on, and it is a claim about an ABSENCE — which is
+// exactly the kind that rots silently.
+//
+// `proxy-stranger` presents `chain_proxy_stranger` to the next hop, and the
+// whole scenario is that the far side does not recognise it. The moment anyone
+// adds that fingerprint to the fixtures' `proxies:` list, the route starts
+// working and the scenario asserting a refusal fails several minutes into the
+// e2e job for a reason that reads like a proxy bug.
+//
+// gen-material.sh must therefore GENERATE the key (the proxy cannot start
+// without it) and must never substitute a fingerprint for it.
+func TestTheStrangerProxysChainKeyIsNeverRegistered(t *testing.T) {
+	t.Parallel()
+
+	template, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	script, err := os.ReadFile(filepath.Join(deployDir, "gen-material.sh"))
+	if err != nil {
+		t.Fatalf("read gen-material.sh: %v", err)
+	}
+
+	if !bytes.Contains(script, []byte("gen chain_proxy_stranger")) {
+		t.Error("gen-material.sh no longer generates chain_proxy_stranger; proxy-stranger cannot start without it")
+	}
+	if bytes.Contains(script, []byte("fingerprint chain_proxy_stranger")) {
+		t.Error("gen-material.sh takes chain_proxy_stranger's fingerprint; nothing may register it (phase 0033)")
+	}
+	if bytes.Contains(template, []byte("@@FP_CHAIN_STRANGER@@")) {
+		t.Error("the fixture template has a slot for chain_proxy_stranger's fingerprint; " +
+			"the scenario needs a chain identity the far hop does NOT recognise")
 	}
 }

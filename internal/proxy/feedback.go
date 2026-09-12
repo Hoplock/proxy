@@ -87,9 +87,22 @@ const (
 	stageConcurrency stage = "concurrency"
 	stageHop         stage = "hop"
 	stageHopDial     stage = "hop-dial"
-	stageRelay       stage = "relay"
-	stageHostKey     stage = "hostkey"
-	stageChannel     stage = "channel"
+	// stageHopAuth is the NEXT PROXY refusing this proxy's chain identity key
+	// (D11), and it is separate from stageHopDial for exactly the reason
+	// stageTargetAuth is separate from stageDial: the two send an operator to
+	// opposite places. The next proxy answered — it is reachable, it completed a
+	// transport, and it got as far as authentication — and what it would not
+	// accept is a key this proxy holds. Reported as a dial failure it reads as a
+	// network fault, which is the one part of the estate that is working
+	// (prompt 0033).
+	//
+	// It is NOT a claim that the chain is insecure. A far hop refusing a
+	// fingerprint its Hoplock Control does not recognise is the trust model
+	// working (PLAN §6.1); what was wrong was only how this proxy reported it.
+	stageHopAuth stage = "hop-auth"
+	stageRelay   stage = "relay"
+	stageHostKey stage = "hostkey"
+	stageChannel stage = "channel"
 )
 
 // setupError is a session-setup failure tagged with the stage it happened in.
@@ -165,6 +178,16 @@ func outageDetail(err error) string {
 		return "the chain of proxies to this target could not be extended"
 	case stageHopDial:
 		return "the next proxy in the chain could not be reached"
+	case stageHopAuth:
+		// The third member of the hop family, and calibrated against the other
+		// two: it says which side was not accepted and nothing else. Not which
+		// proxy refused us, not its id or address, not the key, and not how far
+		// along the chain the session got — a user who could learn where a chain
+		// stops could map the estate one refused session at a time (PLAN §4.3).
+		// What it does say is the actionable half: it is THIS PROXY that was not
+		// accepted, so it is not the user's credentials that are wrong and a
+		// different key of theirs will not help.
+		return "this proxy was not accepted by the next proxy in the chain"
 	case stageRelay:
 		// Named separately from a dial failure because the fix is different:
 		// nothing is unreachable, the next proxy is simply not connected to

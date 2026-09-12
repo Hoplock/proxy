@@ -25,6 +25,7 @@ and nothing outside this repository.
 | `proxy-direct` | an edge proxy that reaches the target itself, and the far end of the `dial` chain | edge, core |
 | `proxy-nexthop` | an edge proxy that reaches the target ONLY by chaining, and the relay hub | edge, relay |
 | `proxy-zone` | a proxy in a protected zone: no inbound listener at all, reached over the relay registration it opens (D11) | core, relay |
+| `proxy-stranger` | a proxy whose **chain identity the fleet does not recognise**, so the next hop it dials refuses it (phase 0033) | edge |
 | `target` | a real `sshd` with the prerequisites both credential methods need (D6, D6a) | core |
 | `device` | a fake FortiOS appliance (`cmd/fake-device`): a CLI over SSH with no `useradd` and no `authorized_keys`, which is what `ephemeral-account` exists for (D13) | core |
 
@@ -45,7 +46,7 @@ proves nothing.
 
 ### What the networks are load-bearing for
 
-- `edge` — the user node, the two reachable proxies, and Hoplock Control.
+- `edge` — the user node, the proxies users can reach, and Hoplock Control.
 - `core` — `internal`, and **the user node is not on it**. The target is
   reachable only through a proxy; that is a property of the topology rather than
   a promise, and the first scenario asserts it.
@@ -54,6 +55,16 @@ proves nothing.
 
 `proxy-nexthop` is deliberately absent from `core`: a chained session that
 reached the target cannot have been served locally.
+
+`proxy-stranger` is the only node here defined by something it does **not**
+have. `deploy/gen-material.sh` generates its chain identity like every other
+proxy's, and then deliberately does not put the fingerprint in the fixtures'
+`proxies:` list — so a user authenticates to it normally and the next hop it
+dials refuses the key *it* presents. That is the everyday fault the chain
+scenarios are about: a chain key rotated on one proxy and never registered, or a
+proxy brought up before anybody added it to Hoplock Control. **Registering that
+fingerprint anywhere turns the scenario into one that fails for a reason nobody
+reads**, which is why `test/topology` asserts the absence.
 
 `proxy-zone` binds its SSH listener to loopback inside its own container
 (`proxy/proxy-zone.yaml`, asserted in `test/topology`), publishes no port, and

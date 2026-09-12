@@ -73,6 +73,12 @@ type chainOptions struct {
 	// relayProxyID overrides the proxy id a relay hop names, so a route can
 	// point at a registration that does not exist.
 	relayProxyID string
+	// unregisteredEdge leaves the EDGE proxy's chain identity out of the
+	// fixtures' proxies list, so the enclave proxy's Hoplock Control does not
+	// recognise the key the edge proxy presents and refuses the leg (phase
+	// 0033). Everything else about the topology is unchanged, which is what
+	// makes the refusal attributable to the key alone.
+	unregisteredEdge bool
 }
 
 func startChain(t *testing.T, opts chainOptions) *chainStack {
@@ -149,13 +155,7 @@ func startChain(t *testing.T, opts chainOptions) *chainStack {
 			},
 			KeyFingerprints: []string{ssh.FingerprintSHA256(userKey.PublicKey())},
 		}},
-		Proxies: []fixtureProxy{{
-			ID:              proxyEdge,
-			KeyFingerprints: []string{ssh.FingerprintSHA256(edgeIdentity.PublicKey())},
-		}, {
-			ID:              proxyEnclave,
-			KeyFingerprints: []string{ssh.FingerprintSHA256(enclaveIdentity.PublicKey())},
-		}},
+		Proxies: chainProxies(opts, edgeIdentity, enclaveIdentity),
 		Routes: []fixtureRoute{{
 			Login:             chainLogin,
 			Target:            tgt.Host(),
@@ -205,6 +205,28 @@ func startChain(t *testing.T, opts chainOptions) *chainStack {
 	serveChainProxy(t, stack.edge, edgeListener)
 	stack.addr = edgeListener.Addr().String()
 	return stack
+}
+
+// chainProxies is the fleet Hoplock Control recognises.
+//
+// It is a function rather than a literal for one option: with
+// unregisteredEdge the EDGE proxy is left out, so the key it presents to the
+// enclave proxy is a fingerprint the server has never heard of. That is the
+// everyday fault phase 0033 is about — a chain key rotated on one proxy and
+// never registered — and it is the only difference between that topology and
+// the working one.
+func chainProxies(opts chainOptions, edge, enclave ssh.Signer) []fixtureProxy {
+	proxies := []fixtureProxy{{
+		ID:              proxyEnclave,
+		KeyFingerprints: []string{ssh.FingerprintSHA256(enclave.PublicKey())},
+	}}
+	if opts.unregisteredEdge {
+		return proxies
+	}
+	return append([]fixtureProxy{{
+		ID:              proxyEdge,
+		KeyFingerprints: []string{ssh.FingerprintSHA256(edge.PublicKey())},
+	}}, proxies...)
 }
 
 // buildChainProxy builds one proxy of the chain against the shared mock.
@@ -634,4 +656,59 @@ func runChainCommand(t *testing.T, stack *chainStack, command string) (string, i
 		status = -1
 	}
 	return stderr.String(), status
+}
+
+// TestChainIdentityRejectionIsNotAnUnreachableProxy is phase 0033's claim,
+// end to end and through the real contract: the enclave proxy is up, reachable,
+// and serving — it refuses the edge proxy's chain identity key because Hoplock
+// Control does not recognise the fingerprint (D11).
+//
+// Reported as "the next proxy could not be reached" — which is what every
+// non-host-key handshake failure on this leg used to say — the operator reading
+// the trail is sent to the network, the one part of the estate that is working.
+//
+// It runs in both connection directions because the refusal happens after the
+// byte stream exists, so nothing about it should depend on where that stream
+// came from: a relay hop opens no new connection and is refused identically.
+func TestChainIdentityRejectionIsNotAnUnreachableProxy(t *testing.T) {
+	for _, direction := range []control.HopConnection{control.HopConnectionDial, control.HopConnectionRelay} {
+		t.Run(string(direction), func(t *testing.T) {
+			stack := startChain(t, chainOptions{
+				direction:        direction,
+				maxHops:          3,
+				unregisteredEdge: true,
+			})
+
+			text, status := runChainCommand(t, stack, "deploy")
+
+			if status == 0 {
+				t.Error("a session whose chain identity was refused exited 0")
+			}
+			if strings.Contains(text, user.DenyMessage) {
+				t.Errorf("user saw %q; a refused chain identity is the proxy's problem, not the user's", text)
+			}
+			if !strings.Contains(text, "not accepted by the next proxy in the chain") {
+				t.Errorf("user saw %q, want it to say this proxy was not accepted", text)
+			}
+			if strings.Contains(text, "could not be reached") {
+				t.Errorf("user saw %q; the next proxy was reached and refused us", text)
+			}
+			if !strings.Contains(text, "sess-"+proxyEdge) {
+				t.Errorf("user saw %q, want the edge proxy's session id as a support reference", text)
+			}
+			// Nothing about the far hop or the key reaches the user (PLAN §4.3).
+			for _, leak := range []string{proxyEnclave, "SHA256:"} {
+				if strings.Contains(text, leak) {
+					t.Errorf("user saw %q, which discloses %q about the chain", text, leak)
+				}
+			}
+			// The enclave proxy is fine, and on a relay hop there is a direct
+			// witness to it: the registration it opened is still live, so the
+			// transport was there and what failed was authentication over it.
+			// Nothing was dialled and nothing went away.
+			if direction == control.HopConnectionRelay && !stack.hub.hub.Registered(proxyEnclave) {
+				t.Error("the enclave registration went away; the refusal was not about the key")
+			}
+		})
+	}
 }
