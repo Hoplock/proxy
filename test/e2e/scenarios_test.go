@@ -1716,14 +1716,25 @@ func testPasswordMFA(t *testing.T) {
 				"a denial that separates the two is a password oracle (PLAN §4.3)", got, want)
 		}
 
-		// What this does NOT claim: that the two runs are indistinguishable.
-		// They are not — a correct password gets an MFA challenge and a wrong
-		// one never does, so the presence of the challenge tells an attacker
-		// the first factor was right. That is a property of asking for an
-		// out-of-band approval at all, it is decided by Hoplock Control rather
-		// than by the proxy, and it is not something this phase may quietly fix
-		// under the heading of a test. It is written up in
-		// prompts/queued/0034-mfa-challenge-first-factor-oracle.md.
+		// What this does NOT claim, and deliberately never will: that the two
+		// runs are indistinguishable. They are not — a correct password gets an
+		// MFA challenge and a wrong one never does, so the challenge's presence
+		// tells an attacker the first factor was right.
+		//
+		// Phase 0026 found that and queued it as a question; phase 0034
+		// answered it NO and the number is retired. In short: the proxy cannot
+		// fix it (Hoplock Control decides when a challenge is issued, D2) and
+		// the contract requires it (a 200 on /v1/auth/password means the
+		// password was accepted); the fix — a decoy challenge — would take a
+		// failed guess from one Control call to ~121 and from a stateless
+		// rejection to a held connection, so it is an amplifier handed to the
+		// attacker; and it would narrow the channel rather than close it,
+		// because the resolution timing still separates a human from a
+		// synthetic draw. The reasoning is in PLAN §4.3 and
+		// docs/learnings/0034-mfa-challenge-first-factor-oracle-learnings.md.
+		//
+		// So the assertion above is the whole claim this scenario makes, and
+		// the one it must keep making: both runs END the same way.
 	})
 
 	// The audit trail is where the estate sees which method let someone in, and
