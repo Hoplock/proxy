@@ -88,7 +88,7 @@ func (p *params) duration(name string) (time.Duration, bool, error) {
 }
 
 // prefixed consumes an open NAMESPACE of parameters, returning them keyed
-// without the prefix (control.ParamDeviceFieldPrefix, contract v3.1).
+// without the prefix (control.ParamDeviceFieldPrefix).
 //
 // It marks every key under the prefix as used, which is the whole reason it
 // exists here rather than in the caller: rest() refuses what nothing consumed,

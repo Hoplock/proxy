@@ -164,7 +164,7 @@ func at(t time.Time, s *Shipper) time.Time {
 	return t.UTC()
 }
 
-// EnforcementAttrs puts the rung IN FORCE on a record (contract v4's four
+// EnforcementAttrs puts the rung IN FORCE on a record (the contract's four
 // fields plus this repository's operator half, PLAN §6.5).
 //
 // It is one function used by every producer — the session's provisioning record

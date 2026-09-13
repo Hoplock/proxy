@@ -57,12 +57,12 @@ type server struct {
 	mu       sync.Mutex
 	mfa      map[string]*mfaChallenge
 	hostKeys map[string]bool // "target\x00fingerprint" -> seen
-	// capabilities is the last enforcement-capability report per target
-	// (contract v4). A real Control accumulates these and constrains policy
-	// authoring by them; the mock only has to remember that one arrived.
+	// capabilities is the last enforcement-capability report per target. A real
+	// Control accumulates these and constrains policy authoring by them; the
+	// mock only has to remember that one arrived.
 	capabilities map[string]*control.TargetCapabilities
-	// uidCursor is the per-target allocation cursor a uid-block lease advances
-	// (contract 4.3). IT ONLY EVER RISES — see uidlease.go for why the whole
+	// uidCursor is the per-target allocation cursor a uid-block lease advances.
+	// IT ONLY EVER RISES — see uidlease.go for why the whole
 	// invariant rests on that — and uidLeases counts the grants per target so a
 	// test can assert "one call per block, not per session".
 	uidCursor map[string]int
@@ -347,6 +347,15 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "target is required")
 		return
 	}
+	if req.PolicyVersion <= 0 {
+		// policy_version is REQUIRED and has no absent-value default. A proxy
+		// that cannot say what vocabulary it reads is one this server would
+		// have to guess for, and the guess decides which restrictions it would
+		// silently drop. Refusing is the only safe answer, and it is a 400
+		// rather than a 500: the request is malformed, not the policy.
+		writeError(w, http.StatusBadRequest, "invalid_request", "policy_version is required")
+		return
+	}
 
 	s.recordAuthorize(&req)
 
@@ -369,7 +378,7 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	resp.Cache = cacheHint(route, req.Identity.Subject, req.Target)
 	// The deadline is anchored here rather than in the fixture, because the
 	// contract carries an absolute instant and a fixture cannot hold one that
-	// is still in the future tomorrow (contract v4).
+	// is still in the future tomorrow.
 	resp.SessionDeadline = route.deadline(s.now())
 
 	// A proxy declaring an older vocabulary must not be answered with fields it
@@ -378,10 +387,11 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// proxy rather than sending policy that will be refused as a protocol error
 	// three lines later.
 	//
-	// The version is the ROUTE's, not the build's: a fixture using only the v2
-	// vocabulary is still servable to a proxy that declared 2, which is what
-	// keeps every pre-0013 fixture working against a v2 proxy.
-	if needed := vocabularyVersion(resp); req.PolicyVersion > 0 && req.PolicyVersion < needed {
+	// The version is the ROUTE's, not the build's, so a proxy one revision
+	// behind still gets every route it CAN read. With one live vocabulary that
+	// is every route; the next revision is what makes the distinction bite
+	// again (vocabularyVersion).
+	if needed := vocabularyVersion(resp); req.PolicyVersion < needed {
 		writeError(w, http.StatusInternalServerError, "policy_version",
 			fmt.Sprintf("this route needs policy vocabulary %d; the proxy declared %d",
 				needed, req.PolicyVersion))
@@ -426,7 +436,7 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 		resp.Decision = control.HostKeyAccept
 	}
 	// Authorise reuse only for a key this server has already ruled on and
-	// accepted (contract 4.1). The proxy declines to reuse the other two cases
+	// accepted. The proxy declines to reuse the other two cases
 	// anyway; a mock that hinted them would be modelling a server whose hint
 	// does nothing, which teaches a fixture author the wrong thing.
 	if known && resp.Decision == control.HostKeyAccept {
@@ -435,7 +445,7 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleReportCapabilities records what a target can enforce (contract v4).
+// handleReportCapabilities records what a target can enforce.
 //
 // A real Control accumulates these per target and constrains policy authoring
 // by them. The mock keeps the last report per target so a test can assert the
@@ -611,7 +621,7 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	// THE UID CURSORS ARE NOT RESET, and that is the point of saying so here
 	// beside everything that is. Resetting one would REWIND it, and a rewound
 	// cursor grants a block that overlaps one a proxy is still allocating from —
-	// the uid reuse contract 4.3 exists to prevent, reintroduced by a test
+	// the uid reuse the lease exists to prevent, reintroduced by a test
 	// facility. A real Control has no reset at all; this mock's is for the
 	// per-run state above, and the cursor is the one thing here that is meant to
 	// be monotonic for the life of the process.

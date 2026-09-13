@@ -129,7 +129,7 @@ type ControlCfg struct {
 	// CacheHint attaches a cache hint to every authorize decision.
 	CacheHint bool `yaml:"cache_hint"`
 	// HostKeyCacheHint attaches a cache hint to every host-key decision the
-	// server has already ruled on and accepted (contract 4.1, phase 0023). It
+	// server has already ruled on and accepted (phase 0023). It
 	// is a SEPARATE knob from CacheHint so a run can attribute what each one
 	// saves: the two calls are the joint-largest items in the residue an
 	// authorize hit leaves (PLAN §9.1), and one flag covering both would make

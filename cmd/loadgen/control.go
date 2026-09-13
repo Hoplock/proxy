@@ -48,8 +48,8 @@ type controlServer struct {
 
 	eventSeq atomic.Uint64
 
-	// uidCursors is the per-target allocation cursor a uid-block lease advances
-	// (contract 4.3). It is instrumented like every other endpoint because the
+	// uidCursors is the per-target allocation cursor a uid-block lease
+	// advances. It is instrumented like every other endpoint because the
 	// claim that justifies the lease shape is a RATE — one call per block, not
 	// per session — and a rate is exactly what this harness measures.
 	uidCursors sync.Map
@@ -305,7 +305,7 @@ func (c *controlServer) handleCapabilities(w http.ResponseWriter, r *http.Reques
 }
 
 // handleUIDLease grants an exclusive block of ephemeral uids for a target
-// (contract 4.3, phase 0035).
+// (phase 0035).
 //
 // The cursor only ever advances, which is the whole server-side requirement.
 // The block is deliberately LARGE relative to a run: this endpoint appearing at

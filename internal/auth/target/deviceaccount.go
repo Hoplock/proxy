@@ -36,7 +36,7 @@ const (
 	ParamCredentialKind = control.ParamCredentialKind
 	ParamExpiryPosture  = control.ParamExpiryPosture
 	// ParamDeviceFieldPrefix opens the route's platform-specific fields
-	// (contract v3.1, phase 0016). Everything under it is handed to the driver
+	// (phase 0016). Everything under it is handed to the driver
 	// as data, and only after the driver has declared it accepts the name.
 	ParamDeviceFieldPrefix = control.ParamDeviceFieldPrefix
 )
@@ -116,7 +116,7 @@ type AccountMapping struct {
 	// replaces the fixed default with a policy choice that this field is how
 	// anybody will be able to audit.
 	Profile string
-	// Fields are the route's platform-specific fields (contract v3.1, phase
+	// Fields are the route's platform-specific fields (phase
 	// 0016), keyed without the namespace prefix.
 	//
 	// They are on this record because on a PARTITIONED device the target string

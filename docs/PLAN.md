@@ -188,11 +188,13 @@ decision's status is worse than no index.
   **Hoplock Control**, per route, not to proxy-local config: one proxy
   fronting both a Linux estate and an appliance estate is the normal case, and
   `auth.target.method` in `config.yaml` cannot express it. The authorize
-  response therefore carries a `target_auth` object (a method name plus
+  response therefore carries a credential object (a method name plus
   method-specific parameters), and the proxy config keeps only the local
   material each method needs. The object is extensible on purpose: a future
   Hoplock Control that mints target credentials itself slots in as another
-  method without a third breaking change.
+  method rather than another breaking change. D14 later makes the response
+  carry an ordered **ladder** of exactly these objects, which is the one way a
+  route names a credential method (§4.2).
 - **D7 — Host key policy from the server.** Prototype: **trust-on-first-use**,
   but every newly seen target host key is reported to Hoplock Control.
   Later: per-target configurable policy fetched from Hoplock Control based
@@ -432,7 +434,9 @@ decision's status is worse than no index.
   is frequently the worse security outcome.
 
   What made fallback unacceptable was never degradation; it was the **proxy**
-  choosing. So `target_auth` becomes an **ordered list the PDP authors**: the
+  choosing. So D6a's credential object rides in an **ordered list the PDP
+  authors**, `target_auth_ladder`, and that list is the only way a route names a
+  credential method: the
   proxy walks it top-down, stops at the first entry it can satisfy, and records
   which one that was. Nothing is proxy-invented — a single-entry list is exactly
   D6a's original behaviour, and a PDP that will not accept degradation on a
@@ -724,35 +728,32 @@ outage-class failure, §4.3). What has never been permitted, and still is not, i
 the proxy connecting with a method the server did not name: a single-entry list
 therefore behaves exactly as D6a originally specified.
 
-On the wire (contract v2, phase 0006) this is `target_auth`: a `method` from
-the table above plus a method-scoped `params` string map — `username`,
-`key_type`, `lifetime_seconds` for `ephemeral-user`; `username` and an opaque
+On the wire (phase 0006, laddered by phase 0013) this is
+`target_auth_ladder`: an ordered array of entries, each a `method` from the
+table above plus a method-scoped `params` string map — `username`, `key_type`,
+`lifetime_seconds` for `ephemeral-user`; `username` and an opaque
 `credential_ref` for `brokered-key`. **No credential material travels on the
 API**; `credential_ref` selects material the proxy already holds. An absent
-`target_auth` leaves the proxy on its locally configured method, which is what
-a v1 server implies and what phase 0005 does today.
+ladder leaves the proxy on its locally configured method; an empty one (`[]`) is
+a **denial**, on the same absent-versus-empty rule as `permitted_channels: []`.
 
-**As written down (contract v3, phase 0013).** D14's ladder is
-`target_auth_ladder`, an ordered array of exactly those objects. The two shapes
-are alternatives and never layers — a response carrying both is refused — and a
-v2 single object reads as a one-entry ladder, so D6a's original behaviour is
-what a v2 server keeps getting. Absent still means "use local config"; an empty
-ladder is a **denial**, on the same absent-versus-empty rule as
-`permitted_channels: []`. `ephemeral-account` adds `platform`,
-`credential_kind`, and `expiry_posture` to the parameter vocabulary (§5.3), and
-**`username` becomes required** on every method where the proxy names the
-account it provisions (`ephemeral-user`, `ephemeral-account`, `static-key`) —
-it used to default to `identity.Login`, a client-typed string that §4.1 forbids
-as the basis of an authorization decision. `brokered-key` keeps its v2
-behaviour, because the account it uses is a standing one an operator chose; that
-its username still falls back to the login is a known gap, recorded in 0013's
-learnings rather than closed there.
+**As written down (phase 0013).** D14's ladder is the one shape a server names a
+credential method in, and a one-entry ladder is D6a's original behaviour
+exactly. `ephemeral-account` adds `platform`, `credential_kind`, and
+`expiry_posture` to the parameter vocabulary (§5.3), and **`username` is
+required** on every method where the proxy names the account it provisions
+(`ephemeral-user`, `ephemeral-account`, `static-key`) — it must never default to
+`identity.Login`, a client-typed string that §4.1 forbids as the basis of an
+authorization decision. `brokered-key` was left out of that set here, because
+the account it uses is a standing one an operator chose; that its username still
+fell back to the login was a known gap, recorded in 0013's learnings rather than
+closed there.
 
-**As finished (contract v4.2, phase 0028).** That gap is closed: **`username` is
-required on `brokered-key` too**, which makes it required on every method the
-contract defines, and no account name reaches a target from `identity.Login` on
-any path. The v3 reasoning for the exclusion was sound and did not reach the
-code — `brokered.go` still fell back to the login when neither the route nor the
+**As finished (phase 0028).** That gap is closed: **`username` is required on
+`brokered-key` too**, which makes it required on every method the contract
+defines, and no account name reaches a target from `identity.Login` on any path.
+The reasoning for the exclusion was sound and did not reach the code —
+`brokered.go` still fell back to the login when neither the route nor the
 proxy's own configuration named an account — and `static-key` was worse than a
 fallback: the contract required a `username` on its routes and the authenticator
 never read them at all. Each method now resolves the account in a fixed order
@@ -764,24 +765,24 @@ ending in a **refusal**, outage-class per §4.3 with nothing provisioned:
 then **`identity.Principals`** — server-established, immutable per D2, and
 therefore the property `Login` lacks — accepting exactly one principal and
 refusing both none and several, because picking one of several would make the
-order a server happened to serialise a list in into policy. `policy_version`
-stays **4**: it declares what a proxy can read, and a tightening is not
-expressible through it. `brokered-key` deliberately does **not** consult
+order a server happened to serialise a list in into policy. `policy_version` is
+not what carries a tightening: it declares what a proxy can **read**, so a
+tightening is announced as a break and refused at the first authorize call. `brokered-key` deliberately does **not** consult
 `Principals` — its account is standing and shared (§5.2), so a per-identity
 principal would imply an attribution the method does not provide — and no method
 cross-checks a route-named `username` against `Principals`, because the PDP
 naming an account is the PDP's decision and overriding it would be the proxy
 originating policy (D2).
 
-**As extended (contract v3.1, phase 0016).** `ephemeral-account` params carry an
+**As extended (phase 0016).** `ephemeral-account` params carry an
 open namespace of platform-specific fields, `device_field.<name>`, for devices
 that are one unit partitioned into many — a FortiGate running virtual domains
 today, a FortiLink-managed switch behind its FortiGate in 0029. The contract
 checks their shape and nothing else; which fields exist is the driver's to
 declare, exactly as the set of platforms is. A field the driver does not declare
-is a skipped rung (D14) and never a field dropped, which is both the safety
-property and the reason the revision needs no new `policy_version`. §5.3 carries
-the reasoning and what it binds.
+is a skipped rung (D14) and never a field dropped: a constraint the proxy
+cannot honour refuses the rung rather than being silently discarded. §5.3
+carries the reasoning and what it binds.
 
 One field beside the credential travels with the route, because the estate D13
 reaches needs it: **`algorithm_profile`**, a server-named preset selecting which
@@ -794,6 +795,39 @@ and the audit record names something a reviewer understands. Anything but
 `default` is a weakening and emits its own audit event, on D14's sibling rule
 for methods. The rung in force and the profile in force are both **audit facts,
 not user-facing ones** (D14): §4.3's disclosure rule does not apply to either.
+
+**As collapsed (phase 0037): one live vocabulary, and the mechanism that
+carries the next.** Building the contract in phases meant each revision left the
+*previous* generation working, so the phases already merged kept passing. At
+release that support described peers that do not exist: proxy and Hoplock
+Control ship together, and nothing older has ever been deployed. So 0037 removed
+it — the superseded singular `target_auth` field and the normalisation that
+mirrored it into a one-entry ladder, the absent-value defaults justified only by
+"that is what an older server produced", and the version-history prose in
+`api/control.yaml` and `api/README.md`. `target_auth_ladder` is the one way a
+route names a credential method, and both documents now state the contract in
+the present tense.
+
+**What 0037 deliberately KEPT, and what a later session must not undo.** The
+versioning *mechanism* is untouched and fully working:
+`AuthorizeRequest.policy_version`, `control.PolicyVersion`, the rule that the
+server MUST NOT answer with policy fields introduced after the version the
+proxy declares, and `vocabularyVersion` in `cmd/mock-control` (the server half,
+which answers a `500` rather than policy the proxy would refuse). Removing
+superseded *versions* is not removing *versioning*: a v5 will land, a fleet will
+not upgrade atomically, and that mechanism is what makes a mid-upgrade fleet
+safe rather than an outage. It is also what licenses the proxy's fail-closed
+decoding, which is only defensible against a server that can tell what this
+proxy can read.
+
+Two consequences for a session reading an older learnings file, which describes
+contracts that really did exist here. First, the v1/v2/v3/v4.x generations those
+files narrate are **history**, not shapes to support — `api/README.md`'s
+"Changing the contract" says a revision *replaces* the vocabulary rather than
+running beside it. Second, `policy_version` is now **required** on every
+authorize request, with no absent-value default: a proxy that cannot say what it
+reads is one the server would have to guess for, and the guess decides which
+restrictions get silently dropped.
 
 Both interfaces take/return `identity.Identity` (not booleans) so that AD/Okta
 claims flow through unchanged (D4/D8-answers question 8).
@@ -1219,7 +1253,7 @@ prerequisite is an account that already exists on it. The proxy is handed
 - The credential **never touches disk on the proxy** and never appears in a
   log, an error, or a config file. Where it comes from is a seam — a local
   secret store today, a Hoplock Control server that mints per-session credentials
-  later (the same `target_auth` object grows a method, D6a).
+  later (the same credential object grows a method, D6a).
 - `Teardown` still exists and is still guaranteed, but its job is zeroing the
   in-memory credential and closing the leg — there is no remote state to undo,
   which is exactly why this method works on a device the proxy cannot
@@ -1237,14 +1271,14 @@ carries the target, the route's opaque `credential_ref`, the account name, and
 the subject. Two local implementations ship — a directory of files and the
 process environment, both keyed by the reference and read on demand rather than
 cached. **A Hoplock Control that mints per-session credentials implements this
-interface**; it arrives as another `target_auth` method plus a source, and
+interface**; it arrives as another credential method plus a source, and
 nothing that touches a credential changes.
 
 **Who the account is (phase 0028).** The route's `username`, or the operator's
 `auth.target.brokered_key.username`, and otherwise the route is refused
-(outage-class, §4.3). Contract v4.2 makes `username` required on this method too,
-so a served route always names one and the local key answers only the v1-shaped
-route that names no `target_auth` at all. Unlike §5.1 this method deliberately
+(outage-class, §4.3). `username` is required on this method as on every other,
+so a served route always names one and the local key answers only the route that
+names no `target_auth_ladder` at all. Unlike §5.1 this method deliberately
 does **not** read the identity's `Principals`: the account is standing and shared
 across sessions by construction, so a per-identity principal is the wrong shape
 for it and using one would imply exactly the attribution the bullet above says
@@ -1304,7 +1338,7 @@ if the proxy has no logging path at all, including its disk buffer. Route fields
 and the declared caveats ride on that record too.
 
 **Scope, and what a route may name.** A `device_field.<name>` names a
-**partition** of the endpoint device (contract v3.1) — never a different device
+**partition** of the endpoint device — never a different device
 behind it. Fields are declared per driver; an undeclared one is a **skipped
 rung** (D14), never a dropped field. They ride on **creation only**: removal,
 enumeration and credential installation address the same administrator table.
@@ -1551,7 +1585,7 @@ the user, and the first is binding beyond this driver.
 1. **What a target is when one device is many: the endpoint stays the device,
    and the ROUTE names the partition.** A VDOM name arrives as an
    `ephemeral-account` parameter in an open namespace —
-   **`device_field.<name>`**, contract v3.1 — handed to the driver as data and
+   **`device_field.<name>`** — handed to the driver as data and
    declared per driver (`device.Capabilities.Fields`), never inferred and never
    defaulted by the proxy. The alternatives were weighed and rejected: encoding
    it in the target (`host/vdom`) overloads the one string DNS resolves, the
@@ -2058,10 +2092,10 @@ which is a materially weaker sentence.
     connection** with this one; this proxy opens a channel over that existing
     connection instead of dialling. The protected zone needs no inbound rule.
 
-  On the wire (contract v2, phase 0006) this is `hop.connection`, with
-  `hop.next_proxy_id` naming the registration a `relay` hop opens a channel
-  over. An absent `hop.connection` means `dial`, so a v1 server's route still
-  works. `routing.Route.HopDirection()` resolves that default for callers.
+  On the wire (phase 0006) this is `hop.connection`, with `hop.next_proxy_id`
+  naming the registration a `relay` hop opens a channel over. An absent
+  `hop.connection` means `dial`, which is what a route that says nothing about
+  direction gets. `routing.Route.HopDirection()` resolves that default for callers.
 
   A proxy that accepts relay registrations authenticates the registering
   proxy the same way Hoplock Control authenticates a proxy, keeps one
@@ -2165,9 +2199,9 @@ work in flight on its own.
   channel the session may not open is not one it may be handed by the target.
 - It also carries the other two axes of D5a, and each is enforced where SSH
   actually decides it. The field names below are the ones the contract ships
-  (`api/control.yaml`, contract v2 from phase 0006); each is **absent by
-  default, and absent means "not policed"** — which is what a v1 server meant —
-  while a *present but empty* object denies everything on its axis, exactly as
+  (`api/control.yaml`, from phase 0006); each is **absent by default, and
+  absent means "not policed"**, while a *present but empty* object denies
+  everything on its axis, exactly as
   `permitted_channels: []` does:
   - **In-channel requests** — `permitted_requests` (`types`, `subsystems`). A
     `session` channel is opened before anyone knows what it is for; the request
@@ -2248,7 +2282,7 @@ evaded", and the product must not let the two blur:
 
 The mode is per connection and comes from the server: `filter_policy.exec_mode`
 is `filtered` (the `rules` list) or `restricted` (`filter_policy.restricted_exec`),
-and an absent `exec_mode` means `filtered`, which is what a v1 server meant. The
+and an absent `exec_mode` means `filtered`. The
 two are **alternatives, not layers** — a policy setting `restricted_exec`
 alongside a non-empty `rules` list is a contract violation the client rejects
 outright, because a guardrail and a boundary disagreeing about one command have
@@ -2344,7 +2378,7 @@ reused, which made it **46% of the 2.17 calls that survive a cache hit** — a
 proxy reconnecting to a target it has seen ten thousand times reported the same
 key ten thousand times and asked for the same answer every time. It is now
 reusable on **the same mechanism as an authorize decision and no other**: an
-optional `cache` hint on `HostKeyReportResponse` (contract 4.1), the server's
+optional `cache` hint on `HostKeyReportResponse` (phase 0023), the server's
 opaque key and lifetime, the same revocation stream, the same fail-closed rule,
 and the same table and bound. Absent hint means report every connection, exactly
 as before. Measured: **2.17 → 1.17** calls per connection (§9.1).
@@ -3422,19 +3456,19 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0003 | Policy caching + session revocation     | cache hint + revocation stream in the contract, `internal/control` cache + subscription, `SessionRegistry` hook |
 | 0004 | Identity model + user→proxy auth      | `internal/identity`, `internal/auth/user`, cert-first + password/MFA |
 | 0005 | Core proxy engine + direct route        | `internal/proxy`, generic channel passthrough, E2E with static-key target auth; implements `SessionRegistry` |
-| 0006 | Policy vocabulary — contract v2         | `api/` + `internal/control`: in-channel requests, forwarding destinations, global requests, `target_auth`, hop direction |
+| 0006 | Policy vocabulary — the three axes      | `api/` + `internal/control`: in-channel requests, forwarding destinations, global requests, the target credential object, hop direction |
 | 0007 | Target credentials                      | `internal/auth/target`: ephemeral provisioner + orphan reaper, and `brokered-key` (D6a) |
 | 0008 | Multi-hop / next-hop routing            | `internal/routing` chaining, relay registration (D11), loop/hop-limit protection |
 | 0009 | Channel allow-list + inspection pipeline| `internal/channel` enforcement of all three axes + pluggable inspector framework |
 | 0010 | Command filtering + policy actions      | `internal/filter`: restricted exec (enforced), filtered exec, interactive best-effort |
 | 0011 | Logging & telemetry pipeline            | `internal/logging` batching, priority flush, disk buffer, redaction |
 | 0012 | Full E2E topology + CI gate + hardening | `deploy/` 5-node compose, CI e2e job, cleanup                      |
-| 0013 | Device provisioning — contract v3        | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
+| 0013 | Device provisioning                      | `ephemeral-account` + the driver seam and its declared capabilities (D13), the ordered method ladder (D14), constrained naming, per-route algorithm profile |
 | 0014 | FortiOS device drivers                  | `internal/auth/target/device/fortios`: the FortiGate driver, device provisioner, device reaper, ladder walk, fake-device tests. The FortiSwitch drivers moved to 0029/0030 — a FortiLink-managed switch is administered *through* its FortiGate, which is a different target identity and a contract question, now answered first by 0016. **That last premise did not survive phase 0029**, which found a managed switch keeps its own SSH plane and made it its own endpoint; read the 0029 row. 0030, which held what was left of it, is **withdrawn** — read its row too |
 | 0015 | FortiOS driver corrections              | act on `docs/FORTIOS-DOC-VERIFICATION.md`: FortiOS *does* have per-admin expiry (`set schedule`), `prof_admin_readonly` is undocumented, the name limit is 64 not 35, and multi-VDOM is unhandled. Ran first because every later phase touching a device builds on facts it corrects. The two capabilities it declined became **0016** and **0017**, which now run next |
 | 0016 | FortiOS multi-VDOM support              | administer a unit running virtual domains instead of refusing it: the `config global` wrapper, `set vdom`, the depth-tracking unwind — and **the answer to what a target is when one device is many**: contract **v3.1**'s open `device_field.<name>` namespace (§5.3), which 0018's contract and 0029's switch driver both build on rather than re-answer (deferred from 0015) |
 | 0017 | FortiOS target-enforced expiry          | `expiry_posture: target-enforced` is rendered onto a FortiGate through `config firewall schedule onetime` + `set schedule`: the schedule takes the administrator's name, teardown removes both objects, and the reaper sweeps an orphaned one through the optional `device.ResidueSweeper`. `EnforcesExpiry` is **true**, and what the device does at the deadline is declared beside it (`ExpiryMechanism`) and recorded on every session (§5.3, "As taken"). Settles the capability 0018's survey must advertise (deferred from 0015) |
-| 0018 | Enforcement points — contract v4         | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
+| 0018 | Enforcement points                       | the survey of where policy is actually enforced, both axes, in §6.5 (D12 amended); the rung vocabulary Control chooses from, **applied** and **attested**; proxy-level and per-target capability advertisement (`POST /v1/capabilities/report`); and D16's session bounds — deadline, required capture, grant context, concurrency caps |
 | 0019 | Target-side enforcement                 | `internal/auth/target` renders the chosen rung onto the ephemeral account — an `authorized_keys` `command=` dispatcher over the route's own `restricted_exec` list, a curated `PATH`, a `noexec,nosuid,nodev` home, `setpriv --no-new-privs`, and a per-uid packet filter on both address families — and onto a device account through the platform's own authorizer under `enforcement.platform_role`. Plus the capability probe and `POST /v1/capabilities/report`, the teardown ordering the uid hazard requires, the reaper's residue sweep, the four audit fields, and the e2e scenarios. The mechanism table is §6.5, "What this proxy actually renders" |
 | 0020 | Scale harness & sizing evidence         | `cmd/loadgen` + `load/`: a synthetic load harness outside the compose topology, and the measured per-proxy ceilings, Control request rates, cache behaviour under fan-out and per-target provisioning ceiling it produced. **Results and sizing guidance: §9.1.** It refutes D17's arithmetic and finds a different problem — the cache's entry bound, queued as 0022 |
 | 0021 | Machine-identity connection model       | **Withdrawn — evaluated, not built.** 0020's measurements removed the connection-volume and provisioning arguments, and the Control load that was left has a cheaper answer in 0022 + 0023 (3.17 → 1.17 calls per connection, both now measured, no amendment to D2). D2 stands; the number **0021 is retired and must never be reused**. Reasoning: `docs/learnings/0021-machine-identity-connection-model-learnings.md`, and D17 |
@@ -3453,7 +3487,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0034 | Does the MFA challenge disclose the first factor? | **Withdrawn — evaluated, not built.** The signal is real and is now an accepted limit of the deny branch (§4.3): a correct password is answered with a challenge and a wrong one is not, so its presence confirms the first factor without any message saying so. Three findings closed it. **It is not the proxy's to fix and not an accident of the mock** — the contract *requires* it, because a `200` on `POST /v1/auth/password` is documented as "the password was accepted", so a decoy would be a contract violation; the proxy meanwhile needs nothing either way, which was confirmed rather than assumed on the two paths a decoy would take (poll → `401`, and `awaitMFA`'s expiry branch), both already driven by the e2e scenario. **The mitigation is an amplifier handed to the attacker:** a decoy takes one failed guess from **1 Control call to ~121** (derived at the shipped 500ms floor over a 60s challenge; §9.1 measures a whole successful connection at 3.17, or 1.17 after 0023) and from a stateless rejection to a connection held for the challenge's life — ~170 guesses/s fills the descriptor ceiling §9.1 measures. It is safe only behind the rate limiting this prompt scoped out, which is also what blunts enumeration directly. **And it would not close the channel:** a decoy narrows a single-probe one-bit oracle to a statistical one, because resolution timing still separates a human on a phone from a synthetic draw and a decoy must never approve. §12's argument holds — the IdP verifies the password in production and is where this defence lives — but the *contract* is not a prototype artifact, so the learnings names the exact sentence a reversal must relax first. No production code, no `api/` change, no cross-repo obligation. The number **0034 is retired and must never be reused**. Reasoning: §4.3 and `docs/learnings/0034-mfa-challenge-first-factor-oracle-learnings.md`. Added by 0026 |
 | 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lived on the **target**, so a proxy RESTART — no attacker needed — left a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target had no continuity at all; and a target that can store nothing (an ordinary Linux host with a read-only root filesystem) was refused outright on a route that worked before 0027. **Delivered:** `POST /v1/uids/lease` (**contract 4.3**; `policy_version` stays 4 — a new endpoint is not in the vocabulary it gates) grants a proxy an **exclusive block** `[uid_from, uid_to)` with a term, out of a per-target allocation cursor that **only ever advances** — which is the whole server-side requirement and the one invariant everything else rests on: a uid inside a granted block is never inside another grant, used, abandoned or expired alike, so a lease needs no release call and two proxies cannot collide. Allocation happens inside the block, so the call is **one per block, not per session** (asserted, because that is the claim the shape is justified by — 0022 and 0023's 3.17 → 1.17 budget is untouched), renewal is background work off the session path, and a held block needs no server at all, so **provisioning rides out a Control outage**. A block ends when it is exhausted or when its term runs out, and **both fail closed** while Control is unreachable — stated rather than hidden, with `uid_lease.uid_count` and the server's term as the knobs an operator sizes against their own outages. The **target-side mark is demoted, not deleted**: it corroborates, may only ever RAISE the leased floor, and its absence is a logged fact and an audit field (`target_uid_marked`) instead of an outage — which is what makes an unwritable `<enforcement_base>` a **served** target rather than a refused one. `uid_min`/`uid_max` **stayed in proxy config** and changed meaning: the range a block is accepted from, sent on the request and enforced on the grant, refused rather than clamped. `target_uid_lease` joins `target_account_uid` on the provisioning record, because with two proxies on one target the uid alone no longer says whose block it came from. **The floor is NOT on the authorize response**, deliberately and structurally: that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one — `CachingClient` implements no `UIDLeaser`, so wiring one in is a compile error. The **device question** (§3 of the prompt) is answered **NO** and checked rather than assumed: a device account is name-keyed with a per-session random token and every object the drivers create is `edit "<name>"`, never a numbered slot, so a fresh administrator inherits nothing from a torn-down one — and `ephemeral-account` needs no lease, so a device route is unaffected by a Control outage. Contract change — carried a cross-repo obligation |
 | 0036 | Per-platform access profile             | `auth.target.ephemeral_account.access_profile` was one string for every platform a proxy serves, and it was FortiOS-shaped: FortiOS documents three built-in profiles and FortiSwitchOS documents one, so a proxy fronting both estates could not express a correct value and phase 0029 worked around it per session. **Delivered:** the setting is a **map keyed on `platform`** — the scalar still means "every platform this proxy serves", so a single-platform deployment is unchanged — and a route naming no scope of its own is now served on both platforms. A platform the proxy registers with **no scope named for it**, a scope the platform **cannot hold**, and a scope named for a platform the proxy does **not serve** are all refusals at **startup**, naming the platform, the profile and the two remedies; the unusable-scope check is answered from a **declaration** (`device.RoleValidator`, an optional driver interface beside `ResidueSweeper`, read off `device.Shipped`) with nothing dialled, so a third platform with a fourth profile vocabulary inherits it rather than repeating the argument. 0029's workaround is **removed** — the switch driver is no longer built with its default blanked, and `fortios.SwitchAcceptsProfile` is replaced by `SwitchDriver.ValidateRole` — and the e2e fixture now expresses the normal arrangement: the FortiSwitch route names no scope, `platform-authorized` moved to a FortiGate route where it is a policy choice, and `test/topology` pins both. **The route override stays where 0019 put it**, beside `platform-authorized`, so a scope in the audit record is still one the route actually chose; **0015's decision that the operator picks the scope is preserved**, not overturned. **No contract change** — `api/` is untouched, so no cross-repo obligation. Reasoning: §5.3, "As settled (phase 0036)". Added by phase 0029 and raised by the user on its PR |
-| 0037 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0036 to make room for 0029's follow-up |
+| 0037 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies, leaving one live vocabulary. **Delivered:** the singular `target_auth` field is gone from the authorize response — `target_auth_ladder` is the one way a route names a credential method — and with it the both-present refusal, the mirroring block in `internal/routing`, the `tgt.Auth` fallback in the ladder walk, and the fixture key; `info.version` is **4.0.0** and `control.PolicyVersion` stays **4** (renumbering the release baseline to 1 was weighed and rejected: it would make every frozen record in `docs/learnings/` and `prompts/implemented/` ambiguous rather than merely historical, and collide with the `/v1` path prefix, which is a different numbering); the `/v1` prefix stays, being a URL namespace and not a compatibility layer; `api/control.yaml`'s six version-history sections and `api/README.md`'s seven revision sections are gone, with every live reason they carried restated in the present tense beside what it governs — why `policy_version` does not reach `HostKeyReportResponse.cache`, why a *tightening* is announced as a break rather than gated, and the uid-lease invariants (monotonic cursor, and why the floor is not on the cacheable authorize response). `policy_version` becomes **required**, with no absent-value default, and the mock refuses a request without one (`400`). **Kept, and tested:** the versioning mechanism entire — `policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule, strict decoding and fail-closed, the open `params` / `device_field.<name>` namespaces, the `legacy-*` algorithm profiles, and `vocabularyVersion` in `cmd/mock-control`, collapsed to the single baseline with the next revision's tier-point documented in place. Ran **last**, after every phase that revises the contract. Contract change — carried a cross-repo obligation |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
 prompts MUST preserve the numbering invariants in `docs/PROTOCOL.md`.
@@ -3485,7 +3519,7 @@ for good and never reused (§6).
 | **0012** | `0011` | Full E2E topology + CI gate + hardening |
 | **0016** | `0027` | FortiOS multi-VDOM support |
 | **0017** | `0028` | FortiOS target-enforced expiry |
-| **0018** | `0013` → `0015` → `0016` | Enforcement points — contract v4 |
+| **0018** | `0013` → `0015` → `0016` | Enforcement points |
 | **0019** | `0014` → `0016` → `0017` | Target-side enforcement |
 | **0020** | `0017` → `0018` *(new at privileged-access)* | Scale harness & sizing evidence |
 | **0021** ⊘ | `0018` → `0019` *(new at privileged-access)* | Machine-identity connection model |
@@ -3881,7 +3915,8 @@ already queued to revise this contract for the D5a/D6a/D11 vocabulary, and it
 is a **versioned, coordinated** change with Hoplock Control on the other side.
 So the rename was batched into it, alongside changes that were breaking anyway.
 
-**Done in phase 0006** (contract v2): `bastion_id` → `proxy_id`, and
+**Done in phase 0006**, with the contract revision it rode: `bastion_id` →
+`proxy_id`, and
 `/v1/bastions/{bastion_id}/events` → `/v1/proxies/{proxy_id}/events`. The Go
 identifier `ProxyID` had already been renamed in the sweep and now carries a
 `json:"proxy_id"` tag; that deliberate, temporary mismatch is closed. Nothing

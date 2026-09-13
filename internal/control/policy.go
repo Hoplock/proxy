@@ -69,7 +69,7 @@ func IsAncillaryChannelRequest(name string) bool { return ancillaryChannelReques
 // copy files off the box" and "CI may run commands but never gets a PTY" —
 // neither of which a channel-type allow-list can say.
 //
-// A NIL *RequestPolicy MEANS NOT POLICED, which is what a v1 server produced
+// A NIL *RequestPolicy MEANS NOT POLICED, which is the deliberate reading
 // and must keep meaning, or a server that never heard of this field would deny
 // every shell. A non-nil policy is an allow-list: anything it does not name is
 // denied, so an empty policy denies every request exactly as
@@ -267,14 +267,13 @@ const (
 	TargetAuthStaticKey TargetAuthMethod = "static-key"
 )
 
-// Every method this contract defines requires the username parameter — the
-// three provisioning methods since contract v3 (phase 0013), and brokered-key
-// since contract v4.2 (phase 0028).
+// Every method this contract defines requires the username parameter —
+// ephemeral-user, ephemeral-account, static-key and brokered-key alike.
 //
-// Before v3 the username defaulted to identity.Identity.Login, and Login is a
+// It is never defaulted to identity.Identity.Login, because Login is a
 // CLIENT-TYPED STRING — internal/identity says in as many words that it must
 // never be the basis of an authorization decision. Letting it name an OS or
-// device account is that rule leaking through the back door: the account name
+// device account would be that rule leaking through the back door: the account name
 // is what the target's own audit trail, its file ownership, and (on a password
 // credential) half the credential pair are made of. So the server names it, or
 // there is no route.
@@ -302,7 +301,7 @@ func (m TargetAuthMethod) requiresUsername() bool {
 
 // Provisions reports whether this method CREATES the account it logs in as, and
 // therefore leaves the proxy administering the target for the session's
-// duration (contract v4, phase 0018).
+// duration (phase 0018).
 //
 // It is what decides whether an APPLIED enforcement rung is reachable on a
 // route (EnforcementPolicy.RequiresProvisioning). brokered-key changes nothing
@@ -354,7 +353,7 @@ const (
 	// (D13).
 	ParamExpiryPosture = "expiry_posture"
 	// ParamDeviceFieldPrefix opens the namespace of PLATFORM-SPECIFIC fields an
-	// ephemeral-account route may carry (contract v3.1, phase 0016).
+	// ephemeral-account route may carry (phase 0016).
 	//
 	// It exists because some devices are not one target. A FortiGate running
 	// virtual domains is one unit partitioned into many, and an administrator
@@ -456,7 +455,7 @@ const (
 )
 
 // TargetAuthLadder is the ordered list of credential methods the server named
-// for this route (D14, contract v3, walked by phase 0014).
+// for this route (D14, walked by phase 0014).
 //
 // The proxy walks it TOP-DOWN and uses the first entry it can satisfy: an entry
 // naming a method this build does not implement, or has no local material for,
@@ -494,7 +493,7 @@ func (l TargetAuthLadder) MarshalJSON() ([]byte, error) {
 }
 
 // AlgorithmProfile names the SSH algorithm set the proxy may offer on the
-// proxy→target leg for this route (contract v3, applied by phase 0014).
+// proxy→target leg for this route (applied by phase 0014).
 //
 // Much of the estate D13 exists to reach speaks key exchanges, host-key
 // algorithms, ciphers, and MACs that golang.org/x/crypto/ssh does not enable by
@@ -534,8 +533,8 @@ const (
 	AlgorithmProfileLegacyDevice AlgorithmProfile = "legacy-device"
 )
 
-// TargetAuth is the server's choice of target credential method for this route
-// (D6a, consumed by phase 0007).
+// TargetAuth is ONE ENTRY of TargetAuthLadder: a credential method the server
+// named for this route, and its parameters (D6a, D14).
 //
 // The choice belongs to the server because one proxy routinely fronts a Linux
 // estate that accepts just-in-time provisioning and an appliance estate that can
@@ -543,21 +542,12 @@ const (
 // With this object, that config key is local material only — which key, which
 // provisioning account — never the selection.
 //
-// Nil means the proxy uses its locally configured method (v1 behaviour, and
-// what phase 0005 does today).
-//
-// A method the proxy does not implement, or has no local material for, is an
-// OUTAGE-CLASS DENIAL (PLAN §4.3): the session fails and says it is an outage.
-// It is never a fallback to another method, which would mean connecting with
-// credentials the server did not choose.
-//
-// Contract v3 (D14) supersedes this single object with TargetAuthLadder, an
-// ORDERED list of exactly these entries. The two are alternatives and never
-// layers: a response carrying both is refused (Validate), on the same reasoning
-// as restricted_exec beside a rule list in phase 0010 — two statements of which
-// credential to use, disagreeing, have no defensible resolution. A v2 server
-// keeps sending this object and it keeps meaning what it meant; Ladder reads
-// either shape.
+// A method the proxy does not implement, or has no local material for, is a
+// SKIPPED ENTRY: the proxy walks on to the next one, and an exhausted ladder is
+// an OUTAGE-CLASS DENIAL (PLAN §4.3). It is never a fallback to a method the
+// server did not name, which would mean connecting with credentials it did not
+// choose. See TargetAuthLadder for the walk and for what an absent or empty
+// ladder means.
 type TargetAuth struct {
 	// Method names the credential method.
 	Method TargetAuthMethod `json:"method"`
@@ -582,7 +572,7 @@ const (
 	// ExecModeFiltered runs the ordered rule list against the whole exec
 	// string: a GUARDRAIL. Every command is seen before it runs, and sh -c, any
 	// interpreter, and any encoding still get past a pattern. This is the
-	// absent-value default, and what a v1 server means.
+	// absent-value default: a route that says nothing about exec gets it.
 	ExecModeFiltered ExecMode = "filtered"
 	// ExecModeRestricted uses RestrictedExec: a BOUNDARY. The command is parsed
 	// rather than matched, only named executables with approved argument shapes

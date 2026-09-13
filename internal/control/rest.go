@@ -228,7 +228,7 @@ func (c *RESTClient) ReportHostKey(ctx context.Context, req *HostKeyReportReques
 	return resp, nil
 }
 
-// ReportCapabilities implements CapabilityReporter (contract v4).
+// ReportCapabilities implements CapabilityReporter.
 //
 // It is not on Client on purpose: the report is made by phase 0019 once a target
 // leg is up, and every other holder of a Client in this tree would only have to
@@ -251,7 +251,7 @@ func (c *RESTClient) ReportCapabilities(ctx context.Context, req *CapabilityRepo
 	return resp, nil
 }
 
-// LeaseUIDs implements UIDLeaser (contract 4.3, phase 0035).
+// LeaseUIDs implements UIDLeaser (phase 0035).
 //
 // It is not on Client for the reason ReportCapabilities is not: one caller, one
 // path. What is more deliberate is that CachingClient does NOT forward it — a

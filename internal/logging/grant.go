@@ -11,7 +11,7 @@ import (
 )
 
 // This file is where D16's grant context becomes record attributes and stops
-// being anything else (contract v4, PLAN §6.5, §13 UC3). The grant context is
+// being anything else (PLAN §6.5, §13 UC3). The grant context is
 // WHY an external system says access was granted; the proxy copies it onto
 // every record the session produces, never parses it, never matches against it,
 // never decides anything from it (D2, D15), and never shows it to the user.
@@ -42,8 +42,7 @@ type Grant struct{ attrs Attrs }
 // It takes the whole response rather than the grant context itself for the
 // reason at the top of this file: the parameter type is what keeps every other
 // package's source free of the identifier, and a nil response or an absent
-// grant context is the ordinary case (a route with no external grant, which is
-// every route a v3 server answered).
+// grant context is the ordinary case: most routes carry no external grant.
 func GrantFrom(resp *control.AuthorizeResponse) *Grant {
 	if resp == nil || resp.GrantContext == nil {
 		return nil

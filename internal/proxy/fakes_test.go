@@ -176,8 +176,7 @@ type harnessOptions struct {
 	// ["session"]; an explicitly empty slice denies everything.
 	permittedChannels []string
 	// permittedRequests is the in-channel request policy (D5a axis 2). Nil is
-	// the contract's absent value: not policed, which is what a v1 server
-	// meant.
+	// the contract's absent value: not policed.
 	permittedRequests *control.RequestPolicy
 	// permittedForwards is the forwarding destination policy (D5a axis 3a).
 	// Nil is not policed.
@@ -189,8 +188,8 @@ type harnessOptions struct {
 	// an empty blacklist, which filters nothing.
 	filterPolicy *control.FilterPolicy
 	// requireSessionCapture makes the route refuse to run unless the session can
-	// be recorded (contract v4, D16). False is what every route before phase
-	// 0031 meant, and it must stay a no-op.
+	// be recorded (D16). False is what every route that names it not means, and
+	// it must stay a no-op.
 	requireSessionCapture bool
 	// concurrency caps live sessions per subject and/or per target (D16). Nil is
 	// uncapped.
@@ -199,7 +198,7 @@ type harnessOptions struct {
 	// proxy copies it onto records and reads it for nothing.
 	grantContext *control.GrantContext
 	// sessionDeadline, when non-zero, gives the route a session deadline that
-	// far ahead of the moment authorize is answered (contract v4, D16). It is a
+	// far ahead of the moment authorize is answered (D16). It is a
 	// duration here only because a test cannot know that instant in advance;
 	// what reaches the proxy is the absolute instant the contract defines.
 	sessionDeadline time.Duration

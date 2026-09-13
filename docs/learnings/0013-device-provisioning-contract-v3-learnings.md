@@ -1,5 +1,12 @@
 # 0013 — Device provisioning: method, driver seam, contract v3 — Learnings
 
+> **Vocabulary note (added by 0037).** The superseded contract vocabularies
+> described here were removed in **0037**, which left one live vocabulary stated
+> in the present tense; the versioning mechanism (`policy_version`,
+> `control.PolicyVersion`, the MUST-NOT-answer-above rule, `vocabularyVersion`)
+> was **kept**. Read the generations below as history — see `docs/PLAN.md` §4.2,
+> "As collapsed (phase 0037)".
+
 ## Summary
 - What shipped: **contract v3**. `/v1/authorize` gained D14's ordered credential
   ladder, D13's `ephemeral-account` method with its device-driver parameters, and

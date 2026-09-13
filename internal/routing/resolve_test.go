@@ -255,10 +255,10 @@ func TestNewResolverRequiresAClient(t *testing.T) {
 	}
 }
 
-// v2Response is an authorize response using the whole phase 0006 vocabulary
-// (D5a, D6a, D11, D12). The tests below prove the route carries every part of
-// it to phases 0007–0010 and shares memory with none of it.
-func v2Response() *control.AuthorizeResponse {
+// policyResponse is an authorize response using the whole policy vocabulary
+// (D5a, D6a, D11, D12, D14). The tests below prove the route carries every part
+// of it to the enforcing packages and shares memory with none of it.
+func policyResponse() *control.AuthorizeResponse {
 	return &control.AuthorizeResponse{
 		RouteType:         control.RouteTypeNextHop,
 		Target:            "proxy-2.company.com",
@@ -273,10 +273,10 @@ func v2Response() *control.AuthorizeResponse {
 		PermittedGlobalRequests: &control.GlobalRequestPolicy{
 			Types: []string{control.GlobalRequestTCPIPForward},
 		},
-		TargetAuth: &control.TargetAuth{
+		TargetAuthLadder: &control.TargetAuthLadder{{
 			Method: control.TargetAuthBrokeredKey,
 			Params: map[string]string{"username": "svc-net"},
-		},
+		}},
 		FilterPolicy: control.FilterPolicy{
 			Mode:     control.FilterModeWhitelist,
 			ExecMode: control.ExecModeRestricted,
@@ -296,11 +296,11 @@ func v2Response() *control.AuthorizeResponse {
 	}
 }
 
-// TestResolveCarriesTheV2Vocabulary is the hand-off to phases 0007–0010: this
-// phase enforces none of it, so the only thing that can go wrong here is the
-// route dropping a field on the floor.
-func TestResolveCarriesTheV2Vocabulary(t *testing.T) {
-	client := &fakeClient{resp: v2Response()}
+// TestResolveCarriesThePolicyVocabulary is the hand-off to the enforcing
+// packages: this layer enforces none of it, so the only thing that can go wrong
+// here is the route dropping a field on the floor.
+func TestResolveCarriesThePolicyVocabulary(t *testing.T) {
+	client := &fakeClient{resp: policyResponse()}
 	r, _ := NewResolver(ResolverOptions{Client: client})
 
 	route, err := r.Resolve(context.Background(), Request{
@@ -342,12 +342,20 @@ func TestResolveCarriesTheV2Vocabulary(t *testing.T) {
 		t.Error("an unnamed global request was permitted")
 	}
 
-	// D6a: the credential method is the server's choice, carried to 0007.
-	if route.TargetAuth == nil || route.TargetAuth.Method != control.TargetAuthBrokeredKey {
-		t.Errorf("target auth = %+v, want the brokered-key method the server chose", route.TargetAuth)
+	// D6a/D14: the credential method is the server's choice, carried to 0007,
+	// and the ladder is the one shape it travels in.
+	if route.TargetAuthLadder == nil || len(*route.TargetAuthLadder) != 1 {
+		t.Fatalf("target auth ladder = %+v, want the one rung the server named", route.TargetAuthLadder)
 	}
-	if got := route.TargetAuth.Params["username"]; got != "svc-net" {
+	rung := (*route.TargetAuthLadder)[0]
+	if rung.Method != control.TargetAuthBrokeredKey {
+		t.Errorf("target auth = %+v, want the brokered-key method the server chose", rung)
+	}
+	if got := rung.Params["username"]; got != "svc-net" {
 		t.Errorf("target auth username = %q, want the server's parameter", got)
+	}
+	if got := route.NamedCredentialMethod(); got != control.TargetAuthBrokeredKey {
+		t.Errorf("NamedCredentialMethod() = %q, want the method the server put first", got)
 	}
 
 	// D12: the exec tier, carried to 0010.
@@ -367,11 +375,11 @@ func TestResolveCarriesTheV2Vocabulary(t *testing.T) {
 	}
 }
 
-// TestResolveCopiesTheWholeV2Policy extends the isolation guarantee to
-// everything phase 0006 added: a cached decision is shared, so a session that
-// mutated what it was handed would be rewriting another session's policy.
-func TestResolveCopiesTheWholeV2Policy(t *testing.T) {
-	resp := v2Response()
+// TestResolveCopiesTheWholePolicy extends the isolation guarantee to every
+// policy field: a cached decision is shared, so a session that mutated what it
+// was handed would be rewriting another session's policy.
+func TestResolveCopiesTheWholePolicy(t *testing.T) {
+	resp := policyResponse()
 	client := &fakeClient{resp: resp}
 	r, _ := NewResolver(ResolverOptions{Client: client})
 
@@ -386,11 +394,11 @@ func TestResolveCopiesTheWholeV2Policy(t *testing.T) {
 	route.PermittedRequests.Subsystems[0] = "mutated"
 	route.PermittedForwards.DirectTCPIP[0].Host = "mutated"
 	route.PermittedGlobalRequests.Types[0] = "mutated"
-	route.TargetAuth.Params["username"] = "mutated"
+	(*route.TargetAuthLadder)[0].Params["username"] = "mutated"
 	route.Filter.RestrictedExec.Commands[0].Argv[0] = "mutated"
 	route.Hop.HopTrail[0] = "mutated"
 
-	pristine := v2Response()
+	pristine := policyResponse()
 	for _, tc := range []struct {
 		name string
 		got  any
@@ -400,7 +408,7 @@ func TestResolveCopiesTheWholeV2Policy(t *testing.T) {
 		{"subsystems", resp.PermittedRequests.Subsystems[0], pristine.PermittedRequests.Subsystems[0]},
 		{"forward host", resp.PermittedForwards.DirectTCPIP[0].Host, pristine.PermittedForwards.DirectTCPIP[0].Host},
 		{"global requests", resp.PermittedGlobalRequests.Types[0], pristine.PermittedGlobalRequests.Types[0]},
-		{"target auth params", resp.TargetAuth.Params["username"], pristine.TargetAuth.Params["username"]},
+		{"target auth params", (*resp.TargetAuthLadder)[0].Params["username"], (*pristine.TargetAuthLadder)[0].Params["username"]},
 		{"restricted argv", resp.FilterPolicy.RestrictedExec.Commands[0].Argv[0], pristine.FilterPolicy.RestrictedExec.Commands[0].Argv[0]},
 		{"hop trail", resp.Hop.HopTrail[0], pristine.Hop.HopTrail[0]},
 	} {
@@ -410,10 +418,10 @@ func TestResolveCopiesTheWholeV2Policy(t *testing.T) {
 	}
 }
 
-// TestRouteFromAV1ServerIsUnpoliced is the compatibility guarantee at the layer
-// the proxy actually reads: a server that never heard of the phase 0006
-// vocabulary still yields a working route, and no axis silently becomes a deny.
-func TestRouteFromAV1ServerIsUnpoliced(t *testing.T) {
+// TestRouteNamingNoPolicyIsUnpoliced is the absent-value guarantee at the layer
+// the proxy actually reads: a response setting only the required fields still
+// yields a working route, and no axis silently becomes a deny.
+func TestRouteNamingNoPolicyIsUnpoliced(t *testing.T) {
 	client := &fakeClient{resp: &control.AuthorizeResponse{
 		RouteType:         control.RouteTypeDirect,
 		Target:            "host.company.com",
@@ -432,20 +440,23 @@ func TestRouteFromAV1ServerIsUnpoliced(t *testing.T) {
 	}
 	for _, name := range []string{control.RequestPTY, control.RequestShell, control.RequestExec} {
 		if !route.RequestPermitted(name) {
-			t.Errorf("request %q denied by a v1 route: an absent axis is not a deny", name)
+			t.Errorf("request %q denied by an unpoliced route: an absent axis is not a deny", name)
 		}
 	}
 	if !route.SubsystemPermitted("sftp") {
-		t.Error("sftp denied by a v1 route")
+		t.Error("sftp denied by an unpoliced route")
 	}
 	if !route.GlobalRequestPermitted(control.GlobalRequestTCPIPForward) {
-		t.Error("tcpip-forward denied by a v1 route")
+		t.Error("tcpip-forward denied by an unpoliced route")
 	}
 	if _, policed := route.ForwardDestinations(control.ChannelDirectTCPIP); policed {
-		t.Error("a v1 route must not police forwarding destinations")
+		t.Error("an unpoliced route must not police forwarding destinations")
 	}
-	if route.TargetAuth != nil {
-		t.Error("a v1 route must leave the proxy on its locally configured method")
+	if route.TargetAuthLadder != nil {
+		t.Error("a route naming no ladder must leave the proxy on its locally configured method")
+	}
+	if got := route.NamedCredentialMethod(); got != "" {
+		t.Errorf("NamedCredentialMethod() = %q, want \"\" when the server named nothing", got)
 	}
 	if got := route.ExecMode(); got != control.ExecModeFiltered {
 		t.Errorf("exec mode = %q, want %q", got, control.ExecModeFiltered)
@@ -457,7 +468,7 @@ func TestRouteFromAV1ServerIsUnpoliced(t *testing.T) {
 
 // TestResolveCarriesTheEnforcementChoice: the rung is read through the
 // accessors and never off the field, because an absent enforcement object is a
-// v3 server saying "proxy-inspected" rather than a server saying nothing.
+// server saying "proxy-inspected" rather than a server saying nothing.
 func TestResolveCarriesTheEnforcementChoice(t *testing.T) {
 	client := &fakeClient{resp: &control.AuthorizeResponse{
 		RouteType:         control.RouteTypeDirect,
@@ -493,8 +504,8 @@ func TestResolveCarriesTheEnforcementChoice(t *testing.T) {
 	}
 }
 
-// TestResolveDefaultsTheEnforcementChoice: a v3 server that never heard of the
-// object keeps working, and both axes read as today's behaviour.
+// TestResolveDefaultsTheEnforcementChoice: a route naming no enforcement object
+// works, and both axes read as their documented default.
 func TestResolveDefaultsTheEnforcementChoice(t *testing.T) {
 	client := &fakeClient{resp: &control.AuthorizeResponse{
 		RouteType: control.RouteTypeDirect, Target: "db-1", TargetPort: 22,
@@ -544,7 +555,7 @@ func TestResolveAdvertisesTheProxysCapabilities(t *testing.T) {
 }
 
 // TestResolveCarriesTheOtherSessionBounds: the three bounds of D16 that are not
-// the deadline reach the route (contract v4, enforced by phase 0031).
+// the deadline reach the route (enforced by phase 0031).
 //
 // The grant context is asserted by its ABSENCE of surface rather than by its
 // contents: the route carries an opaque handle the telemetry pipeline made, and
@@ -590,9 +601,9 @@ func TestResolveCarriesTheOtherSessionBounds(t *testing.T) {
 	}
 }
 
-// TestRouteWithoutTheSessionBoundsIsUnbounded: the absent-value defaults, which
-// are what every v3 server meant — no required capture, no ceilings, no grant
-// context — and what the engine must not change behaviour over.
+// TestRouteWithoutTheSessionBoundsIsUnbounded: the absent-value defaults — no
+// required capture, no ceilings, no grant context — which the engine must not
+// change behaviour over.
 func TestRouteWithoutTheSessionBoundsIsUnbounded(t *testing.T) {
 	client := &fakeClient{resp: &control.AuthorizeResponse{
 		RouteType: control.RouteTypeDirect, Target: "db-1", TargetPort: 22,

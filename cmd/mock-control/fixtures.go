@@ -53,7 +53,7 @@ type fixtures struct {
 	// Events configures the revocation stream (PLAN §6.4).
 	Events fixtureEvents `yaml:"events"`
 	// UIDLeases configures the exclusive uid blocks granted per target
-	// (contract 4.3, PLAN §5.1).
+	// (PLAN §5.1).
 	UIDLeases fixtureUIDLeases `yaml:"uid_leases"`
 }
 
@@ -162,13 +162,10 @@ type fixtureRoute struct {
 	// PermittedGlobalRequests is the connection-level request allow-list
 	// (D5a). Absent means global requests are relayed unpoliced.
 	PermittedGlobalRequests *fixtureGlobalRequestPolicy `yaml:"permitted_global_requests"`
-	// TargetAuth is the credential method the server picks for this route
-	// (D6a). Absent leaves the proxy on its locally configured method.
-	TargetAuth *fixtureTargetAuth `yaml:"target_auth"`
-	// TargetAuthLadder is the v3 ORDERED ladder of credential methods (D14).
+	// TargetAuthLadder is the ORDERED ladder of credential methods the server
+	// picks for this route (D6a, D14), and the one way a fixture names one.
 	// Absent leaves the proxy on its locally configured method; present and
-	// EMPTY is a denial, which is why it is a pointer. Setting it beside
-	// target_auth is refused at startup, exactly as the client refuses it.
+	// EMPTY is a denial, which is why it is a pointer.
 	TargetAuthLadder *[]fixtureTargetAuth `yaml:"target_auth_ladder"`
 	// AlgorithmProfile is the per-route algorithm preset for the proxy→target
 	// leg: "default" (the absent-value default), "legacy-rsa-sha1", or
@@ -183,10 +180,9 @@ type fixtureRoute struct {
 	NextProxyID string `yaml:"next_proxy_id"`
 	// FilterPolicy is the command filter policy for the connection.
 	FilterPolicy fixtureFilterPolicy `yaml:"filter_policy"`
-	// Enforcement is WHERE this route's policy is enforced, per axis
-	// (contract v4). Absent means both axes take their default, which is
-	// proxy-side enforcement only — what every fixture written before phase
-	// 0018 means, and why they all keep working.
+	// Enforcement is WHERE this route's policy is enforced, per axis. Absent
+	// means both axes take their default, which is proxy-side enforcement
+	// only.
 	Enforcement *fixtureEnforcement `yaml:"enforcement"`
 	// SessionDeadlineSeconds sets session_deadline this many seconds from the
 	// authorize call. It is a DURATION here and an absolute instant on the
@@ -385,9 +381,8 @@ type fixtureHostKeys struct {
 	Decision string `yaml:"decision"`
 	// Known pre-seeds keys so a report can be answered with known=true.
 	Known []fixtureKnownHostKey `yaml:"known"`
-	// Cache authorises the proxy to reuse a host-key decision (contract 4.1,
-	// phase 0023). Absent — or a zero ttl_seconds — means report every
-	// connection, which is what this mock did before the field existed.
+	// Cache authorises the proxy to reuse a host-key decision (phase 0023).
+	// Absent — or a zero ttl_seconds — means report every connection.
 	//
 	// The key defaults to one per (target, fingerprint), which is the scope the
 	// proxy's own lookup already has; a server sharing one key more widely is
@@ -583,13 +578,6 @@ func (f *fixtures) validate() error {
 			add("routes[%d].hop_connection %q must be %q or %q", i, r.HopConnection,
 				control.HopConnectionDial, control.HopConnectionRelay)
 		}
-		if r.TargetAuth != nil && r.TargetAuthLadder != nil {
-			add("routes[%d] sets both target_auth and target_auth_ladder; "+
-				"the ladder supersedes the single object, they are not layers (D14)", i)
-		}
-		if r.TargetAuth != nil {
-			checkMethod(fmt.Sprintf("routes[%d].target_auth", i), r.TargetAuth.Method)
-		}
 		if r.TargetAuthLadder != nil {
 			for j, entry := range *r.TargetAuthLadder {
 				checkMethod(fmt.Sprintf("routes[%d].target_auth_ladder[%d]", i, j), entry.Method)
@@ -748,7 +736,6 @@ func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *cont
 		PermittedRequests:       r.PermittedRequests.wire(),
 		PermittedForwards:       r.PermittedForwards.wire(),
 		PermittedGlobalRequests: r.PermittedGlobalRequests.wire(),
-		TargetAuth:              r.TargetAuth.wire(),
 		TargetAuthLadder:        ladderWire(r.TargetAuthLadder),
 		AlgorithmProfile:        control.AlgorithmProfile(r.AlgorithmProfile),
 		FilterPolicy:            r.FilterPolicy.wire(),
@@ -826,13 +813,6 @@ func (p *fixtureGlobalRequestPolicy) wire() *control.GlobalRequestPolicy {
 	return &control.GlobalRequestPolicy{Types: p.Types}
 }
 
-func (a *fixtureTargetAuth) wire() *control.TargetAuth {
-	if a == nil {
-		return nil
-	}
-	return &control.TargetAuth{Method: control.TargetAuthMethod(a.Method), Params: a.Params}
-}
-
 // ladderWire converts a fixture ladder, keeping ABSENT and EMPTY apart: absent
 // leaves the proxy on its locally configured method, empty denies the session,
 // and collapsing the two here would turn a fixture's denial into a connection.
@@ -842,7 +822,11 @@ func ladderWire(entries *[]fixtureTargetAuth) *control.TargetAuthLadder {
 	}
 	ladder := make(control.TargetAuthLadder, 0, len(*entries))
 	for i := range *entries {
-		ladder = append(ladder, *(*entries)[i].wire())
+		e := (*entries)[i]
+		ladder = append(ladder, control.TargetAuth{
+			Method: control.TargetAuthMethod(e.Method),
+			Params: e.Params,
+		})
 	}
 	return &ladder
 }
@@ -983,37 +967,26 @@ func (u *fixtureUser) chainIdentity(hop string) *control.Identity {
 // vocabularyVersion reports the lowest policy vocabulary that can express this
 // response. A proxy that declared an older version refuses a field it does not
 // know rather than dropping it, so the mock has to know when it is about to
-// send one.
+// send one — see server.go, which answers a 500 rather than policy the proxy
+// would refuse three lines later.
 //
-// It answers per RESPONSE rather than per build: a fixture written before phase
-// 0006 is still v1 and is still servable to a v1 proxy, and the same now holds
-// for a v2 fixture against a v2 proxy. Every field added to the contract needs
-// a case here, or the mock will hand it to a proxy that fails the session
-// closed on it.
+// It answers per RESPONSE and not per build, which is the whole point: the
+// refusal is per route, so a proxy one revision behind still gets every route
+// it CAN read.
+//
+// There is exactly ONE live vocabulary, so every response this mock can build
+// today is expressible in control.PolicyVersion and this returns that baseline
+// for all of them. It is not vestigial. The NEXT revision tiers its own fields
+// ABOVE the baseline, here, as a case that runs first:
+//
+//	switch {
+//	case r.SomeFieldAddedInVocabulary5 != nil:
+//		return 5
+//	}
+//
+// Every field added to the contract needs such a case, or the mock hands it to
+// a proxy that fails the session closed on it.
 func vocabularyVersion(r *control.AuthorizeResponse) int {
-	switch {
-	case r.Enforcement != nil,
-		r.SessionDeadline != nil,
-		r.RequireSessionCapture,
-		r.GrantContext != nil,
-		r.Concurrency != nil:
-		return 4
-	}
-	switch {
-	case r.TargetAuthLadder != nil,
-		r.AlgorithmProfile != "",
-		r.TargetAuth != nil && r.TargetAuth.Method == control.TargetAuthEphemeralAccount:
-		return 3
-	}
-	switch {
-	case r.PermittedRequests != nil,
-		r.PermittedForwards != nil,
-		r.PermittedGlobalRequests != nil,
-		r.TargetAuth != nil,
-		r.FilterPolicy.ExecMode != "",
-		r.FilterPolicy.RestrictedExec != nil,
-		r.Hop != nil && (r.Hop.Connection != "" || r.Hop.NextProxyID != ""):
-		return 2
-	}
-	return 1
+	_ = r
+	return control.PolicyVersion
 }

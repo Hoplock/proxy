@@ -345,7 +345,7 @@ type Capabilities struct {
 	// required anywhere.
 	PinsSourceAddress bool
 	// Fields are the PLATFORM-SPECIFIC fields this driver accepts on a route
-	// (control.ParamDeviceFieldPrefix, contract v3.1, phase 0016).
+	// (control.ParamDeviceFieldPrefix, phase 0016).
 	//
 	// They exist because some devices are not one target: a FortiGate running
 	// virtual domains is one unit partitioned into many, and a route has to be

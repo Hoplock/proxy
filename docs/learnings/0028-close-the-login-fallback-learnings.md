@@ -1,5 +1,12 @@
 # 0028 — Close the `identity.Login` fallback — Learnings
 
+> **Vocabulary note (added by 0037).** The superseded contract vocabularies
+> described here were removed in **0037**, which left one live vocabulary stated
+> in the present tense; the versioning mechanism (`policy_version`,
+> `control.PolicyVersion`, the MUST-NOT-answer-above rule, `vocabularyVersion`)
+> was **kept**. Read the generations below as history — see `docs/PLAN.md` §4.2,
+> "As collapsed (phase 0037)".
+
 ## Summary
 - **What shipped:** no account name the proxy presents to a target can come from
   `identity.Identity.Login` any more, on any path. **Contract v4.2** makes

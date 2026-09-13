@@ -135,8 +135,8 @@ func TestSessionEndsAtItsDeadline(t *testing.T) {
 }
 
 // TestSessionWithoutADeadlineIsNotBounded keeps absent from becoming zero: a
-// route that names no deadline leaves the session alone, exactly as a v3
-// server left it (contract v4's absent-value rule).
+// route that names no deadline leaves the session alone (the contract's
+// absent-value rule).
 func TestSessionWithoutADeadlineIsNotBounded(t *testing.T) {
 	h := newHarness(t, harnessOptions{
 		options: func(o *Options) { o.DeadlineWarning = testWarning },

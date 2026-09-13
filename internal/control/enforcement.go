@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// This file carries the policy vocabulary added by phase 0018 (contract v4):
+// This file carries the policy vocabulary phase 0018 added:
 // WHERE a policy claim is enforced (D12 as amended, PLAN §6.5), and the bounds
 // a session exists under (D16, PLAN §13 UC3).
 //
@@ -165,12 +165,10 @@ func (r ReachRung) RequiresProvisioning() bool {
 }
 
 // EnforcementPolicy is the server's choice of WHERE this connection's policy is
-// enforced, on each of the two axes (contract v4, rendered by phase 0019).
+// enforced, on each of the two axes (rendered by phase 0019).
 //
-// A nil policy means both axes take their absent-value default, which is
-// exactly today's behaviour: the proxy decides at the exec request, and
-// forwarding policy covers SSH channels only. A v3 server that never heard of
-// this object therefore keeps working unchanged.
+// A nil policy means both axes take their absent-value default: the proxy
+// decides at the exec request, and forwarding policy covers SSH channels only.
 //
 // It hangs at the top level of the response rather than on filter_policy, and
 // the reasoning is in PLAN §6.5: the recommendation that it belongs on
@@ -421,7 +419,7 @@ func (c *ProxyCapabilities) ProvidesReach(rung ReachRung) bool {
 }
 
 // TargetCapabilities are the enforcement rungs one TARGET can take, as the proxy
-// found them by connecting to it (contract v4, probed by phase 0019).
+// found them by connecting to it (probed by phase 0019).
 //
 // What is available depends on the target far more than on the proxy — whether
 // it runs systemd, whether cgroup v2 is mounted, whether SELinux is enforcing,
@@ -512,7 +510,7 @@ func (c *TargetCapabilities) ProvidesReach(rung ReachRung, now time.Time, ttl ti
 	return false
 }
 
-// CapabilityReportRequest reports what one target can take (contract v4).
+// CapabilityReportRequest reports what one target can take.
 //
 // It is deliberately the same shape as HostKeyReportRequest: the proxy learned
 // something by connecting, and it tells the server, which accumulates it. The

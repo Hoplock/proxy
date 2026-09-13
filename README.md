@@ -41,8 +41,8 @@ before reading the code.
 > `useradd` at all: it creates a short-lived *administrator* on a device through
 > a per-platform driver — FortiGate and FortiSwitch today — and removes it
 > afterwards. Hoplock
-> Control chooses between them per route, and since contract v3 it sends an
-> ordered **ladder** rather than a single method: the proxy walks it top-down,
+> Control chooses between them per route, and sends an ordered **ladder** of
+> methods rather than a single one: the proxy walks it top-down,
 > stops at the first entry it can satisfy, and records which one that was. It
 > never invents an entry. `auth.target` in `config.example.yaml` holds only the
 > local material each method needs. Chaining is in too: a session can traverse
@@ -138,7 +138,7 @@ teardown deliberately does not walk the filesystem — so every file a session
 wrote **outside its home** keeps the bare number, and the next session, belonging
 to a different person, would own it. So:
 
-- **A Hoplock Control that implements `POST /v1/uids/lease`** (contract 4.3).
+- **A Hoplock Control that implements `POST /v1/uids/lease`.**
   It grants this proxy an **exclusive block of uids per target**, and that block
   is where the floor lives: two proxies holding two blocks cannot collide, and a
   proxy that restarts or is replaced allocates above everything the target was

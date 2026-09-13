@@ -163,7 +163,7 @@ type EnforcementResult struct {
 }
 
 // ProxyCapabilities is what THIS BUILD can render, declared on every authorize
-// request (contract v4).
+// request.
 //
 // It answers "can this software do it" and never "can this target take it" —
 // the second needs a login, and it is reported separately after one

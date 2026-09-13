@@ -15,7 +15,7 @@ import (
 )
 
 // fakeUIDLeases is a Hoplock Control that grants blocks from one monotonic
-// cursor, which is the whole server-side requirement contract 4.3 states.
+// cursor, which is the whole server-side requirement the contract states.
 //
 // It counts its calls because "one call per BLOCK, not per session" is the claim
 // that justifies the lease shape over a per-session floor — phases 0022 and 0023

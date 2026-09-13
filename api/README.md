@@ -24,7 +24,7 @@ companion. If the two disagree, the OpenAPI document wins.
   a stream cost **zero** calls to this API. The round trips are at session
   setup (auth, authorize, host-key report), not on the data path.
 - **The snapshot outlives the connection only if the server says so.** An
-  authorize decision — and, since contract 4.1, a host-key decision — may carry
+  authorize decision — and a host-key decision — may carry
   a `cache` hint (an opaque key plus a TTL the *server* sets), and the proxy may
   then reuse it for later connections, but only while it can still hear the
   revocation stream. No hint means no reuse. See "Caching and the latency
@@ -41,170 +41,50 @@ companion. If the two disagree, the OpenAPI document wins.
 - **Errors** use one envelope: `{"error":{"code","message"}}`. Messages never
   contain credentials.
 
-## Versioning: additive fields, and a proxy that fails closed
+## Versioning: one live vocabulary, and a proxy that fails closed
 
-Phase 0006 revised the **vocabulary** `/v1/authorize` answers in — see "Policy
-vocabulary v2" below — without changing a single endpoint or its semantics, so
-the path prefix stays `/v1`. Two rules make that safe in both directions, and
-they only work together:
+`POST /v1/authorize` answers in a **policy vocabulary**, and a proxy declares the
+one it implements in `AuthorizeRequest.policy_version`; the current value is `4`,
+exported as `control.PolicyVersion`. It is **required** and has no absent-value
+default: a request that omits it is refused, because a proxy that cannot say what
+it reads is one the server would have to guess for — and the guess decides which
+restrictions get silently dropped.
 
-- **Every new field is additive with a documented absent-value default**, and
-  every one of those defaults is the behaviour a v1 server already produced. A
-  v2 proxy therefore works unchanged against a v1 server: nothing silently
-  becomes "deny everything", and nothing silently becomes "allow everything".
-  The defaults are listed field by field below and repeated on each schema in
-  `control.yaml`.
+Two rules make that vocabulary safe to extend, and they only work together:
+
 - **A proxy fails closed on a field it does not understand.** The authorize
   response is decoded *strictly*: an unrecognised field is a contract violation
   (`ErrProtocol`, an outage-class failure — never a deny), not something to
   drop. Every field in that response is policy, so an unknown one may be a
   restriction, and a dropped restriction is a widened session.
+- **The server MUST NOT answer with policy fields introduced after the version
+  the proxy declares.** Without it the rule above would make any server upgrade
+  a fleet-wide outage. A server that respects it can add vocabulary freely; a
+  server that ignores it is caught at the first response instead of having its
+  policy quietly thinned.
 
-The second rule would make any server upgrade a fleet-wide outage, so the proxy
-declares what it can read: `AuthorizeRequest.policy_version` carries the highest
-vocabulary it implements (absent means `1`; the current value is `4`, exported
-as `control.PolicyVersion`). **The server MUST NOT answer with policy fields
-introduced after that version.** A server that respects it can add vocabulary
-freely; a server that ignores it is caught at the first response instead of
-having its policy quietly thinned.
+**The number governs `/v1/authorize` and nothing else.** That is the response
+decoded strictly, and so the only place an unknown field could be a restriction.
+A field on another endpoint is outside it — `HostKeyReportResponse.cache` is the
+worked example: a proxy that has never heard of it ignores it and keeps
+reporting every connection, which is correct behaviour and not a dropped
+restriction. A whole new endpoint, `POST /v1/uids/lease` among them, is outside
+it too.
 
-### The v4.2→v4.3 revision
+**And it says what a proxy can READ, never what it requires.** A *tightening* —
+making an existing parameter required — adds no field and changes no field's
+meaning, so it is not expressible through the version at all: a proxy that was
+never told would parse the route exactly as it always did. A tightening is
+therefore announced as a **break** and refused at the first authorize call.
+`params.username`, required on every credential method this document defines, is
+the one such break the contract carries.
 
-Phase 0035 adds one **endpoint** and changes nothing that exists:
-`POST /v1/uids/lease`. It is additive in the strongest sense — no field moves, no
-field changes meaning, and a proxy that never calls it parses every response
-exactly as before — so `policy_version` stays `4`. That number gates the
-**vocabulary `/v1/authorize` answers in**, and a new endpoint is not in it.
-
-**What a server now owes, and it is one integer per target.** The endpoint grants
-a proxy an **exclusive block of uids** for a target, `[uid_from, uid_to)` with a
-term, out of a per-target allocation cursor the server advances on grant. There
-is no per-session write and no read-modify-write on the session path: the proxy
-allocates inside its own block and calls this **once per block**, not once per
-session.
-
-**The invariant a server must keep is that the cursor only ever advances.** A
-uid inside a granted block is never inside another grant — for this proxy or any
-other, ever again, whether the block was used, abandoned, or allowed to expire.
-Everything the proxy relies on follows from it, so a server that "reclaimed" an
-unused block to save uids would silently break the guarantee the endpoint exists
-for: that a fresh ephemeral account never inherits ownership of the files a
-torn-down one left outside its home (PLAN §5.1).
-
-**Why this is not a field on the authorize response**, which is the shape a
-server author will reach for first: that decision is **cacheable** and the proxy
-serves it while this server is unreachable, so a floor carried on it is replayed
-from whenever it was cached — and a stale floor is a *lowered* floor, which is
-the uid reuse the mechanism prevents. A lease is exempt because it is exclusive:
-replaying it grants the same block to the same proxy.
-
-A server that does not implement it refuses the proxy's `ephemeral-user` routes
-in practice, because the proxy fails **closed** rather than falling back to a
-floor it cannot trust. That is the one operational consequence of an otherwise
-additive revision, and it is stated here rather than discovered.
-
-### The v4.1→v4.2 revision
-
-Phase 0028 makes one change and it is a **break**, called out here for the same
-reason v3's was: it is the only kind of change this document cannot let a server
-discover at runtime.
-
-**`username` becomes required on `brokered-key`**, which makes it required on
-every method the contract defines. A `brokered-key` route that omits it is
-refused as a contract violation at the first authorize call, in the
-single-object and the ladder shape alike.
-
-v3 required it on the three methods where the proxy *names the account it
-creates*, and deliberately excluded `brokered-key` because that method logs into
-a **standing** account an operator already chose. That reasoning is sound as far
-as it goes, and it did not reach the code: `internal/auth/target/brokered.go`
-still fell back to the identity's `login` when neither the route nor the proxy's
-own configuration named an account, so a deployment that set nothing locally
-logged in as whatever string the connecting user typed at their SSH client —
-which is exactly what the v3 note says must never happen. The scoping was
-narrower than the argument for it. What is left after this is the route's
-`username` or the operator's `auth.target.brokered_key.username`, and a route
-with neither is refused as an **outage** rather than served on a guess.
-
-`policy_version` stays `4`. It numbers the vocabulary a proxy can *read*, so
-that a server can avoid answering in fields the proxy would fail closed on; it
-has never expressed what the proxy *requires*, and a tightening is not
-expressible through it — nothing is added, nothing changes meaning, and an older
-proxy parses the route exactly as it always did. v3 announced its `username`
-requirement the same way, as a break rather than a gate.
-
-### The v4→v4.1 revision
-
-Phase 0023 adds one optional field: `HostKeyReportResponse.cache`, the same
-`CacheHint` `/v1/authorize` already answers with — see "Reusing a host-key
-decision" below. Absent means what every server does today: the proxy reports
-every connection.
-
-`policy_version` stays `4`, and the reasoning is the same one that kept it at
-`3` for v3.1. It numbers the vocabulary `/v1/authorize` may answer in, because
-that is the response the proxy decodes strictly and where an unknown field could
-be a restriction. This field is on another endpoint, it grants rather than
-restricts, and a proxy that has never heard of it ignores it and keeps
-reporting — which is correct, not a dropped restriction.
-
-### The v3.1→v4 revision
-
-Phase 0018 answers a different question from every revision before it. v2 and
-v3 said **what** a session may do; v4 says **where that is enforced**, and
-bounds how long and on what grounds the session exists at all (PLAN D12 as
-amended, D16, §6.5) — see "Policy vocabulary v4" below.
-
-The endpoints gain one member, `POST /v1/capabilities/report`, because
-`/v1/authorize` happens *before* the proxy has ever touched the target and a
-first-ever connection has nothing to put on `AuthorizeRequest`. Every v4 field
-on the authorize response is additive with a documented absent-value default,
-and each default is exactly what a v3 server already produced: proxy-side
-enforcement only, no deadline, no required capture, no grant context, no
-concurrency cap.
-
-`policy_version` moves to `4`.
-
-### The v3→v3.1 revision
-
-Phase 0016 adds one thing and breaks nothing: the `device_field.<name>`
-namespace on `ephemeral-account` params, for devices that are **one unit
-partitioned into many** — see "Additional device fields" below. It is additive
-in the strong sense, because the params object was already open and the proxy's
-rule for a parameter it does not implement is to **skip the rung**, not to drop
-the field: a proxy built before v3.1 refuses to connect on a route naming a
-field it cannot honour, which is the outcome a constraint deserves.
-
-`policy_version` stays `3`. It numbers the vocabulary a proxy can *read*, and
-nothing here changes how a response is read — an older proxy parses a v3.1 route
-exactly as it always did and declines the rung.
-
-### The v2→v3 revision
-
-Phase 0013 revises the vocabulary again, for the estate the proxy cannot
-administer as a POSIX host (PLAN D13, D14) — see "Policy vocabulary v3" below.
-The endpoints are again untouched, and every v3 field is additive with a
-documented absent-value default **except one**, called out here because it is
-the only break:
-
-**`username` becomes required on every provisioning method** —
-`ephemeral-user`, `ephemeral-account`, and `static-key`. Until v3 it defaulted
-to the identity's `login`, which is a **client-typed string**
-(`internal/identity` says in as many words that `Login` must never be the basis
-of an authorization decision), and letting it name an OS or device account was
-that rule leaking through the back door. A v2 server that omitted it now gets
-its route refused as a contract violation, loudly, at the first authorize call.
-`brokered-key` is deliberately not in that set at v3: it logs into an account
-that already exists and was chosen by an operator, and its v2 behaviour is
-unchanged here. **That exclusion is gone as of v4.2** — see "The v4.1→v4.2
-revision" above for why the scoping turned out to be narrower than the argument
-for it.
-
-### The v1→v2 rename
-
-One breaking change rides along, deliberately batched into the release that was
-breaking anyway (PLAN §11): `ConnMeta.bastion_id` is now `proxy_id`, and
-`GET /v1/bastions/{bastion_id}/events` is now
-`GET /v1/proxies/{proxy_id}/events`. Nothing else on the wire moved.
+**There is exactly one live vocabulary, and this document states it in the
+present tense.** Proxy and Hoplock Control ship together, so no peer older than
+this release has ever been deployed: there is no generation a reader has to
+place a field in, and no "since version N" annotation to look up. What the
+mechanism above carries is the **next** vocabulary, not a previous one — see
+"Changing the contract" at the bottom of this file for how a revision is made.
 
 ## Endpoints
 
@@ -215,8 +95,9 @@ breaking anyway (PLAN §11): `ConnMeta.bastion_id` is now `proxy_id`, and
 | `POST /v1/auth/mfa/poll` | Poll an outstanding out-of-band MFA challenge | `200` | `PollMFA` |
 | `POST /v1/authorize` | Authorize an identity for a target and return the route + policy | `200` | `Authorize` |
 | `POST /v1/hostkeys/report` | Report a target host key, get the trust decision | `200` | `ReportHostKey` |
-| `POST /v1/capabilities/report` | Report the enforcement rungs a target can take (v4) | `200` | `ReportCapabilities` |
+| `POST /v1/capabilities/report` | Report the enforcement rungs a target can take | `200` | `ReportCapabilities` |
 | `POST /v1/logs/batch` | Ingest a batch of log records | `202` | `IngestLogBatch` |
+| `POST /v1/uids/lease` | Lease an exclusive block of ephemeral uids for one target | `200` | `LeaseUIDs` |
 | `POST /v1/logs/priority` | Ingest one critical record, immediately | `200` | `IngestPriorityLog` |
 | `GET /v1/proxies/{proxy_id}/events` | Subscribe to the revocation stream (NDJSON) | `200` | `StreamEvents` |
 
@@ -251,12 +132,11 @@ One call shapes the whole session. The response carries:
 - `permitted_channels`: the SSH channel allow-list; **an empty list denies every
   channel** (D5);
 - `permitted_requests`, `permitted_forwards`, `permitted_global_requests`: the
-  other two policy axes (D5a) — see "Policy vocabulary v2" below;
-- `target_auth`: which target credential method to use (D6a), below — or
-  `target_auth_ladder`, the ordered list that supersedes it in v3 (D14). **Both
-  present is refused**;
+  other two policy axes (D5a) — see "The policy vocabulary" below;
+- `target_auth_ladder`: the ordered list of target credential methods the server
+  named for this route (D6a, D14), below — the one way a route names one;
 - `algorithm_profile`: the per-route SSH algorithm preset for the proxy→target
-  leg (v3), below;
+  leg, below;
 - `filter_policy`: an ordered `rules` list, each rule a `match` pattern with
   **its own** `action` (`allow_and_log`, `block_command`, `warn_and_continue`,
   `kill_session`) and an optional operator `message`, plus a `mode`
@@ -265,52 +145,54 @@ One call shapes the whole session. The response carries:
   kill the session on `rm -rf /` (PLAN §6.3). It also carries `exec_mode` and
   `restricted_exec` (D12), below;
 - `enforcement`: **where** the policy above is enforced, a rung on each of two
-  axes (v4), below;
+  axes, below;
 - `session_deadline`, `require_session_capture`, `grant_context`,
-  `concurrency`: the bounds a session exists under (v4, D16), below;
+  `concurrency`: the bounds a session exists under (D16), below;
 - `hop` (next-hop routes only): `final_target`, `max_hops`, the `hop_trail`
   to forward — which is how loops and runaway chains are caught — plus the
   `connection` direction and `next_proxy_id` (D11), below.
 
-## Policy vocabulary v2
+## The policy vocabulary
+
+This is everything `/v1/authorize` may answer with, and the whole of what
+`policy_version` numbers.
 
 A flat list of permitted channel **types** cannot express what this product
 sells, because SSH puts very different operations inside one channel type
-(PLAN D5a). `permitted_channels` is therefore one of three axes, and the other
-two arrived in phase 0006 together with a server-chosen target credential
-method, a hop connection direction, and an exec enforcement mode.
+(PLAN D5a). `permitted_channels` is therefore one of **three** axes, beside a
+server-chosen target credential ladder, a hop connection direction, an exec
+enforcement mode, the two enforcement axes, and the session bounds.
 
-Nothing below is enforced yet; each field names the phase that consumes it.
+Each field below names the phase that consumes it.
 
 ### Absent-value defaults, in one table
 
 | Field | Absent means | Empty/present means | Consumed by |
 | --- | --- | --- | --- |
-| `permitted_requests` | in-channel requests are **not policed** (v1) | an allow-list; `{}` denies every request | 0009 |
-| `permitted_forwards` | destinations are **not policed** (v1) | an allow-list per direction; an empty direction denies it | 0009 |
-| `permitted_global_requests` | global requests are **relayed unpoliced** (v1) | an allow-list; `{}` denies all of them | 0009 |
-| `target_auth` | the proxy uses its **locally configured** method (v1) | the server's choice for this route | 0007 |
-| `target_auth_ladder` | the proxy uses its **locally configured** method (v1/v2) | an ordered ladder; `[]` **denies the session** | 0014 |
+| `permitted_requests` | in-channel requests are **not policed** | an allow-list; `{}` denies every request | 0009 |
+| `permitted_forwards` | destinations are **not policed** | an allow-list per direction; an empty direction denies it | 0009 |
+| `permitted_global_requests` | global requests are **relayed unpoliced** | an allow-list; `{}` denies all of them | 0009 |
+| `target_auth_ladder` | the proxy uses its **locally configured** method | an ordered ladder; `[]` **denies the session** | 0007, 0014 |
 | `algorithm_profile` | `default` — nothing beyond the library defaults | a named preset; anything but `default` is a weakening | 0014 |
-| `hop.connection` | `dial` (the original next-hop behaviour) | `dial` or `relay` | 0008 |
-| `filter_policy.exec_mode` | `filtered` (the v1 rule list) | `filtered` or `restricted` | 0010 |
-| `enforcement` | **proxy-side enforcement only** — `execution: proxy-inspected`, `reach: proxy-channel-policy` (v3) | a rung per axis; a rung the proxy cannot provide is an **outage**, never a downgrade | 0019 |
+| `hop.connection` | `dial` | `dial` or `relay` | 0008 |
+| `filter_policy.exec_mode` | `filtered` (the ordered rule list) | `filtered` or `restricted` | 0010 |
+| `enforcement` | **proxy-side enforcement only** — `execution: proxy-inspected`, `reach: proxy-channel-policy` | a rung per axis; a rung the proxy cannot provide is an **outage**, never a downgrade | 0019 |
 | `enforcement.platform_role` | — (**required** for `platform-authorized`, forbidden otherwise) | the device role the ephemeral account is scoped to | 0019 |
 | `enforcement.permitted_destinations` | — (**required** for `account-egress-restricted`, forbidden otherwise) | destinations the session's own processes may open | 0019 |
 | `enforcement.attestation` | — (**required** for `platform-attested`, forbidden otherwise) | who asserts the target's own enforcement, and where that is written down | 0019 |
-| `session_deadline` | **no deadline** (v3) | an absolute instant the proxy enforces locally | 0024 |
-| `require_session_capture` | `false` — capture happens if configured, and its absence stops nothing (v3) | a proxy with no recording path at all refuses the session (**outage**) | 0019 |
-| `grant_context` | **no external grant context** (v3) | opaque context copied to every log record; never parsed, never matched, never a decision | 0019 |
-| `concurrency` | **uncapped** (v3) | a per-subject and/or per-target ceiling; exceeding it is a **policy denial**, not an outage | 0019 |
+| `session_deadline` | **no deadline** | an absolute instant the proxy enforces locally | 0024 |
+| `require_session_capture` | `false` — capture happens if configured, and its absence stops nothing | a proxy with no recording path at all refuses the session (**outage**) | 0019 |
+| `grant_context` | **no external grant context** | opaque context copied to every log record; never parsed, never matched, never a decision | 0019 |
+| `concurrency` | **uncapped** | a per-subject and/or per-target ceiling; exceeding it is a **policy denial**, not an outage | 0019 |
 | `capabilities` (request) | the proxy **declares nothing**, so only rungs needing no capability may be chosen | the rungs this build can provide | — |
-| `policy_version` (request) | `1` | the vocabulary the proxy implements | — |
+| `policy_version` (request) | — (**required**; a request without it is refused) | the vocabulary the proxy implements | — |
 
 Absence and emptiness are **not** the same thing, and the difference is the
-whole point: a server that never heard of `permitted_requests` must not thereby
-deny every shell, while a server that sends `permitted_requests: {}` has
+whole point: a server that says nothing about `permitted_requests` must not
+thereby deny every shell, while a server that sends `permitted_requests: {}` has
 decided to permit nothing — exactly as `permitted_channels: []` denies every
 channel. So a truncated or half-understood object always fails toward deny, and
-only a wholly absent one reads as "this server does not speak this axis".
+only a wholly absent one reads as "this server is not policing this axis".
 
 ### In-channel requests (`permitted_requests`, D5a, phase 0009)
 
@@ -369,14 +251,17 @@ Transport hygiene requests are outside the policy and always relayed:
 `keepalive@openssh.com`, `no-more-sessions@openssh.com`,
 `hostkeys-00@openssh.com`, `hostkeys-prove-00@openssh.com`.
 
-### Target credentials (`target_auth`, D6a, phase 0007)
+### Target credentials (`target_auth_ladder`, D6a, D14, phases 0007/0014)
 
 Which method the proxy uses to log into the target is the **server's** choice,
 per route — one proxy routinely fronts a Linux estate that accepts just-in-time
 provisioning and an appliance estate that can never create a user, and
-`auth.target.method` in `config.yaml` cannot express that. With this object that
+`auth.target.method` in `config.yaml` cannot express that. With the ladder, that
 config key becomes **local material only** (which key, which provisioning
 account), never the selection.
+
+The methods and their parameters are below; "The credential ladder" further down
+is the list they ride in and the walk over it.
 
 | `method` | What it does | Documented `params` |
 | --- | --- | --- |
@@ -398,29 +283,28 @@ A method the proxy does not implement, or has no local material for, is an
 It is never a fallback to another method, which would mean connecting with
 credentials the server did not choose.
 
-## Policy vocabulary v3
+## Reaching a device the proxy cannot administer
 
-Contract v3 (phase 0013) is the vocabulary for routing a session to a device the
-proxy cannot administer as a POSIX host: an ordered credential ladder, the
-`ephemeral-account` method and the driver parameters it needs, and a per-route
-algorithm profile for the legs that connect on nothing modern.
+The vocabulary for routing a session to a device that is not a POSIX host the
+proxy can administer: an ordered credential ladder, the `ephemeral-account`
+method and the driver parameters it needs, and a per-route algorithm profile for
+the legs that connect on nothing modern.
 
-Nothing below is enforced yet — phase 0014 walks the ladder, drives the drivers,
-and applies the profile. The one thing that *is* enforced here is the contract
-gate: a response the proxy cannot read exactly is refused as a contract
-violation (an outage, never a deny).
+Phase 0014 walks the ladder, drives the drivers, and applies the profile. What
+the contract itself enforces is the gate: a response the proxy cannot read
+exactly is refused as a contract violation (an outage, never a deny).
 
 ### The credential ladder (`target_auth_ladder`, D14, phase 0014)
 
-`target_auth` said which single method to use, and an unsatisfiable one was a
-clean denial. That rule optimises for never connecting with the wrong credential
-at the cost of not connecting at all — and a session that does not happen
-produces no recording, no command policy, and no audit trail. For a product
-whose first claim is reaching the devices nothing else reaches, denial is
-frequently the worse security outcome.
+D6a named a single method per route, and an unsatisfiable one was a clean
+denial. That rule optimises for never connecting with the wrong credential at
+the cost of not connecting at all — and a session that does not happen produces
+no recording, no command policy, and no audit trail. For a product whose first
+claim is reaching the devices nothing else reaches, denial is frequently the
+worse security outcome.
 
 What made a fallback unacceptable was never degradation; it was **the proxy
-choosing**. So the field becomes an ordered list the PDP authors:
+choosing**. So the field is an ordered list the PDP authors:
 
 ```json
 "target_auth_ladder": [
@@ -442,15 +326,12 @@ not accept degradation on a target writes one.
 
 | Shape | Means |
 | --- | --- |
-| Absent | The proxy uses its **locally configured** method (v1/v2 behaviour) |
+| Absent | The proxy uses its **locally configured** method |
 | `[]` | **A denial.** The server named no method it will accept — the same absent-versus-empty rule as `permitted_channels: []` |
 | Non-empty | Walk it in order |
-| Both `target_auth` and `target_auth_ladder` | **A contract violation the proxy refuses**, on the `restricted_exec`-beside-`rules` precedent (D12): two statements of which credential to use, disagreeing, have no defensible resolution |
 
-A v2 server keeps sending a single `target_auth` object, and the proxy reads it
-as a one-entry ladder. Both shapes are read through one accessor
-(`AuthorizeResponse.Ladder`), so nothing downstream has to know which shape a
-given server speaks.
+The three shapes are read through one accessor (`AuthorizeResponse.Ladder`), so
+no caller has to remember which of them a nil pointer is.
 
 **The rung used is an audit fact, not a user-facing one.** The record and the
 operator surface carry `target_auth_method` and `target_auth_rung` (the 0-based
@@ -485,7 +366,7 @@ running configuration commands against the wrong parser.
 | `credential_kind` | `password` or `publickey` | **Refused** |
 | `expiry_posture` | `target-enforced`, `proxy-enforced`, `accepted-risk` | **Refused** |
 | `lifetime_seconds` | Whole seconds | **Refused** unless the posture is `accepted-risk` |
-| `device_field.<name>` | A platform-specific field handed to the driver as data (contract v3.1) | The driver's own default — for `vdom` on a FortiGate, a **global** administrator |
+| `device_field.<name>` | A platform-specific field handed to the driver as data | The driver's own default — for `vdom` on a FortiGate, a **global** administrator |
 
 None of them has an absent-value default, and that is the point. `platform` is
 never guessed. A `credential_kind` default would hand out the weaker of two
@@ -515,7 +396,7 @@ nearest driver. A proxy advertises the platforms it carries
 (`device.Registry.Platforms`), and a server should not name one it has not been
 told about.
 
-#### Additional device fields (`device_field.<name>`, contract v3.1, phase 0016)
+#### Additional device fields (`device_field.<name>`, phase 0016)
 
 Some devices are not one target. A FortiGate running virtual domains is **one
 unit partitioned into many**, and an administrator on it is either global or
@@ -542,8 +423,7 @@ platform-specific field handed to the named driver as data.
 - A **driver declares** the names it accepts (`device.Capabilities.Fields`). A
   route naming a field the driver does not declare is a **skipped ladder entry**
   (D14): an unknown parameter may be a constraint, and a proxy that cannot
-  honour one must not connect. That is also what makes this revision additive —
-  a proxy built before v3.1 refuses the rung rather than dropping the field.
+  honour one must not connect. A constraint is refused, never dropped.
 - Fields are **policy metadata, never credential material**, and they are
   **audit facts**: the account-mapping record carries them, because on a
   partitioned device the target string alone does not say which partition the
@@ -671,13 +551,13 @@ one argument vector — anything containing `;`, `|`, `&`, a backquote, `$(`,
 `${`, `<`, `>`, a newline, or an unterminated quote — is denied before matching
 begins, because that is shell syntax and no argv means it.
 
-## Policy vocabulary v4
+## Where policy is enforced, and how long a session lives
 
-Contract v4 (phase 0018) answers a question the earlier vocabularies could not
-ask: **where** a policy claim is actually enforced. The survey behind it — every
-candidate enforcement point, on both axes, with what it guarantees, what it does
-not, what the target must already provide, and how it fails — is
-`docs/PLAN.md` §6.5. This section is the wire half.
+The axes above say **what** a session may do. These say **where that is
+enforced**, and bound how long and on what grounds the session exists at all.
+The survey behind them — every candidate enforcement point, on both axes, with
+what it guarantees, what it does not, what the target must already provide, and
+how it fails — is `docs/PLAN.md` §6.5. This section is the wire half.
 
 Nothing below is enforced yet. Phase 0019 renders a rung onto an account; phase
 0024 closes a session at its deadline.
@@ -784,7 +664,7 @@ an attested rung), and `enforcement_attested_by`. Whether the record says
 `account-restricted` or `proxy-inspected` is the whole point of the vocabulary,
 so it is never the requested value.
 
-### Capability advertisement (v4)
+### Capability advertisement
 
 A server cannot sensibly choose a rung that cannot be provided, and what is
 available depends on the **target** far more than on the proxy: whether it runs
@@ -836,18 +716,35 @@ that any of those systems exist.
 
 `POST /v1/uids/lease` grants a proxy an **exclusive block of uids for a target**,
 which is where the floor under an `ephemeral-user` account's uid lives
-(contract 4.3, PLAN §5.1). The proxy allocates inside its own block, so this is
-called once per block rather than once per session, and a block it already holds
-needs no server at all — which is what lets provisioning ride out a Control
-outage. See "The v4.2→v4.3 revision" above for the one invariant a server must
-keep, and why this is not a field on the authorize response.
+(PLAN §5.1). The proxy allocates inside its own block, so this is called once
+per block rather than once per session, and a block it already holds needs no
+server at all — which is what lets provisioning ride out a Control outage.
+
+**The invariant a server must keep is that the per-target allocation cursor only
+ever advances.** A uid inside a granted block is never inside another grant —
+for this proxy or any other, ever again, whether the block was used, abandoned,
+or allowed to expire. A server that "reclaimed" an unused block to save uids
+would silently break the guarantee the endpoint exists for: that a fresh
+ephemeral account never inherits ownership of the files a torn-down one left
+outside its home. It follows that there is no release call, and that the
+server's whole storage requirement is one integer per target.
+
+**Why this is not a field on the authorize response**, which is the shape a
+server author reaches for first: that decision is **cacheable**, and the proxy
+serves it while this server is unreachable — so a floor carried on it is
+replayed from whenever it was cached, and **a stale floor is a lowered floor**,
+which is the uid reuse the mechanism prevents. A lease is exempt because it is
+exclusive: replaying it grants the same block to the same proxy.
+
+A server that does not implement the endpoint refuses the proxy's
+`ephemeral-user` routes in practice, because the proxy fails **closed** rather
+than falling back to a floor it cannot trust.
 
 ### Host keys
 
 The proxy reports every target host key it sees before completing the target
 handshake — unless the server has authorised it to reuse a decision for that
-exact key, which is contract 4.1 and is described under "Reusing a host-key
-decision" below. The prototype's server trusts on first use and records the key,
+exact key — see "Reusing a host-key decision" below. The prototype's server trusts on first use and records the key,
 and answers `known: false` the first time (D7). The response always carries an
 explicit `decision`, so a stricter per-target policy later needs no change on
 the proxy.
@@ -876,8 +773,8 @@ Where the round trips are for one session, before any caching:
 | Authenticate (cert) | 1 | yes |
 | Authenticate (password + MFA) | 1 + one per poll | yes, and bounded by the user |
 | Authorize + route | 1 | yes |
-| Host-key report | 1 per target host key, or 0 when the server authorised reuse (4.1) | yes, before the target handshake |
-| UID block lease | 1 per **block**, not per session (4.3), and taken in the background before the block in hand runs out | no, except the first lease for a target |
+| Host-key report | 1 per target host key, or 0 when the server authorised reuse | yes, before the target handshake |
+| UID block lease | 1 per **block**, not per session, and taken in the background before the block in hand runs out | no, except the first lease for a target |
 | Channel open / command / stream data | **0** | — |
 | Logs | batched, off the data path | no (priority records excepted, by design) |
 
@@ -901,7 +798,7 @@ revocation.
 `ttl_seconds`. **Absent, or `ttl_seconds: 0`, means do not cache** — that is the
 default for every route that does not opt in.
 
-- **Two decisions are cacheable: this one and the host-key report** (4.1,
+- **Two decisions are cacheable: this one and the host-key report** (
   below). Authentication never is: an MFA approval is a per-session assertion,
   and certificate validation is where revocation bites. `control.CachingClient`
   passes every other call straight through.
@@ -927,7 +824,7 @@ default for every route that does not opt in.
 
 ### Reusing a host-key decision (`cache` on `HostKeyReportResponse`)
 
-Contract 4.1 (phase 0023). Same object, same rules, same revocation stream — a
+Same object, same rules, same revocation stream (phase 0023) — a
 server author who has reasoned about the hint above has already reasoned about
 this one. What is specific to it is the shape the proxy keys the reuse on and
 the two answers it declines to reuse:
@@ -966,7 +863,7 @@ damage of a cached allow. A server that issues cache hints must serve it.
 | `type` | Effect |
 | --- | --- |
 | `session_kill` | End the named `session_ids`, or every session for a `subject`, or `all`. The `reason` is **shown to the user** before the connection closes and copied into the audit log (PLAN §4.3) — a revoked session must not look like a crash — so it must be safe to disclose. |
-| `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. `keys` and `all` reach host-key decisions too (4.1); `subject` does not, because a host-key decision is not made for a subject. Running sessions are untouched: they already hold their snapshot. |
+| `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. `keys` and `all` reach host-key decisions too; `subject` does not, because a host-key decision is not made for a subject. Running sessions are untouched: they already hold their snapshot. |
 | `heartbeat` | Liveness only. A silent stream is indistinguishable from a healthy idle one, so a proxy that stops hearing these reconnects (default timeout 20s). |
 | `resync` | "You missed events that cannot be replayed": the proxy drops its entire cache and re-authorizes from scratch. |
 
@@ -997,17 +894,17 @@ Requests/responses: `AuthenticateCertRequest`, `AuthenticatePasswordRequest`,
 `LogPriorityResponse`. Shared types: `ConnMeta`, `Identity`,
 `PublicKeyMaterial`, `MFAChallenge`, `FilterPolicy`, `FilterRule`, `HopMetadata`,
 `LogRecord`, `CacheHint`, `RevocationEvent`, `SessionKillEvent`,
-`CacheInvalidateEvent`. The v2 policy vocabulary adds `RequestPolicy`,
+`CacheInvalidateEvent`. The three policy axes add `RequestPolicy`,
 `ForwardPolicy`, `ForwardDestination`, `PortRange`, `GlobalRequestPolicy`,
-`TargetAuth`, `RestrictedExecPolicy`, `RestrictedCommand`, and `ArgumentSpec`.
-The v3 vocabulary adds `TargetAuthLadder`, `CredentialKind`, `ExpiryPosture`,
-and `AlgorithmProfile`, plus the `Param*` constants naming the parameters the
-contract defines. `AuthorizeResponse.Ladder` is the one accessor that reads both
-credential shapes, and `AuthorizeResponse.Profile` resolves the profile's
-absent-value default; call those rather than reading the fields, so no caller
-has to know which vocabulary a given server speaks.
+`RestrictedExecPolicy`, `RestrictedCommand`, and `ArgumentSpec`. The credential
+plane adds `TargetAuthLadder` and its entry type `TargetAuth`, `CredentialKind`,
+`ExpiryPosture`, and `AlgorithmProfile`, plus the `Param*` constants naming the
+parameters the contract defines. `AuthorizeResponse.Ladder` resolves the
+ladder's absent/empty/non-empty distinction and `AuthorizeResponse.Profile` the
+profile's absent-value default; call those rather than reading the fields.
 
-The v4 vocabulary adds `EnforcementPolicy` with `ExecutionRung` and `ReachRung`
+The enforcement axes and the session bounds add `EnforcementPolicy` with
+`ExecutionRung` and `ReachRung`
 (each with `Attested` and `RequiresProvisioning` predicates), `Attestation`,
 `GrantContext`, `AdditionalContext`, `ConcurrencyLimits`, `ProxyCapabilities`,
 `TargetCapabilities`, and the `CapabilityReportRequest`/`Response` pair.
@@ -1037,7 +934,7 @@ test — that is the one omission nothing else catches.
 mock server checks its fixtures against the same rules the client enforces.
 
 Caching and revocation live in the same package: `CachingClient` (a `Client`
-decorator: `Authorize` and, since 4.1, `ReportHostKey`), `RevocationStream` (the subscription loop), and
+decorator: `Authorize` and `ReportHostKey`), `RevocationStream` (the subscription loop), and
 `SessionRegistry` — the interface the proxy implements in phase 0005 to actually
 tear a session down, with `NopSessionRegistry` standing in until then.
 Enum values have named constants (`RouteTypeDirect`, `FilterActionKillSession`,
@@ -1072,24 +969,23 @@ startup, and every problem in a file is reported at once.
 | `users[]` | `login`, `identity` (`subject`, `display_name`, `source`, `principals`, `groups`, `claims`), `key_fingerprints` (accepted for cert auth), `password`, and `mfa`. |
 | `proxies[]` | The fleet's own proxies: `id` plus `key_fingerprints`. A cert-auth call offering one of these keys is a **chain leg** (D11): the mock answers with the requested login's identity plus a `chain_hop_proxy_id` claim naming the hop, modelling a server that authenticates the previous hop and re-establishes the user itself. |
 | `users[].mfa` | `required`, `decision` (`approve`/`deny`), `pending_polls` (how many polls stay pending before resolving — this is what makes MFA deterministic), `poll_after_ms`, `ttl_ms`, `prompt`. |
-| `routes[]` | Matched in order, first match wins; no match is a `401`. `login`, `target`, and `proxy_id` accept `*` (`proxy_id` may also be omitted). `proxy_id` matches `conn.proxy_id`, which is how one fixture file describes a chain: the same login and target answer `nexthop` at the edge proxy and `direct` at the one behind it. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` + `hop_connection` + `next_proxy_id` (nexthop only), `target_port`, `permissions`, `permitted_channels`, `permitted_requests`, `permitted_forwards`, `permitted_global_requests`, `target_auth`, `filter_policy`, and `cache`. |
+| `routes[]` | Matched in order, first match wins; no match is a `401`. `login`, `target`, and `proxy_id` accept `*` (`proxy_id` may also be omitted). `proxy_id` matches `conn.proxy_id`, which is how one fixture file describes a chain: the same login and target answer `nexthop` at the edge proxy and `direct` at the one behind it. Then `route_type`, `resolved_target` (direct only), `next_hop` + `max_hops` + `hop_connection` + `next_proxy_id` (nexthop only), `target_port`, `permissions`, `permitted_channels`, `permitted_requests`, `permitted_forwards`, `permitted_global_requests`, `target_auth_ladder`, `filter_policy`, and `cache`. |
 | `routes[].permitted_requests` | `types` (from `pty-req`, `shell`, `exec`, `env`, `x11-req`, `auth-agent-req`) and `subsystems` (by name). **Omit the key** to leave requests unpoliced; write `{}` to deny every one. |
 | `routes[].permitted_forwards` | `direct_tcpip` and `forwarded_tcpip`, each a list of `host` + optional `port` or `port_range` (`from`/`to`). Omit the key to leave destinations unpoliced; an empty direction denies it. |
 | `routes[].permitted_global_requests` | `types`, e.g. `[tcpip-forward]`. Omit the key to relay everything; `types: []` denies all of them. |
-| `routes[].target_auth` | `method` (`ephemeral-user`, `brokered-key`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
-| `routes[].target_auth.params` | Method-scoped; `ephemeral-account` also takes the open `device_field.<name>` namespace (contract v3.1), e.g. `device_field.vdom: customer-a`. |
-| `routes[].target_auth_ladder` | The v3 ordered ladder: a list of the same `method` + `params` entries. Omit to leave the proxy on its configured method; write `[]` to deny the session. Setting it **beside** `target_auth` fails at startup, exactly as the client would refuse it. |
+| `routes[].target_auth_ladder` | The ordered ladder: a list of entries, each `method` (`ephemeral-user`, `brokered-key`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method; write `[]` to deny the session. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
+| `routes[].target_auth_ladder[].params` | Method-scoped; `ephemeral-account` also takes the open `device_field.<name>` namespace, e.g. `device_field.vdom: customer-a`. |
 | `routes[].algorithm_profile` | `default` (the default), `legacy-rsa-sha1`, or `legacy-device`. |
 | `routes[].hop_connection` | `dial` (default) or `relay` for a nexthop route. `relay` requires `next_proxy_id`. |
 | `routes[].filter_policy` | `mode` plus ordered `rules` (each `match` + `action` + optional `message`), and `exec_mode` (`filtered`, the default, or `restricted`) with `restricted_exec`. Setting `restricted_exec` beside a rule list fails at startup, exactly as the client would refuse it. |
 | `routes[].filter_policy.restricted_exec` | `commands[]`: `executable` plus either `form: exact` with `argv`, or `form: positional` with `args[]` (`kind` of `literal`/`prefix`/`oneof`/`any`, `value`/`values`, `optional`). Anything not covered by a spec is denied. |
-| `routes[].enforcement` | `execution` and `reach` (the two v4 rungs), plus `platform_role`, `permitted_destinations` (same entry shape as `permitted_forwards`), and `attestation` (`asserted_by`, `reference`, optional RFC 3339 `asserted_at`). Omit the key for proxy-side enforcement only. A rung whose required parameter is missing, whose claim contradicts the route's own `permitted_requests` or `exec_mode`, or which is applied on a ladder where nothing provisions the target, fails at startup — exactly as the client would refuse it. |
+| `routes[].enforcement` | `execution` and `reach` (the two rungs), plus `platform_role`, `permitted_destinations` (same entry shape as `permitted_forwards`), and `attestation` (`asserted_by`, `reference`, optional RFC 3339 `asserted_at`). Omit the key for proxy-side enforcement only. A rung whose required parameter is missing, whose claim contradicts the route's own `permitted_requests` or `exec_mode`, or which is applied on a ladder where nothing provisions the target, fails at startup — exactly as the client would refuse it. |
 | `routes[].session_deadline_seconds` | A **duration** anchored by the server at authorize time; the wire field is an absolute instant. `0` or absent means no deadline. |
 | `routes[].require_session_capture` | `true` makes a proxy with no recording path at all refuse the route. |
 | `routes[].grant_context` | `system`, `reference`, `window_start`/`window_end` (RFC 3339), and **one** of `additional_context_text` or `additional_context_fields` — the wire field is a string or an object, so setting both fails at startup. All of it is test data the proxy logs and never reads. |
 | `routes[].concurrency` | `max_sessions_per_subject` and/or `max_sessions_per_target`. Absent or `0` is uncapped. |
 | `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
-| `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision (4.1). Only a key already ruled on and accepted is hinted. |
+| `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision. Only a key already ruled on and accepted is hinted. |
 | `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). |
 | `uid_leases` | `uid_count` (block size, overriding what the proxy asks for), `term_seconds` (0 leaves the term to the proxy), and `range_min`/`range_max` (0 on either takes that bound from the proxy's own request, which is what a Control with no opinion about a fleet's uid conventions should do). The per-target cursor is in memory and **is not reset by `POST /debug/reset`** — rewinding it would grant a block overlapping one a proxy is still allocating from. |
 
@@ -1097,15 +993,16 @@ Defaults: `identity.subject` falls back to the login and `identity.source` to
 `fixture`; a route defaults to `login: "*"`, `target: "*"`, `route_type:
 direct`, an `allow_and_log` blacklist, and **no** cache hint;
 `host_keys.decision` defaults to `accept` (TOFU); `events.heartbeat_ms` to
-`5000` and `events.replay_buffer` to `128`. Every phase 0006 key defaults to
-**absent**, which is why fixture files written before it still parse and still
-mean what they meant. Fixtures are test data — never put a real secret in one.
+`5000` and `events.replay_buffer` to `128`. Every policy key defaults to
+**absent**, so a fixture names only what it means to say. Fixtures are test data
+— never put a real secret in one.
 
 Route fixtures are validated at startup with the **client's own**
 `AuthorizeResponse.Validate`, not a second copy of the rules, so the mock cannot
-serve a policy a real proxy would refuse. A route that needs the v2 vocabulary
-is answered with a `500` when the proxy declares `policy_version: 1`, rather
-than with policy that proxy would reject three lines later.
+serve a policy a real proxy would refuse. And a route needing vocabulary the
+proxy did not declare is answered with a `500` rather than with policy that
+proxy would reject three lines later — `vocabularyVersion` in `fixtures.go` is
+where the next revision's fields get tiered above the current baseline.
 
 ### Mock-only endpoints
 
@@ -1117,7 +1014,7 @@ These are **not** part of the contract; no production server implements them.
 | `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, and the retained event history. |
 | `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. |
 
-The mock also keeps the **last capability report per target** (v4) in memory, so
+The mock also keeps the **last capability report per target** in memory, so
 a test can assert the proxy reported at all. It answers `accepted` and decides
 nothing: a capability report is an observation, not a request for a decision.
 
@@ -1135,8 +1032,27 @@ process exits.
 4. If the change adds a field to `AuthorizeResponse` or anything it contains:
    give it a documented absent-value default, add it to `clone.go` and to the
    mutation test, and bump `control.PolicyVersion`. A proxy fails closed on a
-   field it does not know, so the version is what lets an older one keep
-   working.
+   field it does not know, so the version is what lets a fleet upgrade without
+   an outage while it is mid-way.
+
+   Also tier the new field in `cmd/mock-control`'s `vocabularyVersion`, above
+   the current baseline. That is the server half: a proxy still on the old
+   number is then answered a `500` naming the mismatch, rather than policy it
+   would refuse as a protocol error three lines later.
+
+   **A revision REPLACES the vocabulary; it does not keep the previous one
+   alive beside it.** Write the new field in the present tense, with no "since
+   version N" annotation and no note about what an older server produced —
+   there is one live vocabulary and this document states it (see "Versioning"
+   above). Proxy and Hoplock Control ship together, and the consumers move with
+   the revision under `docs/CROSS-REPO-PROTOCOL.md`, so a shape kept alive for a
+   peer that does not exist is debt bought for nothing. This is phase 0037's
+   finding, and reintroducing the pattern is the one thing that phase exists to
+   prevent.
+
+   A **tightening** is different and is not expressible through the version at
+   all — see "Versioning" — so announce it as a break and refuse it at the first
+   authorize call.
 5. If the change alters the architecture, update `docs/PLAN.md` in the same PR
    (PROTOCOL §3).
 6. If the change touches this contract at all, it touches a **shared surface**:

@@ -143,8 +143,7 @@ func TestForwardDestinationAxis(t *testing.T) {
 }
 
 // TestForwardDestinationsUnpoliced is the contract's absent value: a nil
-// forward policy is a v1 server, and a v1 server meant "the channel type
-// decides".
+// forward policy means "the channel type decides".
 func TestForwardDestinationsUnpoliced(t *testing.T) {
 	p := newPipeline(t, testPolicy{channels: []string{control.ChannelDirectTCPIP}}, nil)
 	insp, decision := p.Open(context.Background(), OpenEvent{
@@ -254,7 +253,7 @@ func TestRequestAxis(t *testing.T) {
 }
 
 // TestRequestAxisAbsentMeansUnpoliced is the contract's absent value for
-// axis 2: a v1 server never heard of the field, and must not thereby deny every
+// axis 2: a server that says nothing about the axis must not thereby deny every
 // shell in the estate.
 func TestRequestAxisAbsentMeansUnpoliced(t *testing.T) {
 	p := newPipeline(t, testPolicy{channels: []string{"session"}}, nil)

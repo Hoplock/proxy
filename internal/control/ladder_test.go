@@ -100,23 +100,22 @@ func TestLadderRoundTripsAndPreservesOrder(t *testing.T) {
 	}
 }
 
-// TestV2SingleObjectReadsAsAOneEntryLadder is the compatibility half. A v2
-// server sends one object and keeps working, and the shape it maps onto is
-// exactly the one-entry ladder a PDP writes when it refuses degradation — which
-// is D6a's original behaviour, unchanged.
-func TestV2SingleObjectReadsAsAOneEntryLadder(t *testing.T) {
+// TestOneEntryLadderIsD6aExactly is what a PDP writes when it refuses
+// degradation on a target: one method, used or the session fails (D6a). The
+// ladder is a new shape around that answer, never a new answer.
+func TestOneEntryLadderIsD6aExactly(t *testing.T) {
 	resp := &AuthorizeResponse{
 		RouteType:         RouteTypeDirect,
 		Target:            "host.company.com",
 		PermittedChannels: []string{"session"},
-		TargetAuth: &TargetAuth{
+		TargetAuthLadder: ladderOf(TargetAuth{
 			Method: TargetAuthEphemeralUser,
 			Params: map[string]string{ParamUsername: "alice", ParamKeyType: "ed25519"},
-		},
+		}),
 		FilterPolicy: FilterPolicy{Mode: FilterModeBlacklist},
 	}
 	if err := resp.Validate(); err != nil {
-		t.Fatalf("a v2 response is refused by a v3 proxy: %v", err)
+		t.Fatalf("a one-entry ladder was refused: %v", err)
 	}
 
 	rungs, named := resp.Ladder()
@@ -124,32 +123,10 @@ func TestV2SingleObjectReadsAsAOneEntryLadder(t *testing.T) {
 		t.Fatal("Ladder() reports the server named nothing; it named one method")
 	}
 	if len(rungs) != 1 || rungs[0].Method != TargetAuthEphemeralUser {
-		t.Fatalf("Ladder() = %+v, want a one-entry ladder holding the v2 object", rungs)
+		t.Fatalf("Ladder() = %+v, want the one entry the server named", rungs)
 	}
 	if rungs[0].Params[ParamUsername] != "alice" {
 		t.Errorf("the entry lost its params: %+v", rungs[0].Params)
-	}
-}
-
-// TestBothShapesTogetherIsRefused covers the contract violation this revision
-// exists to make loudly, on phase 0010's precedent: two statements of which
-// credential to use, disagreeing, have no defensible resolution, so neither is
-// preferred.
-func TestBothShapesTogetherIsRefused(t *testing.T) {
-	resp := ladderResponse()
-	resp.TargetAuth = &TargetAuth{
-		Method: TargetAuthStaticKey,
-		Params: map[string]string{ParamUsername: "dev"},
-	}
-
-	err := resp.Validate()
-	if err == nil {
-		t.Fatal("a response setting both target_auth and target_auth_ladder was accepted")
-	}
-	for _, want := range []string{"target_auth", "target_auth_ladder"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
 	}
 }
 
@@ -372,13 +349,11 @@ func TestLadderVocabularyIsRefusedNeverCoerced(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Once as a single v2-shaped object...
+			// Once on its own...
 			single := ladderResponse()
-			single.TargetAuthLadder = nil
-			entry := tc.entry
-			single.TargetAuth = &entry
+			single.TargetAuthLadder = ladderOf(tc.entry)
 			if err := single.Validate(); err == nil {
-				t.Errorf("target_auth accepted %+v", tc.entry)
+				t.Errorf("a one-entry ladder accepted %+v", tc.entry)
 			} else if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error %q does not name %q", err, tc.want)
 			}
@@ -425,8 +400,8 @@ func TestAlgorithmProfileDefaultsToTheStrongestAndRefusesTheUnknown(t *testing.T
 	if got := resp.Profile(); got != AlgorithmProfileDefault {
 		t.Errorf("Profile() = %q, want %q", got, AlgorithmProfileDefault)
 	}
-	// Absent must stay absent on the wire, or every v3 response starts telling
-	// a v2 server's audit trail about a profile nobody chose.
+	// Absent must stay absent on the wire, or every response starts telling an
+	// audit trail about a profile nobody chose.
 	body, err := json.Marshal(resp)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -484,19 +459,6 @@ func TestBrokeredKeyNeedsAUsernameToo(t *testing.T) {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("Validate() = %q, want it to name %q", err, want)
 			}
-		}
-	})
-
-	t.Run("as a single object", func(t *testing.T) {
-		resp := ladderResponse()
-		resp.TargetAuthLadder = nil
-		resp.TargetAuth = &entry
-		err := resp.Validate()
-		if err == nil {
-			t.Fatal("brokered-key without a username was accepted as a single object")
-		}
-		if !strings.Contains(err.Error(), ParamUsername) {
-			t.Errorf("Validate() = %q, want it to name %q", err, ParamUsername)
 		}
 	})
 

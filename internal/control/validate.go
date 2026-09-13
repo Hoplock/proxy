@@ -144,22 +144,9 @@ func validateDestinations(field string, dests []ForwardDestination) error {
 
 func validPort(p int) bool { return p >= 1 && p <= 65535 }
 
-// validateTargetAuth checks the route's credential selection in either shape
-// the contract allows, and refuses a response that states it twice.
+// validateTargetAuth checks every entry of the route's credential ladder,
+// which is the one way a server names a credential method.
 func (r *AuthorizeResponse) validateTargetAuth() error {
-	if r.TargetAuth != nil && r.TargetAuthLadder != nil {
-		// The one rejection contract v3 exists to make loudly, on phase 0010's
-		// precedent (restricted_exec beside a non-empty rule list): two
-		// statements of which credential to use, disagreeing, have no
-		// defensible resolution. Preferring either one would make the proxy the
-		// author of a policy the server wrote twice.
-		return errors.New(
-			"authorize response sets both target_auth and target_auth_ladder: " +
-				"the ladder supersedes the single object, they are not layers (D14)")
-	}
-	if err := r.TargetAuth.validate("target_auth"); err != nil {
-		return err
-	}
 	if r.TargetAuthLadder == nil {
 		return nil
 	}
@@ -263,7 +250,7 @@ func (a *TargetAuth) validateEphemeralAccount(where string) error {
 }
 
 // validateDeviceFields checks the SHAPE of the device_field namespace, and only
-// the shape (contract v3.1, phase 0016).
+// the shape (phase 0016).
 //
 // What a field MEANS is the driver's business, and which fields exist is the
 // driver's to declare — the set is as open as the set of platforms, and for the
@@ -377,7 +364,7 @@ func validPlatformName(s string) bool {
 	return !prevHyphen
 }
 
-// validateEnforcement checks the enforcement vocabulary (contract v4, PLAN
+// validateEnforcement checks the enforcement vocabulary (PLAN
 // §6.5): that each rung is one this proxy knows, that the parameters a rung
 // needs are present and the ones it does not are absent, that the rung's claim
 // agrees with the rest of the response, and that an APPLIED rung was not asked
@@ -547,7 +534,7 @@ func (r *AuthorizeResponse) validateRungIsReachable() error {
 }
 
 // validateSessionBounds checks the fields that bound how long and on what
-// grounds a session exists (contract v4, D16).
+// grounds a session exists (D16).
 //
 // The grant context is checked for SHAPE and nothing else, deliberately. The
 // proxy never reads its content for a decision, so there is nothing here that

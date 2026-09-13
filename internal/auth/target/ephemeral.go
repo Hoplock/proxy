@@ -85,7 +85,7 @@ type EphemeralOptions struct {
 	UIDMin int
 	UIDMax int
 	// UIDLeases grants this proxy the exclusive block of uids a target's
-	// ephemeral accounts are allocated from (contract 4.3, phase 0035). It is
+	// ephemeral accounts are allocated from (phase 0035). It is
 	// what holds the non-reuse floor where neither the target nor any single
 	// proxy owns it, so it survives a restart, a replaced proxy, two proxies on
 	// one target, and a target the proxy can write nothing to.
@@ -97,7 +97,7 @@ type EphemeralOptions struct {
 	// and for an embedding that has no Control at all — never a deployment.
 	UIDLeases control.UIDLeaseSource
 	// Reporter records what a target can enforce, so a server never chooses a
-	// rung this target cannot take (contract v4). Nil skips reporting, which
+	// rung this target cannot take. Nil skips reporting, which
 	// costs the server a better-informed choice and costs the session nothing:
 	// a report GRANTS NOTHING, and every rung is re-checked against the live
 	// target here anyway.

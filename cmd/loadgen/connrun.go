@@ -49,7 +49,7 @@ type StepResult struct {
 	CacheScope  string  `json:"cache_scope,omitempty"`
 	CacheTTL    string  `json:"cache_ttl,omitempty"`
 	// HostKeyCacheHint is whether the server authorised reuse of a host-key
-	// decision too (contract 4.1, phase 0023). A result without it was measured
+	// decision too (phase 0023). A result without it was measured
 	// against a server that reported every connection, which is what every run
 	// before that phase did.
 	HostKeyCacheHint bool `json:"host_key_cache_hint"`

@@ -22,16 +22,17 @@ type Target struct {
 	Host string
 	// Port is the target's SSH port.
 	Port int
-	// Auth is Hoplock Control's per-route choice of credential method and its
-	// parameters (D6a, contract v2), copied off the authorize response. Nil
-	// means the proxy's locally configured fallback method, which is what a v1
-	// server implies.
+	// Auth is the ladder entry this provisioning attempt is running — the rung
+	// the Selector is currently on (D6a, D14). Nil means the Selector found no
+	// ladder at all and is running the proxy's locally configured fallback.
 	//
-	// It travels on the target rather than in a second argument because the
-	// server decides it per route, exactly as it decides the host and port: one
-	// proxy routinely fronts a Linux estate that accepts just-in-time
-	// provisioning and an appliance estate that can never create a user, so
-	// "where" and "how" are answered together or not at all.
+	// It is SET BY THE SELECTOR, per rung, and is never an input a caller
+	// fills in: Ladder below is what a caller hands over. It travels on the
+	// target rather than in a second argument because the server decides the
+	// method per route, exactly as it decides the host and port: one proxy
+	// routinely fronts a Linux estate that accepts just-in-time provisioning
+	// and an appliance estate that can never create a user, so "where" and
+	// "how" are answered together or not at all.
 	Auth *control.TargetAuth
 	// HostKeyCallback is the session's target host-key policy (D7). An
 	// implementation that opens its own connection to the target — the
@@ -43,13 +44,13 @@ type Target struct {
 	// provisioner borrows it instead of duplicating it.
 	HostKeyCallback ssh.HostKeyCallback
 	// Ladder is the ORDERED list of credential methods Hoplock Control named
-	// for this route (D14, contract v3). The Selector walks it top-down,
+	// for this route (D14). The Selector walks it top-down,
 	// setting Auth to each rung in turn, and stops at the first one this proxy
 	// can satisfy.
 	//
 	// The pointer carries three states and they are not interchangeable: nil is
 	// "the server named none", a non-nil empty ladder is A DENIAL, and a
-	// non-empty one is the list to walk. Phase 0013's contract types make the
+	// non-empty one is the list to walk. control.TargetAuthLadder makes the
 	// same distinction for the same reason — collapsing empty into absent turns
 	// a denial into a connection on the proxy's own credential.
 	Ladder *control.TargetAuthLadder
@@ -63,13 +64,13 @@ type Target struct {
 	// force an audit fact, and the user is told nothing about it.
 	Rung int
 	// Enforcement is WHERE this route's policy is enforced, on each of the two
-	// axes (contract v4, PLAN §6.5, phase 0019), together with the allow-list
+	// axes (PLAN §6.5, phase 0019), together with the allow-list
 	// an execution rung renders.
 	//
 	// It travels on the target for the reason Auth does: the server decides it
 	// per route, and rendering it is something only the party that provisions
 	// the account can do. Nil means both axes take their absent-value default —
-	// proxy-side enforcement only, which is exactly a v3 server's behaviour.
+	// proxy-side enforcement only.
 	Enforcement *Enforcement
 }
 
@@ -133,7 +134,7 @@ type ProvisionedAccess struct {
 	// id is empty without it. It carries no credential material — a uid is not a
 	// secret and is readable by anyone on the target.
 	AccountUID int
-	// UIDLease names the block that uid came out of (contract 4.3, phase 0035),
+	// UIDLease names the block that uid came out of (phase 0035),
 	// or is empty for a method that leased none.
 	//
 	// It is on the record beside AccountUID because they answer different

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 # 02 with the server also authorising reuse of the HOST-KEY decision
-# (contract 4.1, phase 0023). Everything else is identical, so the difference
+# (phase 0023). Everything else is identical, so the difference
 # between this run and 02's is exactly what that one hint buys, and nothing
 # else moved to explain it away.
 

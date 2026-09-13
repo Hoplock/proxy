@@ -74,7 +74,7 @@ auth:
     # that can never work.
     methods: ["cert"]
   target:
-    # The FALLBACK only: every route in the fixtures names its own target_auth,
+    # The FALLBACK only: every route in the fixtures names its own ladder,
     # which is the server's choice per route (D6a). Both production methods are
     # configured below because this one proxy fronts both estates.
     method: "brokered-key"

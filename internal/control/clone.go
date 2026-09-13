@@ -147,7 +147,7 @@ func (p *RestrictedExecPolicy) Clone() *RestrictedExecPolicy {
 }
 
 // Clone deep-copies an enforcement policy, destinations and attestation
-// included (contract v4).
+// included.
 func (p *EnforcementPolicy) Clone() *EnforcementPolicy {
 	if p == nil {
 		return nil
@@ -319,7 +319,6 @@ func (r *AuthorizeResponse) Clone() *AuthorizeResponse {
 	out.PermittedRequests = r.PermittedRequests.Clone()
 	out.PermittedForwards = r.PermittedForwards.Clone()
 	out.PermittedGlobalRequests = r.PermittedGlobalRequests.Clone()
-	out.TargetAuth = r.TargetAuth.Clone()
 	out.TargetAuthLadder = r.TargetAuthLadder.Clone()
 	out.FilterPolicy = r.FilterPolicy.Clone()
 	out.Enforcement = r.Enforcement.Clone()

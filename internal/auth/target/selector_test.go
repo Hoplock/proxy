@@ -56,29 +56,29 @@ func TestSelectorFollowsTheRoute(t *testing.T) {
 	ctx := context.Background()
 
 	for _, tc := range []struct {
-		name string
-		auth *control.TargetAuth
-		want string
+		name   string
+		ladder *control.TargetAuthLadder
+		want   string
 	}{
 		{
-			name: "the route names a method",
-			auth: &control.TargetAuth{Method: control.TargetAuthEphemeralUser},
-			want: MethodEphemeralUser,
+			name:   "the route names a method",
+			ladder: &control.TargetAuthLadder{{Method: control.TargetAuthEphemeralUser}},
+			want:   MethodEphemeralUser,
 		},
 		{
-			name: "the route names none",
-			auth: nil,
-			want: MethodStaticKey,
+			name:   "the route names none",
+			ladder: nil,
+			want:   MethodStaticKey,
 		},
 		{
-			name: "a v1 server sends an empty object",
-			auth: &control.TargetAuth{},
-			want: MethodStaticKey,
+			name:   "a rung naming no method at all",
+			ladder: &control.TargetAuthLadder{{}},
+			want:   MethodStaticKey,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := methods[tc.want].calls
-			access, err := selector.Provision(ctx, testIdentity(), Target{Host: "host", Port: 22, Auth: tc.auth})
+			access, err := selector.Provision(ctx, testIdentity(), Target{Host: "host", Port: 22, Ladder: tc.ladder})
 			if err != nil {
 				t.Fatalf("Provision: %v", err)
 			}
@@ -118,9 +118,9 @@ func TestSelectorNeverFallsBackToAnotherMethod(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := selector.Provision(ctx, testIdentity(), Target{
-				Host: "host",
-				Port: 22,
-				Auth: &control.TargetAuth{Method: tc.method},
+				Host:   "host",
+				Port:   22,
+				Ladder: &control.TargetAuthLadder{{Method: tc.method}},
 			})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Provision = %v, want errors.Is(..., %v)", err, tc.wantErr)
@@ -225,12 +225,12 @@ func TestAMethodThatProvisionsNothingCarriesOnlyAnAttestedRung(t *testing.T) {
 	}
 	ctx := context.Background()
 	id := &identity.Identity{Subject: "u-1", Login: "alice"}
-	route := &control.TargetAuth{Method: control.TargetAuthBrokeredKey}
+	route := &control.TargetAuthLadder{{Method: control.TargetAuthBrokeredKey}}
 
 	t.Run("an attested rung runs and is recorded", func(t *testing.T) {
 		brokered.calls = 0
 		access, err := sel.Provision(ctx, id, Target{
-			Host: "appliance", Port: 22, Auth: route,
+			Host: "appliance", Port: 22, Ladder: route,
 			Enforcement: &Enforcement{
 				Execution: control.ExecutionPlatformAttested,
 				Reach:     control.ReachPlatformAttested,
@@ -259,7 +259,7 @@ func TestAMethodThatProvisionsNothingCarriesOnlyAnAttestedRung(t *testing.T) {
 	t.Run("an applied rung is refused before the method runs", func(t *testing.T) {
 		brokered.calls = 0
 		_, err := sel.Provision(ctx, id, Target{
-			Host: "appliance", Port: 22, Auth: route,
+			Host: "appliance", Port: 22, Ladder: route,
 			Enforcement: &Enforcement{
 				Execution:      control.ExecutionAccountRestricted,
 				RestrictedExec: &control.RestrictedExecPolicy{Commands: []control.RestrictedCommand{{Executable: "cat"}}},
@@ -326,7 +326,7 @@ func TestSelectorWithholdsAnOpenCredentialBeforeProvisioning(t *testing.T) {
 
 	ctx := context.Background()
 	id := &identity.Identity{Subject: "u-1", Login: "alice"}
-	tgt := Target{Host: "appliance", Port: 22, Auth: &control.TargetAuth{Method: control.TargetAuthBrokeredKey}}
+	tgt := Target{Host: "appliance", Port: 22, Ladder: &control.TargetAuthLadder{{Method: control.TargetAuthBrokeredKey}}}
 
 	access, err := sel.Provision(ctx, id, tgt)
 	if err != nil {
@@ -402,7 +402,7 @@ func TestSelectorScoresNothingForAMethodThatCannotNameItsCredential(t *testing.T
 
 	ctx := context.Background()
 	id := &identity.Identity{Subject: "u-1"}
-	tgt := Target{Host: "appliance", Port: 22, Auth: &control.TargetAuth{Method: control.TargetAuthBrokeredKey}}
+	tgt := Target{Host: "appliance", Port: 22, Ladder: &control.TargetAuthLadder{{Method: control.TargetAuthBrokeredKey}}}
 	access, err := sel.Provision(ctx, id, tgt)
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
