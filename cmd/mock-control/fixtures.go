@@ -52,6 +52,9 @@ type fixtures struct {
 	HostKeys fixtureHostKeys `yaml:"host_keys"`
 	// Events configures the revocation stream (PLAN §6.4).
 	Events fixtureEvents `yaml:"events"`
+	// UIDLeases configures the exclusive uid blocks granted per target
+	// (contract 4.3, PLAN §5.1).
+	UIDLeases fixtureUIDLeases `yaml:"uid_leases"`
 }
 
 // fixtureEvents tunes the server→proxy event stream.

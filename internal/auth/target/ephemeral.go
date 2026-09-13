@@ -84,6 +84,18 @@ type EphemeralOptions struct {
 	// target where that cannot be established refuses the session.
 	UIDMin int
 	UIDMax int
+	// UIDLeases grants this proxy the exclusive block of uids a target's
+	// ephemeral accounts are allocated from (contract 4.3, phase 0035). It is
+	// what holds the non-reuse floor where neither the target nor any single
+	// proxy owns it, so it survives a restart, a replaced proxy, two proxies on
+	// one target, and a target the proxy can write nothing to.
+	//
+	// NIL FALLS BACK TO THE CONFIGURED RANGE AS THE BLOCK, which is phase
+	// 0027's behaviour: the floor is then the target's own mark and this
+	// process's record, and a restarted proxy has only the target's word for it.
+	// newEphemeralFromConfig always supplies one, so that is a path for tests
+	// and for an embedding that has no Control at all — never a deployment.
+	UIDLeases control.UIDLeaseSource
 	// Reporter records what a target can enforce, so a server never chooses a
 	// rung this target cannot take (contract v4). Nil skips reporting, which
 	// costs the server a better-informed choice and costs the session nothing:
@@ -122,6 +134,7 @@ type EphemeralAuthenticator struct {
 	enforceBase string
 	keyExpiry   bool
 	uids        *uidAllocator
+	leases      control.UIDLeaseSource
 	reporter    control.CapabilityReporter
 	probes      *probeCache
 	logger      *log.Logger
@@ -177,6 +190,7 @@ func NewEphemeralAuthenticator(opts EphemeralOptions) (*EphemeralAuthenticator, 
 		shell:       opts.TargetShell,
 		enforceBase: opts.EnforcementBase,
 		keyExpiry:   opts.KeyExpiry,
+		leases:      opts.UIDLeases,
 		reporter:    opts.Reporter,
 		probes:      newProbeCache(control.DefaultCapabilityTTL),
 		logger:      opts.Logger,
@@ -329,6 +343,16 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 		return nil, err
 	}
 	a.uids.observe(tgt.Addr(), uid)
+	// The mark is corroboration now, so its absence is a FACT AND NOT AN OUTAGE
+	// (phase 0035): the floor is the leased block, and a target that can hold no
+	// mark — a read-only root filesystem, an enforcement base nobody made
+	// writable — is served. It is logged because a fleet that silently stopped
+	// corroborating is a fleet relying on one record instead of two.
+	marked := parseUIDMark(out)
+	if !marked {
+		a.logf("auth/target: ephemeral-user could not record uid %d on %s under %s; the leased block is the floor and this target corroborates nothing",
+			uid, tgt, uidWatermarkName)
+	}
 
 	hostKey := admin.HostKey()
 	a.reaper.observe(tgt, hostKey)
@@ -364,6 +388,8 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 		},
 		Enforcement: enforcement,
 		AccountUID:  uid,
+		UIDLease:    plan.lease,
+		UIDMarked:   marked,
 		Teardown: func(ctx context.Context) error {
 			return a.teardown(ctx, tgt, hostKey, principal, home)
 		},
@@ -420,7 +446,34 @@ func (a *EphemeralAuthenticator) allocateUID(ctx context.Context, admin AdminSes
 		return uidPlan{}, fmt.Errorf("%w: the target's uid census could not be read", ErrUIDUnavailable)
 	}
 
-	plan, err := a.uids.allocate(tgt.Addr(), parseUIDCensus(out, a.uids.min, a.uids.max))
+	census := parseUIDCensus(out, a.uids.min, a.uids.max)
+	// The floor is computed BEFORE the block is asked for, and is passed to the
+	// lease call as an observation. It costs nothing — the census is already in
+	// hand — and it is what lets a server whose cursor sits below a mark left by
+	// an earlier deployment catch up rather than granting blocks this proxy
+	// would have to discard one after another.
+	floor, err := a.uids.observedFloor(tgt.Addr(), census)
+	if err != nil {
+		a.logf("auth/target: ephemeral-user cannot allocate a uid on %s: %v", tgt, err)
+		return uidPlan{}, err
+	}
+
+	block, err := a.uidBlock(ctx, tgt, floor)
+	if err != nil {
+		return uidPlan{}, err
+	}
+	plan, err := a.uids.allocate(tgt.Addr(), census, block)
+	if errors.Is(err, errUIDBlockSpent) {
+		// A spent block is RECOVERABLE and is not a wrap: Control's cursor only
+		// advances, so the block that replaces this one is above it and no uid
+		// is offered twice. Exactly one retry — a second spent block means the
+		// floor is above anything the server will grant, and asking again in a
+		// loop would burn the target's range one block per attempt.
+		block, err = a.replaceUIDBlock(ctx, tgt, floor, block)
+		if err == nil {
+			plan, err = a.uids.allocate(tgt.Addr(), census, block)
+		}
+	}
 	if err != nil {
 		a.logf("auth/target: ephemeral-user cannot allocate a uid on %s: %v", tgt, err)
 		return uidPlan{}, err
@@ -428,30 +481,64 @@ func (a *EphemeralAuthenticator) allocateUID(ctx context.Context, admin AdminSes
 	if plan.pressured {
 		// Every allocation from nine tenths of the range onward says so. The
 		// refusal at the top of the range is a target-wide outage for this
-		// method, and the remedy — a wider uid_max — is only cheap while there
-		// is still time to apply it.
-		a.logf("auth/target: WARNING ephemeral-user has %d uid(s) left in %d-%d on %s; allocation does not wrap, so raise auth.target.ephemeral_user.uid_max before it runs out",
+		// method, and the remedy — a wider uid_max, and a wider range at Hoplock
+		// Control — is only cheap while there is still time to apply it.
+		a.logf("auth/target: WARNING ephemeral-user has %d uid(s) left in %d-%d on %s; allocation does not wrap, so raise auth.target.ephemeral_user.uid_max and the server's own range before it runs out",
 			plan.remaining, a.uids.min, a.uids.max, tgt)
 	}
 	return plan, nil
 }
 
-// uidError re-labels the two provisioning-script failures that are about the uid
-// rather than about the account, so the engine classifies them as what they are.
+// uidBlock is the block this target's uids are allocated from.
+//
+// With no lease source the configured range IS the block, which is phase 0027's
+// behaviour and is what tests and a Control-less embedding get. Production
+// always has one (newEphemeralFromConfig), and a lease that cannot be obtained
+// is an OUTAGE rather than a fallback to the range: falling back would be a
+// lowered floor on exactly the restart this phase exists to close, arrived at by
+// a network error nobody would see.
+func (a *EphemeralAuthenticator) uidBlock(ctx context.Context, tgt Target, floor int) (control.UIDBlock, error) {
+	if a.leases == nil {
+		return control.UIDBlock{From: a.uids.min, To: a.uids.max + 1}, nil
+	}
+	block, err := a.leases.Block(ctx, tgt.Host, tgt.Port, floor)
+	if err != nil {
+		a.logf("auth/target: ephemeral-user could not lease a uid block for %s: %v", tgt, err)
+		return control.UIDBlock{}, fmt.Errorf("%w: no uid block could be leased for this target: %w", ErrUIDUnavailable, err)
+	}
+	return block, nil
+}
+
+// replaceUIDBlock takes a fresh block after the one in hand turned out to be
+// spent. With no lease source there is nothing to replace it with.
+func (a *EphemeralAuthenticator) replaceUIDBlock(ctx context.Context, tgt Target, floor int, spent control.UIDBlock) (control.UIDBlock, error) {
+	if a.leases == nil {
+		return control.UIDBlock{}, errUIDBlockSpent
+	}
+	block, err := a.leases.Replace(ctx, tgt.Host, tgt.Port, floor, spent)
+	if err != nil {
+		a.logf("auth/target: ephemeral-user could not lease a fresh uid block for %s: %v", tgt, err)
+		return control.UIDBlock{}, fmt.Errorf("%w: no uid block could be leased for this target: %w", ErrUIDUnavailable, err)
+	}
+	return block, nil
+}
+
+// uidError re-labels the provisioning-script failure that is about the uid
+// rather than about the account, so the engine classifies it as what it is.
+//
+// There used to be two. exitUIDMarkFailed — the target could not record the
+// allocated uid — is gone with phase 0035: the floor is the leased block, so an
+// unwritable mark is a logged fact rather than a refused session, and a target
+// that can store nothing is served.
 func (a *EphemeralAuthenticator) uidError(err error) error {
 	var rce *RemoteCommandError
 	if !errors.As(err, &rce) {
 		return err
 	}
-	switch rce.ExitStatus {
-	case exitUIDExhausted:
+	if rce.ExitStatus == exitUIDExhausted {
 		return fmt.Errorf("%w: every uid offered to the target was already taken: %w", ErrUIDUnavailable, err)
-	case exitUIDMarkFailed:
-		return fmt.Errorf("%w: the target could not record the allocated uid, so the next allocation there would reuse it: %w",
-			ErrUIDUnavailable, err)
-	default:
-		return err
 	}
+	return err
 }
 
 // cleanUpFailedProvision undoes a partial provisioning on the connection that

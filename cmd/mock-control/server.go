@@ -61,8 +61,14 @@ type server struct {
 	// (contract v4). A real Control accumulates these and constrains policy
 	// authoring by them; the mock only has to remember that one arrived.
 	capabilities map[string]*control.TargetCapabilities
-	batched      []control.LogRecord
-	priority     []control.LogRecord
+	// uidCursor is the per-target allocation cursor a uid-block lease advances
+	// (contract 4.3). IT ONLY EVER RISES — see uidlease.go for why the whole
+	// invariant rests on that — and uidLeases counts the grants per target so a
+	// test can assert "one call per block, not per session".
+	uidCursor map[string]int
+	uidLeases map[string]int
+	batched   []control.LogRecord
+	priority  []control.LogRecord
 	// logSinkDown makes both log endpoints answer 503 (pathDebugLogSink). It is
 	// a property of the mock and of nothing in the contract.
 	logSinkDown bool
@@ -109,6 +115,8 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 		hostKeys:     make(map[string]bool),
 		seenLogs:     make(map[string]bool),
 		capabilities: make(map[string]*control.TargetCapabilities),
+		uidCursor:    make(map[string]int),
+		uidLeases:    make(map[string]int),
 		subs:         make(map[*subscriber]bool),
 	}
 	if s.now == nil {
@@ -156,6 +164,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+control.PathAuthorize, s.handleAuthorize)
 	mux.HandleFunc("POST "+control.PathReportHostKey, s.handleReportHostKey)
 	mux.HandleFunc("POST "+control.PathReportCapabilities, s.handleReportCapabilities)
+	mux.HandleFunc("POST "+control.PathLeaseUIDs, s.handleLeaseUIDs)
 	mux.HandleFunc("POST "+control.PathIngestLogBatch, s.handleIngestLogBatch)
 	mux.HandleFunc("POST "+control.PathIngestPriorityLog, s.handleIngestPriorityLog)
 	// The path constant is already a net/http wildcard pattern, so the proxy
@@ -599,6 +608,13 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.mfa = make(map[string]*mfaChallenge)
 	s.hostKeys = make(map[string]bool)
 	s.capabilities = make(map[string]*control.TargetCapabilities)
+	// THE UID CURSORS ARE NOT RESET, and that is the point of saying so here
+	// beside everything that is. Resetting one would REWIND it, and a rewound
+	// cursor grants a block that overlaps one a proxy is still allocating from —
+	// the uid reuse contract 4.3 exists to prevent, reintroduced by a test
+	// facility. A real Control has no reset at all; this mock's is for the
+	// per-run state above, and the cursor is the one thing here that is meant to
+	// be monotonic for the life of the process.
 	// Open subscriptions survive a reset; only the replayable history is
 	// cleared, so a reconnect after this point starts from now.
 	s.events = nil

@@ -244,12 +244,14 @@ auth:
       # `account-confined` rung the home is mounted noexec, so a dispatcher
       # living in it could not be executed, and one the account could write
       # would not be an allow-list.
-      # It also holds the uid high-water mark (below), which is why it must
-      # exist and be writable by the provisioning account even on a fleet that
-      # renders no enforcement rung at all.
+      # It also holds the uid high-water mark (below). Since phase 0035 that
+      # mark only CORROBORATES a floor Hoplock Control holds, so this directory
+      # no longer has to be writable on every target: a host with a read-only
+      # root filesystem is served, and the absence is logged and put on the
+      # provisioning record rather than refusing the session.
       enforcement_base: "/var/lib/hoplock"
-      # The DEDICATED uid range ephemeral accounts are allocated from (phase
-      # 0027). Leave both at 0 for the defaults, 2000000-2999999.
+      # The DEDICATED uid range ephemeral accounts are allocated from. Leave
+      # both at 0 for the defaults, 2000000-2999999.
       #
       # This is not tuning. `useradd` with no explicit uid hands a torn-down
       # account's uid straight back to the next caller, and teardown removes an
@@ -257,8 +259,14 @@ auth:
       # file a session wrote OUTSIDE its home keeps the bare number, and the next
       # session, belonging to a DIFFERENT PERSON, would own it. The proxy
       # therefore chooses the uid itself, strictly above everything the target has
-      # ever handed out, and records the mark under enforcement_base so the
-      # guarantee survives a teardown, a restart, and a second proxy.
+      # ever handed out.
+      #
+      # WHERE THAT FLOOR IS HELD is Hoplock Control's uid-block lease (below),
+      # not this range and not the target: the target is the party the proxy
+      # does not trust, and a single proxy forgets everything when it restarts.
+      # These two bound the block the proxy will ACCEPT — they travel with every
+      # lease request so a server with no range of its own can allocate from
+      # them, and a block outside them is refused rather than clamped.
       #
       # The defaults sit above every distribution's own UID_MAX, so an ephemeral
       # account can never be handed a uid the fleet's own allocator would also
@@ -270,6 +278,30 @@ auth:
       # change when it matters.
       uid_min: 0
       uid_max: 0
+      # The uid-block lease (contract 4.3, phase 0035). Hoplock Control grants
+      # this proxy an EXCLUSIVE block of uids per target and the proxy allocates
+      # inside it: two proxies holding two blocks cannot collide, a restarted or
+      # replaced proxy allocates above everything the target was ever given
+      # without needing the target's word for it, and the session path makes no
+      # call to the server at all — one call per BLOCK, not per session.
+      uid_lease:
+        # How many uids to ask for per block. 0 asks for the server's choice,
+        # which is the normal setting: Control sees every proxy for the target.
+        # It is a REQUEST — the server grants what it chooses.
+        #
+        # Together with the term the server sets, this is the knob for HOW LONG
+        # PROVISIONING SURVIVES A CONTROL OUTAGE on a busy target, and the
+        # trade-off is stated rather than hidden: a block ends when it is
+        # exhausted or when its term runs out, and both refuse the session while
+        # Control is unreachable — an outage, disclosed to the user as one, with
+        # nothing provisioned. A bigger block covers more sessions; a longer term
+        # covers more time.
+        uid_count: 0
+        # How far ahead of a block's term the proxy takes a fresh one, in the
+        # background and off the session path. 0 uses the default, an hour. It is
+        # pure headroom: an outage has to start inside this window, on a target
+        # whose block is nearly spent, to be felt at all.
+        renew_before: 0s
       # Write OpenSSH's expiry-time restriction into the ephemeral
       # authorized_keys entry when a route asks for a lifetime. Set it to false
       # only for a fleet whose sshd predates 8.2: a route that then asks for a

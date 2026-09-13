@@ -87,6 +87,8 @@ const (
 	AttrCredentialMethod = "credential_method"  // the target-credential method (D6a)
 	AttrTargetAccount    = "target_account"     // the account the proxy connected to the target as
 	AttrTargetAccountUID = "target_account_uid" // that account's uid, which outlives its name (0027)
+	AttrTargetUIDLease   = "target_uid_lease"   // the leased block that uid came out of (0035)
+	AttrTargetUIDMarked  = "target_uid_marked"  // whether the target also corroborated the uid (0035)
 	AttrCredentialRung   = "credential_rung"    // which entry of the server's ladder was used (D14)
 	AttrPlatform         = "platform"           // the device platform a driver served (D13)
 	AttrExpiryPosture    = "expiry_posture"     // who enforces the account's end (D13)

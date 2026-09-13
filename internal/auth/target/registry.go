@@ -36,6 +36,15 @@ type Options struct {
 	// skips reporting; a report GRANTS NOTHING, and every rung is re-checked
 	// against the live target when it is rendered.
 	Reporter control.CapabilityReporter
+	// Leaser grants this proxy the exclusive block of uids the ephemeral method
+	// allocates from, per target (contract 4.3, phase 0035). It is the REST
+	// client and never the caching one: a lease answered from memory is a
+	// replayed floor, and a replayed floor is a lowered one.
+	//
+	// Nil leaves the ephemeral method on phase 0027's footing — the configured
+	// range is the block and the floor is the target's own mark — which a
+	// restarted proxy cannot fully trust. Production always supplies one.
+	Leaser control.UIDLeaser
 }
 
 // NewFromConfig builds the proxy's target credential plane.
@@ -258,11 +267,16 @@ func newEphemeralFromConfig(cfg config.EphemeralUserAuth, opts Options) (*Epheme
 	if err != nil {
 		return nil, err
 	}
+	leases, err := newUIDLeaseHolder(cfg, opts)
+	if err != nil {
+		return nil, err
+	}
 	return NewEphemeralAuthenticator(EphemeralOptions{
 		ProxyID:         opts.ProxyID,
 		EnforcementBase: cfg.EnforcementBase,
 		UIDMin:          cfg.UIDMin,
 		UIDMax:          cfg.UIDMax,
+		UIDLeases:       leases,
 		Reporter:        opts.Reporter,
 		Dialer:          dialer,
 		HomeBase:        cfg.HomeBase,
@@ -271,6 +285,39 @@ func newEphemeralFromConfig(cfg config.EphemeralUserAuth, opts Options) (*Epheme
 		ReaperInterval:  cfg.Reaper.Interval,
 		ReaperGrace:     cfg.Reaper.Grace,
 		Logger:          opts.Logger,
+	})
+}
+
+// newUIDLeaseHolder builds the uid-block lease holder, or nil when this proxy
+// has no client to lease from (phase 0035).
+//
+// The configured range travels with every request and is enforced on every
+// grant. It is resolved to its defaults here rather than sent as zero, because a
+// server told nothing about the range can only guess at it, and a proxy that
+// accepted whatever it guessed would allocate into the target's OWN accounts.
+func newUIDLeaseHolder(cfg config.EphemeralUserAuth, opts Options) (control.UIDLeaseSource, error) {
+	if opts.Leaser == nil {
+		return nil, nil
+	}
+	min, max := cfg.UIDMin, cfg.UIDMax
+	if min == 0 {
+		min = DefaultUIDMin
+	}
+	if max == 0 {
+		max = DefaultUIDMax
+	}
+	logf := func(string, ...any) {}
+	if opts.Logger != nil {
+		logf = opts.Logger.Printf
+	}
+	return control.NewUIDLeaseHolder(control.UIDLeaseOptions{
+		Client:      opts.Leaser,
+		ProxyID:     opts.ProxyID,
+		UIDCount:    cfg.UIDLease.UIDCount,
+		RangeMin:    min,
+		RangeMax:    max,
+		RenewBefore: cfg.UIDLease.RenewBefore,
+		Logf:        logf,
 	})
 }
 

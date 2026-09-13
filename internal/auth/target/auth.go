@@ -133,6 +133,21 @@ type ProvisionedAccess struct {
 	// id is empty without it. It carries no credential material — a uid is not a
 	// secret and is readable by anyone on the target.
 	AccountUID int
+	// UIDLease names the block that uid came out of (contract 4.3, phase 0035),
+	// or is empty for a method that leased none.
+	//
+	// It is on the record beside AccountUID because they answer different
+	// questions once more than one proxy serves a target: the uid says which
+	// account, the lease says WHOSE BLOCK it came from — which is what an
+	// incident needs to tell a uid this proxy allocated from one another proxy
+	// did, without asking every proxy in the estate. It names a grant, not a
+	// credential, and holding it discloses nothing.
+	UIDLease string
+	// UIDMarked says the target also recorded the uid in its own high-water
+	// mark. False is not a failure: since phase 0035 the mark only corroborates
+	// a floor the lease already holds, and a target that can write nothing is
+	// served with this false and the fact logged.
+	UIDMarked bool
 	// Enforcement is what was ACTUALLY rendered on the target, never what the
 	// route asked for (PLAN §6.5, phase 0019). Nil means the provisioner did
 	// not answer, and the Selector fills it in from the method's own

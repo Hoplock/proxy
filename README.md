@@ -129,7 +129,7 @@ target keeps working throughout. See `auth.target.rejection` in
 
 ### What `ephemeral-user` needs on a target
 
-Two things beyond the provisioning account itself, both because of how an
+Three things beyond the provisioning account itself, all because of how an
 ephemeral account's **uid** is chosen.
 
 The proxy allocates the uid rather than letting `useradd` do it. Left to itself,
@@ -138,30 +138,45 @@ teardown deliberately does not walk the filesystem — so every file a session
 wrote **outside its home** keeps the bare number, and the next session, belonging
 to a different person, would own it. So:
 
-- **`enforcement_base`** (default `/var/lib/hoplock`) must exist or be creatable
-  by the provisioning account, and be writable by it, on **every** target — not
-  only on the ones that render an enforcement rung. It holds the uid high-water
-  mark, which is what makes the guarantee survive a teardown, a proxy restart,
-  and a second proxy on the same fleet. A target where the mark cannot be written
-  refuses the session as an outage rather than provisioning an account whose uid
-  nothing has recorded. The proxy sets that directory root-owned and mode `700`
-  on every provisioning, and treats what it reads there as evidence that may only
-  ever **raise** the next uid — so a tampered mark costs uids out of the range,
-  loudly, and can never hand a session a uid a previous one held.
+- **A Hoplock Control that implements `POST /v1/uids/lease`** (contract 4.3).
+  It grants this proxy an **exclusive block of uids per target**, and that block
+  is where the floor lives: two proxies holding two blocks cannot collide, and a
+  proxy that restarts or is replaced allocates above everything the target was
+  ever given without needing the target's word for it. The proxy calls it **once
+  per block**, never per session, and keeps using a block it already holds while
+  Control is unreachable — so an outage is felt only when the block runs out or
+  its term ends, and both then refuse the session as an outage with nothing
+  provisioned. `auth.target.ephemeral_user.uid_lease.uid_count` is how many
+  sessions that covers; the server's term is how long.
 
-  Note the shape this rules out: a host with a **read-only root filesystem** can
-  run `useradd -m` and hold an `authorized_keys` in a writable `/home`, but cannot
-  take `/var/lib`. Point `enforcement_base` at a writable path on such a fleet.
-  Appliances reached with `ephemeral-account` — firewalls, switches — are
-  unaffected: the proxy allocates no uid and writes no files there.
+  A Control that does **not** implement it refuses every `ephemeral-user` route
+  in practice: the proxy fails closed rather than falling back to a floor it
+  cannot trust.
+- **`enforcement_base`** (default `/var/lib/hoplock`), where the proxy also
+  records a uid high-water mark on the target. This **corroborates** the leased
+  floor and may only ever **raise** it, so a tampered mark costs uids out of the
+  range, loudly, and can never hand a session a uid a previous one held. The
+  proxy sets the directory root-owned and mode `700` on every provisioning.
+
+  **It does not have to be writable.** A target that cannot take it is served on
+  the lease alone, with the absence logged and put on the provisioning record
+  (`target_uid_marked`) — so a host with a **read-only root filesystem**, which
+  can run `useradd -m` and hold an `authorized_keys` in a writable `/home` but
+  cannot take `/var/lib`, is a supported shape rather than one to point
+  `enforcement_base` around. Routes that render an enforcement rung still need
+  the directory, because that is where the rung's own material goes. Appliances
+  reached with `ephemeral-account` — firewalls, switches — are unaffected either
+  way: the proxy allocates no uid and writes no files there.
 - **The uid range** (`auth.target.ephemeral_user.uid_min`/`uid_max`, default
   `2000000-2999999`) must be free on the fleet. It sits above every
   distribution's own `UID_MAX`, so the target's allocator never enters it; move
-  it only for a fleet that already allocates there, and keep it wide.
-  **Allocation does not wrap** — reaching the top refuses every ephemeral session
-  on that target until `uid_max` is raised, and the proxy warns on every
-  allocation past nine tenths of the range so that raising it is still a cheap
-  change when it matters.
+  it only for a fleet that already allocates there, and keep it wide. It is the
+  range this proxy will **accept a leased block from**: a block outside it is
+  refused rather than clamped, because those numbers encode fleet facts the
+  server cannot know. **Allocation does not wrap** — reaching the top refuses
+  every ephemeral session on that target until `uid_max` and the server's own
+  range are raised, and the proxy warns on every allocation past nine tenths of
+  the range so that raising it is still a cheap change when it matters.
 
 ## The end-to-end topology
 

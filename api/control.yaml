@@ -150,7 +150,7 @@ info:
     older proxy parses a route exactly as it always did. v3 announced its
     `username` requirement as a break rather than a version gate for the same
     reason.
-  version: 4.2.0
+  version: 4.3.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -174,6 +174,10 @@ tags:
     description: server → proxy revocation stream (PLAN §6.4).
   - name: capabilities
     description: what a target can enforce, discovered by the proxy (contract v4).
+  - name: uids
+    description: |
+      exclusive blocks of ephemeral uids, leased per proxy per target
+      (contract 4.3, PLAN §5.1).
 
 paths:
   /v1/auth/cert:
@@ -416,6 +420,115 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/uids/lease:
+    post:
+      tags: [uids]
+      operationId: leaseUIDs
+      summary: Lease an exclusive block of ephemeral uids for one target.
+      description: |
+        Called by a proxy that is about to allocate uids for `ephemeral-user`
+        accounts on a target and holds no usable block for it (contract 4.3,
+        phase 0035, PLAN §5.1).
+
+        ### What the block is for
+
+        `useradd` hands a torn-down account's uid straight back to the next
+        caller, so the proxy chooses the uid itself and passes it as an explicit
+        `-u`, **strictly above everything that target has ever been given**.
+        That floor has to survive a proxy restart, a proxy replaced without its
+        disk, two proxies on one target, and a target the proxy can write
+        nothing to — so it is held **here**, by the only party that sees every
+        proxy for a target.
+
+        ### Why a lease, and not a field on the authorize decision
+
+        `/v1/authorize` is **cacheable** (`cache`, PLAN §6.4), and the proxy
+        serves a cached decision while this server is unreachable. A floor
+        carried on a cacheable decision is therefore replayed from whenever it
+        was cached — and **a stale floor is a lowered floor**, which is the uid
+        reuse this mechanism exists to prevent. Anything cacheable is
+        disqualified for the same reason. A lease is not, because it is
+        **exclusive**: replaying it grants the same block to the same proxy.
+
+        ### What the server must guarantee
+
+        One thing, and the whole invariant rests on it:
+
+        > **The per-target allocation cursor only ever advances.** A uid inside
+        > a granted block is never inside any other grant, for this proxy or
+        > any other, ever again — whether the block was used, abandoned, or
+        > allowed to expire.
+
+        It follows that the server never reclaims a block, and that a lease
+        needs no release call: there is nothing to give back. The server's
+        whole storage requirement is one integer per target, advanced under a
+        lock on grant. There is **no per-session write and no read-modify-write
+        on the session path** — this call is made once per *block*, not once
+        per session, which is what keeps it out of the per-connection budget
+        PLAN §9.1 measures.
+
+        ### The term
+
+        `term_seconds` is how long the proxy may keep allocating from the block.
+        It is not what makes the uids non-reusable — the monotonic cursor above
+        is — so an expired block is simply one this proxy stops allocating
+        from, never one the server hands to somebody else.
+
+        A block therefore ends in one of two ways, and **both fail closed while
+        this server is unreachable**: it is exhausted, or its term runs out.
+        That is the deliberate trade-off and it is stated rather than hidden —
+        a Control outage plus a busy target becomes a provisioning outage for
+        that target (PLAN §4.3, outage-class, nothing provisioned). `uid_count`
+        is how many sessions a proxy can serve through an outage and
+        `term_seconds` is how long it can; a server author sets both against
+        how long their own outages last. The proxy renews in the background
+        well before either runs out, so an outage has to start inside that
+        margin to bite at all.
+
+        ### `observed_floor` is an observation from an untrusted party
+
+        The proxy also writes a high-water mark on the target itself, where it
+        can. That mark is **corroboration and may only ever raise a floor,
+        never lower one** — the same relationship a capability report has to a
+        rung. `observed_floor` passes it on so a server whose cursor sits below
+        a mark left by an earlier deployment catches up rather than granting
+        blocks the proxy must immediately discard.
+
+        It is a target's word, so it is the server's to clamp or ignore, and
+        the exposure is worth stating: root on a target can report a large
+        floor and burn that target's range. That is the availability side of
+        an invariant that already prefers refusing to reusing — it is loud, it
+        is bounded by `range_max`, and it reaches no other target.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UIDLeaseRequest'
+      responses:
+        '200':
+          description: A block was granted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UIDLeaseResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            No block can be granted: the server's cursor for this target has
+            reached the top of its range. The proxy treats it exactly as it
+            treats an exhausted block — outage-class, nothing provisioned — and
+            the remedy is the operator's, not the user's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/ServerError'
 
@@ -1793,6 +1906,106 @@ components:
             freshness of its own record, on the same reasoning as
             `cache.ttl_seconds`: a proxy may re-observe sooner, never later.
           example: 900
+
+    UIDLeaseRequest:
+      type: object
+      required: [proxy_id, target]
+      properties:
+        proxy_id:
+          type: string
+          description: |
+            The proxy the block is granted to. A lease is **per proxy per
+            target** and is not made on behalf of a session, which is why this
+            carries no `conn`.
+          example: proxy-eu-west-1
+        target:
+          type: string
+          description: |
+            The host the block is for. Keyed exactly as `/v1/hostkeys/report`
+            and `/v1/capabilities/report` key their subject, and with the same
+            known imprecision: several names resolving to one host are several
+            keys here. Tidying that is a target-identity question the proxy
+            does not answer twice (PLAN §5.3, phase 0029).
+          example: host.company.com
+        target_port:
+          type: integer
+          format: int32
+          description: The port, when it is not the default.
+        uid_count:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            How many uids the proxy would like. A **request, not a
+            requirement**: the server grants what it chooses and the proxy uses
+            what it is granted. Absent leaves the size entirely to the server.
+          example: 4096
+        range_min:
+          type: integer
+          format: int32
+          description: |
+            The bottom of the range this proxy will accept a block from. A
+            server with no range configured for the target may allocate from
+            it; a server with one ignores it. The proxy **refuses a block
+            outside `[range_min, range_max]`** as an outage rather than
+            allocating from it, because these bounds encode facts about the
+            fleet — above every distribution's own `UID_MAX`, above systemd's
+            dynamic-user range, at the top of SSSD's default id-mapping range,
+            and below 2^31 so a uid stays a positive int32.
+          example: 2000000
+        range_max:
+          type: integer
+          format: int32
+          description: The top of that range, inclusive.
+          example: 2999999
+        observed_floor:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            The highest uid the proxy has seen given out on this target, from
+            the target's own high-water mark and account database. An
+            **observation from an untrusted party** that may only ever raise
+            the server's cursor: see the endpoint description for what a server
+            owes it and what it costs.
+          example: 2000512
+
+    UIDLeaseResponse:
+      type: object
+      required: [lease_id, uid_from, uid_to]
+      properties:
+        lease_id:
+          type: string
+          description: |
+            Names this grant. It goes on the proxy's provisioning record beside
+            the uid, so an incident can say which proxy's block a uid came from
+            without asking every proxy.
+          example: lease-host-0007
+        uid_from:
+          type: integer
+          format: int32
+          description: The first uid in the block, inclusive.
+          example: 2004096
+        uid_to:
+          type: integer
+          format: int32
+          description: |
+            The end of the block, **exclusive**. Must be greater than
+            `uid_from`; a server that cannot grant a non-empty block answers
+            `409` instead.
+          example: 2008192
+        term_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How long the proxy may keep allocating from this block. Absent or
+            `0` means the proxy's own default. The proxy may stop sooner and
+            never later, on the same reasoning as `cache.ttl_seconds` — and,
+            unlike a cache hint, a short term here costs availability rather
+            than buying freshness, because the uids are non-reusable either
+            way.
+          example: 86400
 
     CacheHint:
       type: object

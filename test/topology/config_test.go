@@ -225,12 +225,15 @@ func TestTheUIDRangeTheScenariosDependOn(t *testing.T) {
 			"test/e2e asserts a session's uid is inside %d-%d",
 			e.UIDMin, e.UIDMax, config.DefaultEphemeralUIDMin, config.DefaultEphemeralUIDMax)
 	}
-	// The mark that makes allocation non-reusing lives under this directory, so
-	// a session's uid outliving its account depends on it being somewhere the
-	// provisioning account can write on the target image.
+	// The uid mark lives under this directory, and since phase 0035 it
+	// CORROBORATES a floor the leased block already holds rather than carrying
+	// it — so a target that cannot write it is served. The scenarios still pin
+	// the path, because two of them read the mark directly: the one asserting it
+	// survives the suite, and the one that blocks it to prove an unwritable
+	// target is served.
 	if base := e.EnforcementBase; base != "" && base != "/var/lib/hoplock" {
 		t.Errorf("auth.target.ephemeral_user.enforcement_base = %q; the uid mark lives there and "+
-			"deploy/target must be able to write it", base)
+			"the e2e scenarios read it at that path", base)
 	}
 
 	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
@@ -240,6 +243,13 @@ func TestTheUIDRangeTheScenariosDependOn(t *testing.T) {
 	if !bytes.Contains(body, []byte("target: inherit.company.com")) {
 		t.Error("the fixtures no longer carry the inherit.company.com route, which is the second " +
 			"login the cross-login uid scenario needs")
+	}
+	// The uid-block lease (contract 4.3, phase 0035). Without it the mock grants
+	// no block, and every ephemeral route in the topology refuses as an outage —
+	// so this is not a preference, it is what makes the suite run at all.
+	if !bytes.Contains(body, []byte("uid_leases:")) {
+		t.Error("the fixtures carry no uid_leases block; the ephemeral method allocates inside " +
+			"a block Hoplock Control leases, and a mock that grants none refuses every session")
 	}
 }
 

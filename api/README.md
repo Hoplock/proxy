@@ -68,6 +68,41 @@ introduced after that version.** A server that respects it can add vocabulary
 freely; a server that ignores it is caught at the first response instead of
 having its policy quietly thinned.
 
+### The v4.2→v4.3 revision
+
+Phase 0035 adds one **endpoint** and changes nothing that exists:
+`POST /v1/uids/lease`. It is additive in the strongest sense — no field moves, no
+field changes meaning, and a proxy that never calls it parses every response
+exactly as before — so `policy_version` stays `4`. That number gates the
+**vocabulary `/v1/authorize` answers in**, and a new endpoint is not in it.
+
+**What a server now owes, and it is one integer per target.** The endpoint grants
+a proxy an **exclusive block of uids** for a target, `[uid_from, uid_to)` with a
+term, out of a per-target allocation cursor the server advances on grant. There
+is no per-session write and no read-modify-write on the session path: the proxy
+allocates inside its own block and calls this **once per block**, not once per
+session.
+
+**The invariant a server must keep is that the cursor only ever advances.** A
+uid inside a granted block is never inside another grant — for this proxy or any
+other, ever again, whether the block was used, abandoned, or allowed to expire.
+Everything the proxy relies on follows from it, so a server that "reclaimed" an
+unused block to save uids would silently break the guarantee the endpoint exists
+for: that a fresh ephemeral account never inherits ownership of the files a
+torn-down one left outside its home (PLAN §5.1).
+
+**Why this is not a field on the authorize response**, which is the shape a
+server author will reach for first: that decision is **cacheable** and the proxy
+serves it while this server is unreachable, so a floor carried on it is replayed
+from whenever it was cached — and a stale floor is a *lowered* floor, which is
+the uid reuse the mechanism prevents. A lease is exempt because it is exclusive:
+replaying it grants the same block to the same proxy.
+
+A server that does not implement it refuses the proxy's `ephemeral-user` routes
+in practice, because the proxy fails **closed** rather than falling back to a
+floor it cannot trust. That is the one operational consequence of an otherwise
+additive revision, and it is stated here rather than discovered.
+
 ### The v4.1→v4.2 revision
 
 Phase 0028 makes one change and it is a **break**, called out here for the same
@@ -797,6 +832,16 @@ integrations are Control's and Enterprise's, and the decision they feed was
 already made upstream before this response was written. The proxy never learns
 that any of those systems exist.
 
+### Ephemeral uid blocks
+
+`POST /v1/uids/lease` grants a proxy an **exclusive block of uids for a target**,
+which is where the floor under an `ephemeral-user` account's uid lives
+(contract 4.3, PLAN §5.1). The proxy allocates inside its own block, so this is
+called once per block rather than once per session, and a block it already holds
+needs no server at all — which is what lets provisioning ride out a Control
+outage. See "The v4.2→v4.3 revision" above for the one invariant a server must
+keep, and why this is not a field on the authorize response.
+
 ### Host keys
 
 The proxy reports every target host key it sees before completing the target
@@ -832,6 +877,7 @@ Where the round trips are for one session, before any caching:
 | Authenticate (password + MFA) | 1 + one per poll | yes, and bounded by the user |
 | Authorize + route | 1 | yes |
 | Host-key report | 1 per target host key, or 0 when the server authorised reuse (4.1) | yes, before the target handshake |
+| UID block lease | 1 per **block**, not per session (4.3), and taken in the background before the block in hand runs out | no, except the first lease for a target |
 | Channel open / command / stream data | **0** | — |
 | Logs | batched, off the data path | no (priority records excepted, by design) |
 
@@ -1045,6 +1091,7 @@ startup, and every problem in a file is reported at once.
 | `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision (4.1). Only a key already ruled on and accepted is hinted. |
 | `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). |
+| `uid_leases` | `uid_count` (block size, overriding what the proxy asks for), `term_seconds` (0 leaves the term to the proxy), and `range_min`/`range_max` (0 on either takes that bound from the proxy's own request, which is what a Control with no opinion about a fleet's uid conventions should do). The per-target cursor is in memory and **is not reset by `POST /debug/reset`** — rewinding it would grant a block overlapping one a proxy is still allocating from. |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to
 `fixture`; a route defaults to `login: "*"`, `target: "*"`, `route_type:
