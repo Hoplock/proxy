@@ -139,11 +139,15 @@ func newDeviceHarness(t *testing.T, opts deviceHarnessOptions) *deviceHarness {
 	if accessProfile == "" {
 		accessProfile = testDeviceAccessProfile
 	}
+	profiles := map[string]string{}
+	for _, platform := range registry.Platforms() {
+		profiles[platform] = accessProfile
+	}
 	auth, err := NewDeviceAccountAuthenticator(DeviceAccountOptions{
 		ProxyID:        proxyID,
 		Drivers:        registry,
 		SourceAddress:  "198.51.100.7",
-		AccessProfile:  accessProfile,
+		AccessProfiles: profiles,
 		Events:         events,
 		ReaperInterval: -1, // no background sweeping; tests call Sweep directly
 		ReaperGrace:    opts.reaperGrace,

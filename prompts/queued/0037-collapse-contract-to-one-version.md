@@ -20,8 +20,11 @@
 > rather than trusting this one. When last checked: **0035 has landed** — it
 > took the contract to **4.3** with `POST /v1/uids/lease`, so the version history
 > this phase collapses now has a `v4.2→v4.3` section in `api/README.md` and one
-> more endpoint to keep — and **0036** may still revise `api/` (a route-named
-> default access profile is one of the two shapes it weighs).
+> more endpoint to keep — and **0036 has landed and did NOT touch `api/`**: it
+> made the access profile per-platform in proxy configuration and left 0019's
+> route override where it was, so the contract shape it might have revised was
+> weighed and rejected (PLAN §5.3, "As settled (phase 0036)"). This prompt is
+> now the only one left in `prompts/queued/`.
 > `grep -rln "api/control.yaml" prompts/queued/` is the starting point; each
 > prompt's own header says whether it touches the contract. Collapsing before
 > the last revising phase just means doing it twice.

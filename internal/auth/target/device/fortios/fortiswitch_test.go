@@ -219,8 +219,8 @@ func TestSwitchRefusesAUnitThatIsNotOne(t *testing.T) {
 func TestSwitchRefusesFortiOSBuiltinProfiles(t *testing.T) {
 	for _, profile := range []string{"super_admin_readonly", "prof_admin"} {
 		t.Run(profile, func(t *testing.T) {
-			if err := SwitchAcceptsProfile(profile); err == nil {
-				t.Fatalf("SwitchAcceptsProfile(%q) accepted a FortiOS-only built-in", profile)
+			if err := (&SwitchDriver{}).ValidateRole(profile); err == nil {
+				t.Fatalf("ValidateRole(%q) accepted a FortiOS-only built-in", profile)
 			}
 			if _, err := NewSwitch(SwitchOptions{Dialer: stubDialer{}, AccessProfile: profile}); err == nil {
 				t.Fatalf("NewSwitch accepted %q", profile)
@@ -246,8 +246,8 @@ func TestSwitchRefusesFortiOSBuiltinProfiles(t *testing.T) {
 
 	// A custom profile is the customer's to scope, so only the two FortiOS
 	// built-ins are refused.
-	if err := SwitchAcceptsProfile("hoplock-session"); err != nil {
-		t.Fatalf("SwitchAcceptsProfile refused a custom profile: %v", err)
+	if err := (&SwitchDriver{}).ValidateRole("hoplock-session"); err != nil {
+		t.Fatalf("ValidateRole refused a custom profile: %v", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 
@@ -171,7 +172,7 @@ func newDeviceAccountFromConfig(cfg config.EphemeralAccountAuth, opts Options) (
 		ProxyID:        opts.ProxyID,
 		Drivers:        drivers,
 		SourceAddress:  cfg.SourceAddress,
-		AccessProfile:  cfg.AccessProfile,
+		AccessProfiles: accessProfilesFor(drivers, cfg.AccessProfile),
 		Events:         opts.Events,
 		ReaperInterval: cfg.Reaper.Interval,
 		ReaperGrace:    cfg.Reaper.Grace,
@@ -194,41 +195,19 @@ func newDriverRegistry(cfg config.EphemeralAccountAuth, dialer device.ShellDiale
 		if len(wanted) > 0 && !wanted[platform] {
 			continue
 		}
+		profile, err := accessProfileFor(platform, cfg.AccessProfile)
+		if err != nil {
+			return nil, err
+		}
 		switch platform {
 		case fortios.PlatformFortiGate:
 			if err := fortios.Register(registry, fortios.Options{
 				Dialer:        dialer,
-				AccessProfile: cfg.AccessProfile,
+				AccessProfile: profile,
 			}); err != nil {
 				return nil, err
 			}
 		case fortios.PlatformFortiSwitch:
-			// The proxy-wide access profile is handed over only if this
-			// platform can hold it, and that needs saying because "drop it
-			// quietly" is normally the wrong answer.
-			//
-			// The setting is FortiOS-shaped: `super_admin_readonly` and
-			// `prof_admin` are FortiOS built-ins that FortiSwitchOS does not
-			// have at all (fortios.checkSwitchProfile), and a FortiGate estate
-			// acquiring its first switch will have one of them configured. The
-			// two alternatives are both worse than this. Passing it anyway
-			// means `set accprofile` refused half way through a sequence that
-			// has already created the administrator entry — a rollback on a
-			// customer's switch, per session. Refusing at STARTUP means every
-			// FortiGate-only deployment stops booting the day this driver
-			// ships, over a platform it does not serve.
-			//
-			// So the driver is built with NO default profile, which is a state
-			// it already supports: a route naming its own profile (0019's
-			// `enforcement.platform_role`) is served, and a route relying on
-			// the proxy-wide default is refused by CreateAccount — outage-class
-			// per PLAN §4.3, nothing provisioned, and the error names the
-			// platform and what to set. Nothing is weakened and nothing is
-			// substituted; what is lost is a default that was never valid here.
-			profile := cfg.AccessProfile
-			if fortios.SwitchAcceptsProfile(profile) != nil {
-				profile = ""
-			}
 			if err := fortios.RegisterSwitch(registry, fortios.SwitchOptions{
 				Dialer:        dialer,
 				AccessProfile: profile,
@@ -248,7 +227,72 @@ func newDriverRegistry(cfg config.EphemeralAccountAuth, dialer device.ShellDiale
 			return nil, fmt.Errorf("auth/target: auth.target.ephemeral_account.platforms names %q, which this build has no driver for", platform)
 		}
 	}
+	for _, platform := range cfg.AccessProfile.Platforms() {
+		if _, err := registry.Lookup(platform); err != nil {
+			// A scope written for a platform this proxy does not serve is a
+			// typo far more often than it is foresight, and the one reading it
+			// is the operator who has just been told a DIFFERENT platform has
+			// no scope. Saying so here is what makes that error the whole
+			// answer rather than half of it.
+			return nil, fmt.Errorf("auth/target: auth.target.ephemeral_account.access_profile names platform %q, "+
+				"which this proxy does not serve: it serves %s", platform, strings.Join(registry.Platforms(), ", "))
+		}
+	}
 	return registry, nil
+}
+
+// accessProfileFor resolves the scope one platform's created administrators are
+// given when the route names none, and refuses at STARTUP what phase 0029 could
+// only refuse per session (PLAN §5.3, phase 0036).
+//
+// Two things are checked and they fail differently on purpose. A platform with
+// NO scope configured is the operator having written one string for a fleet
+// that now has two platforms in it — the upgrade case — so the error says which
+// platform is uncovered and what the mapping form looks like. A platform that
+// cannot HOLD the scope named for it is the sharper mistake, and the driver's
+// own declaration (device.RoleValidator) is what answers it: `prof_admin` is a
+// FortiOS profile and a FortiSwitch does not have it, so a proxy fronting both
+// estates with one string was configured wrong whichever value it chose.
+//
+// Both were previously discovered by a session failing on a customer's device.
+// This is the same refusal, moved to the moment the operator can act on it.
+func accessProfileFor(platform string, configured config.AccessProfiles) (string, error) {
+	profile := configured.For(platform)
+	if profile == "" {
+		return "", fmt.Errorf("auth/target: auth.target.ephemeral_account.access_profile names no scope for platform %q, "+
+			"which this proxy serves: no driver in this build has a default (PLAN §5.3), so name one per platform "+
+			"(`access_profile: {%s: <profile>, ...}`) or narrow auth.target.ephemeral_account.platforms to the "+
+			"platforms this proxy actually fronts", platform, platform)
+	}
+	// The declaration is asked BEFORE the driver is built, so a profile no
+	// platform can hold never reaches a device. The shipped registry holds a
+	// declaration-only instance of each driver for exactly this kind of
+	// question (device.Shipped), so nothing is dialled to answer it.
+	declared, err := device.Shipped().Lookup(platform)
+	if err != nil {
+		return "", err
+	}
+	if err := device.ValidateRole(declared, profile); err != nil {
+		return "", fmt.Errorf("auth/target: auth.target.ephemeral_account.access_profile names %q for platform %q, "+
+			"which cannot hold it: %w", profile, platform, err)
+	}
+	return profile, nil
+}
+
+// accessProfilesFor resolves the scope for every platform the registry serves.
+//
+// It re-reads what newDriverRegistry already validated rather than threading a
+// map out of it, because the provisioner needs the same answer for a different
+// reason: the driver applies the default when a CreateRequest carries no
+// profile, and the provisioner records the scope in force on the session's
+// audit record and its log line. Two readers of one setting, and neither is
+// allowed to be the one that guesses.
+func accessProfilesFor(registry *device.Registry, configured config.AccessProfiles) map[string]string {
+	out := make(map[string]string, len(registry.Platforms()))
+	for _, platform := range registry.Platforms() {
+		out[platform] = configured.For(platform)
+	}
+	return out
 }
 
 // newEphemeralFromConfig assembles the just-in-time provisioner from local

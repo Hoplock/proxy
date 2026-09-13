@@ -100,6 +100,7 @@ type SwitchDriver struct {
 }
 
 var _ device.Driver = (*SwitchDriver)(nil)
+var _ device.RoleValidator = (*SwitchDriver)(nil)
 
 // SwitchOptions configure a FortiSwitchOS driver.
 type SwitchOptions struct {
@@ -123,10 +124,7 @@ func NewSwitch(opts SwitchOptions) (*SwitchDriver, error) {
 	// legitimate configuration, and refusing to build the driver would turn
 	// that into a startup failure.
 	if d.profile != "" {
-		if err := validateProfile(d.profile); err != nil {
-			return nil, err
-		}
-		if err := checkSwitchProfile(d.profile); err != nil {
+		if err := d.ValidateRole(d.profile); err != nil {
 			return nil, err
 		}
 	}
@@ -274,7 +272,7 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 	if profile == "" {
 		return nil, errors.New("auth/target/device/fortios: no access profile: " +
 			"an administrator's scope must be named by the route or by " +
-			"`auth.target.ephemeral_account.access_profile`, and FortiSwitchOS's only built-in " +
+			"`auth.target.ephemeral_account.access_profile.fortiswitchos`, and FortiSwitchOS's only built-in " +
 			"profile is `super_admin`, which has access to everything including administrator " +
 			"management")
 	}
@@ -576,23 +574,20 @@ func (d *SwitchDriver) abandon(ctx context.Context, s *cliSession, name string) 
 // system administrators."
 const switchBuiltinProfile = builtinSuperAdmin
 
-// SwitchAcceptsProfile reports whether an access profile can be used on a
-// FortiSwitch, so a caller holding a FLEET-WIDE setting can tell before it
-// hands one over.
+// ValidateRole implements device.RoleValidator.
 //
-// It exists for internal/auth/target's registry, which has exactly that
-// problem: `auth.target.ephemeral_account.access_profile` is one value for
-// every platform a proxy serves, and the FortiOS built-ins that most estates
-// have configured do not exist here. See the call site for why the answer is
-// to build this driver without a default rather than to refuse at startup.
-func SwitchAcceptsProfile(profile string) error {
-	if profile == "" {
-		return nil
-	}
-	if err := validateProfile(profile); err != nil {
+// This is the platform that makes the interface worth having. FortiSwitchOS
+// documents exactly one built-in profile and the two a FortiGate estate
+// actually configures are not it, so a proxy that acquires its first switch has
+// a scope in hand that this platform will refuse — and the refusal without this
+// check lands half way through a sequence that has already created the
+// administrator (checkSwitchProfile). Answering from a declaration moves it to
+// the moment the operator writes the value down.
+func (d *SwitchDriver) ValidateRole(role string) error {
+	if err := validateProfile(role); err != nil {
 		return err
 	}
-	return checkSwitchProfile(profile)
+	return checkSwitchProfile(role)
 }
 
 // checkSwitchProfile refuses a FortiOS built-in on a FortiSwitch.

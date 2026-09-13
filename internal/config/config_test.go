@@ -937,3 +937,120 @@ func TestValidateRejectionSettings(t *testing.T) {
 		}
 	}
 }
+
+// deviceConfig is a minimal ephemeral-account configuration with the access
+// profile left to the caller, so the tests below vary one setting.
+func deviceConfig(accessProfile string) string {
+	return `
+proxy:
+  id: "proxy-1"
+  listen_addr: "0.0.0.0:2222"
+  host_key_path: "/etc/hoplock/host_key"
+control:
+  base_url: "https://control.example.com"
+auth:
+  target:
+    method: "ephemeral-account"
+    ephemeral_account:
+      admin_user: "hoplock-mgmt"
+      password_env: "HOPLOCK_DEVICE_ADMIN_PASSWORD"
+` + accessProfile
+}
+
+// TestParseAccessProfileAcceptsBothShapes is phase 0036's config change.
+//
+// The scalar is not a legacy form kept for compatibility: it is how an operator
+// says "every platform this proxy serves takes the same scope", which is true
+// of a single-platform estate. The mapping is what a proxy fronting two
+// platforms needs, because a profile name is a platform's vocabulary and not a
+// fleet's.
+func TestParseAccessProfileAcceptsBothShapes(t *testing.T) {
+	t.Run("one name for every platform", func(t *testing.T) {
+		cfg, err := Parse(strings.NewReader(deviceConfig(`      access_profile: "prof_admin"` + "\n")))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		p := cfg.Auth.Target.EphemeralAccount.AccessProfile
+		if got := p.For("fortigate"); got != "prof_admin" {
+			t.Errorf("For(fortigate) = %q, want prof_admin", got)
+		}
+		// It answers for a platform nobody named, which is what "every
+		// platform" means and what keeps a single-platform config short.
+		if got := p.For("something-else"); got != "prof_admin" {
+			t.Errorf("For(something-else) = %q, want prof_admin", got)
+		}
+		if got := p.Platforms(); got != nil {
+			t.Errorf("Platforms() = %v, want none: the scalar describes no particular platform", got)
+		}
+	})
+
+	t.Run("one name per platform", func(t *testing.T) {
+		cfg, err := Parse(strings.NewReader(deviceConfig(
+			"      access_profile:\n        fortigate: \"prof_admin\"\n        fortiswitchos: \"super_admin\"\n")))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		p := cfg.Auth.Target.EphemeralAccount.AccessProfile
+		if got := p.For("fortigate"); got != "prof_admin" {
+			t.Errorf("For(fortigate) = %q, want prof_admin", got)
+		}
+		if got := p.For("fortiswitchos"); got != "super_admin" {
+			t.Errorf("For(fortiswitchos) = %q, want super_admin", got)
+		}
+		// No fleet-wide fallback under the mapping form. One would put the
+		// scope of a platform the operator DID think about onto one they did
+		// not, and the driver registry refuses to start over the empty answer.
+		if got := p.For("something-else"); got != "" {
+			t.Errorf("For(something-else) = %q, want none", got)
+		}
+		if got, want := p.Platforms(), []string{"fortigate", "fortiswitchos"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("Platforms() = %v, want %v", got, want)
+		}
+	})
+}
+
+// TestParseRejectsAnUnusableAccessProfile covers the three shapes that are not
+// a configured scope, each of which would otherwise reach the driver registry
+// as "no default" and stop the proxy there with a worse message.
+func TestParseRejectsAnUnusableAccessProfile(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		_, err := Parse(strings.NewReader(deviceConfig("")))
+		assertFieldError(t, err, "auth.target.ephemeral_account.access_profile", ErrMissing)
+	})
+
+	t.Run("a platform with no profile", func(t *testing.T) {
+		_, err := Parse(strings.NewReader(deviceConfig(
+			"      access_profile:\n        fortigate: \"prof_admin\"\n        fortiswitchos: \"\"\n")))
+		assertFieldError(t, err, "auth.target.ephemeral_account.access_profile.fortiswitchos", ErrMissing)
+	})
+
+	t.Run("neither a name nor a mapping", func(t *testing.T) {
+		_, err := Parse(strings.NewReader(deviceConfig(
+			"      access_profile: [\"prof_admin\"]\n")))
+		if err == nil {
+			t.Fatal("a list of profiles was accepted")
+		}
+		if !strings.Contains(err.Error(), "access_profile") {
+			t.Errorf("the error does not name the setting: %v", err)
+		}
+	})
+}
+
+// assertFieldError checks that a validation error names one field with one
+// sentinel.
+func assertFieldError(t *testing.T, err error, field string, want error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("no error, want %s: %v", field, want)
+	}
+	var v *ValidationError
+	if !errors.As(err, &v) {
+		t.Fatalf("error is not a *ValidationError: %v", err)
+	}
+	for _, fe := range v.Fields {
+		if fe.Field == field && errors.Is(fe.Cause, want) {
+			return
+		}
+	}
+	t.Fatalf("no %s / %v among %v", field, want, v.Fields)
+}

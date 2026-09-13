@@ -403,15 +403,38 @@ auth:
       # PLAN §5.3). So there is no route field naming a switch behind a
       # firewall, and nothing here to configure for FortiLink.
       platforms: []
-      # The platform authorization scope created administrators are given.
-      # REQUIRED: no driver in this build has a default, and the proxy refuses
-      # to start without one rather than choosing a privileged account's scope
-      # on your firewalls for you.
+      # The platform authorization scope created administrators are given when
+      # the route names none. REQUIRED, and required for EVERY PLATFORM this
+      # proxy serves: no driver in this build has a default, and the proxy
+      # refuses to start without one rather than choosing a privileged
+      # account's scope on your firewalls for you.
       #
-      # FortiOS documents three built-in profiles: `super_admin` and
-      # `prof_admin` (read-write) and `super_admin_readonly` (read-only,
-      # immutable, and not shown under System > Admin profiles in the GUI).
-      # Two things to know before picking one:
+      # Two shapes. One name for every platform:
+      #
+      #   access_profile: "super_admin_readonly"
+      #
+      # or one per platform, which is what a proxy fronting more than one kind
+      # of device needs (phase 0036):
+      #
+      access_profile:
+        fortigate: "prof_admin"
+        fortiswitchos: "super_admin"
+      #
+      # WHY IT IS PER PLATFORM. A profile name is a platform's vocabulary and
+      # not your fleet's. FortiOS documents three built-in profiles —
+      # `super_admin` and `prof_admin` (read-write) and `super_admin_readonly`
+      # (read-only, immutable, and not shown under System > Admin profiles in
+      # the GUI). FortiSwitchOS documents exactly ONE, `super_admin`; the other
+      # two are FortiOS profiles and do not exist there at all. So a single
+      # string was correct for one estate or the other and never for both, and
+      # the mistake showed up as a session failing on a customer's switch. It is
+      # now a startup error naming the platform and the profile.
+      #
+      # If a platform this proxy serves has no entry, the proxy does not start.
+      # Either add one, or narrow `platforms:` above to the platforms this proxy
+      # actually fronts — a FortiGate-only deployment keeps the scalar form.
+      #
+      # Choosing a FortiOS value. Two things to know:
       #
       #   * `super_admin_readonly` cannot run `diagnose` commands from FortiOS
       #     7.4.x, so it is narrower than "read-only" suggests. Fortinet's own
@@ -419,34 +442,24 @@ auth:
       #     profile with CLI commands permitted.
       #   * a read-only profile is wrong for any route whose purpose is to
       #     CHANGE the device, which is most privileged-access work.
+      #   * on a unit running virtual domains, a VDOM-SCOPED administrator may
+      #     hold only `prof_admin` or a custom profile (phase 0016) —
+      #     `super_admin_readonly` is the GLOBAL read-only profile and FortiOS
+      #     will not accept it there. There is no built-in read-only profile a
+      #     per-VDOM account can hold, so a proxy serving routes that name
+      #     `device_field.vdom` needs `prof_admin` or, better, a custom profile
+      #     you built. The driver refuses the global built-ins for such a route
+      #     rather than letting the device fail the sequence half way through.
       #
-      # WHICH profile a route gets is a policy question that phase 0018 gives a
-      # vocabulary and phase 0019 applies; this proxy-wide setting is what that
-      # replaces.
-      access_profile: "super_admin_readonly"
+      # Choosing a FortiSwitchOS value. There is one built-in and it is the
+      # all-access one, so anything narrower is a custom profile you build on
+      # the switch. That is what the driver's AuthorizationCaveat says, and it
+      # is a real limitation rather than a default worth taking comfort in.
       #
-      # A SECOND consequence, and it is why this setting is under-specified
-      # (phase 0029): it is one value for every platform this proxy serves, and
-      # it is FortiOS-shaped. FortiSwitchOS documents exactly ONE built-in
-      # profile, `super_admin` — `prof_admin` and `super_admin_readonly` are
-      # FortiOS profiles and do not exist there at all. So when this names a
-      # FortiOS built-in, the FortiSwitch driver is built with NO default
-      # profile: a route naming its own scope (`enforcement.platform_role`) is
-      # served, and a route relying on the default is refused outage-class with
-      # nothing provisioned. It is not silently substituted, and the proxy does
-      # not refuse to start — a FortiGate-only deployment must not stop booting
-      # over a platform it does not serve. If you serve both estates, either
-      # name the profile per route or set a custom profile that exists on both.
-      #
-      # One consequence to know before choosing it (phase 0016): on a FortiGate
-      # running virtual domains, a VDOM-SCOPED administrator may hold only
-      # `prof_admin` or a custom profile — `super_admin_readonly` is the GLOBAL
-      # read-only profile and FortiOS will not accept it there. There is no
-      # built-in read-only profile a per-VDOM account can hold, so a proxy
-      # serving routes that name `device_field.vdom` needs either `prof_admin`
-      # or, better, a custom profile the customer built. The driver refuses the
-      # global built-ins for such a route rather than letting the device fail
-      # the sequence half way through.
+      # WHICH profile a route gets when it asks for one is a policy question:
+      # `enforcement.platform_role` on a `platform-authorized` route (phase
+      # 0018's vocabulary, phase 0019's rendering). This setting is what every
+      # route that asks for nothing gets.
       # The address devices see this proxy connect from. Where a driver declares
       # it can pin an account to a source address, this is what it is pinned to.
       # Empty means no pin — a restriction not applied, rather than one applied
