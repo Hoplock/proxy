@@ -19,7 +19,7 @@ import (
 	"github.com/hoplock/proxy/internal/sshtest"
 )
 
-// The three session bounds that are not the deadline (contract v4, D16,
+// The three session bounds that are not the deadline (D16,
 // PLAN §6.5, bounds.go). Each one is tested against the class PLAN §4.3 puts it
 // in, because the class is the deliverable: a capture refusal that read as a
 // denial would send a user to ask for permissions they already have, and a
@@ -96,8 +96,8 @@ func TestARouteThatMustBeRecordedRunsWhileOnlyTheNetworkIsDown(t *testing.T) {
 }
 
 // TestARouteWithoutTheCaptureBoundIsUnaffected keeps the absent-value default
-// honest: a v3 server's route on a proxy with no pipeline at all behaves exactly
-// as it did before this phase.
+// honest: a route naming no capture bound runs on a proxy with no pipeline at
+// all.
 func TestARouteWithoutTheCaptureBoundIsUnaffected(t *testing.T) {
 	h := newHarness(t, harnessOptions{options: noRecorder})
 

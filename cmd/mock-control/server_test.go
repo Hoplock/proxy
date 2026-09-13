@@ -756,21 +756,14 @@ func TestFixtureValidation(t *testing.T) {
 		{
 			name: "unknown target auth method",
 			yaml: "users:\n  - login: alice\n    password: pw\n" +
-				"routes:\n  - target: h\n    target_auth:\n      method: telepathy\n",
-			wantErrs: []string{"target_auth.method"},
+				"routes:\n  - target: h\n    target_auth_ladder:\n      - method: telepathy\n",
+			wantErrs: []string{"target_auth_ladder[0].method"},
 		},
 		{
-			// Contract v4.2 (phase 0028). The fixture layer does not carry its
-			// own copy of the rule — it runs the client's Validate — so this
-			// test is what proves the requirement reaches startup rather than
-			// waiting for a session.
-			name: "brokered-key route with no username",
-			yaml: "users:\n  - login: alice\n    password: pw\n" +
-				"routes:\n  - target: h\n    target_auth:\n      method: brokered-key\n" +
-				"      params:\n        credential_ref: edge-fleet-2026\n",
-			wantErrs: []string{"params.username", "brokered-key"},
-		},
-		{
+			// The fixture layer does not carry its own copy of the
+			// username rule — it runs the client's Validate — so this test is
+			// what proves the requirement reaches startup rather than waiting
+			// for a session.
 			name: "brokered-key ladder rung with no username",
 			yaml: "users:\n  - login: alice\n    password: pw\n" +
 				"routes:\n  - target: h\n    target_auth_ladder:\n      - method: brokered-key\n" +
@@ -1018,11 +1011,12 @@ func assertJSONLines(t *testing.T, path string, want int) {
 	}
 }
 
-// TestAuthorizeServesTheV2Vocabulary drives the phase 0006 fixture keys through
-// the real client, which is the only way to know the mock and the contract agree
-// about them: the client decodes the authorize response strictly and validates
-// it, so a fixture key that serialises wrongly fails here rather than in 0009.
-func TestAuthorizeServesTheV2Vocabulary(t *testing.T) {
+// TestAuthorizeServesThePolicyAxes drives the three policy-axis fixture keys
+// through the real client, which is the only way to know the mock and the
+// contract agree about them: the client decodes the authorize response strictly
+// and validates it, so a fixture key that serialises wrongly fails here rather
+// than in the package that enforces it.
+func TestAuthorizeServesThePolicyAxes(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 	ctx := context.Background()
 	alice := &control.Identity{Subject: "alice@example.com", Login: "alice", Source: "fixture"}
@@ -1051,8 +1045,9 @@ func TestAuthorizeServesTheV2Vocabulary(t *testing.T) {
 		if resp.PermittedGlobalRequests.Permitted(control.GlobalRequestTCPIPForward) {
 			t.Error("tcpip-forward permitted though the fixture's list is empty")
 		}
-		if resp.TargetAuth == nil || resp.TargetAuth.Method != control.TargetAuthEphemeralUser {
-			t.Errorf("target_auth = %+v, want the ephemeral-user method", resp.TargetAuth)
+		rungs, named := resp.Ladder()
+		if !named || len(rungs) != 1 || rungs[0].Method != control.TargetAuthEphemeralUser {
+			t.Errorf("ladder = %+v (named=%v), want the ephemeral-user method", rungs, named)
 		}
 	})
 
@@ -1076,8 +1071,9 @@ func TestAuthorizeServesTheV2Vocabulary(t *testing.T) {
 		if rev, policed := resp.PermittedForwards.Destinations(control.ChannelForwardedTCPIP); !policed || len(rev) != 0 {
 			t.Errorf("forwarded_tcpip = %v (policed=%v), want policed with none", rev, policed)
 		}
-		if resp.TargetAuth == nil || resp.TargetAuth.Params["credential_ref"] != "deploy-fleet-2026" {
-			t.Errorf("target_auth = %+v, want the brokered-key credential reference", resp.TargetAuth)
+		rungs, named := resp.Ladder()
+		if !named || len(rungs) != 1 || rungs[0].Params["credential_ref"] != "deploy-fleet-2026" {
+			t.Errorf("ladder = %+v (named=%v), want the brokered-key credential reference", rungs, named)
 		}
 	})
 
@@ -1122,10 +1118,10 @@ func TestAuthorizeServesTheV2Vocabulary(t *testing.T) {
 	})
 }
 
-// TestAuthorizeStillServesAV1Fixture is the compatibility criterion at the mock:
-// a fixture written before phase 0006 sets none of the new keys, and must still
-// produce a working, documented-default decision rather than a denial.
-func TestAuthorizeStillServesAV1Fixture(t *testing.T) {
+// TestAuthorizeServesAFixtureThatNamesNoPolicy pins the absent-value defaults at
+// the mock: a fixture setting only the required keys must still produce a
+// working, documented-default decision rather than a denial.
+func TestAuthorizeServesAFixtureThatNamesNoPolicy(t *testing.T) {
 	fx := mustParseFixtures(t, `
 users:
   - login: alice
@@ -1158,7 +1154,7 @@ routes:
 		{"permitted_requests", resp.PermittedRequests != nil},
 		{"permitted_forwards", resp.PermittedForwards != nil},
 		{"permitted_global_requests", resp.PermittedGlobalRequests != nil},
-		{"target_auth", resp.TargetAuth != nil},
+		{"target_auth_ladder", resp.TargetAuthLadder != nil},
 		{"restricted_exec", resp.FilterPolicy.RestrictedExec != nil},
 	} {
 		if tc.got {
@@ -1168,9 +1164,9 @@ routes:
 	if got := resp.FilterPolicy.Exec(); got != control.ExecModeFiltered {
 		t.Errorf("exec_mode = %q, want %q", got, control.ExecModeFiltered)
 	}
-	// And the v1 policy it did express is untouched.
+	// And the policy it did express is untouched.
 	if !resp.PermittedRequests.RequestPermitted(control.RequestShell) {
-		t.Error("a v1 fixture must not deny every shell")
+		t.Error("a fixture that polices no requests must not deny every shell")
 	}
 	if len(resp.FilterPolicy.Rules) != 1 {
 		t.Errorf("filter rules = %v, want the fixture's one rule", resp.FilterPolicy.Rules)
@@ -1178,9 +1174,10 @@ routes:
 }
 
 // TestAuthorizeRefusesAProxyThatCannotReadThePolicy covers the other half of the
-// versioning rule. The proxy fails closed on a field it does not understand, so
-// a server holding v2 policy for a proxy that declared v1 says so plainly
-// instead of sending policy that will be refused as a protocol error.
+// versioning rule, and it is the regression test for the NEXT vocabulary bump.
+// The proxy fails closed on a field it does not understand, so a server holding
+// policy the proxy cannot read says so plainly instead of sending policy that
+// will be refused as a protocol error three lines later.
 func TestAuthorizeRefusesAProxyThatCannotReadThePolicy(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
@@ -1216,11 +1213,11 @@ func TestAuthorizeRefusesAProxyThatCannotReadThePolicy(t *testing.T) {
 	}
 }
 
-// TestAuthorizeServesTheV3Vocabulary drives the phase 0013 fixture keys through
-// the real client, for the reason the v2 test exists: the client decodes the
-// authorize response strictly and validates it, so a fixture key that
-// serialises wrongly fails here rather than in 0014.
-func TestAuthorizeServesTheV3Vocabulary(t *testing.T) {
+// TestAuthorizeServesTheCredentialLadder drives the ladder fixture keys through
+// the real client, for the reason the policy-axis test exists: the client
+// decodes the authorize response strictly and validates it, so a fixture key
+// that serialises wrongly fails here rather than in 0014.
+func TestAuthorizeServesTheCredentialLadder(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 	ctx := context.Background()
 	deploy := &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy", Source: "fixture"}
@@ -1248,9 +1245,6 @@ func TestAuthorizeServesTheV3Vocabulary(t *testing.T) {
 		if rungs[1].Method != control.TargetAuthBrokeredKey {
 			t.Errorf("second rung = %q, want the weaker rung behind the device one", rungs[1].Method)
 		}
-		if resp.TargetAuth != nil {
-			t.Error("target_auth was invented beside the ladder")
-		}
 		if got := resp.Profile(); got != control.AlgorithmProfileLegacyDevice {
 			t.Errorf("algorithm_profile = %q, want %q", got, control.AlgorithmProfileLegacyDevice)
 		}
@@ -1275,7 +1269,7 @@ func TestAuthorizeServesTheV3Vocabulary(t *testing.T) {
 		}
 	})
 
-	t.Run("a v2 route still answers a v2 shape", func(t *testing.T) {
+	t.Run("a route naming one method and no profile", func(t *testing.T) {
 		alice := &control.Identity{Subject: "alice@example.com", Login: "alice", Source: "fixture"}
 		resp, err := m.client.Authorize(ctx, &control.AuthorizeRequest{
 			Identity: alice, Target: "host.company.com", Conn: testConn(),
@@ -1283,12 +1277,9 @@ func TestAuthorizeServesTheV3Vocabulary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Authorize: %v", err)
 		}
-		if resp.TargetAuthLadder != nil {
-			t.Fatal("a ladder was invented for a fixture that sets target_auth")
-		}
 		rungs, named := resp.Ladder()
 		if !named || len(rungs) != 1 || rungs[0].Method != control.TargetAuthEphemeralUser {
-			t.Errorf("Ladder() = %+v (named=%v), want the v2 object as one rung", rungs, named)
+			t.Errorf("Ladder() = %+v (named=%v), want the fixture's one rung", rungs, named)
 		}
 		if resp.AlgorithmProfile != "" {
 			t.Errorf("algorithm_profile = %q, want it absent on a route that never named one",
@@ -1336,48 +1327,19 @@ routes:
 	}
 }
 
-// TestFixturesRefuseBothCredentialShapes proves the mock cannot start holding a
-// policy the client would refuse. The check lives in the fixture layer as well
-// as in the contract because a fixture file is where somebody writes the
-// mistake.
-func TestFixturesRefuseBothCredentialShapes(t *testing.T) {
-	_, err := parseFixtures(strings.NewReader(`
-users:
-  - login: alice
-    password: pw
-routes:
-  - login: alice
-    target: h
-    target_auth:
-      method: static-key
-      params:
-        username: dev
-    target_auth_ladder:
-      - method: static-key
-        params:
-          username: dev
-    filter_policy:
-      mode: blacklist
-`))
-	if err == nil {
-		t.Fatal("a fixture setting both credential shapes was accepted")
-	}
-	for _, want := range []string{"target_auth", "target_auth_ladder"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %q", err, want)
-		}
-	}
-}
-
-// TestVersionGateAnswersPerRoute covers the half of the version gate that a
-// vocabulary bump breaks most easily: raising PolicyVersion must not make every
-// older route unservable to a proxy that declared an older vocabulary. The gate
-// answers per ROUTE, not per build — a fixture using only the v2 vocabulary is
-// still v2 however many revisions the contract has had since.
-func TestVersionGateAnswersPerRoute(t *testing.T) {
+// TestTheVersionGateIsTheMechanismForTheNextBump is the regression test that
+// protects the NEXT vocabulary. There is one live vocabulary today, so a proxy
+// declaring it gets every route and a proxy declaring anything lower gets the
+// 500 — but the gate is answered per ROUTE (vocabularyVersion), so when a
+// revision tiers its fields above the baseline, only the routes that use them
+// become unservable to a proxy a revision behind.
+//
+// The refusal is an OUTAGE and never a deny: the proxy is not forbidden, the
+// two ends disagree about what can be said.
+func TestTheVersionGateIsTheMechanismForTheNextBump(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
-	authorizeAs := func(t *testing.T, target string, version int) int {
+	authorizeAs := func(t *testing.T, target string, version int) (int, string) {
 		t.Helper()
 		body, err := json.Marshal(control.AuthorizeRequest{
 			Identity:      &control.Identity{Subject: "svc-deploy@example.com", Login: "svc-deploy"},
@@ -1399,36 +1361,40 @@ func TestVersionGateAnswersPerRoute(t *testing.T) {
 			t.Fatalf("do: %v", err)
 		}
 		defer func() { _ = resp.Body.Close() }()
-		_, _ = io.ReadAll(resp.Body)
-		return resp.StatusCode
+		payload, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(payload)
 	}
 
-	// A v2 route (the wildcard rule: a single brokered-key target_auth and the
-	// forwarding axis) to a proxy declaring 2.
-	if got := authorizeAs(t, "anything.company.com", 2); got != http.StatusOK {
-		t.Errorf("a v2 route to a v2 proxy = %d, want %d", got, http.StatusOK)
+	for _, target := range []string{"anything.company.com", "crown-fw-01.company.com", "edge-fw-01.company.com"} {
+		// A proxy declaring the release vocabulary is served.
+		if got, body := authorizeAs(t, target, control.PolicyVersion); got != http.StatusOK {
+			t.Errorf("%s to a current proxy = %d (%s), want %d", target, got, body, http.StatusOK)
+		}
+		// One below it is not, and is told why rather than handed policy it
+		// would refuse as a protocol error three lines later.
+		got, body := authorizeAs(t, target, control.PolicyVersion-1)
+		if got != http.StatusInternalServerError {
+			t.Errorf("%s to a proxy one vocabulary behind = %d, want %d",
+				target, got, http.StatusInternalServerError)
+		}
+		if !strings.Contains(body, "policy_version") {
+			t.Errorf("body = %s, want it to name the version mismatch", body)
+		}
 	}
-	// A v3 route (a ladder, no enforcement object) to the same proxy: refused,
-	// and refused as an outage rather than served with policy it would fail
-	// closed on.
-	if got := authorizeAs(t, "crown-fw-01.company.com", 2); got != http.StatusInternalServerError {
-		t.Errorf("a v3 route to a v2 proxy = %d, want %d", got, http.StatusInternalServerError)
+
+	// And a proxy that declares NOTHING is refused outright: policy_version has
+	// no absent-value default, because guessing one decides which restrictions
+	// the proxy would silently drop. That is a malformed request, so a 400.
+	got, body := authorizeAs(t, "anything.company.com", 0)
+	if got != http.StatusBadRequest {
+		t.Errorf("a request with no policy_version = %d, want %d", got, http.StatusBadRequest)
 	}
-	if got := authorizeAs(t, "crown-fw-01.company.com", 3); got != http.StatusOK {
-		t.Errorf("a v3 route to a v3 proxy = %d, want %d", got, http.StatusOK)
-	}
-	// A v4 route (an enforcement rung) to a v3 proxy: same answer, one
-	// vocabulary later. This is the case the gate exists for after phase 0018,
-	// and the reason vocabularyVersion needs a case per contract revision.
-	if got := authorizeAs(t, "edge-fw-01.company.com", 3); got != http.StatusInternalServerError {
-		t.Errorf("a v4 route to a v3 proxy = %d, want %d", got, http.StatusInternalServerError)
-	}
-	if got := authorizeAs(t, "edge-fw-01.company.com", 4); got != http.StatusOK {
-		t.Errorf("a v4 route to a v4 proxy = %d, want %d", got, http.StatusOK)
+	if !strings.Contains(body, "policy_version") {
+		t.Errorf("body = %s, want it to name the missing field", body)
 	}
 }
 
-// --- contract v4: enforcement points and session bounds ---------------------
+// --- enforcement points and session bounds ----------------------------------
 
 // TestEnforcementRungsAreServedFromFixtures drives every rung on both axes
 // through the real client, from the worked example. It is the fixture half of

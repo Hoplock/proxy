@@ -12,7 +12,7 @@ import (
 	"github.com/hoplock/proxy/internal/control"
 )
 
-// This file is the POSIX half of contract v4's capability advertisement (PLAN
+// This file is the POSIX half of the capability advertisement (PLAN
 // §6.5): what one TARGET can take, found by connecting to it.
 //
 // It is here rather than in internal/control because it is the only place in

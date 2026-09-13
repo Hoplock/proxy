@@ -186,11 +186,10 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 			string(EventTypeHeartbeat), string(EventTypeResync)}},
 		{"LogRecord", "severity", []string{
 			string(SeverityInfo), string(SeverityWarn), string(SeverityCritical)}},
-		// The phase 0006 vocabulary (D5a, D6a, D11, D12).
+		// The credential plane (D6a, D13, D14).
 		{"TargetAuth", "method", []string{
 			string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
 			string(TargetAuthEphemeralAccount), string(TargetAuthStaticKey)}},
-		// The phase 0013 vocabulary (D13, D14).
 		{"AuthorizeResponse", "algorithm_profile", []string{
 			string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
 			string(AlgorithmProfileLegacyDevice)}},
@@ -342,17 +341,16 @@ func TestSpecItemEnumsMatchGoConstants(t *testing.T) {
 	}
 }
 
-// TestSpecDocumentsTheV2PolicySchemas keeps the AuthorizeResponse properties
+// TestSpecDocumentsThePolicySchemas keeps the AuthorizeResponse properties
 // and the Go struct tags in step. A field the document does not carry is a
 // field a server has no reason to send.
-func TestSpecDocumentsTheV2PolicySchemas(t *testing.T) {
+func TestSpecDocumentsThePolicySchemas(t *testing.T) {
 	doc := loadSpec(t)
 
 	for field, schema := range map[string]string{
 		"permitted_requests":        "RequestPolicy",
 		"permitted_forwards":        "ForwardPolicy",
 		"permitted_global_requests": "GlobalRequestPolicy",
-		"target_auth":               "TargetAuth",
 		"target_auth_ladder":        "TargetAuthLadder",
 	} {
 		ref := "#/components/schemas/AuthorizeResponse/properties/" + field + "/$ref"
@@ -386,15 +384,15 @@ func TestSpecDocumentsTheV2PolicySchemas(t *testing.T) {
 // next time PolicyVersion moves.
 //
 // TestReadmeDocumentsTheContract below asks only whether a name APPEARS, and a
-// containment check cannot see a contradiction: phase 0018 added the whole v4
-// section and left the sentence three lines above it saying the current value
-// was 3, with every test still green. The downstream repository found it during
-// its sync, which is the most expensive place to find a contract that disagrees
-// with itself.
+// containment check cannot see a contradiction: a phase once raised the
+// vocabulary and left the sentence stating the current value three lines above
+// it saying the old number, with every test still green. The downstream
+// repository found it during its sync, which is the most expensive place to
+// find a contract that disagrees with itself.
 //
-// Every other version in that document is HISTORICAL — "policy_version stays 3"
-// under the v3→v3.1 heading is a true statement about that revision and must not
-// be swept — so this pins the current-value sentence alone.
+// The loop below also refuses any LOWER number stated as current. With one live
+// vocabulary (phase 0037) there is no historical "policy_version stays 3" left
+// in the document for that to catch by accident.
 func TestReadmeSaysWhichVocabularyIsCurrent(t *testing.T) {
 	raw, err := os.ReadFile(readmePath)
 	if err != nil {
@@ -433,11 +431,11 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		}
 	}
 
-	// Every field and enum value the phase 0006 vocabulary added, by the name
-	// that appears on the wire.
+	// Every field and enum value the vocabulary defines, by the name that
+	// appears on the wire.
 	for _, name := range []string{
 		"policy_version", "permitted_requests", "permitted_forwards",
-		"permitted_global_requests", "target_auth", "exec_mode",
+		"permitted_global_requests", "exec_mode",
 		"restricted_exec", "next_proxy_id", "subsystems",
 		"direct_tcpip", "forwarded_tcpip", "port_range",
 		string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
@@ -447,7 +445,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		string(ArgumentLiteral), string(ArgumentPrefix), string(ArgumentOneOf),
 		string(ArgumentAny),
 		string(HopConnectionDial), string(HopConnectionRelay),
-		// The phase 0013 vocabulary (D13, D14).
+		// The credential plane (D13, D14).
 		"target_auth_ladder", "algorithm_profile", "platform", "credential_kind",
 		"expiry_posture", "lifetime_seconds", "target_auth_rung",
 		string(TargetAuthEphemeralAccount),
@@ -456,7 +454,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		string(ExpiryPostureAcceptedRisk),
 		string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
 		string(AlgorithmProfileLegacyDevice),
-		// The phase 0018 vocabulary (D12 as amended, D16).
+		// Where policy is enforced, and the session bounds (D12 as amended, D16).
 		"enforcement", "platform_role", "permitted_destinations", "attestation",
 		"asserted_by", "session_deadline", "require_session_capture",
 		"grant_context", "additional_context", "concurrency",

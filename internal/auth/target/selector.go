@@ -31,7 +31,7 @@ const MethodPerRoute = "per-route"
 var ErrMethodUnavailable = errors.New("auth/target: target authentication method is not configured on this proxy")
 
 // Selector routes each session to the credential method Hoplock Control chose
-// for it (D6a, contract v2).
+// for it (D6a, D14).
 //
 // The choice is the server's because one proxy routinely fronts estates that
 // need different methods: a Linux fleet that accepts just-in-time provisioning
@@ -302,17 +302,14 @@ func (s *Selector) credentialKey(tgt Target, method TargetAuthenticator) Rejecti
 }
 
 // rungs reads the route's ladder, preserving the absent/empty distinction.
+//
+// Target.Auth is deliberately NOT consulted: it is the rung this walk is
+// currently on, set by provisionOne, and never an input to the walk.
 func (s *Selector) rungs(tgt Target) (rungs []control.TargetAuth, named bool) {
-	if tgt.Ladder != nil {
-		return []control.TargetAuth(*tgt.Ladder), true
+	if tgt.Ladder == nil {
+		return nil, false
 	}
-	if tgt.Auth != nil {
-		// A v2 single object is a one-entry ladder, which is D6a's original
-		// behaviour exactly (phase 0013's AuthorizeResponse.Ladder says the
-		// same thing on the wire side).
-		return []control.TargetAuth{*tgt.Auth}, true
-	}
-	return nil, false
+	return []control.TargetAuth(*tgt.Ladder), true
 }
 
 // resolve picks the authenticator for one route.

@@ -52,7 +52,7 @@ import (
 // review comment.
 
 // PathLeaseUIDs grants a proxy an exclusive block of ephemeral uids for one
-// target (contract 4.3, phase 0035).
+// target (phase 0035).
 const PathLeaseUIDs = "/v1/uids/lease"
 
 // DefaultUIDLeaseTerm is how long a block is used for when the server sets no
@@ -435,7 +435,7 @@ func (h *UIDLeaseHolder) nearlyDone(b UIDBlock, floor int) bool {
 // uidLeaseKey is how a target is named to the holder.
 //
 // It is host and port, which is how PLAN §5.1's mark, §6.4's host-key decisions
-// and contract v4's capability reports are all keyed, and it carries the same
+// and the capability reports are all keyed, and it carries the same
 // known imprecision: several DNS names resolving to one host are several keys.
 // That is a TARGET-IDENTITY question, it is phase 0029's, and it is deliberately
 // not answered a second time here.

@@ -125,10 +125,9 @@ func TestEnforcementRoundTrips(t *testing.T) {
 	}
 }
 
-// TestAbsentEnforcementIsTodaysBehaviour is the compatibility rule the whole
-// revision rests on: a v3 server that never heard of any of these fields keeps
-// working, and every default is what it already produced.
-func TestAbsentEnforcementIsTodaysBehaviour(t *testing.T) {
+// TestAbsentEnforcementIsTheDocumentedDefault: a route naming none of these
+// fields keeps working, and every default resolves to proxy-side enforcement.
+func TestAbsentEnforcementIsTheDocumentedDefault(t *testing.T) {
 	var resp AuthorizeResponse
 	if err := json.Unmarshal([]byte(`{
 		"route_type": "direct",
@@ -240,12 +239,6 @@ func TestAppliedRungOnABrokeredKeyRouteIsRefused(t *testing.T) {
 	t.Run("every entry is brokered-key", func(t *testing.T) {
 		resp := enforcedResponse()
 		resp.TargetAuthLadder = ladderOf(brokered)
-		assertRefused(t, resp, "no credential method on this route provisions the target")
-	})
-	t.Run("the single v2 object is brokered-key", func(t *testing.T) {
-		resp := enforcedResponse()
-		resp.TargetAuthLadder = nil
-		resp.TargetAuth = &brokered
 		assertRefused(t, resp, "no credential method on this route provisions the target")
 	})
 	t.Run("some entry provisions the target", func(t *testing.T) {

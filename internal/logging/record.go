@@ -37,7 +37,7 @@ const (
 	AttrStage           = "stage"            // which part of setup failed
 	AttrError           = "error"            // the failure text, never a credential
 
-	// The other three session bounds (D16, contract v4, phase 0031). The
+	// The other three session bounds (D16, phase 0031). The
 	// deadline is AttrSessionDeadline above.
 	//
 	// AttrCaptureRequired marks a session whose route may only run if it is
@@ -133,7 +133,7 @@ const (
 	AttrPersistsAcrossReload = "persists_across_reload"
 	AttrPersistenceReason    = "persistence_reason"
 	// AttrDeviceFieldPrefix namespaces a route's platform-specific fields on
-	// the record (contract v3.1, phase 0016): `device_field.vdom` and the like,
+	// the record (phase 0016): `device_field.vdom` and the like,
 	// spelled exactly as the route spelled them.
 	//
 	// One attribute per field rather than one joined string, because the point
@@ -141,7 +141,7 @@ const (
 	// customer-a's virtual domain" is the question this answers, and a joined
 	// string turns that into a substring search.
 	AttrDeviceFieldPrefix = "device_field."
-	// The four enforcement fields contract v4 defined and phase 0019 emits
+	// The four enforcement fields the contract defines and phase 0019 emits
 	// (PLAN §6.5). Each one names the rung IN FORCE and never the rung the
 	// route asked for: a record that says "boundary" for a session that ran at
 	// a weaker rung is the only outcome in this area worse than not shipping
@@ -232,7 +232,7 @@ const (
 	// The order's own text is on the AttrReason of the policy_decision record.
 	EndReasonRevoked = "revoked"
 	// EndReasonDeadline is a session that reached the route's session deadline
-	// (contract v4, PLAN §6.5). It is deliberately its own value and not a
+	// (PLAN §6.5). It is deliberately its own value and not a
 	// flavour of the two above: an expiry is neither a failure nor a
 	// revocation, it is a session ending exactly as it was authorized to.
 	EndReasonDeadline = "session_deadline"

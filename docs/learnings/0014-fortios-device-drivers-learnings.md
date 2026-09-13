@@ -1,5 +1,12 @@
 # 0014 — FortiOS device drivers — Learnings
 
+> **Vocabulary note (added by 0037).** The superseded contract vocabularies
+> described here were removed in **0037**, which left one live vocabulary stated
+> in the present tense; the versioning mechanism (`policy_version`,
+> `control.PolicyVersion`, the MUST-NOT-answer-above rule, `vocabularyVersion`)
+> was **kept**. Read the generations below as history — see `docs/PLAN.md` §4.2,
+> "As collapsed (phase 0037)".
+
 > **Superseded in part by phase 0015 — read this before the facts below.**
 > This file is a record of what phase 0014 shipped and it is left standing as
 > one. What it could not do was read Fortinet's documentation: the sites were

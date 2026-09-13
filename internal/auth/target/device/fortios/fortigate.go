@@ -23,7 +23,7 @@ import (
 const PlatformFortiGate = "fortigate"
 
 // FieldVDOM is the route field naming the virtual domain an administrator is
-// scoped to (control.ParamDeviceFieldPrefix + "vdom", contract v3.1).
+// scoped to (control.ParamDeviceFieldPrefix + "vdom").
 //
 // It is a FIELD rather than part of the endpoint because a VDOM is a partition
 // of one device and not a device: `fgt-edge-1:22` is what DNS resolves, what

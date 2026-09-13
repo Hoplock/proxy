@@ -190,8 +190,8 @@ func TestNewFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
-	// Since contract v2 the plane is a selector over the methods this proxy has
-	// material for; the configured method is its fallback, not its identity.
+	// The plane is a selector over the methods this proxy has material for; the
+	// configured method is its fallback, not its identity.
 	if got, want := auth.Name(), MethodPerRoute; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}

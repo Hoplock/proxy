@@ -12,7 +12,7 @@ import (
 )
 
 // This file enforces the three session bounds that are not the deadline
-// (contract v4, D16, PLAN §6.5; the deadline is deadline.go). They ride the same
+// (D16, PLAN §6.5; the deadline is deadline.go). They ride the same
 // contract revision and are otherwise unalike, and what separates them is which
 // class PLAN §4.3 puts each refusal in:
 //

@@ -299,6 +299,6 @@ func TestACachingClientCannotLeaseUIDs(t *testing.T) {
 	var c any = NewCachingClient(nil, CacheOptions{})
 	if _, ok := c.(UIDLeaser); ok {
 		t.Fatal("CachingClient implements UIDLeaser; a lease answered from a cache is a replayed floor, " +
-			"which is the uid reuse contract 4.3 exists to prevent")
+			"which is the uid reuse the lease exists to prevent")
 	}
 }

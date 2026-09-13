@@ -36,7 +36,7 @@ control:
     # How many cached lookup paths this proxy holds. There are TWO KINDS and
     # they share this one number: one authorize path per (subject, login,
     # target, port, auth method, hop trail), and — where the server hints them
-    # (contract 4.1, phase 0023) — one host-key path per (target, port, host
+    # (phase 0023) — one host-key path per (target, port, host
     # key fingerprint). 0 uses the package default of 32768.
     #
     # So a server hinting both decisions makes each connection cost two paths,
@@ -189,11 +189,11 @@ auth:
       max_wait: 2m
   # proxy -> target authentication (docs/PLAN.md §4.2).
   target:
-    # Since contract v2 (phase 0006) Hoplock Control picks the method per route
-    # in the authorize response's `target_auth` (D6a) — one proxy commonly
-    # fronts hosts that accept just-in-time provisioning and appliances that
-    # cannot. What stays here is the local material each method needs, plus this
-    # FALLBACK, used only when the server sends no `target_auth` at all.
+    # Hoplock Control picks the method per route, in the authorize response's
+    # `target_auth_ladder` (D6a, D14) — one proxy commonly fronts hosts that
+    # accept just-in-time provisioning and appliances that cannot. What stays
+    # here is the local material each method needs, plus this FALLBACK, used
+    # only when the server sends no `target_auth_ladder` at all.
     #
     # "static-key" is the phase-0005 PLACEHOLDER: one preloaded key for every
     # session on every target, provisioning nothing and expiring nothing. It is
@@ -278,7 +278,7 @@ auth:
       # change when it matters.
       uid_min: 0
       uid_max: 0
-      # The uid-block lease (contract 4.3, phase 0035). Hoplock Control grants
+      # The uid-block lease (phase 0035). Hoplock Control grants
       # this proxy an EXCLUSIVE block of uids per target and the proxy allocates
       # inside it: two proxies holding two blocks cannot collide, a restarted or
       # replaced proxy allocates above everything the target was ever given

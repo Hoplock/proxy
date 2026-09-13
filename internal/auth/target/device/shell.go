@@ -60,8 +60,8 @@ type SSHShellOptions struct {
 	// Timeout bounds the dial and the login. Zero means DefaultShellTimeout.
 	Timeout time.Duration
 	// HostKeyAlgorithms narrows what the device may present. Empty means the
-	// library's defaults; a fleet of appliances too old for them is what
-	// contract v3's algorithm profile is for.
+	// library's defaults; a fleet of appliances too old for them is what the
+	// route's algorithm profile is for.
 	HostKeyAlgorithms []string
 	// KeyExchanges and Ciphers likewise, for the same reason.
 	KeyExchanges []string

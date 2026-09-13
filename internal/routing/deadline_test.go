@@ -102,7 +102,7 @@ func TestPlanHopShortensTheDeadline(t *testing.T) {
 
 // TestPlanHopWithoutADeadlineDeclaresNone keeps absent from becoming zero: a
 // chain nobody bounded stays unbounded rather than acquiring an instant in the
-// year 1 (contract v4's absent-value rule).
+// year 1 (the contract's absent-value rule).
 func TestPlanHopWithoutADeadlineDeclaresNone(t *testing.T) {
 	plan, err := PlanHop("proxy-b", Chain{Trail: HopTrail{"proxy-a"}}, nextHop(&control.HopMetadata{
 		NextProxyID: "proxy-c",

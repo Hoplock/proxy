@@ -13,11 +13,11 @@ import (
 	"testing"
 )
 
-// fullV2Response is an authorize response that sets EVERY field the phase 0006
-// vocabulary added, including the nested pointers and slices. The round-trip,
+// fullPolicyResponse is an authorize response that sets EVERY policy field the
+// contract defines, including the nested pointers and slices. The round-trip,
 // isolation, and clone tests all run against it, so a field added to the
 // contract without a line in Clone has one place to be caught.
-func fullV2Response() *AuthorizeResponse {
+func fullPolicyResponse() *AuthorizeResponse {
 	return &AuthorizeResponse{
 		RouteType:         RouteTypeNextHop,
 		Target:            "proxy-2.company.com",
@@ -38,10 +38,10 @@ func fullV2Response() *AuthorizeResponse {
 		PermittedGlobalRequests: &GlobalRequestPolicy{
 			Types: []string{GlobalRequestTCPIPForward, GlobalRequestCancelTCPIPForward},
 		},
-		TargetAuth: &TargetAuth{
+		TargetAuthLadder: &TargetAuthLadder{{
 			Method: TargetAuthBrokeredKey,
 			Params: map[string]string{"username": "svc-net", "credential_ref": "fleet-2026"},
-		},
+		}},
 		FilterPolicy: FilterPolicy{
 			Mode:     FilterModeWhitelist,
 			ExecMode: ExecModeRestricted,
@@ -76,11 +76,11 @@ func fullV2Response() *AuthorizeResponse {
 	}
 }
 
-// TestFullV2ResponseSurvivesARoundTrip is the contract's own smoke test: the
-// whole vocabulary has to reach the proxy through JSON with nothing lost and
-// nothing renamed, or a policy field silently stops arriving.
-func TestFullV2ResponseSurvivesARoundTrip(t *testing.T) {
-	want := fullV2Response()
+// TestFullPolicyResponseSurvivesARoundTrip is the contract's own smoke test:
+// the whole vocabulary has to reach the proxy through JSON with nothing lost
+// and nothing renamed, or a policy field silently stops arriving.
+func TestFullPolicyResponseSurvivesARoundTrip(t *testing.T) {
+	want := fullPolicyResponse()
 	if err := want.Validate(); err != nil {
 		t.Fatalf("the fixture itself violates the contract: %v", err)
 	}
@@ -104,12 +104,12 @@ func TestFullV2ResponseSurvivesARoundTrip(t *testing.T) {
 }
 
 // TestCloneIsolatesEveryMutableField mutates every slice, map, and pointer the
-// v2 vocabulary added and proves the original is untouched. A cached decision is
+// vocabulary carries and proves the original is untouched. A cached decision is
 // handed to many sessions, so a shallow copy anywhere here lets one connection
 // rewrite another's policy.
 func TestCloneIsolatesEveryMutableField(t *testing.T) {
-	original := fullV2Response()
-	pristine := fullV2Response()
+	original := fullPolicyResponse()
+	pristine := fullPolicyResponse()
 
 	c := original.Clone()
 
@@ -120,8 +120,8 @@ func TestCloneIsolatesEveryMutableField(t *testing.T) {
 	c.PermittedForwards.DirectTCPIP[1].PortRange.From = 1
 	c.PermittedForwards.ForwardedTCPIP[0].Host = "mutated"
 	c.PermittedGlobalRequests.Types[0] = "mutated"
-	c.TargetAuth.Params["username"] = "mutated"
-	c.TargetAuth.Params["added"] = "mutated"
+	(*c.TargetAuthLadder)[0].Params["username"] = "mutated"
+	(*c.TargetAuthLadder)[0].Params["added"] = "mutated"
 	c.FilterPolicy.RestrictedExec.Commands[1].Argv[0] = "mutated"
 	c.FilterPolicy.RestrictedExec.Commands[2].Args[0].Value = "mutated"
 	c.FilterPolicy.RestrictedExec.Commands[2].Args[1].Values[0] = "mutated"
@@ -154,52 +154,52 @@ func TestCloneAlsoCoversTheFilterRuleList(t *testing.T) {
 	}
 }
 
-// TestAbsentPolicyIsTheV1Default is the compatibility guarantee written down:
-// a response from a server that never heard of the phase 0006 vocabulary must
-// still be a working decision, and no field may become "deny everything" or
-// "allow everything" by accident.
-func TestAbsentPolicyIsTheV1Default(t *testing.T) {
-	v1 := &AuthorizeResponse{
+// TestAbsentFieldsResolveToTheirDocumentedDefaults pins every absent-value
+// default at once: a response that sets only the required fields must still be
+// a working decision, and no field may become "deny everything" or "allow
+// everything" by accident.
+func TestAbsentFieldsResolveToTheirDocumentedDefaults(t *testing.T) {
+	minimal := &AuthorizeResponse{
 		RouteType:         RouteTypeDirect,
 		Target:            "host.company.com",
 		PermittedChannels: []string{"session"},
 		FilterPolicy:      FilterPolicy{Mode: FilterModeBlacklist},
 	}
-	if err := v1.Validate(); err != nil {
-		t.Fatalf("a v1 response must stay valid: %v", err)
+	if err := minimal.Validate(); err != nil {
+		t.Fatalf("a minimal response must stay valid: %v", err)
 	}
 
-	// Axis 2 and 3 are not policed: a v1 server never expressed them, so
-	// reading its silence as a denial would break every shell it authorised.
+	// Axis 2 and 3 are not policed: the response expresses neither, and reading
+	// that silence as a denial would break every shell it authorised.
 	for _, req := range []string{RequestPTY, RequestShell, RequestExec, RequestEnv} {
-		if !v1.PermittedRequests.RequestPermitted(req) {
+		if !minimal.PermittedRequests.RequestPermitted(req) {
 			t.Errorf("request %q denied by an absent request policy", req)
 		}
 	}
-	if !v1.PermittedRequests.SubsystemPermitted("sftp") {
+	if !minimal.PermittedRequests.SubsystemPermitted("sftp") {
 		t.Error("subsystem denied by an absent request policy")
 	}
-	if !v1.PermittedGlobalRequests.Permitted(GlobalRequestTCPIPForward) {
+	if !minimal.PermittedGlobalRequests.Permitted(GlobalRequestTCPIPForward) {
 		t.Error("global request denied by an absent global request policy")
 	}
-	if _, policed := v1.PermittedForwards.Destinations(ChannelDirectTCPIP); policed {
+	if _, policed := minimal.PermittedForwards.Destinations(ChannelDirectTCPIP); policed {
 		t.Error("an absent forward policy must not police destinations")
 	}
 
-	// The axis a v1 server DID express keeps its meaning: still an allow-list.
-	if v1.PermittedChannels == nil || len(v1.PermittedChannels) != 1 {
-		t.Errorf("permitted channels = %v, want the v1 allow-list intact", v1.PermittedChannels)
+	// The axis it DID express keeps its meaning: still an allow-list.
+	if minimal.PermittedChannels == nil || len(minimal.PermittedChannels) != 1 {
+		t.Errorf("permitted channels = %v, want the allow-list intact", minimal.PermittedChannels)
 	}
 
-	// And the defaults that must resolve to something, resolve to v1 behaviour.
-	if got := v1.FilterPolicy.Exec(); got != ExecModeFiltered {
-		t.Errorf("exec mode = %q, want %q for a v1 policy", got, ExecModeFiltered)
+	// And the defaults that must resolve to something, resolve.
+	if got := minimal.FilterPolicy.Exec(); got != ExecModeFiltered {
+		t.Errorf("exec mode = %q, want %q for a policy that names no tier", got, ExecModeFiltered)
 	}
-	if got := v1.Hop.Direction(); got != HopConnectionDial {
+	if got := minimal.Hop.Direction(); got != HopConnectionDial {
 		t.Errorf("hop direction = %q, want %q for an absent hop", got, HopConnectionDial)
 	}
-	if v1.TargetAuth != nil {
-		t.Error("target auth must stay absent so the proxy uses its local method")
+	if _, named := minimal.Ladder(); named {
+		t.Error("the ladder must stay absent so the proxy uses its local method")
 	}
 }
 
@@ -364,8 +364,8 @@ func TestValidateRejectsAContractViolation(t *testing.T) {
 		want:  "out of range",
 	}, {
 		name:  "unknown target auth method",
-		patch: func(r *AuthorizeResponse) { r.TargetAuth.Method = "magic" },
-		want:  "target_auth.method",
+		patch: func(r *AuthorizeResponse) { (*r.TargetAuthLadder)[0].Method = "magic" },
+		want:  "target_auth_ladder[0].method",
 	}, {
 		name:  "relay hop with no proxy to relay through",
 		patch: func(r *AuthorizeResponse) { r.Hop.NextProxyID = "" },
@@ -385,7 +385,7 @@ func TestValidateRejectsAContractViolation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := fullV2Response()
+			resp := fullPolicyResponse()
 			tc.patch(resp)
 			err := resp.Validate()
 			if err == nil {
@@ -403,7 +403,7 @@ func TestValidateRejectsAContractViolation(t *testing.T) {
 // fails the session closed, as a protocol error, rather than the proxy picking
 // one.
 func TestAuthorizeRejectsBothExecTiers(t *testing.T) {
-	resp := fullV2Response()
+	resp := fullPolicyResponse()
 	resp.FilterPolicy.Rules = []FilterRule{{Match: "rm -rf /", Action: FilterActionKillSession}}
 
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {

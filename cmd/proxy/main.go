@@ -148,7 +148,7 @@ func run(configPath string, logger *log.Logger) error {
 		// event — which is also why the pipeline is now built before it.
 		Events: recorder.DeviceSink(),
 		// What a TARGET can enforce is discovered by probing it and reported
-		// here (contract v4, PLAN §6.5), because authorize happens before the
+		// here (PLAN §6.5), because authorize happens before the
 		// proxy has ever touched the target. The report is an observation and
 		// grants nothing: it only lets Hoplock Control avoid choosing a rung
 		// this target cannot take.
@@ -158,7 +158,7 @@ func run(configPath string, logger *log.Logger) error {
 		// would be reporting the past.
 		Reporter: rest,
 		// The floor under an ephemeral account's uid is held by Hoplock Control
-		// as an exclusive block leased per target (contract 4.3, PLAN §5.1),
+		// as an exclusive block leased per target (PLAN §5.1),
 		// because the target is the party this proxy does not trust and a single
 		// proxy forgets everything when it restarts.
 		//
@@ -186,7 +186,7 @@ func run(configPath string, logger *log.Logger) error {
 		Client:            cache,
 		DefaultTargetPort: cfg.Dial.DefaultTargetPort,
 		// The enforcement rungs this BUILD can render, on every authorize
-		// request beside policy_version (contract v4). It is the half of
+		// request beside policy_version. It is the half of
 		// capability advertisement that needs no probe: a server cannot
 		// sensibly choose a rung this software has never heard of.
 		Capabilities: target.ProxyCapabilities(),

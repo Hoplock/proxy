@@ -432,7 +432,7 @@ func (c *CachingClient) IngestPriorityLog(ctx context.Context, req *LogPriorityR
 
 // ReportCapabilities implements CapabilityReporter by forwarding to the wrapped
 // client, so a proxy holding a CachingClient can still report what a target can
-// enforce (contract v4).
+// enforce.
 //
 // A capability report is an OBSERVATION and is never cached: it is the proxy
 // telling the server what it just saw, and a decorator that answered from

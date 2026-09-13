@@ -19,7 +19,7 @@ const (
 	PathReportHostKey        = "/v1/hostkeys/report"
 	PathIngestLogBatch       = "/v1/logs/batch"
 	PathIngestPriorityLog    = "/v1/logs/priority"
-	// PathReportCapabilities records what one target can enforce (contract v4).
+	// PathReportCapabilities records what one target can enforce.
 	// It exists because authorize happens BEFORE the proxy has touched the
 	// target, so a first-ever connection has nothing to put on
 	// AuthorizeRequest; the proxy learns by connecting and reports, exactly as
@@ -31,26 +31,25 @@ const (
 	PathProxyEvents = "/v1/proxies/{proxy_id}/events"
 )
 
-// PolicyVersion is the highest policy vocabulary this client implements, sent
-// as AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12/D13/D14/D16, phases
-// 0006, 0013 and 0018).
+// PolicyVersion is the policy vocabulary this client implements, sent as
+// AuthorizeRequest.PolicyVersion (PLAN D5a/D6a/D11/D12/D13/D14/D16).
 //
-// Version 1 was the phase 0002/0003 vocabulary: permitted_channels and a
-// filter rule list. Version 2 adds in-channel requests, forwarding
-// destinations, global requests, target_auth, hop connection direction, and
-// the exec enforcement mode. Version 3 (phase 0013) adds the ordered credential
-// ladder (D14), the ephemeral-account method and its device-driver parameters
-// (D13), the per-route algorithm profile, and the requirement that every
-// provisioning method names its username. Version 4 (phase 0018) adds WHERE
-// policy is enforced — the two enforcement axes (D12 as amended, PLAN §6.5) —
-// together with the session bounds D16 asks for: a deadline, required capture,
-// the grant context, and concurrency caps.
+// It is the WHOLE vocabulary the authorize response may be written in: the
+// three policy axes, the credential ladder, the algorithm profile, the hop
+// connection direction, the exec enforcement mode, the two enforcement axes,
+// and the session bounds. There is exactly one live vocabulary and this is it.
 //
 // The server must not answer with policy fields introduced after the version
 // the proxy declares. That is what makes it safe for this client to refuse an
 // authorize response carrying a field it does not understand rather than
 // dropping it: an unknown field may be a restriction, and a dropped
 // restriction is a silently widened policy.
+//
+// A future revision ADDS a field and BUMPS this constant; it does not keep this
+// vocabulary alive beside the new one. api/README.md's "Changing the contract"
+// is the recipe, and the mock's vocabularyVersion is the server half — a field
+// tiered above this baseline there is one an older proxy is answered a 500 for
+// rather than policy it would refuse.
 const PolicyVersion = 4
 
 // QueryLastEventID is the query parameter carrying the last event the proxy
@@ -212,19 +211,21 @@ type AuthorizeRequest struct {
 	Target     string     `json:"target"`
 	TargetPort int        `json:"target_port,omitempty"`
 	AuthMethod AuthMethod `json:"auth_method,omitempty"`
-	// PolicyVersion is the highest policy vocabulary the proxy implements
-	// (PolicyVersion). Absent means 1. The server must not answer with policy
-	// fields introduced after it; the client refuses a response that does.
-	PolicyVersion int `json:"policy_version,omitempty"`
-	// Capabilities are the enforcement rungs this PROXY BUILD can provide
-	// (contract v4, phase 0018). It rides here beside PolicyVersion on 0006's
-	// pattern, and answers only "can this software do it" — whether a given
-	// TARGET can take a rung needs a login to find out and is reported
-	// separately (PathReportCapabilities).
+	// PolicyVersion is the policy vocabulary the proxy implements
+	// (PolicyVersion). It is REQUIRED and has no absent-value default: a proxy
+	// that cannot say what it is able to read is not one the contract knows how
+	// to answer safely. RESTClient fills it in rather than trusting callers.
 	//
-	// Absent declares nothing, which is what a v3 proxy implies and is the
-	// fail-safe reading: a server choosing from it can then only choose a rung
-	// that needs no capability at all.
+	// The server must not answer with policy fields introduced after it; the
+	// client refuses such a response as a contract violation.
+	PolicyVersion int `json:"policy_version"`
+	// Capabilities are the enforcement rungs this PROXY BUILD can provide
+	// (phase 0018). It rides here beside PolicyVersion and answers only "can
+	// this software do it" — whether a given TARGET can take a rung needs a
+	// login to find out and is reported separately (PathReportCapabilities).
+	//
+	// Absent declares nothing, which is the fail-safe reading: a server choosing
+	// from it can then only choose a rung that needs no capability at all.
 	Capabilities *ProxyCapabilities `json:"capabilities,omitempty"`
 	Conn         ConnMeta           `json:"conn"`
 }
@@ -271,23 +272,14 @@ type AuthorizeResponse struct {
 	// unpoliced, which is what the proxy does today; a non-nil policy relays
 	// only the types it lists and answers the rest with a false reply.
 	PermittedGlobalRequests *GlobalRequestPolicy `json:"permitted_global_requests,omitempty"`
-	// TargetAuth is the credential method the server chose for this route
-	// (D6a, consumed by phase 0007). Nil means the proxy uses its locally
-	// configured method, which is v1 behaviour.
-	//
-	// It is the v2 shape and it is kept, not polymorphised: TargetAuthLadder
-	// below is the v3 shape, and a response setting both is refused. Read the
-	// route's credentials through Ladder rather than through either field, so
-	// that no caller has to know which shape the server chose.
-	TargetAuth *TargetAuth `json:"target_auth,omitempty"`
 	// TargetAuthLadder is the ORDERED list of credential methods the server
-	// named for this route (D14, contract v3, walked by phase 0014).
+	// named for this route (D14, walked by phase 0014). It is the ONLY way a
+	// server names a credential method.
 	//
 	// Three states, and they are three different policies:
 	//
 	//   - NIL (absent) — the server named no method; the proxy uses its
-	//     locally configured one. This is what a v1 server implies and what
-	//     phase 0005 does today.
+	//     locally configured one.
 	//   - NON-NIL AND EMPTY — the server named no method it will accept, which
 	//     is a DENIAL, not "use local config". It is the same absent-versus-
 	//     empty rule as permitted_channels: [] and it fails toward deny.
@@ -300,13 +292,13 @@ type AuthorizeResponse struct {
 	// absent one, turning a denial into a locally configured credential.
 	TargetAuthLadder *TargetAuthLadder `json:"target_auth_ladder,omitempty"`
 	// AlgorithmProfile names the SSH algorithm set the proxy may offer on the
-	// proxy→target leg for this route (contract v3, applied by phase 0014).
+	// proxy→target leg for this route (applied by phase 0014).
 	// Empty means AlgorithmProfileDefault: nothing beyond the library defaults.
 	// Anything else is a weakening and is audited as one.
 	AlgorithmProfile AlgorithmProfile `json:"algorithm_profile,omitempty"`
 	FilterPolicy     FilterPolicy     `json:"filter_policy"`
 	// Enforcement is WHERE this connection's policy is enforced, on each of the
-	// two axes (contract v4, rendered by phase 0019). NIL MEANS BOTH AXES TAKE
+	// two axes (PLAN §6.5, rendered by phase 0019). NIL MEANS BOTH AXES TAKE
 	// THEIR DEFAULT, which is exactly today's behaviour: the proxy decides at
 	// the exec request, and forwarding policy covers SSH channels only.
 	//
@@ -317,8 +309,8 @@ type AuthorizeResponse struct {
 	// than a session that does not run.
 	Enforcement *EnforcementPolicy `json:"enforcement,omitempty"`
 	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
-	// (contract v4, D16; enforced locally by phase 0024). Nil means no deadline,
-	// which is today's behaviour.
+	// (D16; enforced locally by phase 0024). Nil means no deadline: the session
+	// is bounded by nothing but the user and the revocation stream.
 	//
 	// It is enforced by the PROXY, locally, so it holds when the revocation
 	// stream is down — which is exactly when an immortal root session is least
@@ -331,10 +323,9 @@ type AuthorizeResponse struct {
 	// privileged one.
 	SessionDeadline *time.Time `json:"session_deadline,omitempty"`
 	// RequireSessionCapture says this route may only run if the session is
-	// recorded (contract v4, D16; enforced by phase 0031). False — the absent
-	// value — is today's
-	// behaviour: capture happens if the proxy is configured for it, and its
-	// absence stops nothing.
+	// recorded (D16; enforced by phase 0031). False — the absent value — means
+	// capture happens if the proxy is configured for it, and its absence stops
+	// nothing.
 	//
 	// When true, a proxy with no recording path at all refuses the session as an
 	// OUTAGE (PLAN §4.3), and the check happens BEFORE the target leg is
@@ -347,16 +338,15 @@ type AuthorizeResponse struct {
 	// scrub its traces; it cannot touch a session captured in the proxy.
 	RequireSessionCapture bool `json:"require_session_capture,omitempty"`
 	// GrantContext is WHY access was granted, as an external system asserted it
-	// (contract v4, D16; recorded by phase 0031). Nil means no external grant
-	// context, which is today's behaviour.
+	// (D16; recorded by phase 0031). Nil means no external grant context.
 	//
 	// THE PROXY TREATS IT AS OPAQUE: copied to every log record for the session,
 	// never parsed, never matched against, never the basis of a proxy-side
 	// decision (D2), and never shown to the user.
 	GrantContext *GrantContext `json:"grant_context,omitempty"`
-	// Concurrency caps how many sessions may be live at once (contract v4,
-	// PLAN §13 UC2; enforced by phase 0031). Nil means uncapped, which is
-	// today's behaviour. Exceeding a cap is a POLICY DENIAL — vague,
+	// Concurrency caps how many sessions may be live at once (PLAN §13 UC2;
+	// enforced by phase 0031). Nil means uncapped. Exceeding a cap is a
+	// POLICY DENIAL — vague,
 	// PLAN §4.3 — and never an outage.
 	//
 	// It is a PER-PROXY ceiling, because the live count is knowable only to a
@@ -375,34 +365,26 @@ type AuthorizeResponse struct {
 // Ladder returns the credential methods the server named for this route, in
 // the order it named them, and whether it named any at all.
 //
-// It is the ONE place the v2 single object and the v3 ordered list are read,
-// so that nothing downstream has to know which shape a given server speaks:
+// It exists to resolve the pointer into the ABSENT/EMPTY/NON-EMPTY distinction
+// once, so that no caller has to remember which of the three a nil pointer is:
 //
 //   - named == false — the server named nothing; the proxy falls back to its
-//     locally configured method (v1/v2 absent behaviour).
+//     locally configured method.
 //   - named == true with an empty ladder — the server named nothing it will
 //     accept. That is a DENIAL and must not be confused with the line above.
 //   - named == true with entries — walk them top-down (D14).
 //
-// A v2 response carrying a single target_auth object reads as a ONE-ENTRY
-// ladder, which is exactly D6a's original behaviour: the proxy uses that method
-// or the session fails. A response carrying both shapes never reaches here —
-// Validate refuses it.
+// A one-entry ladder is D6a's original behaviour exactly: the proxy uses that
+// method or the session fails.
 //
 // The returned slice aliases the response. Callers that keep it past the
 // decision's lifetime take a Clone, exactly as they do for every other policy
 // field.
 func (r *AuthorizeResponse) Ladder() (rungs []TargetAuth, named bool) {
-	if r == nil {
+	if r == nil || r.TargetAuthLadder == nil {
 		return nil, false
 	}
-	if r.TargetAuthLadder != nil {
-		return []TargetAuth(*r.TargetAuthLadder), true
-	}
-	if r.TargetAuth != nil {
-		return []TargetAuth{*r.TargetAuth}, true
-	}
-	return nil, false
+	return []TargetAuth(*r.TargetAuthLadder), true
 }
 
 // Profile returns the algorithm profile this route runs on, resolving the
@@ -416,7 +398,7 @@ func (r *AuthorizeResponse) Profile() AlgorithmProfile {
 
 // EnforcedExecution returns the execution rung in force for this route,
 // resolving the absent-value default so no caller has to decide what an absent
-// enforcement object meant (contract v4).
+// enforcement object meant.
 //
 // It is the value the AUDIT RECORD carries, and the record carries the rung that
 // was actually in force rather than the one requested — the whole point of the
@@ -629,8 +611,8 @@ type FilterRule struct {
 // HopMetadata carries the chaining constraints for a next-hop route.
 type HopMetadata struct {
 	// Connection says how this proxy reaches the next one (D11, consumed by
-	// phase 0008). Empty means HopConnectionDial, which is the original
-	// next-hop behaviour and keeps a v1 server's route working.
+	// phase 0008). Empty means HopConnectionDial, which is the default a route
+	// that says nothing about direction gets.
 	Connection HopConnection `json:"connection,omitempty"`
 	// NextProxyID is the proxy id of the next hop — the same id that proxy
 	// presents when it registers, which is how a relay hop selects the

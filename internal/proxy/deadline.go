@@ -11,7 +11,7 @@ import (
 	"github.com/hoplock/proxy/internal/logging"
 )
 
-// This file enforces the route's session deadline (contract v4, D16, PLAN
+// This file enforces the route's session deadline (D16, PLAN
 // §6.5). A route carries three lifetimes and they bound three different things.
 // Two of them are NOT this one, and the difference is the reason this file
 // exists:
@@ -61,8 +61,8 @@ const exitSessionExpired = 253
 // on a chained route every hop ends on the same instant and no hop can extend
 // one (routing.ShortenDeadline).
 //
-// No deadline means no timer: absent is not zero (contract v4), and a session
-// the server set no bound on is left unbounded exactly as a v3 server left it.
+// No deadline means no timer: absent is not zero, and a session the server set
+// no bound on is left unbounded.
 func (s *session) armDeadline(deadline *time.Time) {
 	if deadline == nil {
 		return

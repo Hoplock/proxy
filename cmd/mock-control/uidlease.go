@@ -32,7 +32,7 @@ import (
 // fixture nor the proxy asks for one.
 const defaultUIDLeaseCount = 4096
 
-// fixtureUIDLeases configures the mock's uid-block grants (contract 4.3).
+// fixtureUIDLeases configures the mock's uid-block grants.
 type fixtureUIDLeases struct {
 	// UIDCount is the block size to grant, overriding whatever the proxy asks
 	// for. Zero honours the proxy's request, and falls back to

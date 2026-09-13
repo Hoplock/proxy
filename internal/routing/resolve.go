@@ -59,7 +59,7 @@ type Route struct {
 	// three policy axes (D5a) and never the whole answer; see the two below.
 	PermittedChannels []string
 	// PermittedRequests is the in-channel request policy (D5a, enforced by
-	// phase 0009). NIL MEANS NOT POLICED, which is what a v1 server means; a
+	// phase 0009). NIL MEANS NOT POLICED, the deliberate absent-value reading; a
 	// non-nil policy denies anything it does not name.
 	PermittedRequests *control.RequestPolicy
 	// PermittedForwards is the forwarding destination policy (D5a, enforced by
@@ -69,16 +69,10 @@ type Route struct {
 	// enforced by phase 0009). Nil means global requests are relayed unpoliced,
 	// which is what internal/proxy does today.
 	PermittedGlobalRequests *control.GlobalRequestPolicy
-	// TargetAuth is the credential method the server chose for this route (D6a,
-	// consumed by phase 0007). Nil means the proxy's locally configured method.
-	//
-	// Since contract v3 it is the FIRST entry of TargetAuthLadder, kept because
-	// the record and the fallback path both want a single answer; the ladder is
-	// what the credential plane actually walks.
-	TargetAuth *control.TargetAuth
 	// TargetAuthLadder is the ORDERED list of credential methods the server
-	// named for this route (D14, contract v3, consumed by phase 0014). The
-	// proxy walks it top-down and stops at the first entry it can satisfy.
+	// named for this route (D6a, D14, consumed by phase 0014). It is the ONE
+	// way a route names a credential method: the proxy walks it top-down and
+	// stops at the first entry it can satisfy.
 	//
 	// Nil means the server named none, and a non-nil EMPTY ladder is a denial —
 	// the distinction the pointer exists to carry, on this side of the wire as
@@ -88,35 +82,34 @@ type Route struct {
 	// which exec tier applies (D12).
 	Filter control.FilterPolicy
 	// Enforcement is WHERE this route's policy is enforced, on each of the two
-	// axes (contract v4, PLAN §6.5, rendered by phase 0019). Nil means both
+	// axes (PLAN §6.5, rendered by phase 0019). Nil means both
 	// axes take their absent-value default: the proxy decides at the exec
 	// request, and forwarding policy covers SSH channels only.
 	Enforcement *control.EnforcementPolicy
 	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
-	// (contract v4, D16, enforced by phase 0024). Nil means the server set no
-	// deadline, which is not the same as zero: absent leaves the session
-	// unbounded, exactly as a v3 server left it.
+	// (D16, enforced by phase 0024). Nil means the server set no deadline, which
+	// is not the same as zero: absent leaves the session unbounded.
 	//
 	// It bounds an ESTABLISHED session and is the only one of the three
 	// lifetimes on a route that does — see internal/proxy/deadline.go, which
 	// holds the distinction and the timer that enforces it.
 	SessionDeadline *time.Time
 	// RequireSessionCapture says this route runs only if the session is
-	// recorded (contract v4, D16, enforced by phase 0031). False is what a v3
-	// server meant and what every route without the field means: capture
-	// happens if it is configured, and its absence stops nothing.
+	// recorded (D16, enforced by phase 0031). False is what every route without
+	// the field means: capture happens if it is configured, and its absence
+	// stops nothing.
 	//
 	// Buffering to local disk COUNTS (PLAN §7): the refusal is outage-class and
 	// triggers only where there is no logging path at all — see
 	// internal/proxy/bounds.go, which holds the check and the predicate.
 	RequireSessionCapture bool
 	// Concurrency caps how many sessions may be live at once, per subject and
-	// per target (contract v4, D16, enforced by phase 0031). Nil — and a zero
+	// per target (D16, enforced by phase 0031). Nil — and a zero
 	// on either scope — means uncapped. Read it through MaxSessionsPerSubject
 	// and MaxSessionsPerTarget.
 	Concurrency *control.ConcurrencyLimits
-	// Grant is WHY an external system says this access was granted (contract
-	// v4, D16), in the only form anything on this side of the wire holds it:
+	// Grant is WHY an external system says this access was granted (D16), in
+	// the only form anything on this side of the wire holds it:
 	// an opaque handle the telemetry pipeline made and nothing can read.
 	//
 	// THE TYPE IS THE RULE. D2 says the proxy originates no policy and D16 says
@@ -247,7 +240,7 @@ func (r *Route) ForwardDestinations(channelType string) ([]control.ForwardDestin
 
 // EnforcedExecution reports the execution rung in force for this route (PLAN
 // §6.5), resolving the absent-value default. Callers must read the rung through
-// this rather than off the field: an absent enforcement object is a v3 server
+// this rather than off the field: an absent enforcement object is a server
 // saying "proxy-inspected", not a server saying nothing.
 func (r *Route) EnforcedExecution() control.ExecutionRung {
 	return r.Enforcement.ExecutionRung()
@@ -267,6 +260,20 @@ func (r *Route) ExecMode() control.ExecMode { return r.Filter.Exec() }
 // control.HopConnectionDial.
 func (r *Route) HopDirection() control.HopConnection { return r.Hop.Direction() }
 
+// NamedCredentialMethod reports the method the server put FIRST on this route's
+// ladder, or "" when it named none and the proxy falls back to local config.
+//
+// It answers "which method did the server choose", at the authorize record,
+// where nothing has been provisioned yet. Which rung was ACTUALLY used is a
+// different question with a different answer (D14): the provisioner reports it
+// and internal/proxy records that, not this.
+func (r *Route) NamedCredentialMethod() control.TargetAuthMethod {
+	if r == nil || r.TargetAuthLadder == nil || len(*r.TargetAuthLadder) == 0 {
+		return ""
+	}
+	return (*r.TargetAuthLadder)[0].Method
+}
+
 // ResolverOptions configures a Resolver.
 type ResolverOptions struct {
 	// Client is the Control API client. Required.
@@ -275,7 +282,7 @@ type ResolverOptions struct {
 	// means DefaultTargetPort.
 	DefaultTargetPort int
 	// Capabilities are the enforcement rungs this PROXY BUILD can provide at
-	// all (contract v4, PLAN §6.5). They ride on every authorize request beside
+	// all (PLAN §6.5). They ride on every authorize request beside
 	// policy_version, so a server never chooses a rung this software cannot
 	// render. Nil declares nothing, which is the fail-safe answer.
 	//
@@ -357,7 +364,6 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		PermittedRequests:       resp.PermittedRequests.Clone(),
 		PermittedForwards:       resp.PermittedForwards.Clone(),
 		PermittedGlobalRequests: resp.PermittedGlobalRequests.Clone(),
-		TargetAuth:              resp.TargetAuth.Clone(),
 		TargetAuthLadder:        resp.TargetAuthLadder.Clone(),
 		Filter:                  resp.FilterPolicy.Clone(),
 		Enforcement:             resp.Enforcement.Clone(),
@@ -371,19 +377,6 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		Grant:      logging.GrantFrom(resp),
 		Hop:        resp.Hop.Clone(),
 		DecisionID: resp.DecisionID,
-	}
-	// A v2 single object is a one-entry ladder, which is exactly D6a's original
-	// behaviour (control.AuthorizeResponse.Ladder says the same thing on the
-	// wire side). Normalising here means the credential plane has one shape to
-	// walk rather than two, and the absent/empty distinction still survives:
-	// only a server that named NOTHING leaves the ladder nil.
-	if route.TargetAuthLadder == nil && route.TargetAuth != nil {
-		ladder := control.TargetAuthLadder{*route.TargetAuth}
-		route.TargetAuthLadder = &ladder
-	}
-	if route.TargetAuth == nil && route.TargetAuthLadder != nil && len(*route.TargetAuthLadder) > 0 {
-		first := (*route.TargetAuthLadder)[0]
-		route.TargetAuth = &first
 	}
 	if route.Port <= 0 {
 		route.Port = r.defaultPort

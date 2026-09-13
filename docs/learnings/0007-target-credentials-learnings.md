@@ -1,5 +1,12 @@
 # 0007 — Target credentials — Learnings
 
+> **Vocabulary note (added by 0037).** The superseded contract vocabularies
+> described here were removed in **0037**, which left one live vocabulary stated
+> in the present tense; the versioning mechanism (`policy_version`,
+> `control.PolicyVersion`, the MUST-NOT-answer-above rule, `vocabularyVersion`)
+> was **kept**. Read the generations below as history — see `docs/PLAN.md` §4.2,
+> "As collapsed (phase 0037)".
+
 > **Path note (added by 0012).** Everything below that says `deploy/sshd/` now
 > lives in **`deploy/target/`**: phase 0012 folded that image into the full e2e
 > topology, where it backs both `make test-sshd` and the compose stack. The keys

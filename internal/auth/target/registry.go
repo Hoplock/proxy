@@ -33,12 +33,12 @@ type Options struct {
 	// exists.
 	Events DeviceEventSink
 	// Reporter records what a target can enforce, so a server never chooses an
-	// enforcement rung the target cannot take (contract v4, PLAN §6.5). Nil
+	// enforcement rung the target cannot take (PLAN §6.5). Nil
 	// skips reporting; a report GRANTS NOTHING, and every rung is re-checked
 	// against the live target when it is rendered.
 	Reporter control.CapabilityReporter
 	// Leaser grants this proxy the exclusive block of uids the ephemeral method
-	// allocates from, per target (contract 4.3, phase 0035). It is the REST
+	// allocates from, per target (phase 0035). It is the REST
 	// client and never the caching one: a lease answered from memory is a
 	// replayed floor, and a replayed floor is a lowered one.
 	//
@@ -50,11 +50,11 @@ type Options struct {
 
 // NewFromConfig builds the proxy's target credential plane.
 //
-// Since contract v2 the METHOD is Hoplock Control's choice per route (D6a), so
-// this does not build "the" authenticator any more: it builds every method this
-// proxy has local material for and hands them to a Selector, which dispatches
-// on the route's target_auth. `auth.target.method` becomes the fallback used
-// when the server names none — which is what a v1 server implies.
+// The METHOD is Hoplock Control's choice per route (D6a), so this does not
+// build "the" authenticator: it builds every method this proxy has local
+// material for and hands them to a Selector, which dispatches on the route's
+// target_auth_ladder. `auth.target.method` is the fallback used when the server
+// names none.
 //
 // There is still no fallback BETWEEN methods, and that is the important part: a
 // route naming a method with no material fails as an outage rather than being

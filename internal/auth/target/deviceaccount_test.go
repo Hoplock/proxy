@@ -550,7 +550,7 @@ func TestSweepFailureIsReported(t *testing.T) {
 
 // TestUnsatisfiablePostureIsASkippedRungNotADowngrade covers D14's walk and the
 // distinction phase 0013's driver errors exist to carry.
-// TestARouteFieldReachesTheDriverAndTheAuditRecord is the contract v3.1
+// TestARouteFieldReachesTheDriverAndTheAuditRecord is the `device_field.`
 // namespace end to end: a policy author writes `device_field.vdom`, the
 // administrator is created inside that virtual domain, and the mapping event
 // says so.
@@ -603,7 +603,7 @@ func TestARouteFieldReachesTheDriverAndTheAuditRecord(t *testing.T) {
 //
 // A field the driver does not declare may be a CONSTRAINT — a VDOM is one — so
 // the proxy must not connect having understood part of the route. It skips the
-// rung instead, which is what an older proxy meeting a newer field does too.
+// rung instead.
 func TestAnUndeclaredRouteFieldSkipsTheRung(t *testing.T) {
 	h := newDeviceHarness(t, deviceHarnessOptions{deliverable: true})
 

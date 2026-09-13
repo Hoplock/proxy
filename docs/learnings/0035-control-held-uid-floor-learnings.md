@@ -1,5 +1,12 @@
 # 0035 — Hold the ephemeral UID floor where the target cannot reach it — Learnings
 
+> **Vocabulary note (added by 0037).** The superseded contract vocabularies
+> described here were removed in **0037**, which left one live vocabulary stated
+> in the present tense; the versioning mechanism (`policy_version`,
+> `control.PolicyVersion`, the MUST-NOT-answer-above rule, `vocabularyVersion`)
+> was **kept**. Read the generations below as history — see `docs/PLAN.md` §4.2,
+> "As collapsed (phase 0037)".
+
 ## Summary
 - **What shipped:** the floor under an `ephemeral-user` account's uid is now an
   **exclusive uid block leased from Hoplock Control per proxy per target**

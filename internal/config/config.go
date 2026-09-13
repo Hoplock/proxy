@@ -144,7 +144,7 @@ type Cache struct {
 	// MaxEntries bounds how many cached lookup paths this proxy holds. Two
 	// kinds share the one number: one authorize path per (subject, login,
 	// target, port, method, hop trail), and — where the server hints them
-	// (contract 4.1, phase 0023) — one host-key path per (target, port,
+	// (phase 0023) — one host-key path per (target, port,
 	// fingerprint). A server hinting both therefore costs two paths per
 	// connection, so an estate sized to its target count under phase 0022
 	// covers half as many targets and should double the setting.
@@ -170,7 +170,7 @@ type Dial struct {
 
 // Session tunes how the proxy handles the bounds Hoplock Control puts on a
 // session — today the one it enforces locally, the route's session deadline
-// (contract v4, D16, PLAN §6.5).
+// (D16, PLAN §6.5).
 //
 // Nothing here sets a deadline, extends one, or decides which sessions get one:
 // that is the server's, per connection (D2). This is only how the proxy behaves
@@ -330,12 +330,11 @@ type Auth struct {
 
 // TargetAuth configures how the proxy logs into targets.
 //
-// Since contract v2 (phase 0006) the *selection* belongs to Hoplock Control:
-// the authorize response's `target_auth` names the method per route, because one
-// proxy routinely fronts a Linux estate and an appliance estate at once (D6a).
-// What lives here is the LOCAL MATERIAL each method needs — which key, which
-// provisioning account — plus the fallback used when a v1 server sends no
-// `target_auth` at all.
+// The *selection* belongs to Hoplock Control: the authorize response's
+// `target_auth_ladder` names the methods per route, because one proxy routinely
+// fronts a Linux estate and an appliance estate at once (D6a, D14). What lives
+// here is the LOCAL MATERIAL each method needs — which key, which provisioning
+// account — plus the fallback used when the server names no ladder at all.
 type TargetAuth struct {
 	// Method is the fallback used when the authorize response carries no
 	// target_auth. Defaults to TargetAuthMethodStaticKey, the phase-0005
@@ -622,7 +621,7 @@ type EphemeralUserAuth struct {
 	UIDMin int `yaml:"uid_min"`
 	UIDMax int `yaml:"uid_max"`
 	// UIDLease tunes the uid-block lease Hoplock Control grants this proxy for
-	// each target (contract 4.3, phase 0035). That lease, and not the range
+	// each target (phase 0035). That lease, and not the range
 	// above, is what holds the non-reuse floor where neither the target nor any
 	// single proxy owns it.
 	UIDLease UIDLeaseAuth `yaml:"uid_lease"`
@@ -653,7 +652,7 @@ type ReaperAuth struct {
 	Grace time.Duration `yaml:"grace"`
 }
 
-// UIDLeaseAuth tunes the uid-block lease (contract 4.3, phase 0035).
+// UIDLeaseAuth tunes the uid-block lease (phase 0035).
 //
 // Both knobs buy the same thing — HOW LONG PROVISIONING SURVIVES A CONTROL
 // OUTAGE on a busy target — and the trade-off is stated rather than hidden: a
@@ -1072,10 +1071,10 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 	}
 
 	// Each method's settings are checked when it is the fallback OR when
-	// anything about it was written down. The second half matters since
-	// contract v2: the method a route names is the SERVER's choice, so a proxy
-	// is normally configured for methods it is not itself defaulting to, and a
-	// typo in one of them must not wait for the first route that selects it.
+	// anything about it was written down. The second half matters because the
+	// method a route names is the SERVER's choice, so a proxy is normally
+	// configured for methods it is not itself defaulting to, and a typo in one
+	// of them must not wait for the first route that selects it.
 	if t.Method == TargetAuthMethodStaticKey || t.StaticKey != (StaticKeyAuth{}) {
 		if t.StaticKey.KeyPath == "" {
 			v.add("auth.target.static_key.key_path", ErrMissing,

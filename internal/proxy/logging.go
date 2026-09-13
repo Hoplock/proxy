@@ -94,8 +94,8 @@ func (s *session) recordAuthorize(route *routing.Route, deadline *time.Time) {
 	if n := route.MaxSessionsPerTarget(); n > 0 {
 		attrs.SetInt(logging.AttrConcurrencyLimitTarget, n)
 	}
-	if route.TargetAuth != nil {
-		attrs.Set(logging.AttrCredentialMethod, string(route.TargetAuth.Method))
+	if m := route.NamedCredentialMethod(); m != "" {
+		attrs.Set(logging.AttrCredentialMethod, string(m))
 	}
 	if route.IsNextHop() {
 		// D11: a hop's connection direction is part of the route, so it is part
@@ -126,15 +126,15 @@ func (s *session) recordHopLeg(plan *routing.HopPlan) {
 // configuration otherwise, which is the same precedence Provision itself
 // applies — so the record says what happened rather than what was asked for.
 func (s *session) recordCredential(route *routing.Route, access *target.ProvisionedAccess) {
-	// Since contract v3 the server sends a LADDER, so "which method" is a
-	// question with more than one possible answer and the record must name the
-	// one that was USED (D14). The provisioner reports it; the route's first
-	// entry is only the fallback for a method that does not.
+	// The server sends a LADDER, so "which method" is a question with more than
+	// one possible answer and the record must name the one that was USED (D14).
+	// The provisioner reports it; the ladder's first entry is only the fallback
+	// for a method that does not.
 	method := access.Method
 	if method == "" {
 		method = s.srv.targetAuth.Name()
-		if route.TargetAuth != nil && route.TargetAuth.Method != "" {
-			method = string(route.TargetAuth.Method)
+		if m := route.NamedCredentialMethod(); m != "" {
+			method = string(m)
 		}
 	}
 	account := ""
@@ -249,7 +249,7 @@ func (s *session) recordChainIdentityRejected(plan *routing.HopPlan, err error) 
 }
 
 // recordEnforcement captures the enforcement rung the session actually stood
-// on, per axis (contract v4, PLAN §6.5).
+// on, per axis (PLAN §6.5).
 //
 // It is a record of its own rather than four more attributes on the
 // provisioning event because it answers a different question. The provisioning
@@ -393,7 +393,7 @@ func (s *session) recordKill(reason string) {
 }
 
 // recordConcurrencyDenied captures a session refused by a concurrency ceiling
-// (contract v4, D16, bounds.go).
+// (D16, bounds.go).
 //
 // It is a POLICY DECISION and it is critical, which puts it on D8's priority
 // path beside every other refusal: a ceiling being hit is a fact a security team
@@ -417,7 +417,7 @@ func (s *session) recordConcurrencyDenied(err error) {
 }
 
 // recordDeadlineExpiry captures a session ending at the route's session
-// deadline (contract v4, D16).
+// deadline (D16).
 //
 // It is an INFORMATIONAL record on the authorize kind, not a denial and not a
 // failure, because that is what it is: the decision that opened this session

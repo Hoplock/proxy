@@ -65,7 +65,7 @@ auth:
     # that can never work.
     methods: ["cert"]
   target:
-    # The FALLBACK only: every route in the fixtures names its own target_auth,
+    # The FALLBACK only: every route in the fixtures names its own ladder,
     # which is the server's choice per route (D6a). Both production methods are
     # configured below because this one proxy fronts both estates.
     method: "brokered-key"
@@ -85,9 +85,9 @@ auth:
       # DELIBERATELY UNSET, and this proxy is the only one in the topology that
       # leaves it so (phase 0028).
       #
-      # Since contract v4.2 every brokered-key ROUTE must name its own account,
-      # so this key is reached by exactly one shape: a route that names no
-      # target_auth at all and therefore falls back to the method configured
+      # Every brokered-key ROUTE must name its own account, so this key is
+      # reached by exactly one shape: a route that names no
+      # target_auth_ladder at all and therefore falls back to the method configured
       # here. With nothing to fall back to, that shape is refused as an outage
       # — no account name is guessed from the login the user typed at their SSH
       # client, which is what this phase closed.

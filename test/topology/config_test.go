@@ -246,7 +246,7 @@ func TestTheUIDRangeTheScenariosDependOn(t *testing.T) {
 		t.Error("the fixtures no longer carry the inherit.company.com route, which is the second " +
 			"login the cross-login uid scenario needs")
 	}
-	// The uid-block lease (contract 4.3, phase 0035). Without it the mock grants
+	// The uid-block lease (phase 0035). Without it the mock grants
 	// no block, and every ephemeral route in the topology refuses as an outage —
 	// so this is not a preference, it is what makes the suite run at all.
 	if !bytes.Contains(body, []byte("uid_leases:")) {
@@ -294,9 +294,9 @@ func TestTheRefusedRouteNamesACredentialNothingElseUses(t *testing.T) {
 // invisible in either one alone.
 //
 // The scenario asserts that a session with NO account name available anywhere
-// is refused as an outage. Since contract v4.2 every credential method requires
-// a `username` on its route, so the only way to reach that state is a route
-// naming no `target_auth` at all, served by a proxy that also configures no
+// is refused as an outage. Every credential method requires a `username` on its
+// route, so the only way to reach that state is a route naming no
+// `target_auth_ladder` at all, served by a proxy that also configures no
 // account for its local method. Break either half — add a username to
 // proxy-nexthop, or a target_auth to the route — and the scenario passes
 // vacuously against a proxy that had an account all along.

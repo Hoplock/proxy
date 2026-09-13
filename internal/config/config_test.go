@@ -632,8 +632,8 @@ func TestValidateProxyAndTargetAuth(t *testing.T) {
 			wantCause: ErrMissing,
 		},
 		{
-			// Since contract v2 a proxy is normally configured for methods it
-			// does not default to, because the SERVER selects per route. A
+			// A proxy is normally configured for methods it does not default
+			// to, because the SERVER selects per route. A
 			// half-written one must fail at startup rather than at the first
 			// route that names it.
 			name: "a method that is configured but not the fallback",

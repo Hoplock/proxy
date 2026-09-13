@@ -94,8 +94,8 @@ routes:
     # may not copy files off the box" — this can. Subsystems are named
     # individually, so sftp is denied here while shell stays.
     #
-    # Omitting `permitted_requests` entirely leaves requests unpoliced (what a
-    # v1 server means). Writing `permitted_requests: {}` denies every one.
+    # Omitting `permitted_requests` entirely leaves requests unpoliced.
+    # Writing `permitted_requests: {}` denies every one.
     permitted_requests:
       types: [pty-req, shell, exec, env]
       subsystems: []
@@ -108,15 +108,15 @@ routes:
     # The credential method for this route is the server's choice, not the
     # proxy's config (D6a). Linux hosts that accept a provisioning account get
     # just-in-time users.
-    target_auth:
-      method: ephemeral-user
-      params:
-        # Required since contract v3 on every provisioning method. It used to
-        # default to the identity's login, and a login is a client-typed string
-        # that must never name an account on a target.
-        username: alice
-        key_type: ed25519
-        lifetime_seconds: "900"
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          # Required on every method. It is never defaulted to the identity's
+          # login: a login is a client-typed string and must never name an
+          # account on a target.
+          username: alice
+          key_type: ed25519
+          lifetime_seconds: "900"
     # The server authorises the proxy to reuse this decision for a minute, so
     # a second session (an scp beside a shell) skips the authorize round trip.
     # Omit `cache` — as every other route here does — to forbid reuse entirely.
@@ -179,12 +179,12 @@ routes:
     permitted_channels: [session]
     permitted_requests:
       types: [exec]
-    target_auth:
-      method: brokered-key
-      params:
-        username: monitor
-        credential_ref: edge-fleet-2026
-    # An ATTESTED rung on a brokered-key route (contract v4). The proxy
+    target_auth_ladder:
+      - method: brokered-key
+        params:
+          username: monitor
+          credential_ref: edge-fleet-2026
+    # An ATTESTED rung on a brokered-key route. The proxy
     # administers nothing here — that is what brokered-key means — so no
     # APPLIED rung is available and naming one would be a contract violation
     # the mock refuses at startup. What IS available is the boundary the
@@ -230,14 +230,11 @@ routes:
                 # a boundary.
                 optional: true
 
-  # A DEVICE, reached with the contract v3 credential ladder (D14). The server
+  # A DEVICE, reached with the credential ladder (D14). The server
   # authors the degradation and the proxy never invents it: a short-lived
   # administrator created through the `fortios` driver first, and the standing
   # brokered credential only if that rung cannot be satisfied — a driver this
   # build does not carry, a device that will not enforce expiry.
-  #
-  # `target_auth_ladder` and `target_auth` are ALTERNATIVES, not layers: a route
-  # setting both is a contract violation and the mock refuses to start.
   #
   # `algorithm_profile` is why this route connects at all. The firmware speaks
   # nothing a modern default enables, and the profile is named here, per route,
@@ -290,8 +287,7 @@ routes:
 
   # The same vocabulary saying the OPPOSITE thing: a ONE-ENTRY ladder is how a
   # policy refuses degradation. If the device cannot give this session its own
-  # administrator, there is no session — which is exactly what a single
-  # `target_auth` object meant before v3.
+  # administrator, there is no session — which is D6a's original rule exactly.
   - login: svc-deploy
     target: crown-fw-01.company.com
     route_type: direct
@@ -316,7 +312,7 @@ routes:
         - match: "get system status"
           action: allow_and_log
 
-  # ENFORCEMENT POINTS, axis 1 (contract v4, PLAN §6.5). The cheapest strong
+  # ENFORCEMENT POINTS, axis 1 (PLAN §6.5). The cheapest strong
   # rung in the whole table, and it is already shipped: this route permits
   # `exec` and not `shell` or `pty-req`, so the session can never obtain a
   # terminal and EVERY command it runs is one the proxy decided. That turns the
@@ -333,12 +329,12 @@ routes:
     permitted_channels: [session]
     permitted_requests:
       types: [exec]
-    target_auth:
-      method: ephemeral-user
-      params:
-        username: svc-automation
-        key_type: ed25519
-        lifetime_seconds: "300"
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: svc-automation
+          key_type: ed25519
+          lifetime_seconds: "300"
     enforcement:
       execution: no-interactive-shell
       # `reach` is omitted, so it takes its default: SSH-channel forwarding is
@@ -375,12 +371,12 @@ routes:
     permitted_channels: [session]
     permitted_requests:
       types: [exec]
-    target_auth:
-      method: ephemeral-user
-      params:
-        username: svc-build
-        key_type: ed25519
-        lifetime_seconds: "900"
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: svc-build
+          key_type: ed25519
+          lifetime_seconds: "900"
     enforcement:
       execution: account-restricted
       reach: account-egress-restricted
@@ -418,12 +414,12 @@ routes:
     permitted_channels: [session]
     permitted_requests:
       types: [exec]
-    target_auth:
-      method: ephemeral-user
-      params:
-        username: svc-sensor
-        key_type: ed25519
-        lifetime_seconds: "300"
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: svc-sensor
+          key_type: ed25519
+          lifetime_seconds: "300"
     enforcement:
       execution: account-confined
       reach: account-network-isolated
@@ -454,12 +450,12 @@ routes:
     permitted_channels: [session]
     permitted_requests:
       types: [pty-req, shell, exec]
-    target_auth:
-      method: ephemeral-user
-      params:
-        username: svc-scan
-        key_type: ed25519
-        lifetime_seconds: "3600"
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: svc-scan
+          key_type: ed25519
+          lifetime_seconds: "3600"
     # Enforced by the PROXY, locally, so it holds when the revocation stream is
     # down — which is exactly when an immortal root session is least
     # acceptable, and the reason this is not "just use revocation".
@@ -519,13 +515,13 @@ routes:
       # The target may not open forwards back at all: the list is empty, and an
       # empty list in a present policy is a deny.
       forwarded_tcpip: []
-    target_auth:
-      method: brokered-key
-      params:
-        username: svc-deploy
-        # An opaque handle naming material the proxy holds locally. No
-        # credential travels on this API.
-        credential_ref: deploy-fleet-2026
+    target_auth_ladder:
+      - method: brokered-key
+        params:
+          username: svc-deploy
+          # An opaque handle naming material the proxy holds locally. No
+          # credential travels on this API.
+          credential_ref: deploy-fleet-2026
     filter_policy:
       # Whitelist: anything no rule matched is blocked. These two are allowed,
       # and reaching for the one dangerous neighbour kills the session outright.
@@ -562,9 +558,9 @@ host_keys:
   known:
     - target: host.company.com
       fingerprint: "SHA256:CCCC3333hostkey3333CCCC3333hostkey3333CCCC"
-  # Authorise the proxy to reuse an accepted host-key decision (contract 4.1,
-  # phase 0023) instead of reporting the same key on every connection. Absent —
-  # or ttl_seconds: 0 — is the old behaviour: report every time.
+  # Authorise the proxy to reuse an accepted host-key decision (phase 0023)
+  # instead of reporting the same key on every connection. Absent — or
+  # ttl_seconds: 0 — means report every time.
   #
   # The proxy keys the reuse on (target, port, FINGERPRINT), so a target that
   # presents a different key is reported however long this TTL is. Only a key
@@ -574,7 +570,7 @@ host_keys:
     ttl_seconds: 300
     # key: hostkey:host.company.com   # optional: widen the INVALIDATION scope
 
-# Exclusive uid blocks, leased per proxy per target (contract 4.3, phase 0035).
+# Exclusive uid blocks, leased per proxy per target (phase 0035, PLAN §5.1).
 #
 # This is where the floor under an `ephemeral-user` account's uid lives. The
 # proxy allocates INSIDE the block it is granted, so it calls the endpoint once
