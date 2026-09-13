@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -403,10 +404,11 @@ type EphemeralAccountAuth struct {
 	// denial and never the nearest driver (D13).
 	Platforms []string `yaml:"platforms"`
 	// AccessProfile is the platform authorization scope created administrators
-	// are given. REQUIRED: no driver in this build has a default.
+	// are given when the route names none. REQUIRED, and required PER PLATFORM
+	// this proxy serves: no driver in this build has a default.
 	//
 	// It had one until phase 0015, and the correction is worth carrying here
-	// because it is the reason this field is now mandatory. The FortiOS default
+	// because it is the reason this field is mandatory. The FortiOS default
 	// was chosen by ranking `super_admin_readonly` against `prof_admin_readonly`
 	// — and no Fortinet source documents the second profile at all. The first
 	// is real and immutable, but it is read-only, it cannot run `diagnose` from
@@ -414,9 +416,15 @@ type EphemeralAccountAuth struct {
 	// a per-VDOM account. A privileged account's scope on a customer's firewall
 	// is a decision an operator makes.
 	//
+	// Phase 0036 made it per platform, because one string could not be right
+	// for two: FortiOS documents three built-in profiles and FortiSwitchOS
+	// documents one, so a proxy fronting both estates had no correct value to
+	// write here. See AccessProfiles for the two shapes it accepts.
+	//
 	// WHICH profile a route gets is phase 0018's vocabulary and phase 0019's to
-	// apply. This is the proxy-wide setting until then.
-	AccessProfile string `yaml:"access_profile"`
+	// apply: a `platform-authorized` route names its own scope and this is what
+	// every other route gets.
+	AccessProfile AccessProfiles `yaml:"access_profile"`
 	// SourceAddress is the address devices see this proxy connect from. Where a
 	// driver declares it can pin an account to a source address, this is what
 	// it is pinned to. Empty means no pin, which is a restriction not applied
@@ -427,6 +435,122 @@ type EphemeralAccountAuth struct {
 	// is the primary removal path rather than a crash-recovery backstop (D13).
 	Reaper ReaperAuth `yaml:"reaper"`
 }
+
+// AccessProfiles is the scope a created administrator is given when the route
+// names none, per device platform (phase 0036).
+//
+// It accepts two shapes, and the scalar is not a legacy form kept for
+// compatibility — it is how an operator says "every platform this proxy serves
+// takes the same scope", which is true of a single-platform estate and of one
+// whose custom profile was built on both:
+//
+//	access_profile: "prof_admin"
+//
+//	access_profile:
+//	  fortigate: "prof_admin"
+//	  fortiswitchos: "super_admin"
+//
+// WHY IT IS A MAP. A profile name is a platform's vocabulary and not the
+// fleet's. FortiOS documents three built-in profiles and FortiSwitchOS
+// documents one, so `prof_admin` — the value a FortiGate estate running virtual
+// domains has to configure (PLAN §5.3) — names nothing at all on a switch. A
+// single string could therefore be correct for one platform or the other and
+// never for both, and the failure it bought was per session and on the
+// customer's device. Under the map the same mistake is a startup error naming
+// the platform and the profile (internal/auth/target's driver registry), which
+// is where an operator can act on it.
+//
+// It is deliberately NOT a contract change. Which scope a route gets when it
+// asks for one is Hoplock Control's (`enforcement.platform_role`, PLAN §6.5,
+// phase 0019); what an operator writes here is the scope for the routes that
+// ask for nothing, and 0015's decision that the operator picks it is exactly
+// what this preserves.
+type AccessProfiles struct {
+	// every is the scalar form: one scope for every platform.
+	every string
+	// byPlatform is the mapping form, keyed on the contract's `platform`.
+	byPlatform map[string]string
+}
+
+// AccessProfileEverywhere is the scalar form: one scope for every platform.
+func AccessProfileEverywhere(profile string) AccessProfiles {
+	return AccessProfiles{every: profile}
+}
+
+// AccessProfilePerPlatform is the mapping form. It copies, so a caller's map
+// cannot change a loaded configuration afterwards.
+func AccessProfilePerPlatform(byPlatform map[string]string) AccessProfiles {
+	m := make(map[string]string, len(byPlatform))
+	for platform, profile := range byPlatform {
+		m[platform] = profile
+	}
+	return AccessProfiles{byPlatform: m}
+}
+
+// UnmarshalYAML accepts either shape.
+//
+// A node that is neither is an error rather than a zero value, because the
+// alternative is a proxy that boots with no scope configured and refuses every
+// device route at session time — which is the failure this type exists to move
+// to startup.
+func (a *AccessProfiles) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		a.every, a.byPlatform = s, nil
+		return nil
+	case yaml.MappingNode:
+		m := map[string]string{}
+		if err := node.Decode(&m); err != nil {
+			return err
+		}
+		a.every, a.byPlatform = "", m
+		return nil
+	default:
+		return fmt.Errorf("line %d: access_profile is either one profile name for every platform, or a mapping of platform to profile name", node.Line)
+	}
+}
+
+// MarshalYAML writes back the shape that was read, so a config round-trip does
+// not silently rewrite an operator's file into the other form.
+func (a AccessProfiles) MarshalYAML() (any, error) {
+	if a.byPlatform != nil {
+		return a.byPlatform, nil
+	}
+	return a.every, nil
+}
+
+// For returns the scope configured for one platform, or "" if none is.
+//
+// A per-platform entry wins over the scalar, and there is no merging of the
+// two: they are alternative shapes of one setting, not layers.
+func (a AccessProfiles) For(platform string) string {
+	if a.byPlatform != nil {
+		return a.byPlatform[platform]
+	}
+	return a.every
+}
+
+// Platforms returns the platforms this setting names explicitly, sorted. The
+// scalar form names none — it answers For() for every platform and describes no
+// particular one.
+func (a AccessProfiles) Platforms() []string {
+	if len(a.byPlatform) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(a.byPlatform))
+	for p := range a.byPlatform {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// IsZero reports whether the operator wrote nothing here.
+func (a AccessProfiles) IsZero() bool { return a.every == "" && len(a.byPlatform) == 0 }
 
 // EphemeralUserAuth is the local material the just-in-time provisioner needs
 // (D6, PLAN §5.1): the management certificate preloaded on targets, the account
@@ -985,17 +1109,7 @@ func (c *Config) validateTargetAuth(v *ValidationError) {
 			v.add("auth.target.ephemeral_account.password_env", ErrMissing,
 				"the device management login needs a password (from the environment) or a key")
 		}
-		if t.EphemeralAccount.AccessProfile == "" {
-			// No device driver in this build carries a default, and phase 0015
-			// removed the one that did: on FortiOS the built-in it named as the
-			// narrower alternative turns out not to exist, the one it chose
-			// cannot run `diagnose` from 7.4.x, and neither fits a per-VDOM
-			// account. Refusing at STARTUP rather than at session time is the
-			// difference between an operator reading one error and every
-			// session failing with the same one.
-			v.add("auth.target.ephemeral_account.access_profile", ErrMissing,
-				"the platform scope created administrators are given; no device driver has a safe default")
-		}
+		validateAccessProfiles(v, t.EphemeralAccount.AccessProfile)
 		if t.EphemeralAccount.Reaper.Grace < 0 {
 			v.add("auth.target.ephemeral_account.reaper.grace", ErrInvalid, "must not be negative")
 		}
@@ -1061,6 +1175,38 @@ func validateEphemeralUIDRange(v *ValidationError, e EphemeralUserAuth) {
 	}
 }
 
+// validateAccessProfiles checks what this package can check about the scope
+// created administrators are given (phase 0036).
+//
+// What it CANNOT check is the half that matters most — whether a platform can
+// actually hold the profile named for it, and whether every platform this proxy
+// registers has one at all. Both need the driver registry, so both are checked
+// where the drivers are built (internal/auth/target's newDriverRegistry) and
+// they are startup errors there for the same reason these are here. What is
+// left for this function is the shape: something must be configured, and an
+// entry that names a platform and then no profile is a typo rather than a
+// deliberate "no scope here", because there is no such thing.
+func validateAccessProfiles(v *ValidationError, a AccessProfiles) {
+	if a.IsZero() {
+		// No device driver in this build carries a default, and phase 0015
+		// removed the one that did: on FortiOS the built-in it named as the
+		// narrower alternative turns out not to exist, the one it chose
+		// cannot run `diagnose` from 7.4.x, and neither fits a per-VDOM
+		// account. Refusing at STARTUP rather than at session time is the
+		// difference between an operator reading one error and every
+		// session failing with the same one.
+		v.add("auth.target.ephemeral_account.access_profile", ErrMissing,
+			"the platform scope created administrators are given; no device driver has a safe default")
+		return
+	}
+	for _, platform := range a.Platforms() {
+		if a.For(platform) == "" {
+			v.add("auth.target.ephemeral_account.access_profile."+platform, ErrMissing,
+				"a platform named here needs a profile name; there is no fleet-wide fallback under the mapping form")
+		}
+	}
+}
+
 // validateEphemeralUIDLease checks the lease knobs (phase 0035).
 //
 // Neither can be negative and there is nothing else to check here: the block's
@@ -1085,7 +1231,7 @@ func ephemeralConfigured(e EphemeralUserAuth) bool {
 // device method.
 func deviceAccountConfigured(e EphemeralAccountAuth) bool {
 	return e.AdminUser != "" || e.PasswordEnv != "" || e.KeyPath != "" || len(e.Platforms) > 0 ||
-		e.AccessProfile != "" || e.SourceAddress != "" || e.Reaper != (ReaperAuth{})
+		!e.AccessProfile.IsZero() || e.SourceAddress != "" || e.Reaper != (ReaperAuth{})
 }
 
 // brokeredConfigured reports whether the operator wrote anything about the

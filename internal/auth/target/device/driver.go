@@ -460,6 +460,48 @@ type ResidueSweeper interface {
 	RemoveResidue(ctx context.Context, req RemoveRequest) error
 }
 
+// RoleValidator is implemented by a driver whose platform can rule an
+// authorization scope OUT from a declaration, before anything is dialled.
+//
+// It is an OPTIONAL interface for ResidueSweeper's reason — most of what a
+// driver knows belongs in Capabilities, which is data, and this cannot be: a
+// platform's answer is a rule over names ("`prof_admin` is a FortiOS profile
+// and does not exist here"), not a list. An allow-list would be wrong on every
+// platform that lets a customer build a custom profile, which is all of them.
+//
+// WHAT AN ANSWER OF NIL MEANS, and it is narrow: nothing this driver declares
+// rules the name out. It is NOT a statement that the role exists on any
+// particular unit — no driver can say that without dialling, and one that could
+// would be answering for a device the caller has not named. The check that
+// matters on the device is still the device's own, at create time.
+//
+// It exists so that the scope an operator configures per platform
+// (`auth.target.ephemeral_account.access_profile`, phase 0036) is refused at
+// STARTUP rather than half way through a sequence that has already created an
+// administrator on a customer's device. A driver that cannot rule anything out
+// simply does not implement it.
+type RoleValidator interface {
+	Driver
+	// ValidateRole reports whether this platform could scope an account to
+	// role, as far as the driver can tell without connecting.
+	ValidateRole(role string) error
+}
+
+// ValidateRole asks a driver about a role, and answers nil for a driver that
+// declares no opinion.
+//
+// Callers use this rather than the type assertion so that "this driver has no
+// rule" and "this role passes the rule" stay one answer at the call site: the
+// caller's decision is the same either way, and a caller that had to branch
+// would eventually branch the wrong way.
+func ValidateRole(d Driver, role string) error {
+	v, ok := d.(RoleValidator)
+	if !ok {
+		return nil
+	}
+	return v.ValidateRole(role)
+}
+
 // ErrUnsupported means THIS PLATFORM CANNOT do what was asked — pin a source
 // address, install a public key, expire an account — and no retry, no backoff,
 // and no different device of the same kind will change that.

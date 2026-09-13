@@ -12,6 +12,17 @@
 > `docs/learnings/0030-fortilink-mediated-administration-learnings.md`. This
 > phase's own shipped behaviour is unchanged.
 
+> **Pointer, added by phase 0036 (this file is otherwise unchanged).** The
+> access-profile gap this phase recorded — one FortiOS-shaped string for every
+> platform, worked around by building the switch driver with no default — is
+> **closed**. `auth.target.ephemeral_account.access_profile` is a map keyed on
+> `platform`, a route naming no scope of its own is served on a FortiSwitch, and
+> the misconfiguration is a startup refusal rather than a per-session outage.
+> `fortios.SwitchAcceptsProfile`, named below, is gone; the same rule is now
+> `SwitchDriver.ValidateRole` (`device.RoleValidator`). See `docs/PLAN.md` §5.3,
+> "As settled (phase 0036)", and
+> `docs/learnings/0036-per-platform-access-profile-learnings.md`.
+
 ## Summary
 - **The prompt's premise was wrong, and correcting it is this phase's main
   deliverable.** 0029 assumed a FortiLink-managed switch "has no independent

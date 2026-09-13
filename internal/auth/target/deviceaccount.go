@@ -221,14 +221,23 @@ type DeviceAccountOptions struct {
 	// used to pin an account where the driver declares it can
 	// (Capabilities.PinsSourceAddress); empty means no pin.
 	SourceAddress string
-	// AccessProfile is the platform authorization scope created administrators
-	// are given. No driver in this build has a default — phase 0015 removed the
-	// one that did, because no FortiOS built-in is a safe one — so a driver
-	// given neither this nor a per-route profile refuses to create an account
-	// rather than choosing a privileged scope on a customer's device. WHICH
-	// profile a route gets is phase 0018's vocabulary and 0019's to apply; this
-	// is the proxy-wide setting until then.
-	AccessProfile string
+	// AccessProfiles is the platform authorization scope created administrators
+	// are given when the route names none, keyed on the contract's `platform`.
+	//
+	// It is PER PLATFORM because a profile name is a platform's vocabulary and
+	// not a fleet's (phase 0036): `prof_admin` is a FortiOS profile and names
+	// nothing on a FortiSwitch, so one string could be right for one platform
+	// or the other and never for both. No driver in this build has a default —
+	// phase 0015 removed the one that did, because no FortiOS built-in is a
+	// safe one — so a platform missing from this map refuses to create an
+	// account rather than choosing a privileged scope on a customer's device.
+	// A proxy built from configuration cannot reach that state: the driver
+	// registry refuses to start without a scope for every platform it serves.
+	//
+	// WHICH profile a route gets when it asks is phase 0018's vocabulary and
+	// 0019's to apply (`enforcement.platform_role`); this is what every route
+	// that asks for nothing gets.
+	AccessProfiles map[string]string
 	// Events receives the mapping event and sweep failures. Nil means the
 	// proxy has no logging path, which refuses any route whose driver declares
 	// a constrained name limit (ErrNoLoggingPath).
@@ -265,14 +274,14 @@ type DeviceAccountOptions struct {
 //   - The reaper is the PRIMARY removal path wherever the driver cannot expire
 //     an account, which is every platform this repository ships a driver for.
 type DeviceAccountAuthenticator struct {
-	proxyID string
-	drivers *device.Registry
-	source  string
-	profile string
-	events  DeviceEventSink
-	logger  *log.Logger
-	now     func() time.Time
-	reaper  *deviceReaper
+	proxyID  string
+	drivers  *device.Registry
+	source   string
+	profiles map[string]string
+	events   DeviceEventSink
+	logger   *log.Logger
+	now      func() time.Time
+	reaper   *deviceReaper
 }
 
 var (
@@ -290,13 +299,13 @@ func NewDeviceAccountAuthenticator(opts DeviceAccountOptions) (*DeviceAccountAut
 		return nil, errors.New("auth/target: ephemeral-account requires at least one device driver")
 	}
 	a := &DeviceAccountAuthenticator{
-		proxyID: opts.ProxyID,
-		drivers: opts.Drivers,
-		source:  opts.SourceAddress,
-		profile: opts.AccessProfile,
-		events:  opts.Events,
-		logger:  opts.Logger,
-		now:     opts.Now,
+		proxyID:  opts.ProxyID,
+		drivers:  opts.Drivers,
+		source:   opts.SourceAddress,
+		profiles: opts.AccessProfiles,
+		events:   opts.Events,
+		logger:   opts.Logger,
+		now:      opts.Now,
 	}
 	if a.now == nil {
 		a.now = time.Now
@@ -464,10 +473,12 @@ func (a *DeviceAccountAuthenticator) resolve(auth *control.TargetAuth, e *Enforc
 // an exhausted ladder is the outage-class denial it already was. It is never a
 // session served without the rung: that is the silent downgrade D6a forbids.
 func (a *DeviceAccountAuthenticator) resolveEnforcement(r *deviceRoute) error {
-	// The proxy-wide setting is the default, and it stays REQUIRED at startup:
-	// no FortiOS built-in is a safe default (0015), and a route that names no
-	// role must still get a scope somebody chose.
-	r.profile = a.profile
+	// The operator's setting for THIS PLATFORM is the default, and it stays
+	// REQUIRED at startup: no FortiOS built-in is a safe default (0015), and a
+	// route that names no role must still get a scope somebody chose. Since
+	// phase 0036 the scope is per platform, so a proxy fronting two platforms
+	// whose profile vocabularies do not overlap has a correct value for each.
+	r.profile = a.profiles[r.platform]
 
 	switch exec := r.enforce.ExecutionRung(); exec {
 	case control.ExecutionProxyInspected, control.ExecutionNoInteractiveShell:

@@ -293,6 +293,21 @@ routes:
           # phase 0029, which only corrected the sentence above.
           expiry_posture: proxy-enforced
           lifetime_seconds: "900"
+    # The route names its own scope, and here that is a policy choice rather
+    # than a workaround: on a FortiGate the session's real command boundary IS
+    # its access profile, so `platform-authorized` says what is actually
+    # enforcing and `platform_role` says under which grouping (PLAN §6.5, phase
+    # 0019). The rung lived on the FortiSwitch route until phase 0036, where it
+    # was standing in for a proxy-wide default that platform could not hold —
+    # policy covering for configuration, and indistinguishable in the fixture
+    # from a route that meant it.
+    #
+    # `prof_admin` is the same scope this proxy's `fortigate` default names, so
+    # what the route buys is the RECORD: the audit trail now says the device's
+    # own authorizer decided, and names the grouping it decided under.
+    enforcement:
+      execution: platform-authorized
+      platform_role: prof_admin
 
   # ------------------------------------- ephemeral-account, partitioned ---
   # The SAME appliance, running virtual domains (phase 0016). It is a second
@@ -374,20 +389,18 @@ routes:
           # for.
           expiry_posture: proxy-enforced
           lifetime_seconds: "900"
-    # The route names the account's scope, and on this platform it has to.
-    # The proxy-wide `auth.target.ephemeral_account.access_profile` is
-    # FortiOS-shaped — this topology's is `prof_admin`, which FortiSwitchOS
-    # does not have — so the switch driver is built with no default at all and
-    # a route relying on one is refused rather than served with a profile the
-    # device will reject half way through the sequence (phase 0029).
+    # The route names NO scope of its own, which is the normal arrangement and
+    # the point of this fixture (phase 0036). Until then it had to name one:
+    # `auth.target.ephemeral_account.access_profile` was a single FortiOS-shaped
+    # string, so the switch driver was built with no default and a route relying
+    # on one was refused outage-class. The proxy now configures a scope per
+    # platform, so an ordinary route is served on a switch exactly as it is on a
+    # FortiGate, and `super_admin` reaches the account from the proxy's own
+    # configuration rather than from policy.
     #
-    # `super_admin` because it is the ONLY built-in FortiSwitchOS documents,
-    # not because an all-access profile is a good scope for a session: any
-    # narrower one here is a custom profile the customer builds on the switch,
-    # which is exactly what the driver's AuthorizationCaveat says.
-    enforcement:
-      execution: platform-authorized
-      platform_role: super_admin
+    # `enforcement.platform_role` is still where a route names its own scope,
+    # still only beside `platform-authorized` (phase 0019), and the FortiGate
+    # routes above still exercise it.
 
   # The ladder's fall-through (D14). The first entry names a platform this proxy
   # has no driver for, so it is UNSATISFIABLE and skipped; the second is served.

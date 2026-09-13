@@ -1259,7 +1259,7 @@ The route names the platform; nothing is inferred from a banner.
 
 #### What is true today — read this before the layers below
 
-The rest of this section is **append-only**: eight `As <verb> (phase N)` blocks
+The rest of this section is **append-only**: nine `As <verb> (phase N)` blocks
 recording what each phase established, several of which supersede parts of
 earlier ones. Composing them costs ~8k tokens and is how a session ends up
 building against a rule that was overturned two phases later. This block is the
@@ -1314,8 +1314,13 @@ VDOM-scoped account, and an unknown VDOM is refused before anything is created.
 **The account's authorization scope** comes from the route's
 `enforcement.platform_role` on a `platform-authorized` route, and otherwise from
 `auth.target.ephemeral_account.access_profile`, which is required and checked at
-startup. A route naming that rung with no role is **refused**, not silently given
-the proxy-wide default. The rung is satisfiable only where the driver declares
+startup **per platform**: a profile name is a platform's vocabulary rather than a
+fleet's, so the setting is a map keyed on `platform` (a scalar still says "every
+platform this proxy serves"), a platform the proxy registers with no scope named
+for it is a **boot error**, and so is a scope the platform cannot hold — the
+driver answers that from a declaration (`device.RoleValidator`) without dialling
+anything. A route naming that rung with no role is **refused**, not silently
+given the proxy-wide default. The rung is satisfiable only where the driver declares
 `CommandAuthorization`, and a shipped driver declaring one must also declare
 `AuthorizationCaveat`. **Source-address pinning has no rung name** — it is
 applied unconditionally wherever declared, on both IPv4 and IPv6, and an IPv6
@@ -1373,12 +1378,7 @@ Like the VDOM and unit-shape refusals this is deliberately **not**
 wrong is which device the route names — so skipping the rung would answer a
 misrouted route by serving the session on a credential the server ranked lower.
 
-**Known gaps, carried rather than closed.** The proxy-wide `access_profile` is
-one FortiOS-shaped string for every platform, so the switch driver runs with no
-default when the configured value is a FortiOS built-in — a route naming its own
-`enforcement.platform_role` is still served, and one relying on the proxy-wide
-default is **refused outage-class with nothing provisioned** (phase **0036**
-owns the fix). Whether FortiOS's schedule covers an **SSH** login is an
+**Known gaps, carried rather than closed.** Whether FortiOS's schedule covers an **SSH** login is an
 inference from the field's shape — Fortinet publishes only a GUI denial — and it
 is carried to the operator through `ExpiryMechanism`. Which scope the schedule table lives in on a
 partitioned unit is undocumented; the failure names the assumption.
@@ -1921,6 +1921,8 @@ option serves. Write it as a **new, higher-numbered prompt**; the number
 **0030 is retired** (`docs/PROTOCOL.md` §6).
 
 **A note on the proxy-wide access profile, which is now under-specified.**
+*(Resolved by "As settled (phase 0036)" below, which made the setting
+per-platform. What follows is 0029's reasoning for the workaround it replaced.)*
 `auth.target.ephemeral_account.access_profile` is one value for every platform
 a proxy serves, and it is FortiOS-shaped: the built-ins most estates have
 configured do not exist on a FortiSwitch. The switch driver is therefore built
@@ -1933,6 +1935,84 @@ half way through a sequence that has already created the administrator, and
 refusing at startup means every FortiGate-only deployment stops booting the day
 this driver ships over a platform it does not serve. A per-platform default is
 the real answer and belongs to whichever phase next touches that setting.
+
+**As settled (phase 0036): the scope is per PLATFORM, and the mistake is a boot
+error.** 0029's note above named the real answer and left it to whichever phase
+next touched the setting. This is that phase, and it took the note's own
+candidate: `auth.target.ephemeral_account.access_profile` is a **map keyed on
+the contract's `platform`**, and a route that names no scope of its own is
+served on every platform this proxy registers. Two decisions came out of it,
+settled with the user.
+
+1. **The default is proxy configuration, per platform; the route override stays
+   exactly where 0019 put it.** Three answers were weighed and the other two are
+   recorded here so no future session re-derives them.
+
+   *A route-named default, decoupled from the rung*, was the contract answer:
+   make `platform_role` readable on every device route rather than only beside
+   `platform-authorized`. It was rejected on two grounds. 0019 tied the two
+   together deliberately, so that a scope in the audit record is one the route
+   actually chose — decoupling them means a record that names a scope beside a
+   rung that is not enforcing it, and "which grouping did the device decide
+   under" stops being answerable from the record alone. And it does not answer
+   the question this phase is named for: a route that names nothing still needs
+   a default from somewhere, so the contract change would have been additional
+   to this one rather than instead of it. `api/` is therefore **untouched**, and
+   there is no cross-repo obligation (`docs/CROSS-REPO-PROTOCOL.md` §1).
+
+   *Driver-declared defaults* — each driver naming a safe scope for its own
+   platform — is the cheapest and is the one 0015 explicitly refused, in terms
+   that have not weakened: "a default that is wrong for the common case, quietly
+   weaker than advertised on 7.4+, and inapplicable on a whole class of unit is
+   not a safe default; it is a guess with a comment." On FortiSwitchOS it would
+   be worse than on FortiOS, because the only built-in there is the all-access
+   one — so the shipped default would be the widest scope on the platform,
+   chosen by Hoplock rather than by the customer. Nothing here overturns that
+   decision: the value is still the operator's, and what changed is only that
+   they can now write one per platform instead of one for all of them.
+
+   What the map buys is that the **operator's own mistake becomes expressible**.
+   The setting could be right for FortiOS or right for FortiSwitchOS and never
+   for both, so its validation could not tell an operator they had made it; now
+   it can, because there is a correct configuration to compare against.
+
+2. **A platform with no scope, or a scope its platform cannot hold, refuses to
+   START.** Both were previously discovered by a session failing on a customer's
+   device. `internal/auth/target`'s driver registry resolves the scope for every
+   platform it is about to register and refuses the proxy if one is missing or
+   unusable, naming the platform, the profile and the two remedies (add an
+   entry, or narrow `platforms:`). A scope written for a platform the proxy does
+   not serve is refused in the same pass, because an operator who misspelled a
+   platform name is otherwise told only that a *different* one is uncovered.
+
+   0029's argument against a startup refusal — that a FortiGate-only deployment
+   must not stop booting the day a second driver ships — is answered rather than
+   overruled: `platforms:` is what says which estates a proxy fronts, and a
+   deployment that lists one keeps writing one string. What no longer boots is a
+   proxy that registers a driver it has no valid scope for, which is a proxy
+   that was going to fail those sessions anyway.
+
+   **The check is a declaration, not a probe.** `device.RoleValidator` is an
+   optional driver interface beside `ResidueSweeper`, answered from the shipped
+   declaration-only driver (`device.Shipped`) with nothing dialled. It is a rule
+   over names rather than a list, because every platform here lets a customer
+   build a custom profile and an allow-list would refuse the configuration
+   Fortinet's own guidance recommends. Nil therefore means only *nothing this
+   driver declares rules this name out* — never that the role exists on any
+   particular unit, which no driver can say without connecting, and which the
+   device's own refusal at create time still answers.
+
+**What this removes.** 0029's workaround is gone: `newDriverRegistry` no longer
+blanks the switch driver's default when the configured profile is a FortiOS
+built-in, and `fortios.SwitchAcceptsProfile`, which existed only to serve it, is
+replaced by `SwitchDriver.ValidateRole` — the same rule, asked through the seam,
+at startup instead of per session. The e2e topology's FortiSwitch route named
+`enforcement.platform_role: super_admin` for the same reason and now names no
+scope at all, which is the normal arrangement; `platform-authorized` moved to a
+FortiGate route, where naming the device's own authorizer is a policy choice
+rather than configuration in disguise. What did **not** change: no account is
+created with a scope nobody chose, no platform is handed a profile it cannot
+hold, and a route that did not choose a scope still says so in the record.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -3372,7 +3452,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0033 | Chain identity rejection                 | the defect 0025 fixed on the proxy→target leg, still live on the proxy→proxy one: `handshakeNextHop` reported a next hop **refusing this proxy's chain identity key** (D11) as *"the next proxy in the chain could not be reached"*, sending the operator to the network when the network is the part that works. **Delivered:** the `hop-auth` stage and its §4.3 wording — *"this proxy was not accepted by the next proxy in the chain"*, the third member of the hop family beside `hop-dial` and `relay` — classified with `target.IsAuthRejection`, which stays the tree's **single** copy of x/crypto's wording (its doc now says "far side", its tripwire test did not move), ordered after `takeHostKeyErr` exactly as `dialTarget` is; plus a critical `chain.identity_rejected` record naming the next proxy id, the hop direction, and the **SHA256 fingerprint** of the chain key — never the key, never its path. **Containment was the question, and the answer is NO**, with the reasoning in the learnings: the blast radius that justified 0025's breaker is a property of an OpenSSH *target* (`PerSourcePenalties` scoring the proxy's source address), the far end here is another Hoplock proxy on `x/crypto/ssh` which has no such defence, a `relay` hop opens no connection to withhold in the first place, and a refused chain key is permanent until an operator registers it — so a cooldown would stack a second outage on top of the first, between their fix and service returning. Nothing is withheld; `RejectionBreaker` is untouched and the `chain.` config gains nothing. No contract change. Added by 0025 |
 | 0034 | Does the MFA challenge disclose the first factor? | **Withdrawn — evaluated, not built.** The signal is real and is now an accepted limit of the deny branch (§4.3): a correct password is answered with a challenge and a wrong one is not, so its presence confirms the first factor without any message saying so. Three findings closed it. **It is not the proxy's to fix and not an accident of the mock** — the contract *requires* it, because a `200` on `POST /v1/auth/password` is documented as "the password was accepted", so a decoy would be a contract violation; the proxy meanwhile needs nothing either way, which was confirmed rather than assumed on the two paths a decoy would take (poll → `401`, and `awaitMFA`'s expiry branch), both already driven by the e2e scenario. **The mitigation is an amplifier handed to the attacker:** a decoy takes one failed guess from **1 Control call to ~121** (derived at the shipped 500ms floor over a 60s challenge; §9.1 measures a whole successful connection at 3.17, or 1.17 after 0023) and from a stateless rejection to a connection held for the challenge's life — ~170 guesses/s fills the descriptor ceiling §9.1 measures. It is safe only behind the rate limiting this prompt scoped out, which is also what blunts enumeration directly. **And it would not close the channel:** a decoy narrows a single-probe one-bit oracle to a statistical one, because resolution timing still separates a human on a phone from a synthetic draw and a decoy must never approve. §12's argument holds — the IdP verifies the password in production and is where this defence lives — but the *contract* is not a prototype artifact, so the learnings names the exact sentence a reversal must relax first. No production code, no `api/` change, no cross-repo obligation. The number **0034 is retired and must never be reused**. Reasoning: §4.3 and `docs/learnings/0034-mfa-challenge-first-factor-oracle-learnings.md`. Added by 0026 |
 | 0035 | Hold the ephemeral UID floor off the target | the residual 0027 left, raised in review on its PR: the uid high-water mark lived on the **target**, so a proxy RESTART — no attacker needed — left a fresh process with only the target's word for the floor, and a replaced proxy or a second proxy on one target had no continuity at all; and a target that can store nothing (an ordinary Linux host with a read-only root filesystem) was refused outright on a route that worked before 0027. **Delivered:** `POST /v1/uids/lease` (**contract 4.3**; `policy_version` stays 4 — a new endpoint is not in the vocabulary it gates) grants a proxy an **exclusive block** `[uid_from, uid_to)` with a term, out of a per-target allocation cursor that **only ever advances** — which is the whole server-side requirement and the one invariant everything else rests on: a uid inside a granted block is never inside another grant, used, abandoned or expired alike, so a lease needs no release call and two proxies cannot collide. Allocation happens inside the block, so the call is **one per block, not per session** (asserted, because that is the claim the shape is justified by — 0022 and 0023's 3.17 → 1.17 budget is untouched), renewal is background work off the session path, and a held block needs no server at all, so **provisioning rides out a Control outage**. A block ends when it is exhausted or when its term runs out, and **both fail closed** while Control is unreachable — stated rather than hidden, with `uid_lease.uid_count` and the server's term as the knobs an operator sizes against their own outages. The **target-side mark is demoted, not deleted**: it corroborates, may only ever RAISE the leased floor, and its absence is a logged fact and an audit field (`target_uid_marked`) instead of an outage — which is what makes an unwritable `<enforcement_base>` a **served** target rather than a refused one. `uid_min`/`uid_max` **stayed in proxy config** and changed meaning: the range a block is accepted from, sent on the request and enforced on the grant, refused rather than clamped. `target_uid_lease` joins `target_account_uid` on the provisioning record, because with two proxies on one target the uid alone no longer says whose block it came from. **The floor is NOT on the authorize response**, deliberately and structurally: that decision is cacheable and served during a Control outage, so a replayed floor is a lowered one — `CachingClient` implements no `UIDLeaser`, so wiring one in is a compile error. The **device question** (§3 of the prompt) is answered **NO** and checked rather than assumed: a device account is name-keyed with a per-session random token and every object the drivers create is `edit "<name>"`, never a numbered slot, so a fresh administrator inherits nothing from a torn-down one — and `ephemeral-account` needs no lease, so a device route is unaffected by a Control outage. Contract change — carried a cross-repo obligation |
-| 0036 | Per-platform access profile             | `auth.target.ephemeral_account.access_profile` is one string for every platform a proxy serves, and it is FortiOS-shaped: FortiOS documents three built-in profiles and FortiSwitchOS documents one, so a proxy fronting both estates cannot express a correct value. Phase 0029 worked around it — the switch driver is built with no default when the configured profile is a FortiOS built-in, so a route naming `enforcement.platform_role` is served and one relying on the default is refused outage-class — and queued the fix. The question is where a created administrator's scope comes from when the route names none: per-platform configuration (no contract change), a route-named default decoupled from 0019's rung (a contract change, weighed against D2), or driver-declared defaults (which 0015 explicitly refused). Must run before the collapse, because one candidate answer revises `api/` (new prompt, added by phase 0029 and raised by the user on its PR) |
+| 0036 | Per-platform access profile             | `auth.target.ephemeral_account.access_profile` was one string for every platform a proxy serves, and it was FortiOS-shaped: FortiOS documents three built-in profiles and FortiSwitchOS documents one, so a proxy fronting both estates could not express a correct value and phase 0029 worked around it per session. **Delivered:** the setting is a **map keyed on `platform`** — the scalar still means "every platform this proxy serves", so a single-platform deployment is unchanged — and a route naming no scope of its own is now served on both platforms. A platform the proxy registers with **no scope named for it**, a scope the platform **cannot hold**, and a scope named for a platform the proxy does **not serve** are all refusals at **startup**, naming the platform, the profile and the two remedies; the unusable-scope check is answered from a **declaration** (`device.RoleValidator`, an optional driver interface beside `ResidueSweeper`, read off `device.Shipped`) with nothing dialled, so a third platform with a fourth profile vocabulary inherits it rather than repeating the argument. 0029's workaround is **removed** — the switch driver is no longer built with its default blanked, and `fortios.SwitchAcceptsProfile` is replaced by `SwitchDriver.ValidateRole` — and the e2e fixture now expresses the normal arrangement: the FortiSwitch route names no scope, `platform-authorized` moved to a FortiGate route where it is a policy choice, and `test/topology` pins both. **The route override stays where 0019 put it**, beside `platform-authorized`, so a scope in the audit record is still one the route actually chose; **0015's decision that the operator picks the scope is preserved**, not overturned. **No contract change** — `api/` is untouched, so no cross-repo obligation. Reasoning: §5.3, "As settled (phase 0036)". Added by phase 0029 and raised by the user on its PR |
 | 0037 | Drop the superseded contract vocabularies | remove the support the phased build accumulated for *older* vocabularies — the superseded singular `target_auth`, the shape normalisation, the version-history prose — leaving one live vocabulary. The versioning mechanism (`policy_version`, `PolicyVersion`, the MUST-NOT-answer-above rule) is **kept**: it is how the contract evolves after release. Runs **last**: it must follow every phase that revises the contract, which now includes 0023's host-key cache hint — and its number says so, after the revisions below moved it from 0029 and, most recently, from 0036 to make room for 0029's follow-up |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued

@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoplock/proxy/internal/auth/target/device"
+	_ "github.com/hoplock/proxy/internal/auth/target/device/fortios" // registers the shipped declarations
 	"github.com/hoplock/proxy/internal/config"
 )
 
@@ -524,5 +526,119 @@ func TestTheStrangerProxysChainKeyIsNeverRegistered(t *testing.T) {
 	if bytes.Contains(template, []byte("@@FP_CHAIN_STRANGER@@")) {
 		t.Error("the fixture template has a slot for chain_proxy_stranger's fingerprint; " +
 			"the scenario needs a chain identity the far hop does NOT recognise")
+	}
+}
+
+// TestEveryRoutedPlatformHasAScopeOnItsProxy is the other half of the check
+// above, added by phase 0036 for the same reason and against the same class of
+// failure: two files in different directories that have to agree.
+//
+// `platforms:` says which drivers a proxy registers; `access_profile:` says
+// what scope each of them gives an administrator when the route names none.
+// Getting the first right and the second wrong used to be a per-session outage
+// on the customer's device, and it is now a startup refusal — but only the
+// proxy binary performs that refusal, and this suite's fixtures are checked by
+// nothing that boots one. So the same resolution is done here, over the
+// declarations, which is exactly what the proxy will do at startup.
+func TestEveryRoutedPlatformHasAScopeOnItsProxy(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(filepath.Join(deployDir, "proxy"))
+	if err != nil {
+		t.Fatalf("read the proxy configs: %v", err)
+	}
+	checked := 0
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".yaml" {
+			continue
+		}
+		cfg, err := config.Load(filepath.Join(deployDir, "proxy", e.Name()))
+		if err != nil {
+			t.Errorf("load %s: %v", e.Name(), err)
+			continue
+		}
+		account := cfg.Auth.Target.EphemeralAccount
+		if account.AdminUser == "" {
+			continue // this proxy serves no device routes
+		}
+		platforms := account.Platforms
+		if len(platforms) == 0 {
+			platforms = device.Shipped().Platforms()
+		}
+		for _, platform := range platforms {
+			checked++
+			profile := account.AccessProfile.For(platform)
+			if profile == "" {
+				t.Errorf("%s registers platform %q and names no access profile for it, so the proxy will "+
+					"refuse to start", e.Name(), platform)
+				continue
+			}
+			declared, err := device.Shipped().Lookup(platform)
+			if err != nil {
+				continue // TestEveryRoutedPlatformHasADriverOnItsProxy owns this
+			}
+			if err := device.ValidateRole(declared, profile); err != nil {
+				t.Errorf("%s names access profile %q for platform %q, which cannot hold it: %v",
+					e.Name(), profile, platform, err)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no proxy config in the topology registers a device platform; this test has stopped checking anything")
+	}
+}
+
+// TestTheFortiSwitchRouteNamesNoScopeOfItsOwn pins the arrangement phase 0036
+// was asked to leave behind.
+//
+// Until then the fixture had to name `enforcement.platform_role: super_admin`
+// on the switch route — not because the route wanted the device's own
+// authorizer, but because the proxy-wide setting was one FortiOS-shaped string
+// and the switch driver was therefore built with no default at all. That is a
+// workaround expressed as policy, and a reader of the fixture could not tell it
+// from a route that genuinely chose its scope. The route now names nothing and
+// is served from the proxy's per-platform configuration, which is the normal
+// arrangement on every other platform.
+//
+// The FortiGate routes still exercise `platform_role`, and the assertion below
+// keeps that true: this is a check that the workaround is gone, not that the
+// rung is unused.
+func TestTheFortiSwitchRouteNamesNoScopeOfItsOwn(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	route, ok := routeNaming(body, "fortiswitchos")
+	if !ok {
+		t.Fatal("no fixture route names platform fortiswitchos; this test has stopped checking anything")
+	}
+	if bytes.Contains(route, []byte("platform_role:")) {
+		t.Errorf("the FortiSwitch route still names its own scope:\n%s", route)
+	}
+	if !bytes.Contains(body, []byte("platform_role:")) {
+		t.Error("no fixture route names platform_role at all — phase 0019's rung is no longer covered")
+	}
+}
+
+// routeNaming returns the fixture route that names one platform, from the
+// `- login:` that opens it to the one that opens the next.
+func routeNaming(body []byte, platform string) ([]byte, bool) {
+	const opener = "\n  - login:"
+	want := []byte("platform: " + platform)
+	for rest := body; ; {
+		i := bytes.Index(rest, []byte(opener))
+		if i < 0 {
+			return nil, false
+		}
+		rest = rest[i+1:]
+		block := rest
+		if end := bytes.Index(rest, []byte(opener)); end >= 0 {
+			block = rest[:end+1]
+		}
+		if bytes.Contains(block, want) {
+			return block, true
+		}
 	}
 }

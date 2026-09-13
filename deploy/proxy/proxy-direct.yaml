@@ -121,14 +121,27 @@ auth:
       # driver default to leave it at: no FortiOS built-in is a safe default, so
       # the operator picks. Phase 0019 is what turns this into policy.
       #
-      # `prof_admin` rather than `super_admin_readonly`, and the reason is the
-      # finding phase 0016 wrote down: a per-VDOM administrator "must use either
-      # the `prof_admin` administrator profile, or a custom profile", and
-      # `super_admin_readonly` is the GLOBAL read-only one. There is no built-in
-      # read-only profile a VDOM-scoped account can hold, so a proxy serving
-      # both unit shapes with ONE profile has exactly this choice — and a real
-      # deployment builds a custom profile instead of taking the wider built-in.
-      access_profile: "prof_admin"
+      # PER PLATFORM since phase 0036, and this topology is the reason the
+      # setting had to become one: a profile name is a platform's vocabulary and
+      # this proxy fronts two whose vocabularies do not overlap. Writing one
+      # string here is now a startup error naming the platform it does not fit,
+      # which is what the two entries below buy.
+      #
+      #   * `fortigate`: `prof_admin` rather than `super_admin_readonly`, on the
+      #     finding phase 0016 wrote down — a per-VDOM administrator "must use
+      #     either the `prof_admin` administrator profile, or a custom profile",
+      #     and `super_admin_readonly` is the GLOBAL read-only one. There is no
+      #     built-in read-only profile a VDOM-scoped account can hold, and a
+      #     real deployment builds a custom profile rather than taking the wider
+      #     built-in.
+      #   * `fortiswitchos`: `super_admin` because it is the ONLY built-in
+      #     FortiSwitchOS documents — `prof_admin` and `super_admin_readonly`
+      #     are FortiOS profiles and do not exist there at all. Any narrower
+      #     scope on a switch is a custom profile the customer builds, which is
+      #     exactly what that driver's AuthorizationCaveat says.
+      access_profile:
+        fortigate: "prof_admin"
+        fortiswitchos: "super_admin"
       # Tight, because on FortiOS nothing but this sweep ever removes an
       # account: the platform can deny an administrator's login on a schedule
       # but never deletes one, and this driver does not render even that

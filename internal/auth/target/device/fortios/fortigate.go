@@ -108,6 +108,7 @@ type Driver struct {
 }
 
 var _ device.Driver = (*Driver)(nil)
+var _ device.RoleValidator = (*Driver)(nil)
 
 // New returns a FortiOS driver.
 func New(opts Options) (*Driver, error) {
@@ -128,7 +129,7 @@ func New(opts Options) (*Driver, error) {
 	// would turn that into a startup failure. What must not happen is an
 	// account created without one, and CreateAccount is where that is decided.
 	if d.profile != "" {
-		if err := validateProfile(d.profile); err != nil {
+		if err := d.ValidateRole(d.profile); err != nil {
 			return nil, err
 		}
 	}
@@ -304,7 +305,7 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		// the session on a credential the server ranked lower.
 		return nil, errors.New("auth/target/device/fortios: no access profile: " +
 			"an administrator's scope must be named by the route or by " +
-			"`auth.target.ephemeral_account.access_profile`, because no FortiOS built-in " +
+			"`auth.target.ephemeral_account.access_profile` for this platform, because no FortiOS built-in " +
 			"is a safe default (`super_admin_readonly` cannot run `diagnose` from 7.4.x " +
 			"and does not fit a per-VDOM account)")
 	}
@@ -1245,6 +1246,21 @@ func randomSecret(n int) (string, error) {
 	}
 	return string(out), nil
 }
+
+// ValidateRole implements device.RoleValidator.
+//
+// FortiOS rules a profile name out only on its SHAPE. The platform documents
+// three built-ins — `super_admin`, `prof_admin` and `super_admin_readonly` —
+// but a custom profile is the normal answer for anything narrower and this
+// driver has no way to know what a unit carries, so an allow-list here would
+// refuse the very configuration Fortinet's own guidance recommends (PLAN §5.3,
+// phase 0015).
+//
+// The one FortiOS rule that IS a refusal by name — that a VDOM-scoped account
+// may hold neither global built-in — depends on the route's `device_field.vdom`
+// and not on the name alone, so it stays at create time in checkVDOMProfile
+// where the route is in hand.
+func (d *Driver) ValidateRole(role string) error { return validateProfile(role) }
 
 // Register adds this repository's FortiOS drivers to a registry, so a proxy
 // builds them in one call rather than knowing each platform name.

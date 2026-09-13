@@ -1603,6 +1603,30 @@ func testDeviceCredentials(t *testing.T) {
 			t.Errorf("the mapping record names platform %q, want fortiswitchos", got)
 		}
 
+		// And the account holds the scope the PROXY named for this platform,
+		// on a route that names none of its own (phase 0036). Until then this
+		// route had to carry `enforcement.platform_role: super_admin`, because
+		// the proxy-wide setting was one FortiOS-shaped string the switch could
+		// not hold and the driver was therefore built with no default at all.
+		// `super_admin` is the only built-in FortiSwitchOS documents, so it is
+		// the right value here and a narrower one is a custom profile the
+		// customer builds — but it now reaches the account from
+		// `auth.target.ephemeral_account.access_profile.fortiswitchos` rather
+		// than from policy standing in for it.
+		//
+		// The assertion is on the RECORD rather than on the switch's table,
+		// because by now the session has closed and teardown has probably
+		// removed the account — and the record is what an auditor reads
+		// anyway. It carries the scope the device was actually given, read
+		// back from the driver's own answer.
+		if got := mapping.Attributes["access_profile"]; got != "super_admin" {
+			t.Errorf("the mapping record names access profile %q, want the proxy's per-platform default super_admin", got)
+		}
+		if got := mapping.Attributes["enforcement_execution"]; got == "platform-authorized" {
+			t.Errorf("the FortiSwitch route still names the platform-authorized rung; phase 0036 removed the " +
+				"workaround it was standing in for, and the record should say the route chose nothing")
+		}
+
 		// And it is gone afterwards. On this platform that matters more than
 		// on a FortiGate: FortiSwitchOS's `set schedule` names a table it does
 		// not have, so the driver declares no expiry mechanism and the reaper
