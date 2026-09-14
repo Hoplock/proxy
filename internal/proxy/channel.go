@@ -28,11 +28,59 @@ const (
 	requestExitSignal = "exit-signal"
 )
 
-// exitGrace bounds how long a finished channel waits for the target's
-// exit-status after its output has been drained. A well-behaved server sends
-// exit-status and closes immediately; this stops one that does not from pinning
-// the client's channel open.
-const exitGrace = 5 * time.Second
+// exitGrace bounds every wait a channel's teardown makes: how long it waits for
+// the target's exit-status after the output has been drained, and how long it
+// waits for a client request that is still in flight. A well-behaved server
+// sends exit-status and closes immediately, and answers a request it was sent;
+// this stops one that does not from pinning the client's channel open.
+//
+// It is a var rather than a const only so that the teardown tests can bound
+// their own runtime. Nothing outside a test writes it.
+var exitGrace = 5 * time.Second
+
+// relayGate sequences the client's in-flight channel requests against the
+// teardown that closes the client's half of the channel.
+//
+// A request is policed, relayed to the target, and answered to the client while
+// the gate is held, so a close can never land between the target's answer and
+// the client hearing it. That is the ordering guarantee pump already holds for
+// the exit status — captured, and replayed once the output has drained —
+// applied to the one message that was missing it: nothing the client is waiting
+// on may be lost to teardown. A lost affirmative reply makes a permitted
+// command indistinguishable on the wire from one policy refused, which is
+// exactly the confusion the disclosure rule exists to prevent (PLAN §4.3, §6.3).
+//
+// It is a channel rather than a sync.Mutex because teardown has to be able to
+// give up: a target that never answers a request must not hold the client's
+// channel open, so teardown's acquire is bounded by exitGrace.
+type relayGate chan struct{}
+
+// newRelayGate returns a gate nobody holds.
+func newRelayGate() relayGate {
+	g := make(relayGate, 1)
+	g <- struct{}{}
+	return g
+}
+
+// hold takes the gate, waiting as long as it must. The request forwarder calls
+// it: its round trip is already bounded by the target's channel ending, and a
+// forwarder that gave up here would be the lost answer all over again.
+func (g relayGate) hold() { <-g }
+
+// holdBefore takes the gate unless the grace expires or the session ends first,
+// and reports whether it got it. release is only safe after a true.
+func (g relayGate) holdBefore(grace <-chan time.Time, done <-chan struct{}) bool {
+	select {
+	case <-g:
+		return true
+	case <-grace:
+	case <-done:
+	}
+	return false
+}
+
+// release hands the gate back.
+func (g relayGate) release() { g <- struct{}{} }
 
 // policing says whether a connection-level request stream is the client's, and
 // therefore carries the session's own policy (D5a axis 3). The target's
@@ -369,6 +417,7 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 		exitReq  *ssh.Request
 		drained  = make(chan struct{})
 		reqsDone = make(chan struct{})
+		relaying = newRelayGate()
 	)
 
 	nearDir := insp.Opener()
@@ -413,7 +462,7 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 	go func() {
 		defer all.Done()
 		if nearDir == channel.FromClient {
-			s.forwardClientRequests(nearReqs, near, far, insp)
+			s.forwardClientRequests(nearReqs, near, far, insp, relaying)
 			return
 		}
 		forwardRequests(nearReqs, far, nil)
@@ -440,6 +489,19 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 	case <-s.ctx.Done():
 	}
 
+	// A request the client is still waiting on is answered before its channel is
+	// closed. By the time the output has drained the target has usually already
+	// accepted the request that started the work, so closing here turns its
+	// "yes" into an EOF — and a client that tells a refused exec from a channel
+	// that merely ended reads a permitted command as a denied one (PLAN §4.3).
+	//
+	// Bounded like every other teardown wait, for the reason waiting on
+	// forwardClientRequests to RETURN cannot be: it ranges over nearReqs, and
+	// nearReqs does not close until the channel does, so moving all.Wait() above
+	// the closes deadlocks. A target that never answers gets exitGrace and no
+	// more.
+	held := relaying.holdBefore(time.After(exitGrace), s.ctx.Done())
+
 	exitMu.Lock()
 	captured := exitReq
 	exitMu.Unlock()
@@ -454,6 +516,12 @@ func (s *session) pump(near ssh.Channel, nearReqs <-chan *ssh.Request, far ssh.C
 
 	_ = near.Close()
 	_ = far.Close()
+	if held {
+		// Handed back after the closes, so a request that arrives during
+		// teardown still unwinds: it relays into a closed channel, is answered
+		// there, and the forwarder returns once nearReqs closes.
+		relaying.release()
+	}
 	all.Wait()
 	// The close record is made after the pump has fully unwound, so a stream
 	// chunk can never be recorded after the channel it belongs to was closed.
@@ -472,12 +540,18 @@ func exitStatusOf(payload []byte) (int, bool) {
 // forwardClientRequests relays the client's in-channel requests through the
 // request axis. A denial that leaves the channel with nothing left to do closes
 // both halves, which unwinds the pump.
-func (s *session) forwardClientRequests(in <-chan *ssh.Request, near, far ssh.Channel, insp *channel.Inspection) {
+//
+// relaying is held across the whole of one request — the policy decision, the
+// relay, and the answer — so that pump's teardown cannot close the client's
+// half while any part of it is outstanding.
+func (s *session) forwardClientRequests(in <-chan *ssh.Request, near, far ssh.Channel, insp *channel.Inspection, relaying relayGate) {
 	for req := range in {
+		relaying.hold()
 		relay, alive := s.policeRequest(near, insp, req)
 		if relay {
 			forwardRequest(far, req)
 		}
+		relaying.release()
 		if !alive {
 			_ = near.Close()
 			_ = far.Close()
