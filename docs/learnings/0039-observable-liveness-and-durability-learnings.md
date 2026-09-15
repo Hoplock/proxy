@@ -145,3 +145,30 @@ heartbeats and advertises nothing.
   ignores one, which is correct and costs nothing — the value can only tighten.
   Turning it into an `ErrProtocol` would make a misconfigured server an outage,
   which is a real design call and not obviously the right one.
+
+### A pre-existing e2e race, found while driving this PR (not fixed here)
+
+`TestTopology/session_bounds/a_subject_at_its_ceiling_is_denied,_and_the_slot_
+comes_back` failed once on this PR's first CI run, and the cause is in the
+**test's wait condition**, not in anything this phase touches.
+
+`test/e2e/scenarios_test.go` waits for the held session's ephemeral account to
+disappear from the target and then immediately opens the next session. But the
+account and the concurrency slot are released at different points:
+`session.close()` removes the account at `internal/proxy/session.go:701`, then
+records the session end and returns, and only then does `Server.remove`'s
+`s.release(sess.id)` (`internal/proxy/proxy.go:380`) give the slot back. So "the
+account is gone" is strictly earlier than "the slot is free", and on a loaded
+runner a new connection fits in the gap and is refused — correctly, as a policy
+denial.
+
+The in-process test of the same property does **not** have the race:
+`TestAnEndedSessionFreesItsSlot` waits on `h.server.liveSessions() == 0`, which
+is the slot itself. The e2e suite has no equivalent observable from outside the
+container, so the fix is to make the third session's success the wait rather
+than a precondition of it — a bounded retry, in the shape the suite's other
+`waitFor`s already use.
+
+Left alone deliberately (PROTOCOL §3): it is a test-only race in a suite this
+phase does not touch, and fixing it here would widen a contract PR into the e2e
+suite. Whoever picks it up should treat it as a one-file change.
