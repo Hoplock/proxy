@@ -2014,6 +2014,61 @@ const (
 	grantedFieldsTarget = "granted-fields.company.com"
 )
 
+// holdTheOnlySlot opens a session that holds its route's only concurrency slot
+// and hands back overlapping's collector for it, retrying until the proxy
+// admits one.
+//
+// It retries because the slot and the ephemeral account are released at
+// DIFFERENT moments, and the account goes first: session.close() removes the
+// account (internal/proxy/session.go), and only once run() has unwound does
+// Server.remove release the slot (internal/proxy/proxy.go). So "the target
+// holds no ephemeral account" is strictly EARLIER than "the slot is free", and
+// a session opened on the strength of it can be refused — correctly, as a
+// policy denial. Nothing outside the container can see the live-session
+// registry, so being admitted IS the wait: an admitted session provisions an
+// account on the target, and a refused one is turned away before it provisions
+// anything (internal/proxy/bounds.go).
+//
+// The caller waits for the target to hold NO ephemeral account first, so the
+// one account this watches for is this session's.
+func holdTheOnlySlot(t *testing.T, s session, what string) func() []result {
+	t.Helper()
+
+	deadline := time.Now().Add(readyTimeout)
+	for attempt := 1; ; attempt++ {
+		// Every attempt starts from a target holding none of this proxy's
+		// accounts, so the one account below is unambiguously this attempt's.
+		// The caller has already waited for that; a RETRY has not, and its
+		// predecessor's teardown is asynchronous.
+		for len(ephemeralAccountsOn(t)) != 0 && time.Now().Before(deadline) {
+			time.Sleep(pollInterval)
+		}
+
+		collect := overlapping(t, s)
+		admitted := false
+		for stop := time.Now().Add(concurrentHold); time.Now().Before(stop); {
+			if len(ephemeralAccountsOn(t)) == 1 {
+				admitted = true
+				break
+			}
+			time.Sleep(pollInterval)
+		}
+		if admitted {
+			return collect
+		}
+		// Refused, or never provisioned. Collect before retrying so the
+		// attempt's goroutine is not left behind, and keep what it printed for
+		// the timeout: a slot that genuinely never comes back has to fail
+		// here, naming the property, rather than as an exit status somewhere
+		// downstream.
+		results := collect()
+		if !time.Now().Before(deadline) {
+			t.Fatalf("timed out after %s waiting for %s (%d attempts)\n%v",
+				readyTimeout, what, attempt, results)
+		}
+	}
+}
+
 // testSessionBounds is the acceptance evidence for the three session bounds the
 // proxy enforces that are not the deadline (docs/PLAN.md §6.5, D16).
 //
@@ -2058,22 +2113,23 @@ func testSessionBounds(t *testing.T) {
 	})
 
 	t.Run("a subject at its ceiling is denied, and the slot comes back", func(t *testing.T) {
-		// An earlier scenario's account is removed as its session closes, and
-		// that teardown is asynchronous: counting accounts before it finished
-		// would count somebody else's session as this ceiling's.
+		// About ACCOUNTS, and only accounts. An earlier scenario's account is
+		// removed as its session closes, and that teardown is asynchronous:
+		// counting accounts before it finished would count somebody else's
+		// session as this ceiling's. It says nothing about whether a
+		// concurrency SLOT is free — the slot is released later still — which
+		// is why the session below waits to be admitted rather than assuming
+		// it will be.
 		waitFor(t, "the target to be free of ephemeral accounts before the ceiling", func() bool {
 			return len(ephemeralAccountsOn(t)) == 0
 		})
 
 		hold := aliceOn(proxyDirect, cappedSubjectTarget)
 		hold.command = holdingCommand()
-		collect := overlapping(t, hold)
 		// The ceiling is only being tested if the first session is LIVE when the
 		// second arrives, and the account on the target is what says so: the
 		// admission check runs before anything is provisioned.
-		waitUpTo(t, concurrentHold, "the first capped session to hold an account on the target", func() bool {
-			return len(ephemeralAccountsOn(t)) == 1
-		})
+		collect := holdTheOnlySlot(t, hold, "the subject's only slot to admit the session that holds it")
 
 		second := aliceOn(proxyDirect, cappedSubjectTarget)
 		second.command = "/bin/true"
@@ -2098,10 +2154,21 @@ func testSessionBounds(t *testing.T) {
 
 		// The cap that was hit exists only on the audit record, and it is a
 		// POLICY DECISION there rather than a fault.
+		//
+		// By SESSION ID, because a subject-scope refusal is no longer
+		// necessarily unique: a slot still held when this subtest started makes
+		// holdTheOnlySlot retry, and every refused attempt writes a record of
+		// its own. This is the record of the one session the client above was
+		// refused on.
+		refusedID := sessionIDOf(r)
+		if refusedID == "" {
+			t.Fatalf("the refused session was not named in the proxy's banner\n%s", r)
+		}
 		var refusal logRecord
 		waitFor(t, "the refusal record naming the subject ceiling", func() bool {
 			refusal = findRecord(t, func(rec logRecord) bool {
-				return rec.Attributes["concurrency_scope"] == "subject"
+				return rec.SessionID == refusedID &&
+					rec.Attributes["concurrency_scope"] == "subject"
 			})
 			return refusal.SessionID != ""
 		})
@@ -2120,27 +2187,35 @@ func testSessionBounds(t *testing.T) {
 
 		// The slot comes back. A cap that did not give one up would turn the
 		// first session of a proxy's life into its only one.
-		waitFor(t, "the capped session's account to be removed", func() bool {
-			return len(ephemeralAccountsOn(t)) == 0
+		//
+		// And it comes back strictly AFTER the account does: close() removes
+		// the account, remove() releases the slot. So the next session
+		// SUCCEEDING is the wait, not something asserted once on the strength
+		// of a signal that means something else.
+		var next result
+		waitFor(t, "the freed slot to admit the next session", func() bool {
+			third := aliceOn(proxyDirect, cappedSubjectTarget)
+			third.command = "/bin/true"
+			next = ssh(t, third)
+			return next.code == 0
 		})
-		third := aliceOn(proxyDirect, cappedSubjectTarget)
-		third.command = "/bin/true"
-		wantExit(t, ssh(t, third), "the next session after the slot was freed", 0)
+		wantExit(t, next, "the next session after the slot was freed", 0)
 	})
 
 	t.Run("a target at its ceiling refuses a second subject", func(t *testing.T) {
 		// The scope that is not reachable through the other one: the subject
 		// refused here has no session anywhere and no per-subject cap at all.
+		//
+		// As in the scenario above, this wait is about ACCOUNTS only — nothing
+		// may be provisioned on the target while this one counts them — and the
+		// slot the holding session needs is waited for by being admitted.
 		waitFor(t, "the target to be free of ephemeral accounts before the target ceiling", func() bool {
 			return len(ephemeralAccountsOn(t)) == 0
 		})
 
 		hold := aliceOn(proxyDirect, cappedPerTarget)
 		hold.command = holdingCommand()
-		collect := overlapping(t, hold)
-		waitUpTo(t, concurrentHold, "the first session to hold the target's only slot", func() bool {
-			return len(ephemeralAccountsOn(t)) == 1
-		})
+		collect := holdTheOnlySlot(t, hold, "the target's only slot to admit the session that holds it")
 
 		other := svcOn(proxyDirect, cappedPerTarget)
 		other.command = "/bin/true"
@@ -2155,10 +2230,21 @@ func testSessionBounds(t *testing.T) {
 			wantExit(t, results[0], "the session that held the target's only slot", 0)
 		}
 
+		// By session id for the same reason as the subject scope above: this
+		// must be the record of the session the client was refused on, not of
+		// an attempt holdTheOnlySlot made while a previous slot was still held.
+		// It is also what keeps the two scopes' scenarios off each other's
+		// refusals, which the attribution below would otherwise read as a bug
+		// in the record.
+		refusedID := sessionIDOf(r)
+		if refusedID == "" {
+			t.Fatalf("the refused session was not named in the proxy's banner\n%s", r)
+		}
 		var refusal logRecord
 		waitFor(t, "the refusal record naming the target ceiling", func() bool {
 			refusal = findRecord(t, func(rec logRecord) bool {
-				return rec.Attributes["concurrency_scope"] == "target"
+				return rec.SessionID == refusedID &&
+					rec.Attributes["concurrency_scope"] == "target"
 			})
 			return refusal.SessionID != ""
 		})
@@ -2168,6 +2254,11 @@ func testSessionBounds(t *testing.T) {
 		if got := refusal.Attributes["concurrency_limit"]; got != "1" {
 			t.Errorf("the refusal record carries a limit of %q, want 1", got)
 		}
+		// Leave the target holding no ephemeral account, so a later scenario
+		// that counts them does not count this one's. About ACCOUNTS on
+		// purpose: it is NOT a claim that the slot is free, and nothing after
+		// it reads it as one — a scenario needing a free slot waits to be
+		// admitted (holdTheOnlySlot).
 		waitFor(t, "the capped target's account to be removed", func() bool {
 			return len(ephemeralAccountsOn(t)) == 0
 		})
