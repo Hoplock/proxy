@@ -764,6 +764,17 @@ Records carry a client-assigned `record_id`; the server de-duplicates on it, so
 retrying a batch after a timeout or draining the local disk buffer is safe.
 `accepted` counts records actually stored.
 
+**That durability guarantee is not observable through this contract.** Nothing
+here reads a record back: the priority ack is the server's word, and there is no
+proxy-facing endpoint that would let a caller check the record is really there.
+Reading logs is not a proxy-facing operation — a proxy writes, it never
+queries — so putting one on `/v1` would make every Hoplock Control implement an
+operator API it does not need. An implementation that wants the guarantee
+**graded** therefore exposes a read path of its own, outside `/v1`, and a
+conformance harness takes that path as an input rather than deriving it from
+this document. `cmd/mock-control`'s `GET /debug/logs` is the reference shape and
+is documented below as mock-only, which is exactly what it stays.
+
 ## Caching and the latency budget
 
 Where the round trips are for one session, before any caching:
@@ -864,14 +875,50 @@ damage of a cached allow. A server that issues cache hints must serve it.
 | --- | --- |
 | `session_kill` | End the named `session_ids`, or every session for a `subject`, or `all`. The `reason` is **shown to the user** before the connection closes and copied into the audit log (PLAN §4.3) — a revoked session must not look like a crash — so it must be safe to disclose. |
 | `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. `keys` and `all` reach host-key decisions too; `subject` does not, because a host-key decision is not made for a subject. Running sessions are untouched: they already hold their snapshot. |
-| `heartbeat` | Liveness only. A silent stream is indistinguishable from a healthy idle one, so a proxy that stops hearing these reconnects (default timeout 20s). |
+| `heartbeat` | Liveness only. A silent stream is indistinguishable from a healthy idle one, so a proxy that stops hearing these reconnects (default timeout 20s). It is the event that normally carries `heartbeat_interval_seconds` — see "The interval the server is keeping" below. |
 | `resync` | "You missed events that cannot be replayed": the proxy drops its entire cache and re-authorizes from scratch. |
+
+**The interval the server is keeping.** Any event may carry
+`heartbeat_interval_seconds`, and a `heartbeat` normally does: it names the
+interval the server is keeping **now**, so a later event carrying a different
+value is a re-statement rather than a contradiction. Three rules go with it, and
+the field is worth little without them.
+
+- **Absent means what every server did before the field existed**: the proxy
+  falls back to its own timers, exactly as today. The field advertises, it does
+  not configure — the same absent-value discipline as
+  `HostKeyReportResponse.cache`, and for the same reason.
+- **It may only ever tighten detection, never loosen it.** A proxy may use it to
+  notice a dead stream *sooner* than its configured timeout; it must never
+  extend that timeout to accommodate a large advertised interval. Sooner is
+  always allowed, later is not — the same rule as `cache.ttl_seconds` (clamp
+  shorter, never longer) and `report_after_seconds` (re-observe sooner, never
+  later). Otherwise a broken or hostile server could silence itself indefinitely
+  by announcing that it intends to, which is the fail-closed rule below
+  inverted.
+- **There is still a ceiling, and the field does not replace it.** A conformant
+  server keeps heartbeats at **10 seconds or less** (`MaxHeartbeatIntervalSeconds`),
+  so that two consecutive intervals fit inside the proxy's 20s reconnect timeout
+  and one lost heartbeat is not mistaken for a dead stream. A server advertising
+  600s and then keeping to it passes its own claim and breaks every proxy in the
+  fleet. **Both** are conformance requirements: the server keeps the interval it
+  advertises, *and* that interval is within the ceiling.
 
 **Gap recovery.** On reconnect the proxy sends the last `event_id` it
 processed as `?last_event_id=`. The **server** decides what happens: replay
 everything after that id before resuming live delivery, or — when the id is too
 old, unknown, or no history is kept — emit `resync` as the first line and
 nothing older. No `last_event_id` means a fresh subscription starting from now.
+
+**Whether that promise is kept is not observable through this contract.** Gap
+recovery says a reconnecting proxy is either replayed or told `resync`, and
+never silently skipped — and grading it needs an event **published while the
+subscriber is away**. Nothing here publishes one. An event originates from an
+operator action on a surface this contract does not describe, and the action is
+not proxy-facing, so it does not belong on `/v1` any more than reading a log
+record back does. Same answer as there: the implementation supplies a publish
+path of its own, a conformance harness takes it as an input, and
+`cmd/mock-control`'s `POST /debug/revoke` is the reference shape.
 
 **Fail-closed rule.** While the proxy has not heard the stream for longer than
 `CacheOptions.StaleAfter` (default 30s) it serves **nothing** from cache and
@@ -986,7 +1033,7 @@ startup, and every problem in a file is reported at once.
 | `routes[].concurrency` | `max_sessions_per_subject` and/or `max_sessions_per_target`. Absent or `0` is uncapped. |
 | `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision. Only a key already ruled on and accepted is hinted. |
-| `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). |
+| `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). Every heartbeat advertises `heartbeat_interval_seconds` derived from `heartbeat_ms` itself — rounded **up** to the whole second, so the mock never claims an interval it does not keep — and a fixture that disables heartbeats advertises nothing. |
 | `uid_leases` | `uid_count` (block size, overriding what the proxy asks for), `term_seconds` (0 leaves the term to the proxy), and `range_min`/`range_max` (0 on either takes that bound from the proxy's own request, which is what a Control with no opinion about a fleet's uid conventions should do). The per-target cursor is in memory and **is not reset by `POST /debug/reset`** — rewinding it would grant a block overlapping one a proxy is still allocating from. |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to

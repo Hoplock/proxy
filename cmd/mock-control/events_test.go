@@ -423,3 +423,69 @@ func TestEventFixtureDefaults(t *testing.T) {
 		t.Errorf("cache ttl = %d, want 0: a route must opt into caching", fx.Routes[0].Cache.TTLSeconds)
 	}
 }
+
+// TestHeartbeatsAdvertiseTheIntervalTheMockKeeps is the server half of phase
+// 0039. The value is derived from the fixture key that drives the ticker, so
+// the mock cannot advertise one interval and keep another — which is what makes
+// it usable as the reference server for a conformance suite grading exactly
+// that.
+func TestHeartbeatsAdvertiseTheIntervalTheMockKeeps(t *testing.T) {
+	m := startMock(t, mustParseFixtures(t, eventFixtures), serverOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream, err := m.client.StreamEvents(ctx, "proxy-1", "")
+	if err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	start := time.Now()
+	ev, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if ev.Type != control.EventTypeHeartbeat {
+		t.Fatalf("first event is %q, want a heartbeat", ev.Type)
+	}
+
+	advertised, ok := ev.AdvertisedHeartbeatInterval()
+	if !ok {
+		t.Fatal("the heartbeat advertised no interval")
+	}
+	// The fixture heartbeats every 20ms; the wire field is whole seconds and
+	// rounds up, so the claim is 1s and the mock keeps well inside it.
+	if want := time.Second; advertised != want {
+		t.Errorf("advertised interval = %s, want %s for heartbeat_ms: 20", advertised, want)
+	}
+	if elapsed := time.Since(start); elapsed > advertised {
+		t.Errorf("heartbeat arrived after %s, later than the advertised %s", elapsed, advertised)
+	}
+	if advertised > control.MaxHeartbeatIntervalSeconds*time.Second {
+		t.Errorf("advertised interval %s is above the ceiling", advertised)
+	}
+}
+
+// TestAdvertisedHeartbeatSecondsFollowsTheFixture covers the derivation itself,
+// including the fixture that disables heartbeats: a server that emits none
+// advertises none, which reads as "fall back to your own timers".
+func TestAdvertisedHeartbeatSecondsFollowsTheFixture(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ms   int
+		want int32
+	}{
+		{"the shipped example", 5000, 5},
+		{"rounds up, never down", 20, 1},
+		{"an exact second", 1000, 1},
+		{"a sub-ceiling interval", 9500, 10},
+		{"disabled advertises nothing", -1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &server{fx: &fixtures{Events: fixtureEvents{HeartbeatMS: tc.ms}}}
+			if got := s.advertisedHeartbeatSeconds(); got != tc.want {
+				t.Errorf("advertisedHeartbeatSeconds() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
