@@ -2425,6 +2425,22 @@ Two mechanisms address that, and they only make sense together:
   bounds the damage of a cached allow, and it is the only way the server can end
   a session that is already in flight.
 
+  A silent stream is indistinguishable from a healthy idle one, so the server
+  heartbeats, and **says on the wire which interval it is keeping**
+  (`RevocationEvent.heartbeat_interval_seconds`). Stating it is what turns "at a
+  steady interval" from an obligation a reader has to be told out of band into a
+  claim that can be graded against the stream itself — which is the whole reason
+  the field exists. An absent value means what every server did before it: the
+  proxy stays on its own timers. Two rules bound it. It may only ever **tighten**
+  detection — a proxy may notice a dead stream sooner than its configured
+  timeout, never extend that timeout to accommodate a large advertised interval,
+  or a broken or hostile server could silence itself indefinitely by announcing
+  that it intends to, which is the fail-closed rule below inverted. And the
+  advertisement does not replace the **ceiling**: a conformant server keeps
+  heartbeats at 10s or less, so two consecutive intervals still fit inside the
+  proxy's 20s reconnect timeout. Both halves are conformance requirements —
+  keeping the interval advertised, and advertising one inside the ceiling.
+
 Fail-closed rule: if the proxy cannot hear revocations (the subscription has
 been down beyond a short threshold), it stops serving cached decisions and
 re-authorizes every connection. It does **not** kill live sessions — losing the

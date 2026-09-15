@@ -59,7 +59,8 @@ type fixtures struct {
 
 // fixtureEvents tunes the server→proxy event stream.
 type fixtureEvents struct {
-	// HeartbeatMS is the interval between heartbeat events. Zero uses
+	// HeartbeatMS is the interval between heartbeat events, and the interval
+	// each heartbeat advertises (advertisedHeartbeatSeconds). Zero uses
 	// defaultHeartbeatMS; a negative value disables heartbeats entirely, which
 	// is how a test drives a proxy's missed-heartbeat detection.
 	HeartbeatMS int `yaml:"heartbeat_ms"`

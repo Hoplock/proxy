@@ -542,9 +542,13 @@ routes:
 # is what makes the cache above safe to hold: it can kill a live session or drop
 # a cached decision at any moment.
 events:
-  # How often to emit a heartbeat. It must stay comfortably inside the proxy's
-  # heartbeat timeout (20s by default), or a healthy stream looks dead. A
-  # negative value disables heartbeats, to exercise that detection.
+  # How often to emit a heartbeat. A conformant server keeps it at 10s or less,
+  # so that two consecutive intervals still fit inside the proxy's heartbeat
+  # timeout (20s by default) and one lost heartbeat does not make a healthy
+  # stream look dead. A negative value disables heartbeats, to exercise that
+  # detection. Every heartbeat advertises this interval as
+  # `heartbeat_interval_seconds` (rounded up to the whole second), so the mock
+  # never claims one interval and keeps another; disabled advertises nothing.
   heartbeat_ms: 5000
   # How many events are retained for replay after a reconnect. A proxy
   # resuming from before the retained history is answered with `resync`.

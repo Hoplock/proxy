@@ -56,7 +56,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.0.0
+  version: 4.1.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -526,11 +526,22 @@ paths:
         The proxy keeps one subscription open per proxy id and reconnects
         with bounded exponential backoff. A stream that goes silent is
         indistinguishable from a healthy idle one, so the server MUST emit
-        `heartbeat` events at a steady interval (comfortably inside the
-        proxy's timeout, which defaults to 20s); a proxy that misses them
-        drops the connection and reconnects. While the proxy cannot hear this
-        stream it stops serving cached decisions and re-authorizes every
-        connection — it does **not** kill live sessions.
+        `heartbeat` events at a steady interval of **10 seconds or less**, and
+        SHOULD say which interval it is keeping in
+        `RevocationEvent.heartbeat_interval_seconds`. Those are two
+        requirements, not one: the server keeps the interval it advertises,
+        **and** that interval is inside the ceiling. A proxy that misses
+        heartbeats drops the connection and reconnects (its timeout defaults to
+        20s, so two consecutive intervals at the ceiling still fit inside it).
+        While the proxy cannot hear this stream it stops serving cached
+        decisions and re-authorizes every connection — it does **not** kill live
+        sessions.
+
+        **Nothing on this API publishes an event.** An event originates from an
+        operator action — a revocation, a policy change — on a surface this
+        contract does not describe, so a harness that wants to observe gap
+        recovery gets its publish path from the implementation rather than from
+        here; see "Revoking" in `api/README.md`.
 
         **Gap recovery.** On reconnect the proxy sends the last `event_id` it
         processed as `last_event_id`. **The server decides** what happens next:
@@ -1979,7 +1990,8 @@ components:
             `session_kill` — end sessions that are running now.
             `cache_invalidate` — drop cached authorize decisions.
             `heartbeat` — liveness only, so a silently dead stream is
-            detectable.
+            detectable. It is the event that normally carries
+            `heartbeat_interval_seconds`.
             `resync` — the proxy missed events that cannot be replayed: it
             drops its entire cache and re-authorizes from scratch.
 
@@ -1989,6 +2001,41 @@ components:
           type: string
           format: date-time
           description: When the server emitted the event.
+        heartbeat_interval_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            The heartbeat interval the server is **currently keeping**, in
+            seconds. The server sets it on `heartbeat` events; it may set it on
+            any event, and a proxy reads it wherever it appears. A later event
+            carrying a different value is the server re-stating the interval it
+            keeps now, not contradicting an earlier claim.
+
+            **Absent means what every server did before this field existed**:
+            the proxy falls back to its own timers, exactly as today. The field
+            advertises, it does not configure — the same absent-value discipline
+            as `HostKeyReportResponse.cache`, and for the same reason.
+
+            **It may only ever tighten detection, never loosen it.** A proxy may
+            use it to notice a dead stream *sooner* than its configured timeout;
+            it must never extend that timeout to accommodate a large advertised
+            interval. Sooner is always allowed, later is not — the same rule as
+            `cache.ttl_seconds` (a proxy may clamp shorter, never longer) and
+            `report_after_seconds` (re-observe sooner, never later). Otherwise a
+            broken or hostile server could silence itself indefinitely by
+            announcing that it intends to, which is the fail-closed rule of
+            PLAN §6.4 inverted.
+
+            **There is still a ceiling, and this field does not replace it.** A
+            conformant server keeps heartbeats at **10 seconds or less**, so
+            that two consecutive intervals fit inside the proxy's 20s reconnect
+            timeout and one lost heartbeat is not mistaken for a dead stream. A
+            server advertising 600s and then keeping to it passes its own claim
+            and breaks every proxy in the fleet, so **both** halves are
+            conformance requirements: the server keeps the interval it
+            advertises, *and* that interval is within the ceiling.
+          example: 5
         session_kill:
           $ref: '#/components/schemas/SessionKillEvent'
         cache_invalidate:

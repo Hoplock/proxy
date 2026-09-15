@@ -371,6 +371,11 @@ func TestSpecDocumentsThePolicySchemas(t *testing.T) {
 		"HopMetadata":        "next_proxy_id",
 		"ForwardPolicy":      "forwarded_tcpip",
 		"ForwardDestination": "port_range",
+		// Not policy, and deliberately checked here anyway: it is a field on
+		// the wire, and the cross-check is what stops the document and the Go
+		// types drifting apart (see heartbeat_test.go for why it is not a
+		// vocabulary revision).
+		"RevocationEvent": "heartbeat_interval_seconds",
 	} {
 		ref := "#/components/schemas/" + schema + "/properties/" + field
 		if _, ok := resolveRef(doc, ref); !ok {
@@ -460,6 +465,8 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		"grant_context", "additional_context", "concurrency",
 		"max_sessions_per_subject", "max_sessions_per_target", "observed_at",
 		"report_after_seconds", "enforcement_execution", "enforcement_reach",
+		// The revocation stream's liveness claim (phase 0039).
+		"heartbeat_interval_seconds",
 		string(ExecutionProxyInspected), string(ExecutionNoInteractiveShell),
 		string(ExecutionAccountRestricted), string(ExecutionAccountConfined),
 		string(ExecutionPlatformAuthorized), string(ExecutionPlatformAttested),

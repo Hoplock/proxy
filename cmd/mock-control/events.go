@@ -102,7 +102,9 @@ func (s *server) handleProxyEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-heartbeats:
-			if !write(s.newEvent(control.EventTypeHeartbeat)) {
+			ev := s.newEvent(control.EventTypeHeartbeat)
+			ev.HeartbeatIntervalSeconds = s.advertisedHeartbeatSeconds()
+			if !write(ev) {
 				return
 			}
 		}
@@ -221,6 +223,22 @@ func (s *server) newEvent(t control.EventType) control.RevocationEvent {
 		Type:      t,
 		Timestamp: s.now().UTC(),
 	}
+}
+
+// advertisedHeartbeatSeconds is the interval this server tells subscribers it
+// is keeping, derived from the fixture that actually drives the ticker so the
+// mock cannot advertise one thing and do another. A fixture that disables
+// heartbeats advertises nothing, which reads as "fall back to your own timers".
+//
+// Sub-second fixture intervals round UP to the whole second: the wire field is
+// in seconds (minimum 1), and a server heartbeating sooner than it advertised
+// still keeps its claim, while one rounding down would not.
+func (s *server) advertisedHeartbeatSeconds() int32 {
+	ms := s.fx.Events.HeartbeatMS
+	if ms <= 0 {
+		return 0
+	}
+	return int32((ms + 999) / 1000)
 }
 
 // nextEventIDLocked assigns the next id. Ids are monotonic, which is what makes

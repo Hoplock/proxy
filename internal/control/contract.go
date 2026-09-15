@@ -488,6 +488,44 @@ type RevocationEvent struct {
 	SessionKill *SessionKillEvent `json:"session_kill,omitempty"`
 	// CacheInvalidate is set when Type is EventTypeCacheInvalidate.
 	CacheInvalidate *CacheInvalidateEvent `json:"cache_invalidate,omitempty"`
+	// HeartbeatIntervalSeconds is the heartbeat interval the server says it is
+	// currently keeping. Servers set it on heartbeats; it may appear on any
+	// event, and a later event carrying a different value is a re-statement
+	// rather than a contradiction. Read it through AdvertisedHeartbeatInterval,
+	// which resolves the absent value.
+	HeartbeatIntervalSeconds int32 `json:"heartbeat_interval_seconds,omitempty"`
+}
+
+// MaxHeartbeatIntervalSeconds is the ceiling a conformant server keeps its
+// heartbeats inside, whatever it advertises.
+//
+// It is half DefaultHeartbeatTimeout so that TWO consecutive intervals still
+// fit inside the proxy's reconnect timeout: one heartbeat lost or delayed must
+// not be enough to make a healthy stream look dead. The field below does not
+// replace this bound — a server that advertises 600s and then keeps to it
+// passes its own claim and breaks every proxy in the fleet, so both halves are
+// conformance requirements.
+const MaxHeartbeatIntervalSeconds = 10
+
+// AdvertisedHeartbeatInterval returns the heartbeat interval the server says it
+// is keeping, resolving the absent value so no caller has to decide what an
+// absent field meant.
+//
+// ok is false when the server advertised nothing, which means exactly what
+// every server did before the field existed: the proxy stays on its own timers.
+//
+// The value may only ever TIGHTEN detection. A proxy may use it to notice a
+// dead stream sooner than its configured timeout; it must never extend that
+// timeout to accommodate a large advertised interval, or a broken or hostile
+// server could silence itself indefinitely by announcing that it intends to —
+// the fail-closed rule of PLAN §6.4 inverted. Sooner is always allowed, later
+// is not, exactly as for CacheHint.TTLSeconds and
+// CapabilityReportResponse.ReportAfterSeconds.
+func (e *RevocationEvent) AdvertisedHeartbeatInterval() (d time.Duration, ok bool) {
+	if e == nil || e.HeartbeatIntervalSeconds <= 0 {
+		return 0, false
+	}
+	return time.Duration(e.HeartbeatIntervalSeconds) * time.Second, true
 }
 
 // SessionKillEvent ends sessions that are already running. Exactly one of
