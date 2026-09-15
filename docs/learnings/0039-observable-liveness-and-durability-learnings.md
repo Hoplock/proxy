@@ -34,6 +34,9 @@
   number and, structurally, that the field is absent from `AuthorizeResponse`.
 - Decisions affected: none amended. D2, D7, D8 unchanged; this makes an existing
   obligation observable, it does not move one.
+- Follow-up queued: **0040** — the e2e session-bounds scenarios wait for the
+  ephemeral account to vanish as if that proved the concurrency slot was free;
+  it is released later, in `Server.remove`. Test-only, four sites.
 - Downstream: `hoplock/control` sync kickoff handed to the user in the PR's
   `## Cross-repo impact` section (re-vendor, `internal/contract` resolver,
   `cmd/pdpconform` heartbeat case, two docs that record the gaps as open).
@@ -171,4 +174,7 @@ than a precondition of it — a bounded retry, in the shape the suite's other
 
 Left alone deliberately (PROTOCOL §3): it is a test-only race in a suite this
 phase does not touch, and fixing it here would widen a contract PR into the e2e
-suite. Whoever picks it up should treat it as a one-file change.
+suite. Queued instead as **0040 — wait for the slot, not for the account**,
+which also names the three *other* sites in `testSessionBounds` that share the
+assumption. Treat it as a test-only change: altering the teardown ordering is a
+different question and that prompt puts it out of scope.
