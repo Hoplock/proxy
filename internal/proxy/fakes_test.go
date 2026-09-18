@@ -201,6 +201,11 @@ type harnessOptions struct {
 	// far ahead of the moment authorize is answered (D16). It is a
 	// duration here only because a test cannot know that instant in advance;
 	// what reaches the proxy is the absolute instant the contract defines.
+	//
+	// A NEGATIVE duration is therefore a deadline that has already passed, and
+	// that case is load-bearing rather than accidental: an instant may be
+	// replayed by a reused decision (D2, PLAN §6.4), so the proxy must have a
+	// defined answer for one it can no longer meet (deadline_test.go).
 	sessionDeadline time.Duration
 	// routeType overrides the route type; empty means direct.
 	routeType control.RouteType

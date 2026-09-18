@@ -235,7 +235,18 @@ func (s *session) setup() {
 	// Armed before anything is provisioned or dialled, and for BOTH route
 	// types: a chained session is bounded at every hop, and a session that died
 	// between here and the target leg still had a deadline while it existed.
-	s.armDeadline(deadline)
+	//
+	// False means the deadline had already passed when this session arrived —
+	// an instant is reusable and may be replayed after it (D2, D16, PLAN §6.4)
+	// — and the session has already been ended by the ordinary expiry path. It
+	// is not a setup failure and gets no stage: nothing was denied and nothing
+	// is broken (PLAN §4.3). The authorize record above is still written,
+	// because a session that ended on arrival was still authorized and an
+	// operator resolving its id must find the decision that produced the
+	// deadline.
+	if !s.armDeadline(deadline) {
+		return
+	}
 
 	// The other two bounds, in this order and both before the route types
 	// diverge — a chained session is bounded on every hop it crosses, exactly

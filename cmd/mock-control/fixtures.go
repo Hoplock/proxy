@@ -190,6 +190,17 @@ type fixtureRoute struct {
 	// wire: a fixture cannot carry a timestamp that is still in the future
 	// tomorrow, and the contract deliberately refuses a duration (a duration
 	// re-anchors on every hop). Zero means no deadline.
+	//
+	// A NEGATIVE value is allowed, and it is a fixture affordance rather than a
+	// knob an operator sets: `session_deadline_seconds` is not a field a real
+	// Hoplock Control exposes, and a real one has no reason to compute an
+	// instant behind its own clock. It exists so the topology can exercise a
+	// proxy behaviour that IS reachable in normal operation — an authorize
+	// decision may be reused for as long as its cache hint allows (D2, PLAN
+	// §6.4), so a replayed decision replays the instant it was computed with
+	// and can hand a proxy a deadline that has already passed (phase 0041).
+	// Expressing that from the server side is the only way to reach the proxy's
+	// answer to it through the real topology.
 	SessionDeadlineSeconds int `yaml:"session_deadline_seconds"`
 	// RequireSessionCapture makes the route refuse a proxy that cannot record
 	// at all (D16). False is today's behaviour.
@@ -612,9 +623,6 @@ func (f *fixtures) validate() error {
 					i, j, rule.Match, rule.Action)
 			}
 		}
-		if r.SessionDeadlineSeconds < 0 {
-			add("routes[%d].session_deadline_seconds must not be negative", i)
-		}
 		if e := r.Enforcement; e != nil {
 			if a := e.Attestation; a != nil {
 				if _, err := fixtureTime(a.AssertedAt); err != nil {
@@ -768,8 +776,12 @@ func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *cont
 // time. The contract carries an absolute instant on purpose (a duration
 // re-anchors on every hop), so the fixture's duration is anchored exactly once,
 // here, by the server that made the decision.
+//
+// Only ZERO means no deadline. A negative value anchors like any other and
+// yields an instant already in the past, which is what lets a fixture pose the
+// question a reused decision poses in production (see SessionDeadlineSeconds).
 func (r *fixtureRoute) deadline(now time.Time) *time.Time {
-	if r.SessionDeadlineSeconds <= 0 {
+	if r.SessionDeadlineSeconds == 0 {
 		return nil
 	}
 	at := now.Add(time.Duration(r.SessionDeadlineSeconds) * time.Second)

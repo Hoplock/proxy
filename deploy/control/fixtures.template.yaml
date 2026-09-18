@@ -466,6 +466,42 @@ routes:
     filter_policy:
       mode: blacklist
 
+  # A route whose deadline has ALREADY PASSED when this server answers
+  # (phase 0041). Scenario: the session ends on arrival as an expiry — nothing
+  # is provisioned, the target is never dialled, and the record says
+  # `end_reason=session_deadline` rather than a setup failure.
+  #
+  # The negative value is a FIXTURE AFFORDANCE, not a policy an operator would
+  # write: `session_deadline` is an absolute instant (D16) and a decision may be
+  # reused for as long as its cache hint allows (D2, PLAN §6.4), so a replayed
+  # decision replays the instant it was computed with and can hand a proxy a
+  # deadline behind its own clock. This is how the topology poses that from the
+  # server side. See `session_deadline_seconds` in cmd/mock-control/fixtures.go.
+  #
+  # `ephemeral-user` on purpose, mirroring the route above: the scenario's claim
+  # is that NOTHING was provisioned, and that is only a claim on a route where
+  # something would have been.
+  - login: alice
+    target: expired.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [pty-req, shell, exec, env]
+      subsystems: []
+    session_deadline_seconds: -1
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: alice
+          key_type: ed25519
+          lifetime_seconds: "900"
+    filter_policy:
+      mode: blacklist
+
   # ------------------------------------- the other session bounds (0031) ---
   # D16's fourth bound is the deadline above; these are the other three. Each
   # route carries exactly one of them, so a scenario that fails names the bound
