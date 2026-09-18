@@ -3575,7 +3575,7 @@ for good and never reused (§6).
 
 **The name is the disambiguator, not the number.** Almost every number in this
 repository is *both* a live phase and a historical alias of a different one —
-**29 of 41** are. `0031` is the session-bounds phase today and is what the
+**29 of 42** are. `0031` is the session-bounds phase today and is what the
 decision cache (now `0022`) was called before the run-order revision; `0025` is target-credential rejection today and is what the session
 deadline (now `0024`) was called. So a bare number in a frozen document is
 genuinely ambiguous, and resolving it by number alone is guesswork.
