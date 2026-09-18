@@ -184,6 +184,26 @@ been archived, not raised. And two occurrences in the two different directions t
 chain has is why this is a general flow rather than a courtesy owed to one pair of
 repositories.
 
+**What makes the diagnosis certain is that the same traffic already works when
+nothing is blocked.** Proxy phases 0039 and 0041 were both raised from
+`hoplock/control` — 0002 found two obligations the contract stated but did not
+make observable, 0005 found an untested path in how a past deadline is handled —
+and both became numbered upstream phases promptly, with no flow in this file to
+thank for it. The difference is not care and it is not seniority. It is that
+neither one **blocked** the session that found it: Control noticed something about
+the proxy, its own phase was unaffected, so saying it out loud cost nothing and
+carried no temptation.
+
+A blocked session is the opposite case in every respect. It has a phase to finish,
+a workaround within reach, and a genuine reason to keep going — and writing the
+problem down and moving on *reads like diligence*, which is what makes it so
+durable a failure. So the flow was missing at exactly the point where the pressure
+to skip it is highest, which is the only place a flow is worth anything. That is
+also why step 2 is an obligation to **build** rather than permission to stop: the
+answer to "I am blocked" is not "down tools" and not "ship around it", and a
+section that did not say so would be read as licence for whichever of the two the
+reader already preferred.
+
 ---
 
 ## 4. The two hand-over obligations
