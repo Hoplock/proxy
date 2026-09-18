@@ -136,9 +136,18 @@ section, refresh it.
   obligation in another repository — and that work has no prompt number, so
   nothing in *this* file covers it. That one does: the ordering (upstream merges
   first), the downstream-impact check your PR owes — including the ready-to-run
-  sync kickoff it must hand the user for each affected repository (§4) — and the
+  sync kickoff it must hand the user for each affected repository (§4.1) — and the
   conventions for a sync PR. It lists the shared surfaces in its Section 1; if
   your change touches none of them, you do not need to read it.
+
+  Traffic also arrives **from** downstream. This repository is the most upstream
+  of the three, so it never raises an upstream request (§3.2) and is the only one
+  that only ever receives them: a phase here may exist because `hoplock/control`
+  or `hoplock/enterprise` needed a shape that did not exist. Such a phase is
+  ordinary work with one addition — once merged it owes a downstream sync to every
+  consumer **including the repository that asked**, which is the one most easily
+  forgotten because it is already waiting (§4.2, §5). `docs/KICKOFF.md` carries
+  the kickoff that turns an arriving request into a queued prompt.
 - **The plan's indexes are part of the plan, and go stale in the same PR that
   makes them wrong.** `docs/PLAN.md` carries three indexes that exist so a
   session can answer a question without reading the body beneath them (§1), and

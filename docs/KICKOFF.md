@@ -4,6 +4,11 @@ Copy one of the prompts below into a **fresh** Claude Code session (the repo is
 cloned fresh per session). The prompts in `prompts/queued/` are self-contained;
 `docs/PROTOCOL.md` tells the session how to pick up and deliver the work.
 
+Two of the blocks below are not phases. A **downstream sync** and an **upstream
+request** both have no prompt file and no number, and
+`docs/CROSS-REPO-PROTOCOL.md` — not `docs/PROTOCOL.md` — is what governs them.
+Neither is ever "next" in the queue: they run because somebody pastes them.
+
 ## Default: implement the next queued prompt
 
 ```
@@ -33,7 +38,7 @@ session never runs **here**. The prompt below is what a
 proxy PR hands you to run in `hoplock/control` or `hoplock/enterprise`, in a
 **fresh session with that repository checked out**. An upstream PR whose
 `## Cross-repo impact` section names obligations is required to emit it already
-filled in (that protocol's §4), so normally you paste what the PR gave you
+filled in (that protocol's §4.1), so normally you paste what the PR gave you
 rather than composing this by hand.
 
 ```
@@ -72,6 +77,71 @@ worth a paragraph in the PR (`docs/CROSS-REPO-PROTOCOL.md` §5,
 `docs/PROTOCOL.md` §2). What identifies the sync is the PR body naming the
 upstream change.
 
+## Upstream request (arrives here from downstream)
+
+The mirror of the block above, and the one this repository actually runs. A
+**request** is what a downstream repository owes upstream when it needs a shape
+that does not exist yet: `hoplock/control` needs a contract field the proxy has
+not defined, or `hoplock/enterprise` needs a seam Control has not exposed
+(`docs/CROSS-REPO-PROTOCOL.md` §3.2, §4.2).
+
+This repository is the most upstream of the three, so requests only ever **arrive**
+here — a downstream PR's `## Upstream request` section is required to emit this
+kickoff already filled in, so normally you paste what that PR gave you.
+
+**What it produces is a queued prompt, not the change.** What arrives is a *need*,
+described by somebody who navigated this repository's plan only far enough to be
+blocked by it. Turning that into a specified phase is this repository's own work,
+and it is why the session below stops at the prompt: a downstream author who wrote
+the prompt too would be specifying a phase against an architecture they have not
+read.
+
+```
+Read docs/PROTOCOL.md and follow it. You are turning an upstream request from
+<requesting repo> into a queued prompt. The request is in <downstream PR URL>,
+under "## Upstream request". Do not implement any queued prompt in this session,
+and do not implement this one.
+
+Read that section, then this repository's docs/PLAN.md — its section headings and
+its decision register — far enough to place the work: which sections and which D
+decisions the phase touches, and whether an existing decision already settles
+part of it. The requester could not do this, which is the whole reason the
+request stops at a need.
+
+Write ONE self-contained prompt into prompts/queued/ per docs/PROTOCOL.md §7 —
+lowest unused number, contiguous above the implemented block, a "Read first"
+block naming plan sections by § and decisions by D id, in-scope and out-of-scope
+items, the exact files and shapes, acceptance criteria and required tests. Cite
+the requesting repository's decision ids by id (M* for control, E* for
+enterprise), never restated (docs/CROSS-REPO-PROTOCOL.md §1).
+
+Two things the prompt MUST carry, because they are what the request is for:
+- the exact shape asked for, in this repository's own vocabulary, and what
+  downstream is unable to do until it exists;
+- that the phase implementing it owes a downstream sync to EVERY consuming
+  repository once merged — including the one that raised the request, which is
+  the one most easily forgotten because it is already waiting
+  (docs/CROSS-REPO-PROTOCOL.md §5, "The PR that answers an upstream request is
+  not a sync").
+
+If the request cannot be met as asked — it contradicts a D decision, or the
+shape is wrong for reasons the requester could not see — say so and propose the
+alternative rather than queueing a prompt you expect to be wrong. A request is a
+need, not an instruction, and the answer "not like that, like this" is a real
+outcome.
+
+Work on the branch this session was given, whatever it is named — if the name is
+yours to choose, claude/NNNN-short-description matching the prompt you add. Open
+one PR whose body names the downstream PR the request came from, quotes the shape
+requested, and says where in the queue you put it and why.
+```
+
+Fill in `<requesting repo>` and `<downstream PR URL>` and leave the rest alone. The
+two most droppable paragraphs are the two that matter: reading the plan before
+writing the prompt, and the reminder that the phase owes a sync **back**. Dropped,
+you get a prompt specified from outside this repository's architecture, and a
+change that lands here and is never vendored by the repository that asked for it.
+
 ## Rules of thumb
 
 - **One session = one prompt = one PR.** Start a fresh session for each queued
@@ -81,6 +151,11 @@ upstream change.
   A fresh session branches off `main`, so it only sees **merged** work — kick off
   the next prompt after the previous PR merges. Only run prompts in parallel when
   they genuinely don't depend on each other.
+- **A request is not a phase either, and it produces one rather than being one.**
+  An upstream request arrives as a need and leaves as a queued prompt; the phase
+  that implements it is a later, separate session. Never let the two collapse —
+  a session that writes the prompt and then implements it has reviewed its own
+  specification.
 - **A sync is not a phase.** One upstream change means one sync PR per affected
   repository, each in its own fresh session against that repository. Never sync
   from a session that is implementing a prompt — the two are separately
