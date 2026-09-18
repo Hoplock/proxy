@@ -1617,6 +1617,45 @@ func TestCapabilityReportIsRecorded(t *testing.T) {
 	}
 }
 
+// TestANegativeFixtureDeadlineIsAnInstantAlreadyPast covers the one fixture
+// affordance here that exists to reach a PROXY behaviour rather than to
+// describe a policy.
+//
+// `session_deadline` is an absolute instant (D16) and an authorize decision may
+// be reused for as long as its cache hint allows (D2, PLAN §6.4), so a replayed
+// decision replays the instant it was computed with and a proxy can be handed a
+// deadline that has already passed. Until phase 0041 the mock blocked that in
+// two places — validation refused a negative value, and deadline() treated one
+// as "no deadline" — so the topology could not pose the question at all. Both
+// have to stay moved together: allowing the value while the helper still
+// returned nil would produce an UNBOUNDED session, which is the opposite of the
+// case under test.
+func TestANegativeFixtureDeadlineIsAnInstantAlreadyPast(t *testing.T) {
+	const yaml = "users:\n  - login: alice\n    password: pw\n" +
+		"routes:\n  - target: h\n    filter_policy:\n      mode: blacklist\n" +
+		"    session_deadline_seconds: -60\n" +
+		"  - target: unbounded\n    filter_policy:\n      mode: blacklist\n"
+
+	fx, err := parseFixtures(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("parseFixtures refused a negative session_deadline_seconds: %v", err)
+	}
+	now := time.Now()
+	at := fx.Routes[0].deadline(now)
+	if at == nil {
+		t.Fatal("a negative session_deadline_seconds produced no deadline at all; " +
+			"an unbounded session is the opposite of the case it exists to express")
+	}
+	if !at.Before(now) {
+		t.Errorf("deadline = %s, want an instant before %s", at, now)
+	}
+	// Zero still means absent, which is the contract's rule and what every
+	// other route in a fixture file relies on.
+	if at := fx.Routes[1].deadline(now); at != nil {
+		t.Errorf("a route naming no deadline was given %s", at)
+	}
+}
+
 // TestInvalidV4FixturesAreRefusedAtStartup. Fixture decoding is strict and the
 // route is checked against the CLIENT's own Validate, so a fixture describing a
 // policy a real proxy would refuse must not start the mock — which is the only
@@ -1667,11 +1706,6 @@ func TestInvalidV4FixturesAreRefusedAtStartup(t *testing.T) {
 			name:     "a malformed grant window",
 			yaml:     preamble + "    grant_context:\n      window_end: \"yesterday\"\n",
 			wantErrs: []string{"RFC 3339"},
-		},
-		{
-			name:     "a negative deadline",
-			yaml:     preamble + "    session_deadline_seconds: -1\n",
-			wantErrs: []string{"session_deadline_seconds"},
 		},
 	}
 

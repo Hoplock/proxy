@@ -497,3 +497,202 @@ func TestRevokedSessionTearsDownWhileTheRemoteCommandIsStillRunning(t *testing.T
 		"the revoked session's credentials to be torn down while the remote command is still running")
 	waitFor(t, func() bool { return len(h.server.Sessions()) == 0 }, "the session to be deregistered")
 }
+
+// --- a deadline that had already passed when the session arrived -------------
+//
+// `session_deadline` is an absolute instant (D16) and an authorize decision may
+// be reused for as long as the server's cache hint allows (D2, PLAN §6.4), so a
+// replayed decision replays the instant it was computed with: a route can
+// legitimately arrive carrying a deadline behind this proxy's clock. It is not
+// a contract violation and it must not become a denial or an outage — it is an
+// expiry, PLAN §4.3's third case, reached before setup goes any further.
+
+// pastDeadline is far enough behind the clock that no scheduling delay could
+// make it look like a deadline that merely fired promptly.
+const pastDeadline = -time.Minute
+
+// awaitDisconnect waits for the proxy to close the client's connection.
+func awaitDisconnect(t *testing.T, client *ssh.Client) {
+	t.Helper()
+	closed := make(chan struct{})
+	go func() {
+		_ = client.Wait()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the proxy did not close a session whose deadline had already passed")
+	}
+}
+
+// TestADeadlineAlreadyPassedEndsTheSessionOnArrival is the phase's headline
+// claim: the session ends at once, as an expiry, and the target is never
+// touched.
+//
+// The assertion about the target is the one worth having. "Before setup goes
+// on" is a claim about ordering, and ordering is exactly what the previous
+// arrangement left to the scheduler: the timer goroutine reached the same
+// ending, but it raced capture, concurrency, provisioning and the dial to get
+// there.
+func TestADeadlineAlreadyPassedEndsTheSessionOnArrival(t *testing.T) {
+	h := newHarness(t, harnessOptions{sessionDeadline: pastDeadline})
+
+	client := h.mustDial(h.username())
+	awaitDisconnect(t, client)
+
+	// Nothing was provisioned and nothing was dialled.
+	if logins := h.target.Logins(); len(logins) != 0 {
+		t.Errorf("the target was logged into as %v; the check must run before the target leg", logins)
+	}
+	waitFor(t, func() bool { return len(h.server.Sessions()) == 0 }, "the session to be deregistered")
+
+	end, ok := h.awaitRecord(func(r control.LogRecord) bool { return r.Kind == control.LogKindSessionEnd })
+	if !ok {
+		t.Fatal("no session_end record was produced")
+	}
+	// Not setup_failed and not revoked: nothing failed and nobody intervened.
+	// The session reached the end it was authorized to, before it began.
+	if got := end.Attributes[logging.AttrEndReason]; got != logging.EndReasonDeadline {
+		t.Errorf("session_end %s = %q, want %q", logging.AttrEndReason, got, logging.EndReasonDeadline)
+	}
+	for _, rec := range h.records() {
+		if rec.Kind == control.LogKindError {
+			t.Errorf("an expiry on arrival produced an error record (%q); it is neither a denial nor an outage (PLAN §4.3)",
+				rec.Message)
+		}
+	}
+}
+
+// TestADeadlineAlreadyPassedStillRecordsTheAuthorizeDecision keeps the record
+// complete for a session that ended before it ran.
+//
+// It was still a session, and it was still authorized: an operator handed its
+// id has to be able to find the decision that produced the deadline, or the
+// only trace of the ending is an ending with nothing behind it.
+func TestADeadlineAlreadyPassedStillRecordsTheAuthorizeDecision(t *testing.T) {
+	h := newHarness(t, harnessOptions{sessionDeadline: pastDeadline})
+
+	client := h.mustDial(h.username())
+	awaitDisconnect(t, client)
+
+	authorized, ok := h.awaitRecord(func(r control.LogRecord) bool {
+		return r.Kind == control.LogKindAuthorize && r.Attributes[logging.AttrRouteType] != ""
+	})
+	if !ok {
+		t.Fatal("no authorize record was produced for a session that ended on arrival")
+	}
+	if authorized.Attributes[logging.AttrSessionDeadline] == "" {
+		t.Errorf("the authorize record carries no %s; the bound that ended the session is invisible",
+			logging.AttrSessionDeadline)
+	}
+	if _, ok := h.awaitRecord(func(r control.LogRecord) bool {
+		return r.Attributes[logging.AttrEvent] == "session.deadline_reached"
+	}); !ok {
+		t.Error("no record named the moment the deadline was reached")
+	}
+}
+
+// TestADeadlineAlreadyPassedNeverDialsTheTarget proves the ordering rather than
+// inferring it from timing: with no target at all, a dial that happened would
+// fail and the session would end as a setup failure. It must still end as an
+// expiry.
+func TestADeadlineAlreadyPassedNeverDialsTheTarget(t *testing.T) {
+	h := newHarness(t, harnessOptions{sessionDeadline: pastDeadline, noTarget: true})
+
+	client := h.mustDial(h.username())
+	awaitDisconnect(t, client)
+
+	end, ok := h.awaitRecord(func(r control.LogRecord) bool { return r.Kind == control.LogKindSessionEnd })
+	if !ok {
+		t.Fatal("no session_end record was produced")
+	}
+	if got := end.Attributes[logging.AttrEndReason]; got != logging.EndReasonDeadline {
+		t.Errorf("session_end %s = %q, want %q; a dial was attempted and failed",
+			logging.AttrEndReason, got, logging.EndReasonDeadline)
+	}
+	for _, rec := range h.records() {
+		if stage := rec.Attributes[logging.AttrStage]; stage != "" {
+			t.Errorf("a setup failure was recorded at stage %q; an expiry is not a setup failure", stage)
+		}
+	}
+}
+
+// TestADeadlineAlreadyPassedWarnsNobody is the negative half of the two
+// messages 0024 settled: a warning is only useful before the fact, and there is
+// no before left.
+//
+// DeadlineWarning is left at its default, so the lead time is far longer than
+// the (negative) time remaining. Today's `warn` predicate would exclude the
+// warning anyway; what this asserts is that there is no timer goroutine to
+// evaluate it in, which is what keeps the exclusion structural.
+func TestADeadlineAlreadyPassedWarnsNobody(t *testing.T) {
+	h := newHarness(t, harnessOptions{sessionDeadline: pastDeadline})
+
+	client := h.mustDial(h.username())
+	awaitDisconnect(t, client)
+
+	log := h.logs.String()
+	if strings.Contains(log, "deadline warning delivered") {
+		t.Errorf("a warning was delivered for a deadline that had already passed:\n%s", log)
+	}
+	if strings.Contains(log, "deadline armed") {
+		t.Errorf("a timer was armed for a deadline that had already passed:\n%s", log)
+	}
+	if !strings.Contains(log, "deadline already reached on arrival") {
+		t.Errorf("the log does not say the deadline had already passed:\n%s", log)
+	}
+}
+
+// TestAChainedSessionInheritingAnExpiredDeadlineEndsOnArrival is the same claim
+// one hop in, and the one a chain could otherwise lose.
+//
+// The inherited instant has already passed and this hop's own answer is an hour
+// away, so ShortenDeadline hands setup a deadline it can no longer meet. A hop
+// that treated that as "no bound worth arming" would let an inner session
+// outlive the bound the first hop was given (D11, D2) — which is the failure an
+// absolute instant exists to prevent, and it is invisible without a chain.
+func TestAChainedSessionInheritingAnExpiredDeadlineEndsOnArrival(t *testing.T) {
+	h := newHarness(t, harnessOptions{
+		// This hop's own answer, and not what should be enforced.
+		sessionDeadline: time.Hour,
+	})
+
+	key, err := sshtest.GenerateSigner()
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
+	}
+	client, err := ssh.Dial("tcp", h.addr, &ssh.ClientConfig{
+		User:            h.username(),
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(key)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		ClientVersion:   routing.HopClientVersion,
+		Timeout:         10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("dial as a hop peer: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	inherited := time.Now().Add(pastDeadline)
+	ok, _, err := client.SendRequest(routing.RequestHopTrail, true, routing.MarshalChain(routing.Chain{
+		Trail:       routing.HopTrail{"proxy-upstream"},
+		FinalTarget: h.targetName(),
+		Deadline:    &inherited,
+	}))
+	if err != nil || !ok {
+		t.Fatalf("declare the hop trail: ok=%t err=%v", ok, err)
+	}
+	awaitDisconnect(t, client)
+
+	if logins := h.target.Logins(); len(logins) != 0 {
+		t.Errorf("the target was logged into as %v; an inner hop's expired deadline must end the session first", logins)
+	}
+	end, found := h.awaitRecord(func(r control.LogRecord) bool { return r.Kind == control.LogKindSessionEnd })
+	if !found {
+		t.Fatal("no session_end record was produced")
+	}
+	if got := end.Attributes[logging.AttrEndReason]; got != logging.EndReasonDeadline {
+		t.Errorf("session_end %s = %q, want %q", logging.AttrEndReason, got, logging.EndReasonDeadline)
+	}
+}

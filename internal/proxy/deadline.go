@@ -54,7 +54,9 @@ const DefaultDeadlineWarning = time.Minute
 // 0 (that would report success), not 255 (the SSH client's own code).
 const exitSessionExpired = 253
 
-// armDeadline starts this session's local deadline timer.
+// armDeadline starts this session's local deadline timer, reporting whether
+// setup may continue. A deadline already reached ends the session here rather
+// than racing the rest of setup, and false means the caller must return.
 //
 // It is called from setup with the deadline the chain resolved — the earlier of
 // what this hop's authorize returned and what the session arrived carrying — so
@@ -63,11 +65,41 @@ const exitSessionExpired = 253
 //
 // No deadline means no timer: absent is not zero, and a session the server set
 // no bound on is left unbounded.
-func (s *session) armDeadline(deadline *time.Time) {
+//
+// A deadline that has ALREADY PASSED is ordinary rather than exotic, and it is
+// not a contract violation: `session_deadline` is an absolute instant (D16) and
+// an authorize decision may be REUSED for as long as the server's own cache
+// hint allows (D2, PLAN §6.4), so a decision replayed `ttl_seconds` later
+// replays the instant it was computed with. Where that instant came from a
+// just-in-time grant's expiry it can be behind this proxy's clock before the
+// connection it serves is even opened — which is the property an absolute
+// instant was chosen FOR, since a duration would silently re-anchor instead.
+//
+// It is therefore ended the way every other expiry is — through expire, as PLAN
+// §4.3's third case, with end reason logging.EndReasonDeadline — and never
+// through failSetup, which would put a denial or an outage in the record and in
+// what the user is told about a session that reached exactly the end it was
+// authorized to. Synchronously, and before the caller goes on to capture,
+// concurrency, provisioning and the target dial: the timer goroutine would
+// reach the same outcome (waitUntil returns at once on a non-positive
+// duration), but it would race setup for it, so what is torn down would depend
+// on the scheduler rather than on a rule.
+func (s *session) armDeadline(deadline *time.Time) bool {
 	if deadline == nil {
-		return
+		return true
 	}
 	at := *deadline
+
+	if !s.srv.now().Before(at) {
+		s.logf("proxy: session=%s deadline already reached on arrival at=%s past_by=%s",
+			s.id, at.UTC().Format(time.RFC3339), s.srv.now().Sub(at).Round(time.Millisecond))
+		// No warning, and not because the predicate below would exclude one:
+		// returning before the goroutine exists is what makes that structural.
+		// There is nothing to warn about and, before the first channel, nobody
+		// to warn.
+		s.expire(at)
+		return false
+	}
 
 	// A lead time longer than the session's whole deadline warns nobody rather
 	// than warning at once. It is PLAN §4.3's rule about explaining too early:
@@ -95,6 +127,7 @@ func (s *session) armDeadline(deadline *time.Time) {
 		}
 		s.expire(at)
 	}()
+	return true
 }
 
 // waitUntil sleeps until an instant, reporting false if the session ended first.
@@ -145,6 +178,18 @@ func (s *session) warnDeadline(at time.Time) {
 // ending exactly as it was authorized to (PLAN §4.3). What it shares with kill
 // is the ending: channels closed, the client connection closed, and then the
 // engine's ordinary teardown in session.close.
+//
+// It also runs with NO channel open, for a session whose deadline had already
+// passed when it arrived (armDeadline). The loops below then write nothing and
+// lingerUntilClosed is correctly skipped: the only thing left to carry the
+// expiry text is disconnect's SSH_MSG_DISCONNECT description, which is not
+// obvious from here. That description is the right place for it, and today it
+// goes nowhere — x/crypto/ssh exposes no way to send a disconnect (see
+// session.disconnect), so a client that has opened no channel is told nothing,
+// which is the limitation PLAN §4.3 already records rather than a new one. The
+// text is passed anyway, and is deliberately the SAME text: a second wording
+// for the same ending would be a second thing to keep in step, and if the
+// library ever exports a disconnect the right words are already here.
 func (s *session) expire(at time.Time) {
 	s.mu.Lock()
 	if s.killed {

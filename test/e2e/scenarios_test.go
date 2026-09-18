@@ -2411,6 +2411,13 @@ const deadlineHold = 120
 // well inside one client invocation.
 const expiringTarget = "expiring.company.com"
 
+// expiredTarget is the fixture route whose deadline has ALREADY PASSED by the
+// time Hoplock Control answers (`session_deadline_seconds: -1`). It is how the
+// topology poses the case a REUSED decision poses in ordinary operation: an
+// absolute instant (D16) replayed for as long as its cache hint allows (D2,
+// docs/PLAN.md §6.4) can reach a proxy already behind its clock.
+const expiredTarget = "expired.company.com"
+
 // heldOnExpiringRoute is a session that would run for minutes if nothing ended
 // it, with an optional command run first.
 func heldOnExpiringRoute(setup string) session {
@@ -2423,9 +2430,11 @@ func heldOnExpiringRoute(setup string) session {
 // testSessionDeadline is the acceptance evidence for the one session bound the
 // proxy enforces itself (docs/PLAN.md §6.5, D16).
 //
-// Every subtest here holds a session open past its deadline, so this group
-// costs about two minutes of wall clock. That is the feature: a deadline
-// cannot be demonstrated faster than it elapses.
+// Every subtest here but the last holds a session open past its deadline, so
+// this group costs about two minutes of wall clock. That is the feature: a
+// deadline cannot be demonstrated faster than it elapses. The last one is the
+// opposite case and costs nothing: a deadline that had already passed when the
+// session arrived.
 func testSessionDeadline(t *testing.T) {
 	t.Run("the user is warned, then told the session reached its authorized end", func(t *testing.T) {
 		r := ssh(t, heldOnExpiringRoute(""))
@@ -2562,6 +2571,64 @@ func testSessionDeadline(t *testing.T) {
 			}
 			return false
 		})
+	})
+
+	t.Run("a deadline already past ends the session before setup goes on", func(t *testing.T) {
+		// The other side of the same bound, through the real topology: the
+		// route's deadline is behind the proxy's clock before the connection
+		// serving it is opened. It is not a contract violation and must not
+		// become one — an expiry is docs/PLAN.md §4.3's third case, neither a
+		// denial nor an outage — and it is reached before capture, concurrency,
+		// provisioning and the target dial (phase 0041).
+		expired := aliceOn(proxyDirect, expiredTarget)
+		expired.command = "echo should-not-run"
+		r := ssh(t, expired)
+
+		// The command never ran, because the session ended before there was a
+		// target leg to run it on.
+		wantNotContains(t, r, "expired deadline", "should-not-run")
+		wantFailure(t, r, "expired deadline")
+		// The two things this ending must never be mistaken for. There is no
+		// channel open by the time the session ends, so the client is told
+		// nothing at all — §4.3's SSH_MSG_DISCONNECT limitation, not a new one
+		// — and "nothing" must at least not be either of those.
+		wantNotContains(t, r, "expired deadline", "Access denied.")
+		wantNotContains(t, r, "expired deadline", "not a permissions problem")
+
+		// Where the ending IS visible: the record. `end_reason` is the single
+		// answer to "why did this session stop", and for this one it is the
+		// same answer a session that ran for its full deadline gets.
+		var sessionID string
+		waitFor(t, "the expired session's records to arrive", func() bool {
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.Target != expiredTarget || rec.Kind != "session_end" {
+					continue
+				}
+				sessionID = rec.SessionID
+				if got := rec.Attributes["end_reason"]; got != "session_deadline" {
+					t.Errorf("session_end end_reason = %q, want %q", got, "session_deadline")
+				}
+				return true
+			}
+			return false
+		})
+		for _, rec := range fetchLogs(t).Batched {
+			if rec.SessionID != sessionID {
+				continue
+			}
+			// Nothing was provisioned: the credential record is written the
+			// moment an account exists, so its absence is the topology's
+			// version of "the target was never touched".
+			if rec.Kind == "provisioning" {
+				t.Errorf("session %s provisioned target access (%q) before its expiry was noticed",
+					sessionID, rec.Message)
+			}
+			// And no setup failure was recorded for it, at any stage.
+			if rec.Kind == "error" {
+				t.Errorf("session %s recorded a setup failure (%q); an expiry is not one",
+					sessionID, rec.Message)
+			}
+		}
 	})
 }
 
