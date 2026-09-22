@@ -299,11 +299,20 @@ exactly like this; do not reopen the choice.
     (`ssh.InsecureAlgorithms().KeyExchanges`), its **CBC** ciphers (not RC4:
     the contract promises CBC, and nothing more), and `hmac-sha1-96`. Each goes
     after every secure entry on its axis; 0045 depends on that ordering.
-  - **`ssh-dss`** is in no profile today. The recommendation is to add DSA host
-    keys (and their certificate form) to `legacy-device`, because firmware old
-    enough to need SHA-1 key exchange is where DSA-only host keys live, and
-    without it that population has no profile at all. Decide, and write the
-    answer into the contract's `legacy-device` description either way.
+  - **`legacy-device` also adds `ssh-dss`** as a host-key algorithm, with its
+    certificate form `ssh-dss-cert-v01@openssh.com` (decided by the owner on
+    PR #64). Firmware old enough to need SHA-1 key exchange is where DSA-only
+    host keys live, and without this that population has no profile at all.
+    It goes after every secure host-key algorithm and after `ssh-rsa`. Update
+    the contract's `legacy-device` description in `api/control.yaml` and
+    `api/README.md` to list it; it is a description change and moves no
+    version beyond the `info.version` bump this phase already makes.
+    DSA is **not** added for public-key auth: the proxy's own keys are never
+    DSA.
+  - **No finer presets.** Splitting `legacy-device` (for example into separate
+    SHA-1 key-exchange and CBC presets) was considered and declined. An
+    administrator who needs only part of `legacy-device` combines it with
+    0045's bans. Do not add profile values here.
 - **It is a tightening, so it is announced as a break**, following phase 0028's
   precedent (its learnings, "The version decision"):
   - `policy_version` does **not** move, because no field changes meaning to a
@@ -365,6 +374,11 @@ exactly like this; do not reopen the choice.
   every axis equal to `ssh.SupportedAlgorithms()`, and a test pins the exact
   lists. `diffie-hellman-group14-sha1`, `hmac-sha1-96`, `ssh-rsa` and
   `ssh-dss` appear on no axis.
+- A target whose only host key is DSA fails under `default` and under
+  `legacy-rsa-sha1` with `stageAlgorithmPolicy` on the host-key axis, and
+  connects under `legacy-device`. The applied host-key list under
+  `legacy-device` ends with the RSA-SHA1 and DSA entries, in that order, after
+  every secure one.
 - A target offering only `diffie-hellman-group14-sha1` fails under `default`
   with `stageAlgorithmPolicy`: the outage-branch message, a `warn`
   `target.algorithm_policy_unmet` record naming the key-exchange axis and the
@@ -431,5 +445,5 @@ from and what it touches:
   `target.algorithm_policy_unmet` event is how an operator finds those devices.
 - The **learnings summary** names the attribute keys added, the event name and
   its delivery path, where the profile is applied, what each profile now
-  expands to (and the `ssh-dss` answer), the break and its `info.version`, the naming verdict, and what
+  expands to (including `ssh-dss` under `legacy-device`), the break and its `info.version`, the naming verdict, and what
   Control must change — that last line is what the sync session reads.

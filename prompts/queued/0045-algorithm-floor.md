@@ -61,7 +61,7 @@
   expansion in `internal/control/algorithms.go`, the profile on
   `routing.Route`, `device.Endpoint` and `target.Target`, and how it survives the
   reaper's bare-endpoint copy, and its answer to "Decided in 0045's review"
-  (`default` as the secure set, and the `ssh-dss` question). **Also read `0044-brokered-certificate-credentials-learnings.md`'s summary for
+  (`default` as the secure set, and what each legacy profile adds, `ssh-dss` included). **Also read `0044-brokered-certificate-credentials-learnings.md`'s summary for
   the `policy_version` number it left behind.**
 - `docs/CROSS-REPO-PROTOCOL.md` — **§1, §2, §3.2, §4.1, §5**. This phase answers
   an upstream request, so §5's "The PR that answers an upstream request is not a
