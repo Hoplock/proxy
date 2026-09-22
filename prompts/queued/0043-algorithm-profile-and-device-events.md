@@ -259,6 +259,11 @@ Whichever way it goes:
 
 ## Out of scope
 
+- **A floor** (`algorithm_floor`, a minimum rather than a weakening). That is
+  **0045**, which narrows the expansion you build here and rides the same path to
+  every connection — so keep that expansion the one place a connection's lists
+  come from, and keep the reaper's bare-endpoint copy carrying whatever the
+  endpoint's algorithms are rather than the profile alone.
 - **Control's side** (its M8 store, its projections, its queries, its plan's
   field names). This phase emits; that repository stores, and it is a numbered
   phase there.
