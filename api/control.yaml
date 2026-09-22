@@ -56,7 +56,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.1.0
+  version: 4.2.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -80,6 +80,10 @@ tags:
     description: server → proxy revocation stream (PLAN §6.4).
   - name: capabilities
     description: what a target can enforce, discovered by the proxy.
+  - name: fleet-config
+    description: |
+      configuration distributed to the fleet, and what each proxy runs
+      (PLAN D18).
   - name: uids
     description: |
       exclusive blocks of ephemeral uids, leased per proxy per target
@@ -582,6 +586,147 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/proxies/{proxy_id}/config:
+    get:
+      tags: [fleet-config]
+      operationId: fetchProxyConfig
+      summary: Fetch the proxy's desired configuration document.
+      description: |
+        Returns the **current** desired configuration document for this proxy
+        (PLAN D18). A proxy calls it when a `config_changed` event says its
+        desired document moved, on every (re)connect of the event stream, and at
+        startup, before it builds anything from its configuration.
+
+        **The event is a notification and this is the document.** The event
+        stream is replayable from a `last_event_id`, so a document carried on it
+        would be replayed — and a replayed configuration is a stale one applied
+        as if current. This endpoint always answers with the document desired
+        **now**, so a replayed notification for an older version can at worst
+        cause a fetch that answers `304`.
+
+        **Unchanged is a `304`.** The proxy sends the `hash` of the document it
+        already holds as `If-None-Match`; a server whose current document has
+        that hash answers `304 Not Modified` with no body, and the proxy neither
+        re-fetches nor re-applies it. That is what makes the fetch on every
+        reconnect cheap.
+
+        **Nothing published is a `204`.** The proxy runs on its bootstrap file
+        alone, and a document it was running before goes back to the bootstrap
+        values under the same rules as any other document.
+
+        **A proxy Hoplock Control has not enrolled is answered `404`** with the
+        code `not_enrolled`. It runs on its bootstrap file and keeps retrying;
+        this is a fact about the registry, not a deny, so it is not a `401`.
+
+        Configuration is not on the data path: a proxy that cannot complete this
+        call keeps serving on the last document it applied, and never ends a
+        session or refuses a connection over it.
+      parameters:
+        - name: proxy_id
+          in: path
+          required: true
+          description: The proxy whose document is being fetched.
+          schema:
+            type: string
+          example: proxy-eu-west-1
+        - name: If-None-Match
+          in: header
+          required: false
+          description: |
+            The `hash` of the document the proxy already holds, as an entity
+            tag (`"sha256:…"`). Absent on a first fetch.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The desired document.
+          headers:
+            ETag:
+              description: The document's `hash`, as an entity tag.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyConfigDocument'
+        '204':
+          description: Nothing is published for this proxy; it runs on its bootstrap file alone.
+        '304':
+          description: The document named by `If-None-Match` is still the desired one.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No proxy with this id is enrolled (`not_enrolled`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/proxies/{proxy_id}/config/report:
+    post:
+      tags: [fleet-config]
+      operationId: reportProxyConfig
+      summary: Say which configuration document the proxy is running.
+      description: |
+        The proxy's half of drift (PLAN D18): after every fetch, successful or
+        not, it reports the document it is **running** and what became of the
+        one it was asked to run. This is the only proxy→server call that carries
+        it — Hoplock Control's own enrollment and heartbeat surfaces are outside
+        this contract.
+
+        **"Running" is a claim this report cannot overstate.** A document is
+        reported as running only when **every** setting in it is in force in the
+        proxy process. A document that changes a setting which takes effect only
+        at startup is reported as `pending_restart`, with `restart_required`
+        naming those settings, and **nothing** in it is applied until the
+        process restarts: the proxy runs exactly one document at a time, and
+        `running_*` keeps naming it. So a drift view built on this report can
+        say a rollout finished only when it has.
+
+        **A bad document never takes a proxy out of service.** One that cannot
+        be parsed or applied is reported `rejected` with a `last_error`, and one
+        that cannot be fetched is reported `fetch_failed`; in both cases
+        `running_*` still names the document the proxy is serving on, and no
+        session is ended or connection refused. Keeping the previous version and
+        rolling back is the server's; this report is what tells it to.
+      parameters:
+        - name: proxy_id
+          in: path
+          required: true
+          description: The proxy making the report.
+          schema:
+            type: string
+          example: proxy-eu-west-1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProxyConfigReport'
+      responses:
+        '200':
+          description: The report was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProxyConfigReportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No proxy with this id is enrolled (`not_enrolled`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/ServerError'
 
@@ -1985,7 +2130,7 @@ components:
           example: evt-00000042
         type:
           type: string
-          enum: [session_kill, cache_invalidate, heartbeat, resync]
+          enum: [session_kill, cache_invalidate, heartbeat, resync, config_changed]
           description: |
             `session_kill` — end sessions that are running now.
             `cache_invalidate` — drop cached authorize decisions.
@@ -1994,6 +2139,10 @@ components:
             `heartbeat_interval_seconds`.
             `resync` — the proxy missed events that cannot be replayed: it
             drops its entire cache and re-authorizes from scratch.
+            `config_changed` — the proxy's desired configuration document
+            moved (PLAN D18). It names the document; the proxy fetches it from
+            `GET /v1/proxies/{proxy_id}/config`. It touches no session and no
+            cached decision.
 
             A proxy ignores a type it does not recognise, so the server may
             add types without breaking older proxies.
@@ -2040,6 +2189,144 @@ components:
           $ref: '#/components/schemas/SessionKillEvent'
         cache_invalidate:
           $ref: '#/components/schemas/CacheInvalidateEvent'
+        config_changed:
+          $ref: '#/components/schemas/ConfigChangedEvent'
+
+    ConfigChangedEvent:
+      type: object
+      description: |
+        The proxy's desired configuration document moved (PLAN D18). It
+        **names** the document and does not carry it: this stream is replayable,
+        and a replayed document would be a stale one applied as if current. The
+        proxy answers by fetching the **current** document, so a replayed
+        notification for an older version cannot bring that version back.
+
+        A notification naming the document the proxy already holds is dropped
+        without a fetch. A proxy that does not take fleet configuration ignores
+        the event, as it would any type it does not recognise.
+      required: [version, hash]
+      properties:
+        version:
+          type: string
+          description: The desired document's version, as the server names it. Opaque to the proxy.
+          example: zone-eu-west/v42
+        hash:
+          type: string
+          description: |
+            The desired document's content identifier. The proxy compares it for
+            equality with the document it holds, and never computes or parses
+            it.
+          example: sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+
+    ProxyConfigDocument:
+      type: object
+      description: |
+        One desired configuration (PLAN D18). It is applied **whole or not at
+        all**: a setting that is not fleet-owned — anything the proxy needs to
+        reach Hoplock Control or be recognised by it, any path to material on
+        the proxy's host, any listener, or a key that does not exist — or a
+        value that does not validate rejects the entire document, and the proxy
+        keeps running on the one before.
+      required: [version, hash, settings]
+      properties:
+        version:
+          type: string
+          description: The document's version, as the server names it.
+          example: zone-eu-west/v42
+        hash:
+          type: string
+          description: The document's content identifier; also the response's `ETag`.
+          example: sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        settings:
+          type: object
+          description: |
+            Fleet-owned settings by their dotted bootstrap key, each replacing
+            the proxy's own file for as long as the document is published. A
+            key absent here takes the proxy's bootstrap value. Durations are Go
+            duration strings (`"30s"`, `"5m"`), counts are integers, addresses
+            are strings.
+
+            The fleet-owned keys, and whether a running proxy applies each one
+            live (**L**) or only at startup (**R**): `control.cache.max_ttl`
+            (L), `session.deadline_warning` (L), `control.cache.max_entries`
+            (R), `dial.dial_timeout` (R), `dial.default_target_port` (R),
+            `chain.max_hops` (R), `chain.upstream.address` (R),
+            `auth.user.mfa.min_poll_interval` (R),
+            `auth.user.mfa.progress_interval` (R), `auth.user.mfa.max_wait`
+            (R), and `logging.batch_size`, `logging.flush_interval`,
+            `logging.queue_size`, `logging.send_timeout`, `logging.retry_min`,
+            `logging.retry_max`, `logging.max_payload_bytes` (all R). Every
+            other key is bootstrap-only.
+          additionalProperties: {}
+          example:
+            control.cache.max_ttl: 5m
+            logging.batch_size: 128
+
+    ProxyConfigReport:
+      type: object
+      description: What a proxy is running, and what became of its desired document.
+      required: [state, reported_at]
+      properties:
+        running_version:
+          type: string
+          description: |
+            The document **every setting of which** is in force in the proxy
+            process. Absent (with `running_hash`) means the proxy runs on its
+            bootstrap file alone.
+          example: zone-eu-west/v41
+        running_hash:
+          type: string
+          example: sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae
+        desired_version:
+          type: string
+          description: |
+            The newest document the proxy knows of — fetched, or announced by a
+            `config_changed` it could not follow up. Absent means none is
+            published.
+          example: zone-eu-west/v42
+        desired_hash:
+          type: string
+          example: sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        state:
+          type: string
+          enum: [applied, pending_restart, rejected, fetch_failed]
+          description: |
+            `applied` — the desired document is the running one.
+            `pending_restart` — the desired document is valid but changes a
+            setting that takes effect only at startup; nothing in it is applied
+            until the proxy restarts, and `restart_required` names the settings.
+            `rejected` — the desired document could not be parsed or applied;
+            `last_error` says why.
+            `fetch_failed` — the proxy was told the desired document moved and
+            could not fetch it; it retries.
+            In every state but `applied` the proxy keeps serving on the running
+            document.
+        restart_required:
+          type: array
+          description: The settings holding a `pending_restart` document. Absent otherwise.
+          items:
+            type: string
+          example: [logging.batch_size]
+        last_error:
+          type: string
+          description: |
+            Why the desired document was rejected or could not be fetched. It
+            names settings by key and never quotes a value.
+          example: 'config field "proxy.id": not a fleet-owned setting'
+        reported_at:
+          type: string
+          format: date-time
+          description: When the proxy reached this state.
+
+    ProxyConfigReportResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          description: |
+            True when the server recorded the report. Anything else is a
+            contract violation; the proxy reports again after its next fetch.
 
     SessionKillEvent:
       type: object

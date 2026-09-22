@@ -448,8 +448,9 @@ side is proved end to end.
   method table.
 - **§2's register**: D6a keeps its status (this phase renders it, it does not
   amend it — that is the finding, not an omission). Add §5.4 to its **Mainly
-  in** column. **No new `D`,** and therefore no change to the `D1–D17` range
-  that `test/docs/indexes_test.go` pins across three files.
+  in** column. **No new `D`,** and therefore no change to the decision range
+  (`D1–D18` since phase 0042) that `test/docs/indexes_test.go` pins across three
+  files.
 - **§10**: a `0044` row. `TestEveryPhaseHasAPromptOrIsWithdrawn` requires it.
 - **`api/README.md`**: the method's row in "Target credentials", rows in the
   absent-value defaults table for `key_type` and `lifetime_seconds` on this

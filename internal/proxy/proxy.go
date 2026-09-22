@@ -13,6 +13,7 @@ import (
 	"net"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -128,21 +129,23 @@ type Options struct {
 // It also implements control.SessionRegistry, so Hoplock Control's
 // revocation stream can end a session that is already in flight (PLAN §6.4).
 type Server struct {
-	hostKey         ssh.Signer
-	auth            user.UserAuthenticator
-	resolver        *routing.Resolver
-	targetAuth      target.TargetAuthenticator
-	client          control.Client
-	proxyID         string
-	delimiter       string
-	hopSigner       ssh.Signer
-	relay           RelayOpener
-	recorder        *logging.Shipper
-	inspectors      *channel.Registry
-	maxHops         int
-	dialTimeout     time.Duration
-	authTimeout     time.Duration
-	deadlineWarning time.Duration
+	hostKey     ssh.Signer
+	auth        user.UserAuthenticator
+	resolver    *routing.Resolver
+	targetAuth  target.TargetAuthenticator
+	client      control.Client
+	proxyID     string
+	delimiter   string
+	hopSigner   ssh.Signer
+	relay       RelayOpener
+	recorder    *logging.Shipper
+	inspectors  *channel.Registry
+	maxHops     int
+	dialTimeout time.Duration
+	authTimeout time.Duration
+	// deadlineWarning is held as nanoseconds and read atomically because a
+	// fleet document applies it live (PLAN D18, SetDeadlineWarning).
+	deadlineWarning atomic.Int64
 	serverVersion   string
 	logger          *log.Logger
 	now             func() time.Time
@@ -182,27 +185,26 @@ func New(opts Options) (*Server, error) {
 	}
 
 	s := &Server{
-		hostKey:         opts.HostKey,
-		auth:            opts.Authenticator,
-		resolver:        opts.Resolver,
-		targetAuth:      opts.TargetAuth,
-		client:          opts.Client,
-		proxyID:         opts.ProxyID,
-		delimiter:       opts.TargetDelimiter,
-		hopSigner:       opts.HopSigner,
-		relay:           opts.RelayOpener,
-		recorder:        opts.Recorder,
-		inspectors:      opts.Inspectors,
-		maxHops:         opts.MaxHops,
-		dialTimeout:     opts.DialTimeout,
-		authTimeout:     opts.AuthTimeout,
-		deadlineWarning: opts.DeadlineWarning,
-		serverVersion:   opts.ServerVersion,
-		logger:          opts.Logger,
-		now:             opts.Now,
-		newSessionID:    opts.NewSessionID,
-		sessions:        make(map[string]*session),
-		live:            make(map[string]liveSession),
+		hostKey:       opts.HostKey,
+		auth:          opts.Authenticator,
+		resolver:      opts.Resolver,
+		targetAuth:    opts.TargetAuth,
+		client:        opts.Client,
+		proxyID:       opts.ProxyID,
+		delimiter:     opts.TargetDelimiter,
+		hopSigner:     opts.HopSigner,
+		relay:         opts.RelayOpener,
+		recorder:      opts.Recorder,
+		inspectors:    opts.Inspectors,
+		maxHops:       opts.MaxHops,
+		dialTimeout:   opts.DialTimeout,
+		authTimeout:   opts.AuthTimeout,
+		serverVersion: opts.ServerVersion,
+		logger:        opts.Logger,
+		now:           opts.Now,
+		newSessionID:  opts.NewSessionID,
+		sessions:      make(map[string]*session),
+		live:          make(map[string]liveSession),
 	}
 	if s.dialTimeout <= 0 {
 		s.dialTimeout = DefaultDialTimeout
@@ -213,9 +215,7 @@ func New(opts Options) (*Server, error) {
 	if s.authTimeout == 0 {
 		s.authTimeout = DefaultAuthTimeout
 	}
-	if s.deadlineWarning == 0 {
-		s.deadlineWarning = DefaultDeadlineWarning
-	}
+	s.SetDeadlineWarning(opts.DeadlineWarning)
 	if s.serverVersion == "" {
 		s.serverVersion = defaultServerVersion
 	}
@@ -226,6 +226,18 @@ func New(opts Options) (*Server, error) {
 		s.newSessionID = newSessionID
 	}
 	return s, nil
+}
+
+// SetDeadlineWarning changes how long before a session's deadline its user is
+// warned, for deadlines armed from now on (Options.DeadlineWarning: zero means
+// DefaultDeadlineWarning, negative sends no warning). It is how a fleet document
+// applies session.deadline_warning without a restart (PLAN D18); a session whose
+// timer is already armed keeps the lead it was armed with.
+func (s *Server) SetDeadlineWarning(d time.Duration) {
+	if d == 0 {
+		d = DefaultDeadlineWarning
+	}
+	s.deadlineWarning.Store(int64(d))
 }
 
 // Serve accepts connections until ctx ends or the listener fails.

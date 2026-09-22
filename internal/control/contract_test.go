@@ -78,6 +78,7 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 		PathIngestPriorityLog:    "200",
 		PathReportCapabilities:   "200",
 		PathLeaseUIDs:            "200",
+		PathProxyConfigReport:    "200",
 	}
 
 	for path, success := range wantStatus {
@@ -123,7 +124,25 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 		}
 	}
 
-	if got, want := len(paths), len(wantStatus)+1; got != want {
+	// The configuration fetch is the other GET: no body, a conditional request,
+	// and three success answers the proxy treats differently (PLAN D18).
+	item, ok = paths[PathProxyConfig].(map[string]any)
+	if !ok {
+		t.Fatalf("%s documents no path %q", specPath, PathProxyConfig)
+	}
+	op, ok = item["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("path %q has no get operation", PathProxyConfig)
+	}
+	checkResponses(t, "get "+PathProxyConfig, op, "200")
+	responses, _ := op["responses"].(map[string]any)
+	for _, status := range []string{"204", "304", "404"} {
+		if _, ok := responses[status]; !ok {
+			t.Errorf("get %q does not document the %s the client handles", PathProxyConfig, status)
+		}
+	}
+
+	if got, want := len(paths), len(wantStatus)+2; got != want {
 		t.Errorf("spec documents %d paths, client knows %d; keep them in step", got, want)
 	}
 }
@@ -183,7 +202,11 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 			string(HostKeyAccept), string(HostKeyReject)}},
 		{"RevocationEvent", "type", []string{
 			string(EventTypeSessionKill), string(EventTypeCacheInvalidate),
-			string(EventTypeHeartbeat), string(EventTypeResync)}},
+			string(EventTypeHeartbeat), string(EventTypeResync),
+			string(EventTypeConfigChanged)}},
+		{"ProxyConfigReport", "state", []string{
+			string(ConfigStateApplied), string(ConfigStatePendingRestart),
+			string(ConfigStateRejected), string(ConfigStateFetchFailed)}},
 		{"LogRecord", "severity", []string{
 			string(SeverityInfo), string(SeverityWarn), string(SeverityCritical)}},
 		// The credential plane (D6a, D13, D14).
@@ -376,6 +399,10 @@ func TestSpecDocumentsThePolicySchemas(t *testing.T) {
 		// types drifting apart (see heartbeat_test.go for why it is not a
 		// vocabulary revision).
 		"RevocationEvent": "heartbeat_interval_seconds",
+		// Fleet configuration (PLAN D18, phase 0042) — likewise not policy.
+		"ConfigChangedEvent":  "hash",
+		"ProxyConfigDocument": "settings",
+		"ProxyConfigReport":   "restart_required",
 	} {
 		ref := "#/components/schemas/" + schema + "/properties/" + field
 		if _, ok := resolveRef(doc, ref); !ok {
@@ -430,6 +457,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 	for _, path := range []string{
 		PathAuthenticateCert, PathAuthenticatePassword, PathPollMFA, PathAuthorize,
 		PathReportHostKey, PathIngestLogBatch, PathIngestPriorityLog, PathProxyEvents,
+		PathProxyConfig, PathProxyConfigReport,
 	} {
 		if !strings.Contains(readme, path) {
 			t.Errorf("%s does not document the path %q", readmePath, path)
@@ -467,6 +495,11 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		"report_after_seconds", "enforcement_execution", "enforcement_reach",
 		// The revocation stream's liveness claim (phase 0039).
 		"heartbeat_interval_seconds",
+		// Fleet configuration (PLAN D18, phase 0042).
+		string(EventTypeConfigChanged), "running_version", "desired_version",
+		"restart_required", "last_error", "If-None-Match",
+		string(ConfigStateApplied), string(ConfigStatePendingRestart),
+		string(ConfigStateRejected), string(ConfigStateFetchFailed),
 		string(ExecutionProxyInspected), string(ExecutionNoInteractiveShell),
 		string(ExecutionAccountRestricted), string(ExecutionAccountConfined),
 		string(ExecutionPlatformAuthorized), string(ExecutionPlatformAttested),

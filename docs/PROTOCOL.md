@@ -128,7 +128,7 @@ section, refresh it.
   discover work that belongs to a later phase, do **not** do it here — note it in
   your learnings file and/or add a new queued prompt (Section 6).
 - **Follow the plan.** Match `docs/PLAN.md`: package layout, interfaces, naming,
-  decisions (D1–D17, including D5a and D6a). If reality forces a deviation,
+  decisions (D1–D18, including D5a and D6a). If reality forces a deviation,
   update `docs/PLAN.md` in the **same PR** and call it out in the PR description
   and learnings.
 - **Cross-repo changes follow `docs/CROSS-REPO-PROTOCOL.md`.** This repo owns

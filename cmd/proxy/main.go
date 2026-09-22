@@ -74,7 +74,7 @@ func run(configPath string, logger *log.Logger) error {
 	if configPath == "" {
 		return errors.New("-config is required")
 	}
-	cfg, err := config.Load(configPath)
+	bootstrap, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}
@@ -82,18 +82,27 @@ func run(configPath string, logger *log.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hostKey, err := loadHostKey(cfg.Proxy.HostKeyPath)
+	hostKey, err := loadHostKey(bootstrap.Proxy.HostKeyPath)
 	if err != nil {
 		return err
 	}
 
+	// Reaching Control is bootstrap-only by definition (PLAN D18), so the client
+	// is built from the host's file before anything a fleet document can set.
 	rest, err := control.NewRESTClient(control.Options{
-		BaseURL: cfg.Control.BaseURL,
-		Token:   cfg.Control.Token,
+		BaseURL: bootstrap.Control.BaseURL,
+		Token:   bootstrap.Control.Token,
 	})
 	if err != nil {
 		return err
 	}
+
+	// The fleet's document is fetched BEFORE any component is built, so every
+	// fleet-owned setting — including the ones that only take effect at startup
+	// — is in force from the first connection, and a restart is what clears a
+	// pending one. A failure here is never fatal: the proxy starts on its
+	// bootstrap file and the sync below catches up once Control answers.
+	cfg, startupDoc, fetchErr, applyErr := startupFleetConfig(ctx, rest, bootstrap, logger)
 
 	// The caching client reuses only decisions the server authorised, and only
 	// while the revocation stream below is being heard (PLAN §6.4). The two are
@@ -252,9 +261,33 @@ func run(configPath string, logger *log.Logger) error {
 		return err
 	}
 
+	// Fleet configuration (PLAN D18) follows the stream's notifications off the
+	// stream's goroutine. Only the Live settings are pushed into a running
+	// component; a document changing anything else is held until a restart and
+	// reported as pending, never as running.
+	fleet := config.NewFleet(bootstrap, cfg, func(next *config.Config) {
+		cache.SetMaxTTL(next.Control.Cache.MaxTTL)
+		server.SetDeadlineWarning(next.Session.DeadlineWarning)
+	})
+	configSync, err := control.NewConfigSync(control.ConfigSyncOptions{
+		Source:  rest,
+		Applier: fleet,
+		ProxyID: bootstrap.Proxy.ID,
+		Logger:  logger,
+	})
+	if err != nil {
+		return err
+	}
+	configSync.Started(startupDoc, fetchErr, applyErr)
+	configDone := make(chan struct{})
+	go func() {
+		defer close(configDone)
+		configSync.Run(ctx)
+	}()
+
 	// The proxy is the session registry: the stream's kills land on live
 	// sessions, which is what makes a cached decision safe to hold.
-	stream := control.NewRevocationStream(rest, cache, server, control.StreamOptions{Logger: logger})
+	stream := control.NewRevocationStream(rest, cache, server, control.StreamOptions{Logger: logger, Config: configSync})
 	streamDone := make(chan struct{})
 	go func() {
 		defer close(streamDone)
@@ -276,6 +309,7 @@ func run(configPath string, logger *log.Logger) error {
 	serveErr := server.Serve(ctx, listener)
 	closeRecorder(recorder, logger)
 	<-streamDone
+	<-configDone
 	if registrarDone != nil {
 		<-registrarDone
 	}
@@ -284,6 +318,37 @@ func run(configPath string, logger *log.Logger) error {
 	}
 	logger.Printf("proxy: stopped")
 	return serveErr
+}
+
+// startupConfigTimeout bounds the fleet-document fetch at startup. Past it the
+// proxy starts on its bootstrap file rather than waiting on Control: the
+// document is configuration, and the proxy is useful without it.
+const startupConfigTimeout = 5 * time.Second
+
+// startupFleetConfig fetches the fleet's document and returns the configuration
+// the process is built from, with what happened for ConfigSync.Started. It
+// never fails: an unreachable Control or an unusable document leaves the
+// bootstrap file in force, said loudly.
+func startupFleetConfig(ctx context.Context, src control.FleetConfigSource, bootstrap *config.Config, logger *log.Logger) (
+	cfg *config.Config, doc *control.ProxyConfigDocument, fetchErr, applyErr error,
+) {
+	fetchCtx, cancel := context.WithTimeout(ctx, startupConfigTimeout)
+	defer cancel()
+	doc, fetchErr = src.FetchProxyConfig(fetchCtx, bootstrap.Proxy.ID, "")
+	if fetchErr != nil {
+		logger.Printf("proxy: fleet configuration unavailable at startup (%v); starting on the bootstrap configuration", fetchErr)
+		return bootstrap, nil, fetchErr, nil
+	}
+	if !doc.Published() {
+		return bootstrap, doc, nil, nil
+	}
+	cfg, applyErr = bootstrap.WithFleet(doc.Settings)
+	if applyErr != nil {
+		logger.Printf("proxy: fleet configuration version %s REJECTED at startup; starting on the bootstrap configuration: %v", doc.Version, applyErr)
+		return bootstrap, doc, nil, applyErr
+	}
+	logger.Printf("proxy: starting on fleet configuration version %s", doc.Version)
+	return cfg, doc, nil, nil
 }
 
 // closeRecorder ships what the last sessions queued.

@@ -50,6 +50,22 @@ type StreamOptions struct {
 	// Logger receives reconnects and unexpected events; nil discards them. It
 	// must never be given event contents beyond ids and types.
 	Logger *log.Logger
+	// Config receives configuration notifications (PLAN D18). Nil means this
+	// proxy does not take fleet configuration, and a config_changed event is
+	// ignored exactly as any other type this proxy does not recognise.
+	Config ConfigNotifier
+}
+
+// ConfigNotifier is how the revocation stream hands configuration news to
+// whatever applies it (ConfigSync). Both calls must return promptly: they are
+// made from the stream's goroutine, and a fetch there would stall every kill
+// queued behind it.
+type ConfigNotifier interface {
+	// ConfigChanged is called for each config_changed event, replayed or live.
+	ConfigChanged(ev *ConfigChangedEvent)
+	// StreamConnected is called on every (re)connect and on resync: whatever
+	// the proxy missed while it could not hear the stream, a fetch now covers.
+	StreamConnected()
 }
 
 // RevocationStream keeps the proxy's outbound subscription to the management
@@ -68,6 +84,7 @@ type RevocationStream struct {
 	src      EventStreamer
 	cache    CacheController
 	registry SessionRegistry
+	config   ConfigNotifier
 
 	heartbeatTimeout time.Duration
 	minBackoff       time.Duration
@@ -95,6 +112,7 @@ func NewRevocationStream(src EventStreamer, cache CacheController, registry Sess
 		now:              opts.Now,
 		sleep:            opts.Sleep,
 		logger:           opts.Logger,
+		config:           opts.Config,
 	}
 	if s.registry == nil {
 		s.registry = NopSessionRegistry{}
@@ -174,6 +192,12 @@ func (s *RevocationStream) runOnce(ctx context.Context, proxyID string) error {
 	// A connected stream is itself proof the server is reachable, so the cache
 	// may be served from here even before the first heartbeat.
 	s.markAlive()
+	// A notification missed while disconnected is not necessarily replayed (the
+	// server may answer resync, or keep no history), so every connect asks for
+	// the current document. It is a conditional fetch: unchanged costs a 304.
+	if s.config != nil {
+		s.config.StreamConnected()
+	}
 
 	done := make(chan struct{})
 	defer func() {
@@ -240,6 +264,9 @@ func (s *RevocationStream) handle(ctx context.Context, ev *RevocationEvent) {
 		// The server cannot tell us what we missed, so nothing we hold can be
 		// trusted: drop it all and re-authorize from scratch.
 		s.invalidateAll()
+		if s.config != nil {
+			s.config.StreamConnected()
+		}
 	case EventTypeCacheInvalidate:
 		inv := ev.CacheInvalidate
 		switch {
@@ -256,6 +283,18 @@ func (s *RevocationStream) handle(ctx context.Context, ev *RevocationEvent) {
 		}
 	case EventTypeSessionKill:
 		s.handleKill(ctx, ev.SessionKill)
+	case EventTypeConfigChanged:
+		if s.config == nil {
+			// This proxy takes no fleet configuration: the event means to it
+			// exactly what an unknown type means to one built before the type
+			// existed.
+			s.logf("control: ignoring revocation event type %q (event %s): no configuration handler", ev.Type, ev.EventID)
+			return
+		}
+		// A notification only. The document is fetched by the handler off this
+		// goroutine, and nothing here touches a session or a cached decision:
+		// configuration is not on the data path.
+		s.config.ConfigChanged(ev.ConfigChanged)
 	default:
 		// A newer server may know event types this proxy does not. Ignoring
 		// them keeps the stream alive rather than reconnecting in a loop.

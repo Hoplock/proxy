@@ -55,6 +55,9 @@ type fixtures struct {
 	// UIDLeases configures the exclusive uid blocks granted per target
 	// (PLAN §5.1).
 	UIDLeases fixtureUIDLeases `yaml:"uid_leases"`
+	// FleetConfig is the configuration document served to the fleet
+	// (PLAN D18).
+	FleetConfig fixtureFleetConfig `yaml:"fleet_config"`
 }
 
 // fixtureEvents tunes the server→proxy event stream.
@@ -678,6 +681,15 @@ func (f *fixtures) validate() error {
 
 	if f.Events.ReplayBuffer < 0 {
 		add("events.replay_buffer must not be negative")
+	}
+
+	if _, err := buildConfigDocument(f.FleetConfig.Document); err != nil {
+		add("%v", err)
+	}
+	for i, id := range f.FleetConfig.Enrolled {
+		if id == "" {
+			add("fleet_config.enrolled[%d] is empty", i)
+		}
 	}
 
 	if len(problems) > 0 {

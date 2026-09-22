@@ -466,6 +466,9 @@ const (
 	// EventTypeResync says the proxy missed events it cannot be given: it
 	// drops its entire cache and re-authorizes from scratch.
 	EventTypeResync EventType = "resync"
+	// EventTypeConfigChanged says the proxy's desired configuration document
+	// moved (PLAN D18). It names the document; the proxy fetches it.
+	EventTypeConfigChanged EventType = "config_changed"
 )
 
 // RevocationEvent is one line of the server→proxy event stream
@@ -488,6 +491,8 @@ type RevocationEvent struct {
 	SessionKill *SessionKillEvent `json:"session_kill,omitempty"`
 	// CacheInvalidate is set when Type is EventTypeCacheInvalidate.
 	CacheInvalidate *CacheInvalidateEvent `json:"cache_invalidate,omitempty"`
+	// ConfigChanged is set when Type is EventTypeConfigChanged.
+	ConfigChanged *ConfigChangedEvent `json:"config_changed,omitempty"`
 	// HeartbeatIntervalSeconds is the heartbeat interval the server says it is
 	// currently keeping. Servers set it on heartbeats; it may appear on any
 	// event, and a later event carrying a different value is a re-statement

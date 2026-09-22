@@ -107,7 +107,7 @@ func (s *session) armDeadline(deadline *time.Time) bool {
 	// something goes into a stream nobody is reading, so an immediate "warning"
 	// is indistinguishable from no warning at all. The expiry message still
 	// arrives, and it is the one §4.3 actually requires.
-	lead := s.srv.deadlineWarning
+	lead := time.Duration(s.srv.deadlineWarning.Load())
 	warnAt := at.Add(-lead)
 	warn := lead > 0 && warnAt.After(s.srv.now())
 	s.logf("proxy: session=%s deadline armed at=%s in=%s warn_at=%s",

@@ -113,6 +113,13 @@ func validateEvent(ev *RevocationEvent) error {
 		if len(i.Keys) == 0 && i.Subject == "" && !i.All {
 			return errors.New("cache_invalidate names no keys, subject, or all")
 		}
+	case EventTypeConfigChanged:
+		if ev.ConfigChanged == nil {
+			return errors.New("config_changed event has no config_changed payload")
+		}
+		if ev.ConfigChanged.Version == "" || ev.ConfigChanged.Hash == "" {
+			return errors.New("config_changed names no version or hash")
+		}
 	}
 	return nil
 }

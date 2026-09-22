@@ -64,6 +64,10 @@ func TestTopology(t *testing.T) {
 	// Control has to be up both to decide the second factor and to receive it.
 	t.Run("password and out-of-band MFA", testPasswordMFA)
 	t.Run("telemetry", testTelemetry)
+	// A configuration rollout through the real binaries (D18). It needs
+	// Hoplock Control up, and it restores the bootstrap values before it
+	// returns, so it may sit anywhere before the scenarios that stop Control.
+	t.Run("fleet configuration", testFleetConfig)
 	// The other three session bounds (D16). It is before both scenarios that
 	// stop Hoplock Control, for two reasons: it reads the records its own
 	// sessions produced, and one subtest takes the mock's LOG DESTINATION down

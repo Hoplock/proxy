@@ -602,3 +602,24 @@ uid_leases:
   # them rather than clamping it.
   range_min: 0
   range_max: 0
+
+# Fleet configuration (phase 0042, PLAN D18).
+#
+# One document, served to every enrolled proxy from
+# GET /v1/proxies/{proxy_id}/config. Its hash is derived from the bytes served,
+# and a new one is published through POST /debug/config, which also emits the
+# config_changed event from the same stored document — so the mock can never
+# announce a version it does not serve. Settings are passed through
+# uninterpreted: which keys a proxy accepts is the proxy's rule (PLAN D18), and a
+# mock that refused a bad document could not test a proxy refusing one.
+fleet_config:
+  # Proxy ids treated as enrolled. Empty: every id is. Anything else is answered
+  # 404 not_enrolled.
+  enrolled: []
+  # The document published at startup. Omit it and the fetch answers 204:
+  # nothing published, the proxy runs on its bootstrap file alone.
+  document:
+    version: fleet-v1
+    settings:
+      control.cache.max_ttl: 5m
+      session.deadline_warning: 2m
