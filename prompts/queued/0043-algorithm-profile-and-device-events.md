@@ -257,10 +257,45 @@ Whichever way it goes:
   profile is actually dialled.
 - Tests, per the acceptance criteria below.
 
+## A finding from 0045's review: `default` is not what the contract says
+
+Settle this before building the expansion. `api/control.yaml` and
+`api/README.md` call `default` "nothing beyond the library defaults" and "the
+only profile that is not a weakening", and describe `legacy-rsa-sha1` as
+*adding* `ssh-rsa`. But x/crypto's **client defaults** (checked at v0.56.0)
+already offer:
+- `diffie-hellman-group14-sha1`, a SHA-1 key exchange;
+- `hmac-sha1-96`, which the library itself classes as insecure;
+- `ssh-rsa` and `ssh-dss` host keys, plus their certificate forms.
+
+Nothing here sets `KeyExchanges`, `Ciphers`, `MACs` or `HostKeyAlgorithms`
+today, so every target leg on `default` offers all of these now. The contract
+is right that `default` adds nothing to the library, but it is **not** "not a
+weakening" in the sense a reader takes it.
+
+Two answers, and this phase must choose one and write it into §4.2, both
+contract documents and the PR:
+- **`default` = the library's *secure* set** (`ssh.SupportedAlgorithms()`,
+  host keys and public-key auth included). The contract's sentence then
+  becomes true. `legacy-rsa-sha1` and `legacy-device` genuinely add what they
+  say. But targets that today connect only through `diffie-hellman-group14-sha1`
+  or an `ssh-rsa` host key stop connecting on `default` and need a legacy
+  profile. That is a **tightening**, so under "Versioning" it is announced as a
+  break, and the PR needs the owner's agreement before it merges.
+- **`default` = the library's default** (today's behaviour). The contract text
+  is corrected to say what `default` actually offers. The profile descriptions
+  change so they don't claim to add something that is already offered. The
+  weakening is left for floors and bans (0045) to remove.
+
+If the choice isn't obvious from the plan, stop and ask (`docs/PROTOCOL.md`
+§9). Either way, keep an in-repo copy of the library's default lists pinned by
+a test, as 0045 describes. 0045's bans subtract from whatever this phase
+decides `default` offers, and they must never add to it.
+
 ## Out of scope
 
-- **A floor** (`algorithm_floor`, a minimum rather than a weakening). That is
-  **0045**, which narrows the expansion you build here and rides the same path to
+- **A floor or bans** (`algorithm_floor`, a minimum rather than a weakening,
+  and `algorithm_bans`, a per-route removal list). That is **0045**, which narrows the expansion you build here and rides the same path to
   every connection — so keep that expansion the one place a connection's lists
   come from, and keep the reaper's bare-endpoint copy carrying whatever the
   endpoint's algorithms are rather than the profile alone.

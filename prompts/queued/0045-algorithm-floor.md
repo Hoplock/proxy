@@ -144,11 +144,22 @@ With that, Control can show an administrator which targets a change would break
 remain ruled out (§4.2): the dial moves between named levels, never between
 identifiers.
 
+**Amended again in review: banned algorithms.** The owner then asked for a way
+for an administrator to make sure a vulnerable algorithm is not used, without
+waiting for a proxy release. Levels can't do that: they move in named steps, and
+a new step ships with the software. So this phase also adds `algorithm_bans`
+(§6), a per-route list of SSH algorithm identifiers the proxy **must not
+offer**, on any axis. This is a list of identifiers, and §4.2 rules those out,
+but §4.2's objection is to lists that **widen** what a route offers. A ban can
+only remove. It can't be used to weaken a route one identifier at a time, and
+it names exactly the fact an auditor wants to see. The phase writes that
+distinction into §4.2: **a list may narrow a route, never widen it.**
+
 ## Objective
 
 Let Control name, per route, a **minimum level** of key exchange the
 proxy→target leg must negotiate, chosen from an ordered ladder it can move up or
-down; apply it on every connection the session causes to that target; fail
+down, and name algorithms the leg must never use; apply it on every connection the session causes to that target; fail
 closed and legibly when the target cannot meet it; record the key exchange
 actually negotiated on every target leg; and give Control what it needs to
 manage the dial safely across a fleet. That means which levels each proxy build
@@ -258,7 +269,7 @@ lowest first. Each level is defined by the set of key exchanges it accepts:
 | Rank | Level | Accepts (this build) | Excludes |
 | --- | --- | --- | --- |
 | 0 | *(absent)* | whatever the profile offers | nothing |
-| 1 | `modern-kex` | every key exchange `x/crypto/ssh` implements **except** those `legacy-device` adds (the SHA-1 exchanges); today `mlkem768x25519-sha256`, `curve25519-sha256`, `ecdh-sha2-nistp256/384/521`, `diffie-hellman-group14-sha256`, `diffie-hellman-group16-sha512`, `diffie-hellman-group-exchange-sha256` | SHA-1 key exchange |
+| 1 | `modern-kex` | every key exchange `x/crypto/ssh` implements **except** the SHA-1 ones (`ssh.InsecureAlgorithms().KeyExchanges`, one of which the library offers **by default**, see below); today `mlkem768x25519-sha256`, `curve25519-sha256`, `ecdh-sha2-nistp256/384/521`, `diffie-hellman-group14-sha256`, `diffie-hellman-group16-sha512`, `diffie-hellman-group-exchange-sha256` | SHA-1 key exchange |
 | 2 | `pq-hybrid-kex` | the implemented hybrid set: today exactly `mlkem768x25519-sha256` | every classical exchange |
 
 Derive the rank-1 set from the library's own list, not a hand-copied one: it is
@@ -283,14 +294,28 @@ neither above nor below `pq-hybrid-kex`. Such a regime is a different construct,
 not a rung. Say so in `api/README.md` so nobody tries to squeeze it in. That
 construct is out of scope here.
 
-**What `modern-kex` buys when `default` already offers no SHA-1 exchange.** It
-is a commitment, not a change to today's handshake. Under `default` and
-`legacy-rsa-sha1` it offers exactly what the library already would. What it
-adds is that a later policy edit putting the route on `legacy-device` is
-**refused** rather than silently applied. That is the point of a floor, and the
-bottom rung is what a compliance statement such as "no SHA-1 key exchange,
-anywhere" is written in. Say this plainly in the contract, so nobody reads the
-level as doing more on the wire than it does.
+**`modern-kex` changes the wire today, because `default` is not what it
+sounds like.** An `ssh.ClientConfig` that leaves `KeyExchanges` empty gets the
+library's *default* list, which is **not** `ssh.SupportedAlgorithms()`. At
+x/crypto v0.56.0 (checked while amending this prompt) the client default:
+- offers `diffie-hellman-group14-sha1`, a SHA-1 key exchange;
+- leaves out `diffie-hellman-group16-sha512` and
+  `diffie-hellman-group-exchange-sha256`;
+- on the other axes, offers `hmac-sha1-96` as a MAC and `ssh-rsa`/`ssh-dss`
+  (and their certificate forms) as host-key algorithms.
+
+Nothing in this repository sets those fields today, so **every target leg on
+`default` currently offers SHA-1 key exchange**. 0043 has to decide what
+`default` means given that (see its prompt). Whatever it decides, `modern-kex`
+removes `diffie-hellman-group14-sha1` from the offer. That is a real narrowing,
+and it is the reason the bottom rung is worth having on its own. It also adds
+the two secure exchanges the default leaves out, since a level's offer is its
+accepted set. State both effects in the contract.
+
+A second, smaller effect: a later policy edit putting the route on
+`legacy-device` is **refused** rather than silently applied. That is the point
+of a floor, and the bottom rung is where a compliance statement such as "no
+SHA-1 key exchange, anywhere" is written.
 
 ### 2. Applying it
 
@@ -329,7 +354,12 @@ The floor narrows 0043's expansion; it does not travel separately.
   may not remove a floor a route named, and no proxy-wide knob is added (D2).
 - The hop leg is out of scope (below).
 
-### 3. Semantics when the floor cannot be met
+### 3. Semantics when the floor (or a ban, §6) cannot be met
+
+Everything in this section applies equally when a handshake fails because the
+target offers only algorithms a **ban** removed, on any axis. It is one failure
+class, "the target cannot meet this route's algorithm policy", with one
+classifier, one stage and one event. The record names which axis failed.
 
 The request frames this as an "outage-class denial". In this repository those
 are two different branches of §4.3, and the difference is the point of the
@@ -354,22 +384,26 @@ disclosure rule:
 Mechanics:
 
 - **One classifier**, beside 0025's `IsAuthRejection` in
-  `internal/auth/target` (e.g. `IsAlgorithmFloorUnmet(err) bool`), using
-  `errors.As` on `*ssh.AlgorithmNegotiationError` with `What == "key exchange"`
-  **and** a floor in force. Without a floor, the same error is an ordinary dial
-  failure and stays one — do not reclassify existing behaviour.
+  `internal/auth/target` (e.g. `IsAlgorithmPolicyUnmet(err) bool`), using
+  `errors.As` on `*ssh.AlgorithmNegotiationError`, **and** a floor or ban in
+  force on the axis the error names (`What` is `key exchange`, `host key`,
+  `client to server cipher`, and so on; map it to the axis in one table). If no
+  floor or ban was in force on that axis, the same error is an ordinary dial
+  failure and stays one. Do not reclassify existing behaviour.
 - **A stage of its own** in `internal/proxy/feedback.go` (e.g.
-  `stageAlgorithmFloor`), with the comment explaining why it is separate from
+  `stageAlgorithmPolicy`), with the comment explaining why it is separate from
   `stageDial` in the house style (it sends an operator somewhere different: the
   network is fine, the target's SSH server is too old for this route). Classify
   it **after** the host-key branch and **before** the rejection branch in
   `dialTarget`.
-- **A record**: `warn`, batch path, `event` `target.algorithm_floor_unmet`,
-  carrying `algorithm_floor`, `target_addr`, and the **target's offered key
-  exchanges** from `AlgorithmNegotiationError.RequestedAlgorithms`
-  (`target_kex_offered`, one comma-joined string — it is public protocol
-  metadata, not credential material, and it is what tells the operator whether
-  the fix is an OpenSSH upgrade). `warn`, not `critical`, on §7's own rule: this
+- **A record**: `warn`, batch path, `event` `target.algorithm_policy_unmet`,
+  carrying `algorithm_floor` and `algorithm_bans.<axis>` as in force,
+  `target_addr`, `algorithm_axis` (the axis that failed), and **what the target
+  offered on that axis**, taken from
+  `AlgorithmNegotiationError.RequestedAlgorithms`
+  (`target_algorithms_offered`, one comma-joined string). That list is public
+  protocol metadata, not credential material, and it tells the operator whether
+  the fix is an OpenSSH upgrade or a configuration change on the target. `warn`, not `critical`, on §7's own rule: this
   is a target-posture fact, not a security event — KEXINIT is covered by the
   exchange hash the host key signs and the host key is checked under D7, so an
   on-path attacker cannot strip the hybrid without failing host-key
@@ -460,11 +494,127 @@ target's key exchange, and it sees one on **every** target handshake. So:
 - `POST /v1/capabilities/report` is outside `policy_version`, so this moves
   `info.version` only.
 
-### 6. Versioning
+### 6. Banned algorithms (`algorithm_bans`)
+
+**The shape.** `AuthorizeResponse.algorithm_bans`, an object with one optional
+array per axis, each holding SSH algorithm identifiers exactly as SSH spells
+them:
+
+```yaml
+algorithm_bans:
+  key_exchanges:   [diffie-hellman-group14-sha256]
+  ciphers:         [aes128-cbc]
+  macs:            []
+  host_keys:       [ssh-rsa]
+  public_key_auth: [ssh-rsa]
+```
+
+Absent ⇒ **nothing banned**. It is per axis rather than one flat list because
+some identifiers appear on more than one axis. `ssh-rsa` is both a host-key
+and a public-key algorithm, and an administrator may want to ban it for one
+and not the other. Go: `control.AlgorithmBans` with one `[]string` per axis,
+on `AuthorizeResponse`, deep-copied in `clone.go`.
+
+**It is Control's policy, per route (D2).** An administrator banning an
+algorithm "everywhere" is Control applying the ban to every route it serves.
+The contract carries only the per-route result. No proxy config knob is added,
+and config can't un-ban anything.
+
+**Applying it: subtract last.** `internal/control/algorithms.go` computes the
+lists in force in this order: the profile's expansion (0043), then the floor's
+narrowing (§2), then **remove every banned identifier**. A ban always wins,
+including over what `legacy-device` adds. It rides the same path to every
+connection the session causes to the target (§2's list: session leg,
+management login, driver CLI, reaper sweep).
+- An axis with **no** ban keeps 0043's behaviour exactly. `default` still
+  means "library defaults, no explicit list".
+- An axis **with** a ban has to become an explicit list, since the library has
+  no "all defaults except X" option. **Subtract from what the route would have
+  offered without the ban, never from `ssh.SupportedAlgorithms()`.** The two
+  differ (see Correction 4's note on `default`), and building from "supported"
+  would make a ban **add** algorithms the route never offered, which is the one
+  thing a ban must not do.
+  - The library doesn't export its default lists. So keep an in-repo copy per
+    axis (`libraryDefaults` in `internal/control/algorithms.go`), and **pin it
+    with a test**: dial a stub listener with an unconfigured `ssh.ClientConfig`,
+    parse the client's KEXINIT (it is sent in the clear, and parsing it in a
+    *test* is fine), and assert that each axis equals the copy. A library
+    upgrade that changes its defaults then fails the build instead of silently
+    changing what a ban subtracts from.
+  - The host-key default is also filtered when FIPS 140 mode is on. Mirror
+    that, or refuse to start in that mode, and say which.
+  - If 0043 made `default` an explicit list, subtract from that list instead,
+    and this bullet collapses to "the expansion is always explicit".
+  - Assert that a ban which is empty on an axis leaves that axis's offer
+    unchanged, so turning a ban on changes the offer by exactly the banned
+    names and nothing else.
+- `public_key_auth` is enforced where 0043 applies `legacy-rsa-sha1`'s
+  public-key algorithms (the signer's algorithm set). Reuse that mechanism; do
+  not build a second one.
+
+**What is refused at authorize** (`validate()` → `ErrProtocol`, the server
+**MUST NOT** send it, same discipline as Correction 3):
+- a ban that leaves an axis with **nothing** to offer;
+- a ban that removes **every** member of the floor level's accepted set. For
+  example, banning `mlkem768x25519-sha256` under `pq-hybrid-kex` describes a
+  leg that can never connect;
+- an empty-string identifier, or the same identifier listed twice on one axis.
+
+**What is not refused: a name this build does not implement.** Banning
+something the proxy never offers is already satisfied. Refusing it would turn
+a same-day ban issued after an advisory into an outage on every proxy build
+that never had the algorithm. So an unknown name is accepted. What it can't be
+is **silent**, because a typo in a ban looks exactly like a working ban:
+- the proxy stamps `algorithm_bans_unmatched` on the record, listing the
+  banned names that matched nothing this build could offer;
+- each proxy declares everything it *can* offer, per axis, in
+  `ProxyCapabilities.algorithms`: the same five axis names, listing every
+  identifier any profile or floor level in this build can put in an offer,
+  built from the same function. Control can then warn about a ban that
+  matches nothing anywhere in the fleet **before** it is saved. That check is
+  Control's work and goes into the sync.
+
+**Recording it, so a ban is verifiable per session.** The floor only needed
+the negotiated key exchange, but a ban can be on any axis. So on every target
+leg, record what was actually negotiated on each axis
+`ssh.NegotiatedAlgorithms` exposes:
+- `target_kex_algorithm` (already in §1) and `target_host_key_algorithm`;
+- `target_cipher_out` and `target_cipher_in` (proxy→target and target→proxy);
+- `target_mac_out` and `target_mac_in`, omitted when an AEAD cipher makes the
+  MAC implicit.
+
+Also stamp each non-empty ban axis as `algorithm_bans.<axis>` (sorted,
+comma-joined). That is one attribute per axis, following the
+`device_field.<name>` pattern, so "which sessions ran under a ban on X" is a
+filter rather than a substring search. The public-key algorithm used is not
+exposed by `NegotiatedAlgorithms`; record the signer algorithm the proxy
+offered instead, and name it as that.
+
+**The target report stays about the target.** A handshake whose key-exchange
+offer a ban reduced cannot say what the target *would* have picked. Such a
+successful handshake produces **no** `floor_met` observation (§5). A
+**failed** one still does, because the target's full list comes back in the
+error.
+
+**The emergency runbook, written into `api/README.md`**, because an advisory is
+the moment this is for and nobody should have to work it out on the day:
+1. Control adds the ban to the affected routes' policy.
+2. Control sends `cache_invalidate` with `all`. Cached decisions otherwise keep
+   the old policy until their TTL (§6.4), and the proxy never overrides a
+   decision (D2), so this step is what makes the ban take effect at the next
+   connection.
+3. Sessions already running keep the algorithms they negotiated. SSH re-keys
+   within the session's existing configuration, so the ban doesn't reach them.
+   To end them, Control sends `session_kill`, finding them by the negotiated
+   attributes above (for example, every open session whose
+   `target_cipher_out` is the banned cipher). The `reason` is shown to the user
+   (§4.3), so it should say why.
+
+### 7. Versioning
 
 `algorithm_floor` is a new field inside the strictly-decoded authorize response,
-so it is vocabulary. Both of its levels ship in the same revision, so this is
-one bump, not two: follow "Changing the contract" exactly — `control.yaml`
+so it is vocabulary, and so is `algorithm_bans`. Both levels and the bans ship
+in the same revision, so this is one bump, not three: follow "Changing the contract" exactly — `control.yaml`
 first, Go types, `clone.go` and the mutation test, `control.PolicyVersion` to the
 next number, the README prose that states the current value, `info.version` to
 the next **minor**, and `cmd/mock-control`'s `vocabularyVersion` tiering the field
@@ -472,16 +622,19 @@ above the baseline so a proxy on the old number is answered a `500` rather than
 policy it would refuse.
 
 State in the contract the obligation this puts on the server, because it is the
-one place a floor could be lost silently: **a route whose policy carries a floor
-MUST NOT be served to a proxy declaring an older vocabulary with the floor
-omitted** — the server refuses (as the mock does, with its `500`) rather than
+one place a floor or a ban could be lost silently: **a route whose policy
+carries a floor or a ban MUST NOT be served to a proxy declaring an older
+vocabulary with it omitted** — the server refuses (as the mock does, with its `500`) rather than
 thinning the policy. Omitting a floor is a dropped restriction, which is the
 exact failure the version mechanism exists to prevent. This is a Control
 obligation and goes into the sync.
 
-The floor rides the reusable decision (§6.4) with no change to caching: a
-replayed floor is the same floor. Say so in one sentence where the field is
-described.
+The floor and the bans ride the reusable decision (§6.4) with no change to
+caching: a replayed floor is the same floor. The one consequence is the ban
+runbook's step 2. Say so in one sentence where each field is described.
+
+`ProxyCapabilities.algorithms` rides the request, like `algorithm_floors`, so
+it moves `info.version` only.
 
 ## In scope
 
@@ -489,13 +642,15 @@ described.
   level's accepted set, the nesting invariant as the rule for adding a level,
   what is not a level, the axis table, the server's MUST NOTs),
   `ProxyCapabilities.algorithm_floors`, `TargetCapabilities.kex` and the
-  report merge rule, `info.version`, and the `## Versioning` block's current
-  number.
+  report merge rule, `AuthorizeResponse.algorithm_bans` (subtract-last, what is
+  refused, what is merely unmatched), `ProxyCapabilities.algorithms`,
+  `info.version`, and the `## Versioning` block's current number.
 - `api/README.md` — a subsection beside "Algorithm profile" (the ladder and how
-  to tune it), the absent-value table, "Capability advertisement", and the
-  current-number prose.
+  to tune it, and bans beside it with the emergency runbook), the absent-value
+  table, "Capability advertisement", and the current-number prose.
 - `internal/control` — `policy.go`, `contract.go`, `validate.go` (including the
-  profile × floor rule), `clone.go`, `algorithms.go` (the expansion), and the
+  profile × floor rule and the ban refusals), `clone.go`, `algorithms.go` (the
+  expansion: profile, then floor, then bans), and the
   contract cross-check tests that read `control.yaml`.
 - `internal/control` also: `enforcement.go` (`ProxyCapabilities.AlgorithmFloors`,
   `TargetCapabilities.Kex`), and wherever the proxy builds its
@@ -510,15 +665,20 @@ described.
 - `internal/proxy` — `session.go` (`dialTarget`: apply, classify, read the
   negotiated exchange), `feedback.go` (the stage and its message), `logging.go`.
 - `internal/logging` — `record.go` (`AttrAlgorithmFloor`,
-  `AttrTargetKexAlgorithm`, `AttrTargetKexOffered`, the event name), `device.go`.
+  `AttrAlgorithmBansPrefix`, `AttrAlgorithmBansUnmatched`,
+  `AttrTargetKexAlgorithm`, `AttrTargetHostKeyAlgorithm`, the four
+  cipher/MAC attributes, `AttrAlgorithmAxis`, `AttrTargetAlgorithmsOffered`,
+  the event name), `device.go`.
 - `cmd/mock-control` — fixture field, validation (including the refused pair),
-  `vocabularyVersion`, the `500` for a floor the proxy did not declare, the
+  `vocabularyVersion`, the `500` for a floor the proxy did not declare, a
+  per-route `algorithm_bans` fixture with the same refusals, the
   capability-report merge rule, and `fixtures.example.yaml`.
 - `test/e2e` — a route with a floor against a target that offers ML-KEM and one
-  that does not (see acceptance).
-- `docs/PLAN.md` — §4.2 (the floor beside the profile), §4.3 (where this
-  failure sits), §7 (the three attribute keys, the event, its severity, the
-  absence rule), §10's row. If you add an `As <verb> (phase 0045)` layer to
+  that does not, and a route with a ban (see acceptance).
+- `docs/PLAN.md` — §4.2 (the floor and the bans beside the profile, and the
+  rule that a list may narrow a route but never widen it), §4.3 (where this
+  failure sits), §7 (the attribute keys, the event, its severity, the
+  absence rules), §10's row. If you add an `As <verb> (phase 0045)` layer to
   §5.3, recompose "What is true today" and refresh its layer count.
 
 ## Out of scope
@@ -531,7 +691,15 @@ described.
   far end; the chain's own posture is this proxy's configuration, not route
   policy. If you think it should be policy too, note it as a follow-up in the
   learnings — do not build it.
-- **The user→proxy leg.** The proxy's own server config; not route policy.
+- **The user→proxy leg.** The proxy's own server config, not route policy.
+  That includes **bans on it**. An administrator who wants a vulnerable
+  algorithm gone from *every* leg also wants it gone from the proxy's own
+  listener and from the hop leg. Those are fleet configuration, which is
+  0042's area rather than route policy's. Note it in the learnings as a
+  follow-up that should reuse this phase's per-axis ban shape, and do not
+  build it here.
+- **Allow-lists.** A per-route list that *adds* algorithms stays ruled out
+  (§4.2). Only removal is added here.
 - **Floors on any other axis** (ciphers, MACs, host-key algorithms). Name the
   field and the ladder so a sibling axis can be added later without renaming
   this one. Add none now.
@@ -555,7 +723,7 @@ described.
   separately, one offering only `sntrup761x25519-sha512` plus classical — the
   case Correction 1 exists for) fails at setup with the new stage; the user sees
   the outage-branch message naming the key-exchange requirement and the session
-  id; a `warn` `target.algorithm_floor_unmet` record carries the offered list;
+  id; a `warn` `target.algorithm_policy_unmet` record carries the offered list;
   the 0025 breaker is untouched; no ladder walk happens.
 - **Without** a floor, the same classical-only target still connects, and the
   record still carries `target_kex_algorithm` (the classical one). Nothing that
@@ -602,6 +770,34 @@ described.
   floor; the contract cross-check tests pass against the edited `control.yaml`.
 - A test in a package importing x/crypto asserts the string constant in
   `internal/control` equals `ssh.KeyExchangeMLKEM768X25519`.
+- **Bans:** a table test over profile × floor × bans on every axis asserts the
+  applied `ssh.ClientConfig` offers exactly the expected lists, and that a ban
+  always wins over a profile's additions. An axis with no ban is byte-for-byte
+  what it was without the feature.
+- Banning a cipher the target also offers alongside others connects on another
+  cipher, and the record's `target_cipher_out`/`_in` shows which. Banning the
+  target's **only** common cipher fails with the algorithm-policy stage,
+  `algorithm_axis` naming the cipher axis and `target_algorithms_offered`
+  listing the target's ciphers. The 0025 breaker is untouched in both cases.
+- `validate()` refuses a ban that empties an axis, a ban that removes every
+  member of the floor's level, an empty identifier and a duplicate. It
+  **accepts** a ban naming an algorithm this build doesn't implement, and that
+  name appears in `algorithm_bans_unmatched` on the record.
+- `ProxyCapabilities.algorithms` lists, per axis, every identifier any profile
+  or level can offer (built from the same function, asserted equal).
+- The `libraryDefaults` copy is pinned by the KEXINIT test, and a ban on
+  `diffie-hellman-group16-sha512` under `default` changes nothing on the wire
+  (the default never offered it). That is the regression test for "a ban
+  never adds".
+- A successful handshake under a key-exchange ban produces no `floor_met`
+  report. A failed one does.
+- A proxy declaring the previous `policy_version` is answered `500` by the mock
+  for a route with a ban.
+- The emergency runbook works as written. In an integration test against the
+  mock: a cached decision without the ban serves a session; the fixture gains
+  the ban; `cache_invalidate` `all` is sent; the next session runs under the
+  ban. A session opened before the change still reports its original cipher
+  until `session_kill` ends it.
 - `make build vet test lint`, the licence-header check, `go test ./test/docs/...`
   and the e2e topology all pass.
 
@@ -640,14 +836,27 @@ from and what it touches:
     "these proxies cannot enforce X yet". That console is Control's work, and
     the obligation is to plan it;
   - the attribute is **`target_kex_algorithm`**, not the `kex_algorithm` it
-    asked for, plus `algorithm_floor` (omitted when none) and the
-    `target.algorithm_floor_unmet` event with `target_kex_offered`;
+    asked for, plus `algorithm_floor` (omitted when none), the other negotiated
+    attributes (`target_host_key_algorithm`, `target_cipher_out`/`_in`,
+    `target_mac_out`/`_in`), `algorithm_bans.<axis>`,
+    `algorithm_bans_unmatched`, and the `target.algorithm_policy_unmet` event
+    with `algorithm_axis` and `target_algorithms_offered`;
+  - `algorithm_bans` is per route and per axis, applied after the profile and
+    the floor, and a ban always wins. A "ban everywhere" is Control applying
+    it to every route. Control's policy validation should refuse what the
+    proxy refuses (an emptied axis, an emptied floor level) and **warn**, not
+    refuse, on a name no proxy in the fleet declared in
+    `capabilities.algorithms`;
+  - the emergency runbook in `api/README.md` (ban, `cache_invalidate` `all`,
+    optional `session_kill` of sessions found by the negotiated attributes) is
+    a Control workflow to plan;
   - `legacy-device` + floor is refused by the proxy; `legacy-rsa-sha1` + floor
     is **accepted** — Control's policy validation should match, not reject more;
-  - the server MUST NOT serve a floored route to an older-vocabulary proxy with
-    the floor omitted.
+  - the server MUST NOT serve a route with a floor or a ban to an
+    older-vocabulary proxy with either omitted.
 - The **learnings summary** names the field and its levels in rank order, each
   level's member set in this build, the capability declaration and the target
-  report and its merge rule, the attribute keys and event, the stage, the profile × floor rule, the
+  report and its merge rule, the ban shape and order of application, what is
+  refused and what is only unmatched, the runbook, the attribute keys and event, the stage, the profile × floor rule, the
   version number reached, and what Control must change — that last line is what
   the sync session reads.
