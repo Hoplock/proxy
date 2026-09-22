@@ -273,7 +273,7 @@ prefix indicating implementation order.
   chain is six deep — so §10 carries the **composed mapping** above them, and a
   renumbering PR regenerates it as part of the same change. Resolve an old
   reference by the phase's *subject* against that table, never by its digits
-  alone: 29 of the 43 numbers in use are simultaneously a live phase and a
+  alone: 29 of the 44 numbers in use are simultaneously a live phase and a
   historical alias of a different one.
 - **A withdrawn number is retired for good** — never reused, even though nothing
   occupies it (**0021**, **0030**, **0032** and **0034** today; see
