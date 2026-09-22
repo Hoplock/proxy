@@ -132,8 +132,9 @@ So the phase is **apply, then record**, and the recording is the cheap half:
   host-key algorithms and public-key auth algorithms as plain string slices —
   `internal/control` stays free of `x/crypto/ssh`. It is one place because
   `internal/proxy` and `internal/auth/target/device` both need it and neither
-  may import the other. `default` expands to **nothing**: the library's own
-  defaults, never a list this repository maintains.
+  may import the other. `default` expands to the library's **secure set** on
+  every axis, as an explicit list; see "Decided in 0045's review" below. No
+  profile ever leaves a config field empty.
 - **Apply it to every connection the session causes to that target**: the
   session leg in `internal/proxy/session.go` (`dialTarget`), the POSIX
   management login in `internal/auth/target/admin.go`, and the driver's
@@ -163,9 +164,9 @@ So the phase is **apply, then record**, and the recording is the cheap half:
 - **Say how the promise is rendered.** `api/control.yaml` and `api/README.md`
   say a non-default profile "emits its own audit event". If the phase renders
   that as an attribute on the provisioning record rather than as a record of its
-  own, say so in both documents and in §4.2 — and say explicitly in the PR that
-  neither `info.version` nor `policy_version` moves for a description-only edit,
-  per `api/README.md`'s "Changing the contract". If the phase concludes a
+  own, say so in both documents and in §4.2. `policy_version` does not move.
+  `info.version` moves once, for the `default` tightening below, and not for
+  this description edit. If the phase concludes a
   distinct record is the better rendering, that is a legitimate answer: build it
   and write down why.
 
@@ -257,40 +258,85 @@ Whichever way it goes:
   profile is actually dialled.
 - Tests, per the acceptance criteria below.
 
-## A finding from 0045's review: `default` is not what the contract says
+## Decided in 0045's review: `default` is the library's secure set
 
-Settle this before building the expansion. `api/control.yaml` and
-`api/README.md` call `default` "nothing beyond the library defaults" and "the
-only profile that is not a weakening", and describe `legacy-rsa-sha1` as
-*adding* `ssh-rsa`. But x/crypto's **client defaults** (checked at v0.56.0)
-already offer:
+**The finding.** `api/control.yaml` and `api/README.md` call `default` "nothing
+beyond the library defaults" and "the only profile that is not a weakening",
+and describe `legacy-rsa-sha1` as *adding* `ssh-rsa`. But x/crypto's **client
+defaults** (checked at v0.56.0) already offer:
 - `diffie-hellman-group14-sha1`, a SHA-1 key exchange;
 - `hmac-sha1-96`, which the library itself classes as insecure;
 - `ssh-rsa` and `ssh-dss` host keys, plus their certificate forms.
 
 Nothing here sets `KeyExchanges`, `Ciphers`, `MACs` or `HostKeyAlgorithms`
-today, so every target leg on `default` offers all of these now. The contract
-is right that `default` adds nothing to the library, but it is **not** "not a
-weakening" in the sense a reader takes it.
+today, so every target leg on `default` offers all of these now.
 
-Two answers, and this phase must choose one and write it into §4.2, both
-contract documents and the PR:
-- **`default` = the library's *secure* set** (`ssh.SupportedAlgorithms()`,
-  host keys and public-key auth included). The contract's sentence then
-  becomes true. `legacy-rsa-sha1` and `legacy-device` genuinely add what they
-  say. But targets that today connect only through `diffie-hellman-group14-sha1`
-  or an `ssh-rsa` host key stop connecting on `default` and need a legacy
-  profile. That is a **tightening**, so under "Versioning" it is announced as a
-  break, and the PR needs the owner's agreement before it merges.
-- **`default` = the library's default** (today's behaviour). The contract text
-  is corrected to say what `default` actually offers. The profile descriptions
-  change so they don't claim to add something that is already offered. The
-  weakening is left for floors and bans (0045) to remove.
+**The decision (the repository owner, on PR #64):** `default` means the
+library's **secure set**, and the contract's sentence becomes true. Build it
+exactly like this; do not reopen the choice.
 
-If the choice isn't obvious from the plan, stop and ask (`docs/PROTOCOL.md`
-§9). Either way, keep an in-repo copy of the library's default lists pinned by
-a test, as 0045 describes. 0045's bans subtract from whatever this phase
-decides `default` offers, and they must never add to it.
+- **`default` expands to an explicit list on every axis**: the `ssh.SupportedAlgorithms()`
+  field for that axis, in the library's order. That covers `KeyExchanges`,
+  `Ciphers`, `MACs`, `HostKeys` and `PublicKeyAuths`. Never an empty config
+  field, which is what lets the library's insecure defaults back in.
+  - At v0.56.0 this removes `diffie-hellman-group14-sha1`, `hmac-sha1-96`,
+    `ssh-rsa`, `ssh-dss` and the RSA-SHA1/DSA certificate forms. It adds
+    `diffie-hellman-group16-sha512` and `diffie-hellman-group-exchange-sha256`,
+    which the library supports but does not offer by default.
+  - It **keeps `hmac-sha1`**: the library classes it as supported, and HMAC
+    with SHA-1 is not broken the way a SHA-1 signature is. Say so in the
+    contract rather than leave a reader to find it; 0045's bans are how an
+    administrator removes it.
+  - The rule for the future is "`default` follows the library's secure
+    classification". A library upgrade that moves an algorithm between its
+    supported and insecure lists changes `default`. So pin the expansion with a
+    test that asserts the exact lists per axis, so such a change fails the build
+    and is reviewed, not absorbed.
+- **The legacy profiles now add exactly what they say, on top of that:**
+  - `legacy-rsa-sha1` adds `ssh-rsa` (and `ssh-rsa-cert-v01@openssh.com`) as a
+    host-key algorithm, and `ssh-rsa` as a public-key auth algorithm.
+  - `legacy-device` adds that, plus the library's insecure SHA-1 key exchanges
+    (`ssh.InsecureAlgorithms().KeyExchanges`), its **CBC** ciphers (not RC4:
+    the contract promises CBC, and nothing more), and `hmac-sha1-96`. Each goes
+    after every secure entry on its axis; 0045 depends on that ordering.
+  - **`ssh-dss`** is in no profile today. The recommendation is to add DSA host
+    keys (and their certificate form) to `legacy-device`, because firmware old
+    enough to need SHA-1 key exchange is where DSA-only host keys live, and
+    without it that population has no profile at all. Decide, and write the
+    answer into the contract's `legacy-device` description either way.
+- **It is a tightening, so it is announced as a break**, following phase 0028's
+  precedent (its learnings, "The version decision"):
+  - `policy_version` does **not** move, because no field changes meaning to a
+    parser;
+  - `info.version` moves to the next **minor**, with the break stated in
+    `api/README.md`'s "Versioning" paragraph beside `params.username`. That
+    paragraph says "the one such break", and it now has two;
+  - write it in the present tense, per 0037.
+  
+  The cost is low: proxy and Control ship together and nothing has been
+  deployed (0037), so no running estate depends on SHA-1 through `default`.
+  Say that in the PR too.
+- **Make the break visible when it bites.** A target that can only connect with
+  something `default` no longer offers now fails the handshake with
+  `*ssh.AlgorithmNegotiationError`. Today that is reported as a generic dial
+  failure, which sends an operator to the network. Add:
+  - **one classifier**, beside 0025's `IsAuthRejection` in
+    `internal/auth/target`: `IsAlgorithmPolicyUnmet(err) bool`, using
+    `errors.As`, with one table mapping the error's `What` (`key exchange`,
+    `host key`, `client to server cipher`, and so on) to an axis name;
+  - **a stage of its own**, `stageAlgorithmPolicy` in
+    `internal/proxy/feedback.go`, classified after the host-key branch and
+    before the rejection branch in `dialTarget`, never scored against the
+    credential (0025). The user sees the outage branch of §4.3 saying the
+    target does not support the algorithms this route allows;
+  - **a `warn` batch record**, `event` `target.algorithm_policy_unmet`, carrying
+    `algorithm_profile`, `target_addr`, `algorithm_axis` and the target's
+    offered list for that axis (`target_algorithms_offered`, from
+    `RequestedAlgorithms`).
+  
+  The operator reads the offered list and moves the route to the right legacy
+  profile. 0045 extends this same classifier, stage and event to floors and
+  bans; build it so that is an extension and not a rewrite.
 
 ## Out of scope
 
@@ -315,6 +361,19 @@ decides `default` offers, and they must never add to it.
 
 ## Acceptance criteria
 
+- Under `default`, the applied `ssh.ClientConfig` carries explicit lists on
+  every axis equal to `ssh.SupportedAlgorithms()`, and a test pins the exact
+  lists. `diffie-hellman-group14-sha1`, `hmac-sha1-96`, `ssh-rsa` and
+  `ssh-dss` appear on no axis.
+- A target offering only `diffie-hellman-group14-sha1` fails under `default`
+  with `stageAlgorithmPolicy`: the outage-branch message, a `warn`
+  `target.algorithm_policy_unmet` record naming the key-exchange axis and the
+  target's offered list, and the 0025 breaker untouched. The same target
+  connects under `legacy-device`.
+- A target offering only an `ssh-rsa` host key fails under `default` and
+  connects under `legacy-rsa-sha1`.
+- Under each legacy profile, every added algorithm comes after every secure one
+  on its axis.
 - A route naming `legacy-device` completes a session against a target offering
   only the algorithms that profile adds, and the **same route under `default`
   fails to handshake** — the negative half is what proves the weakening is
@@ -364,8 +423,13 @@ from and what it touches:
   one to skip: the repository already waiting is the one it is tempting to
   assume needs no telling, and the session there that indexes the new event and
   drops the second field name is a fresh one that knows nothing. Its obligations
-  are concrete — whether `default` is stamped, the event's delivery path, and
-  the naming verdict.
+  are concrete — whether `default` is stamped, the event's delivery path, the
+  naming verdict, and the **`default` tightening**. `default` now means the
+  secure set, it is announced as a break in the contract, and Control's policy
+  guidance must say that a device which only speaks SHA-1 key exchange or
+  `ssh-rsa`/`ssh-dss` host keys needs a legacy profile. The
+  `target.algorithm_policy_unmet` event is how an operator finds those devices.
 - The **learnings summary** names the attribute keys added, the event name and
-  its delivery path, where the profile is applied, the naming verdict, and what
+  its delivery path, where the profile is applied, what each profile now
+  expands to (and the `ssh-dss` answer), the break and its `info.version`, the naming verdict, and what
   Control must change — that last line is what the sync session reads.

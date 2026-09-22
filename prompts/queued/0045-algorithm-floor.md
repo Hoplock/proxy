@@ -60,7 +60,8 @@
   `0043-algorithm-profile-and-device-events-learnings.md`: the profile
   expansion in `internal/control/algorithms.go`, the profile on
   `routing.Route`, `device.Endpoint` and `target.Target`, and how it survives the
-  reaper's bare-endpoint copy. **Also read `0044-brokered-certificate-credentials-learnings.md`'s summary for
+  reaper's bare-endpoint copy, and its answer to "Decided in 0045's review"
+  (`default` as the secure set, and the `ssh-dss` question). **Also read `0044-brokered-certificate-credentials-learnings.md`'s summary for
   the `policy_version` number it left behind.**
 - `docs/CROSS-REPO-PROTOCOL.md` — **§1, §2, §3.2, §4.1, §5**. This phase answers
   an upstream request, so §5's "The PR that answers an upstream request is not a
@@ -269,7 +270,7 @@ lowest first. Each level is defined by the set of key exchanges it accepts:
 | Rank | Level | Accepts (this build) | Excludes |
 | --- | --- | --- | --- |
 | 0 | *(absent)* | whatever the profile offers | nothing |
-| 1 | `modern-kex` | every key exchange `x/crypto/ssh` implements **except** the SHA-1 ones (`ssh.InsecureAlgorithms().KeyExchanges`, one of which the library offers **by default**, see below); today `mlkem768x25519-sha256`, `curve25519-sha256`, `ecdh-sha2-nistp256/384/521`, `diffie-hellman-group14-sha256`, `diffie-hellman-group16-sha512`, `diffie-hellman-group-exchange-sha256` | SHA-1 key exchange |
+| 1 | `modern-kex` | every key exchange `x/crypto/ssh` implements **except** the SHA-1 ones (`ssh.InsecureAlgorithms().KeyExchanges`); today `mlkem768x25519-sha256`, `curve25519-sha256`, `ecdh-sha2-nistp256/384/521`, `diffie-hellman-group14-sha256`, `diffie-hellman-group16-sha512`, `diffie-hellman-group-exchange-sha256` | SHA-1 key exchange |
 | 2 | `pq-hybrid-kex` | the implemented hybrid set: today exactly `mlkem768x25519-sha256` | every classical exchange |
 
 Derive the rank-1 set from the library's own list, not a hand-copied one: it is
@@ -294,28 +295,22 @@ neither above nor below `pq-hybrid-kex`. Such a regime is a different construct,
 not a rung. Say so in `api/README.md` so nobody tries to squeeze it in. That
 construct is out of scope here.
 
-**`modern-kex` changes the wire today, because `default` is not what it
-sounds like.** An `ssh.ClientConfig` that leaves `KeyExchanges` empty gets the
-library's *default* list, which is **not** `ssh.SupportedAlgorithms()`. At
-x/crypto v0.56.0 (checked while amending this prompt) the client default:
-- offers `diffie-hellman-group14-sha1`, a SHA-1 key exchange;
-- leaves out `diffie-hellman-group16-sha512` and
-  `diffie-hellman-group-exchange-sha256`;
-- on the other axes, offers `hmac-sha1-96` as a MAC and `ssh-rsa`/`ssh-dss`
-  (and their certificate forms) as host-key algorithms.
-
-Nothing in this repository sets those fields today, so **every target leg on
-`default` currently offers SHA-1 key exchange**. 0043 has to decide what
-`default` means given that (see its prompt). Whatever it decides, `modern-kex`
-removes `diffie-hellman-group14-sha1` from the offer. That is a real narrowing,
-and it is the reason the bottom rung is worth having on its own. It also adds
-the two secure exchanges the default leaves out, since a level's offer is its
-accepted set. State both effects in the contract.
-
-A second, smaller effect: a later policy edit putting the route on
-`legacy-device` is **refused** rather than silently applied. That is the point
-of a floor, and the bottom rung is where a compliance statement such as "no
-SHA-1 key exchange, anywhere" is written.
+**What `modern-kex` does on the wire.** 0043 makes `default` the library's
+**secure set** (decided in PR #64's review; see 0043's "Decided in 0045's
+review"). Under `default` and `legacy-rsa-sha1` the key-exchange offer is then
+already exactly the `modern-kex` set, so the level changes nothing on the wire
+for those routes. Say so in the contract, so nobody reads the level as doing
+more than it does. What it adds:
+- **a commitment that holds under policy change:** a later edit putting the
+  route on `legacy-device` is **refused** rather than applied. That is the
+  point of a floor, and the bottom rung is where a compliance statement such as
+  "no SHA-1 key exchange, anywhere" is written;
+- **a rung for the target report** (§5): "meets `modern-kex`" is the fact that
+  separates a target needing `legacy-device` from one that doesn't;
+- **independence from the library's classification:** `default` follows it
+  (0043), while `modern-kex` is defined by this contract as "no SHA-1 key
+  exchange". If the library ever reclassifies, the level's promise still
+  holds and the pinned-list test says which side moved.
 
 ### 2. Applying it
 
@@ -383,22 +378,21 @@ disclosure rule:
 
 Mechanics:
 
-- **One classifier**, beside 0025's `IsAuthRejection` in
-  `internal/auth/target` (e.g. `IsAlgorithmPolicyUnmet(err) bool`), using
-  `errors.As` on `*ssh.AlgorithmNegotiationError`, **and** a floor or ban in
-  force on the axis the error names (`What` is `key exchange`, `host key`,
-  `client to server cipher`, and so on; map it to the axis in one table). If no
-  floor or ban was in force on that axis, the same error is an ordinary dial
-  failure and stays one. Do not reclassify existing behaviour.
-- **A stage of its own** in `internal/proxy/feedback.go` (e.g.
-  `stageAlgorithmPolicy`), with the comment explaining why it is separate from
-  `stageDial` in the house style (it sends an operator somewhere different: the
-  network is fine, the target's SSH server is too old for this route). Classify
-  it **after** the host-key branch and **before** the rejection branch in
-  `dialTarget`.
-- **A record**: `warn`, batch path, `event` `target.algorithm_policy_unmet`,
+- **Extend 0043's classifier; do not add a second one.** 0043 introduced
+  `IsAlgorithmPolicyUnmet`, `stageAlgorithmPolicy` and
+  `target.algorithm_policy_unmet` for a target the profile can't reach. A floor
+  or ban failing is the same class. The record now also says **why** the offer
+  lacked what the target needed: the profile, the floor, or a ban. Add an
+  `algorithm_policy_cause` attribute (`profile` | `floor` | `ban`), decided by
+  which step of the expansion removed the target's offered algorithms on that
+  axis.
+- **The stage is 0043's `stageAlgorithmPolicy`.** Extend its user message so
+  a floor or ban failure names the requirement (for example, "this route
+  requires a post-quantum key exchange") without disclosing policy beyond what
+  `ssh -vv` would show.
+- **The record is 0043's**: `warn`, batch path, `event` `target.algorithm_policy_unmet`,
   carrying `algorithm_floor` and `algorithm_bans.<axis>` as in force,
-  `target_addr`, `algorithm_axis` (the axis that failed), and **what the target
+  `algorithm_policy_cause`, `target_addr`, `algorithm_axis` (the axis that failed), and **what the target
   offered on that axis**, taken from
   `AlgorithmNegotiationError.RequestedAlgorithms`
   (`target_algorithms_offered`, one comma-joined string). That list is public
@@ -534,17 +528,9 @@ management login, driver CLI, reaper sweep).
   differ (see Correction 4's note on `default`), and building from "supported"
   would make a ban **add** algorithms the route never offered, which is the one
   thing a ban must not do.
-  - The library doesn't export its default lists. So keep an in-repo copy per
-    axis (`libraryDefaults` in `internal/control/algorithms.go`), and **pin it
-    with a test**: dial a stub listener with an unconfigured `ssh.ClientConfig`,
-    parse the client's KEXINIT (it is sent in the clear, and parsing it in a
-    *test* is fine), and assert that each axis equals the copy. A library
-    upgrade that changes its defaults then fails the build instead of silently
-    changing what a ban subtracts from.
-  - The host-key default is also filtered when FIPS 140 mode is on. Mirror
-    that, or refuse to start in that mode, and say which.
-  - If 0043 made `default` an explicit list, subtract from that list instead,
-    and this bullet collapses to "the expansion is always explicit".
+  - 0043 makes every profile, `default` included, expand to an **explicit**
+    list on every axis. So there is always a concrete list to subtract from,
+    and no need to reconstruct the library's unexported defaults.
   - Assert that a ban which is empty on an axis leaves that axis's offer
     unchanged, so turning a ban on changes the offer by exactly the banned
     names and nothing else.
@@ -785,10 +771,10 @@ it moves `info.version` only.
   name appears in `algorithm_bans_unmatched` on the record.
 - `ProxyCapabilities.algorithms` lists, per axis, every identifier any profile
   or level can offer (built from the same function, asserted equal).
-- The `libraryDefaults` copy is pinned by the KEXINIT test, and a ban on
-  `diffie-hellman-group16-sha512` under `default` changes nothing on the wire
-  (the default never offered it). That is the regression test for "a ban
-  never adds".
+- **A ban never adds:** for every profile × floor, the offer with bans is a
+  subset of the offer without them, axis by axis, asserted as a property over
+  the whole table. A ban on an algorithm the route didn't offer (for example
+  `diffie-hellman-group1-sha1` under `default`) changes nothing on the wire.
 - A successful handshake under a key-exchange ban produces no `floor_met`
   report. A failed one does.
 - A proxy declaring the previous `policy_version` is answered `500` by the mock
