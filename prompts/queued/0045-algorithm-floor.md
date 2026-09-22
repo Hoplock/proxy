@@ -38,10 +38,18 @@
     connections, unchanged here), **D8** (which path the new records take).
 - `api/README.md` — **"Versioning: one live vocabulary, and a proxy that fails
   closed"**, **"Algorithm profile (`algorithm_profile`, phase 0014)"**,
-  **"Absent-value defaults, in one table"**, and **"Changing the contract"** —
-  the recipe you follow, step by step.
-- `api/control.yaml` — `AuthorizeResponse.algorithm_profile` and the
-  `## Versioning` block in `info.description`.
+  **"Absent-value defaults, in one table"**, **"Capability advertisement"**
+  (the per-proxy and per-target halves this phase extends, and "a report is an
+  observation and grants nothing"), and **"Changing the contract"** — the recipe
+  you follow, step by step.
+- `api/control.yaml` — `AuthorizeResponse.algorithm_profile`, the
+  `## Versioning` block in `info.description`, and the capability shapes:
+  `ProxyCapabilities`, `TargetCapabilities`, `CapabilityReportRequest`,
+  `CapabilityReportResponse` and the `POST /v1/capabilities/report` path.
+- `internal/auth/target/probe.go` — how the `ephemeral-user` probe caches an
+  observation per target while it is fresh and reports it fire-and-forget on a
+  detached context. The key-exchange observation below reuses that pattern and
+  must not add a Control call to the session path.
 - `docs/learnings/` — read the summaries; open
   `0013-device-provisioning-contract-v3-learnings.md` (where
   `algorithm_profile` entered the wire), `0025-target-auth-failure-containment-learnings.md`
@@ -124,13 +132,28 @@ the structure — a sibling field, not a profile value — and this phase takes 
 as asked. It is wrong in three details it could not see from Control's side,
 and the phase builds the corrected form below.
 
+**Amended in review (PR #64): the floor is a dial, not a switch.** The owner
+asked whether an administrator of Control and a proxy fleet can change the floor
+as new algorithms are released, and tune it up or down to match their
+compliance needs. With one value the answer was "only on/off". So this phase
+builds the floor as an **ordered ladder of named levels** (Correction 4), has
+each proxy **declare** the levels and member algorithms its build enforces
+(§4), and has proxies **report** which level each target was seen to meet (§5).
+With that, Control can show an administrator which targets a change would break
+*before* they raise the floor, and which proxies can enforce it. Algorithm lists
+remain ruled out (§4.2): the dial moves between named levels, never between
+identifiers.
+
 ## Objective
 
-Let Control name, per route, a **minimum** key exchange the proxy→target leg
-must negotiate; apply it on every connection the session causes to that target;
-fail closed and legibly when the target cannot meet it; and record the key
-exchange actually negotiated on every target leg, so the floor is observable in
-production and not only assertable in a test.
+Let Control name, per route, a **minimum level** of key exchange the
+proxy→target leg must negotiate, chosen from an ordered ladder it can move up or
+down; apply it on every connection the session causes to that target; fail
+closed and legibly when the target cannot meet it; record the key exchange
+actually negotiated on every target leg; and give Control what it needs to
+manage the dial safely across a fleet. That means which levels each proxy build
+enforces and with which algorithms, and which level each target has been seen
+to meet.
 
 ## What this phase must settle
 
@@ -144,10 +167,14 @@ floor, which one field cannot express. It is also the §4.2 argument again: a
 named value, not an algorithm list, so it cannot be tuned one identifier at a
 time and a reviewer reads a word rather than decoding one.
 
-- Enum: `[pq-hybrid-kex]`. Absent ⇒ **no floor**, today's behaviour. Add it to
-  "Absent-value defaults, in one table".
-- Go: `control.AlgorithmFloor` (string type) with
-  `AlgorithmFloorPQHybridKEX = "pq-hybrid-kex"`, in `internal/control/policy.go`
+- Enum: `[modern-kex, pq-hybrid-kex]`, **ordered** (Correction 4). Absent ⇒
+  **no floor**, today's behaviour. Add it to "Absent-value defaults, in one
+  table".
+- Go: `control.AlgorithmFloor` (string type) with `AlgorithmFloorModernKEX =
+  "modern-kex"` and `AlgorithmFloorPQHybridKEX = "pq-hybrid-kex"`, plus a
+  `Rank() int` (absent = 0) and an `AlgorithmFloors()` list in rank order. The
+  order is defined in **one** place, and every comparison in the phase uses
+  `Rank`, never a string compare. All of it goes in `internal/control/policy.go`
   beside `AlgorithmProfile`; `AuthorizeResponse.AlgorithmFloor` with
   `json:"algorithm_floor,omitempty"`; `validate()` in `validate.go` refusing an
   unknown value (refused, never coerced — the `algorithm_profile` argument
@@ -211,7 +238,7 @@ excludes — a route naming both describes a leg that can never connect — so t
 pair is refused. Write the rule as the axis in the contract, as a table, so the
 next profile added is placed by rule rather than by analogy:
 
-| `algorithm_profile` | with `algorithm_floor: pq-hybrid-kex` |
+| `algorithm_profile` | with any `algorithm_floor` (`modern-kex` or above) |
 | --- | --- |
 | `default` (or absent) | accepted |
 | `legacy-rsa-sha1` | accepted — different axis |
@@ -221,15 +248,68 @@ next profile added is placed by rule rather than by analogy:
 violation, `ErrProtocol`, outage-class — Control sent policy that cannot be
 obeyed, and the server **MUST NOT** send it. It is not a deny.
 
+**Correction 4 — the floor is an ordered ladder, because an administrator has
+to be able to tune it.** One value only lets a route turn post-quantum on or
+off. Compliance usually works in steps, and an estate reaches them one step at
+a time: forbid SHA-1 key exchange everywhere now, require PQ hybrid on
+production once the targets are upgraded. So the enum is a **total order**,
+lowest first. Each level is defined by the set of key exchanges it accepts:
+
+| Rank | Level | Accepts (this build) | Excludes |
+| --- | --- | --- | --- |
+| 0 | *(absent)* | whatever the profile offers | nothing |
+| 1 | `modern-kex` | every key exchange `x/crypto/ssh` implements **except** those `legacy-device` adds (the SHA-1 exchanges); today `mlkem768x25519-sha256`, `curve25519-sha256`, `ecdh-sha2-nistp256/384/521`, `diffie-hellman-group14-sha256`, `diffie-hellman-group16-sha512`, `diffie-hellman-group-exchange-sha256` | SHA-1 key exchange |
+| 2 | `pq-hybrid-kex` | the implemented hybrid set: today exactly `mlkem768x25519-sha256` | every classical exchange |
+
+Derive the rank-1 set from the library's own list, not a hand-copied one: it is
+`ssh.SupportedAlgorithms().KeyExchanges`, which at x/crypto v0.56.0 is exactly
+the eight exchanges above and already leaves out the three in
+`ssh.InsecureAlgorithms().KeyExchanges` (checked while amending this prompt).
+Assert that the two lists are disjoint. If a later library version changes
+either list, the library wins and the table is updated.
+
+**The invariant that makes it a dial, stated in the contract as the rule for
+adding a level:** every key exchange a level accepts is also accepted by every
+level below it. Raising the floor can only shrink the accepted set, and lowering
+it can only grow it. So "tune up or down" means one thing, and Control can
+compare two levels by rank alone. A future level (a pure-PQ exchange, a larger
+ML-KEM parameter set) goes in **above** the current top only if it keeps the
+invariant, and is an ordinary vocabulary revision.
+
+**What is deliberately *not* a level.** A regime whose accepted set is not
+nested with the others cannot be placed on this ladder. FIPS is the obvious
+case: it forbids `curve25519-sha256`, which `modern-kex` accepts, yet it sits
+neither above nor below `pq-hybrid-kex`. Such a regime is a different construct,
+not a rung. Say so in `api/README.md` so nobody tries to squeeze it in. That
+construct is out of scope here.
+
+**What `modern-kex` buys when `default` already offers no SHA-1 exchange.** It
+is a commitment, not a change to today's handshake. Under `default` and
+`legacy-rsa-sha1` it offers exactly what the library already would. What it
+adds is that a later policy edit putting the route on `legacy-device` is
+**refused** rather than silently applied. That is the point of a floor, and the
+bottom rung is what a compliance statement such as "no SHA-1 key exchange,
+anywhere" is written in. Say this plainly in the contract, so nobody reads the
+level as doing more on the wire than it does.
+
 ### 2. Applying it
 
 The floor narrows 0043's expansion; it does not travel separately.
 
 - **One place.** Extend the function 0043 put in
   `internal/control/algorithms.go` so it takes the floor as well as the profile
-  and returns the lists in force. Under `pq-hybrid-kex` the key-exchange list is
-  **exactly** the implemented hybrid set — not "hybrids first", which would let
-  the target pick classical. Every other axis is the profile's answer, unchanged.
+  and returns the lists in force. Under a floor, the key-exchange list is
+  **exactly** that level's accepted set, **ordered highest level first**. Under
+  `pq-hybrid-kex` that is the hybrid set alone, not "hybrids first", which would
+  let the target pick classical. Every other axis is the profile's answer,
+  unchanged.
+- **The offer is always ordered by level, floor or no floor**, and that
+  includes 0043's `legacy-device` expansion: the SHA-1 exchanges it adds go
+  **after** every modern one. SSH negotiation picks the client's first
+  preference the server also offers. So when the offer is ordered highest level
+  first, the exchange that gets negotiated tells you the highest level this
+  target meets among those offered. §5 depends on that inference, so assert the
+  ordering in a test.
   Note that `default` expands to *nothing* under 0043 (library defaults); with a
   floor, the key-exchange list becomes explicit while the other axes may stay
   library-default. Keep `internal/control` free of `x/crypto/ssh` as 0043
@@ -300,10 +380,91 @@ Mechanics:
   provisioned under the same floor, so this means the device changed under the
   proxy — say that in the record's message).
 
-### 4. Versioning
+### 4. Each proxy declares the levels it enforces
+
+The dial is only safe to turn if Control knows which proxies can honour a
+setting, and with which algorithms. A level's member set can change with a proxy
+release (sntrup761 arriving is exactly that), so during a rolling upgrade two
+builds can accept different exchanges for the same level. That is acceptable.
+Hiding it is not.
+
+- `ProxyCapabilities.algorithm_floors`: an array of `{level, key_exchanges}`,
+  one entry per level this build enforces, `key_exchanges` being that level's
+  accepted set **in this build**. For example:
+  `[{level: modern-kex, key_exchanges: [...]}, {level: pq-hybrid-kex,
+  key_exchanges: [mlkem768x25519-sha256]}]`. Build it from the same function
+  §2 uses, so it cannot describe anything other than what the proxy offers.
+  Go: `control.AlgorithmFloorCapability`, on `control.ProxyCapabilities`.
+- **Absent declares nothing**, as it does for the rest of `ProxyCapabilities`.
+  The server **MUST NOT** send a floor level that the requesting proxy did not
+  declare. This is the per-level form of the `policy_version` rule and covers
+  what the version cannot: a level added in a later build.
+  - The proxy's backstop: `validate()` refuses a floor the build does not
+    implement, which is already true since an unknown enum value is refused.
+  - The mock's server half: `cmd/mock-control` answers a `500` for a route
+    whose floor the request did not declare, matching `vocabularyVersion`.
+- This rides `AuthorizeRequest`, which `policy_version` does not govern (it
+  governs the *response*), so it moves `info.version` and not the vocabulary
+  number. State that in the README beside the existing `capabilities` prose.
+
+### 5. Each target is reported against the ladder
+
+To tune a floor **up** safely, an administrator needs to know which targets
+would fail before they change it. The proxy is the only party that sees a
+target's key exchange, and it sees one on **every** target handshake. So:
+
+- `TargetCapabilities.kex`: an optional object
+  `{floor_met, negotiated, offered, observed_at}`, all strings except `offered`
+  (array) and `observed_at` (date-time).
+  - `floor_met` is the **highest level** the target was observed to meet, or
+    `none`.
+  - `negotiated` is the exchange used.
+  - `offered` is the target's full key-exchange list when the proxy knows it
+    (a failed negotiation gives it through
+    `ssh.AlgorithmNegotiationError.RequestedAlgorithms`) and is absent
+    otherwise. A successful handshake does not expose the peer's list in
+    `x/crypto/ssh`, and **you must not parse KEXINIT off the wire to get it**.
+- **How `floor_met` is derived**, in one function beside the §2 expansion,
+  unit-tested for every level:
+  - After a **success**, it is the highest level whose accepted set contains
+    `negotiated`. This is sound only because the offer is ordered highest level
+    first (§2): a target that preferred classical was not offered PQ, or does
+    not have it.
+  - After a **floor failure**, compute it exactly from `offered`.
+  - If the offer was capped by a floor, a success at that floor proves **at
+    least** that level. Report that level. Never report a higher one you did
+    not test.
+- **Reported for every credential method**, not only `ephemeral-user`: brokered,
+  device and certificate routes have key exchanges too.
+  - Use `probe.go`'s pattern: a per-target cache keyed by address; report only
+    when there is no fresh observation, or when `floor_met` **changed**, because
+    a change is news, and a target whose level dropped is news a security team
+    wants.
+  - Honour `report_after_seconds`. Send fire-and-forget on a detached context,
+    **never on the session path**. 0023 cut Control calls per connection, and
+    this must not add one back.
+- **Merge, don't clobber.** A kex-only report (no `execution`/`reach`) must not
+  read as "this target can take no enforcement rungs". State the merge rule in
+  the contract, where the server has to implement it:
+  - each of `kex` and the rung observation has its own `observed_at` and is
+    replaced only by a report that carries it;
+  - an absent sub-object leaves the stored one untouched.
+  
+  Either the `ephemeral-user` probe and the kex observation from the same
+  session go out as **one** report, or they go out as two that the rule makes
+  safe. Pick one, say which, and have the mock implement the rule.
+- It is still **an observation that grants nothing** ("Capability
+  advertisement"): the authorize response is the authority, and the live
+  handshake re-checks it every time. A stale or wrong report can cost a refused
+  session, never a session below its floor.
+- `POST /v1/capabilities/report` is outside `policy_version`, so this moves
+  `info.version` only.
+
+### 6. Versioning
 
 `algorithm_floor` is a new field inside the strictly-decoded authorize response,
-so it is vocabulary: follow "Changing the contract" exactly — `control.yaml`
+so it is vocabulary. Both of its levels ship in the same revision, so this is
+one bump, not two: follow "Changing the contract" exactly — `control.yaml`
 first, Go types, `clone.go` and the mutation test, `control.PolicyVersion` to the
 next number, the README prose that states the current value, `info.version` to
 the next **minor**, and `cmd/mock-control`'s `vocabularyVersion` tiering the field
@@ -324,25 +485,35 @@ described.
 
 ## In scope
 
-- `api/control.yaml` — the field, its description (the property, the one
-  implemented member, the axis table, the server's MUST NOT), `info.version`,
-  the `## Versioning` block's current number.
-- `api/README.md` — a subsection beside "Algorithm profile", the absent-value
-  table, the current-number prose.
+- `api/control.yaml` — the field and its ordered levels, its description (each
+  level's accepted set, the nesting invariant as the rule for adding a level,
+  what is not a level, the axis table, the server's MUST NOTs),
+  `ProxyCapabilities.algorithm_floors`, `TargetCapabilities.kex` and the
+  report merge rule, `info.version`, and the `## Versioning` block's current
+  number.
+- `api/README.md` — a subsection beside "Algorithm profile" (the ladder and how
+  to tune it), the absent-value table, "Capability advertisement", and the
+  current-number prose.
 - `internal/control` — `policy.go`, `contract.go`, `validate.go` (including the
   profile × floor rule), `clone.go`, `algorithms.go` (the expansion), and the
   contract cross-check tests that read `control.yaml`.
+- `internal/control` also: `enforcement.go` (`ProxyCapabilities.AlgorithmFloors`,
+  `TargetCapabilities.Kex`), and wherever the proxy builds its
+  `AuthorizeRequest.capabilities`.
 - `internal/routing/resolve.go` — the floor on `routing.Route`, deep-copied
   beside the profile.
 - `internal/auth/target` — `auth.go` (`Target`), `admin.go`, `devicereaper.go`,
-  `registry.go`, `device/driver.go` (`Endpoint`), `device/shell.go`, and the new
-  classifier beside `reject.go`.
+  `registry.go`, `device/driver.go` (`Endpoint`), `device/shell.go`, the new
+  classifier beside `reject.go`, and the per-target kex observation cache and
+  reporter (beside `probe.go`, sharing its freshness pattern, reached from
+  every method).
 - `internal/proxy` — `session.go` (`dialTarget`: apply, classify, read the
   negotiated exchange), `feedback.go` (the stage and its message), `logging.go`.
 - `internal/logging` — `record.go` (`AttrAlgorithmFloor`,
   `AttrTargetKexAlgorithm`, `AttrTargetKexOffered`, the event name), `device.go`.
 - `cmd/mock-control` — fixture field, validation (including the refused pair),
-  `vocabularyVersion`, and `fixtures.example.yaml`.
+  `vocabularyVersion`, the `500` for a floor the proxy did not declare, the
+  capability-report merge rule, and `fixtures.example.yaml`.
 - `test/e2e` — a route with a floor against a target that offers ML-KEM and one
   that does not (see acceptance).
 - `docs/PLAN.md` — §4.2 (the floor beside the profile), §4.3 (where this
@@ -361,8 +532,15 @@ described.
   policy. If you think it should be policy too, note it as a follow-up in the
   learnings — do not build it.
 - **The user→proxy leg.** The proxy's own server config; not route policy.
-- **Floors on any other axis** (ciphers, MACs, host-key algorithms). The enum is
-  built to take more values later; add none now.
+- **Floors on any other axis** (ciphers, MACs, host-key algorithms). Name the
+  field and the ladder so a sibling axis can be added later without renaming
+  this one. Add none now.
+- **Non-nested regimes** (FIPS and the like). Correction 4 says why they are
+  not rungs. Designing their construct is a later phase; note it in the
+  learnings as a follow-up.
+- **Control's console for the dial**, meaning the impact preview and fleet
+  coverage view that §4 and §5 feed. This phase supplies the data. The UI is
+  Control's numbered work.
 - **Implementing sntrup761** or vendoring an implementation of it.
 - **A proxy-wide floor knob.** D2; §4.2's argument against a fleet-wide profile
   applies in reverse.
@@ -391,6 +569,31 @@ described.
   `pq-hybrid-kex` are accepted. The mock refuses the same pair in fixture
   validation.
 - An unknown `algorithm_floor` value is refused, not coerced.
+- **The ladder is a dial:** a table test asserts that every level's accepted
+  set contains the accepted set of every level above it (the Correction 4
+  invariant), over `AlgorithmFloors()`, so adding a level that breaks it fails
+  the build. The rank-1 set is asserted equal to
+  `ssh.SupportedAlgorithms().KeyExchanges` and disjoint from the insecure set.
+- The same route moved **down** from `pq-hybrid-kex` to `modern-kex` connects to
+  a classical-only modern target. Moved **up** again, it fails with the floor
+  stage. Only the decision changed, not the proxy's config.
+- Under `legacy-device` with no floor, the offer lists every SHA-1 exchange
+  after every modern one.
+- `AuthorizeRequest.capabilities.algorithm_floors` lists both levels, each with
+  exactly the key exchanges §2 offers for it (built from the same function, and
+  asserted equal). The mock answers `500` for a route whose floor the request
+  did not declare.
+- `floor_met` is derived correctly for a target offering ML-KEM, one offering
+  only modern classical, one offering only sntrup761 plus classical, and one
+  offering only SHA-1. Check success and floor-failure paths for each, and
+  check that a success under a capped offer never reports above the cap.
+- A kex report goes out for a brokered-key or device route as well as an
+  `ephemeral-user` one. A second session to the same target within the freshness
+  window sends **none**. A session that sees `floor_met` change sends one at
+  once. No report is made on the session path (setup does not wait on it; a
+  failing reporter does not fail the session).
+- The mock's store keeps a target's rung observation when a kex-only report
+  arrives, and the reverse. Asserted through the real client.
 - The driver's privileged connection, the management login and the **reaper's
   sweep** all dial under the floor — test the sweep specifically, as 0043 did
   for the profile.
@@ -421,9 +624,21 @@ from and what it touches:
   0019 is a fresh one that knows nothing. Its obligations are concrete and the
   kickoff must list them:
   - re-vendor the contract; the new `policy_version` number;
-  - the field is `algorithm_floor` with one value, `pq-hybrid-kex`, and it
-    means **ML-KEM768 hybrid only** today — **not** sntrup761 — so any Control
-    text or guidance promising "either" is wrong;
+  - the field is `algorithm_floor`, an **ordered** ladder `modern-kex` <
+    `pq-hybrid-kex`, compared by rank; the nesting invariant is the contract's
+    rule for adding levels; `pq-hybrid-kex` means **ML-KEM768 hybrid only**
+    today, **not** sntrup761, so any Control text or guidance promising
+    "either" is wrong;
+  - the server MUST NOT send a level the proxy did not declare in
+    `capabilities.algorithm_floors`, and each declared level's
+    `key_exchanges` is the per-build truth that a fleet view shows during a
+    rolling upgrade;
+  - `TargetCapabilities.kex` arrives from every credential method, and the
+    server merges it per sub-object without clobbering the rung observation.
+    Together with the proxy declarations, it is what Control's console needs
+    to show "raising this route to level X would break these targets" and
+    "these proxies cannot enforce X yet". That console is Control's work, and
+    the obligation is to plan it;
   - the attribute is **`target_kex_algorithm`**, not the `kex_algorithm` it
     asked for, plus `algorithm_floor` (omitted when none) and the
     `target.algorithm_floor_unmet` event with `target_kex_offered`;
@@ -431,7 +646,8 @@ from and what it touches:
     is **accepted** — Control's policy validation should match, not reject more;
   - the server MUST NOT serve a floored route to an older-vocabulary proxy with
     the floor omitted.
-- The **learnings summary** names the field and value, the implemented member
-  set, the attribute keys and event, the stage, the profile × floor rule, the
+- The **learnings summary** names the field and its levels in rank order, each
+  level's member set in this build, the capability declaration and the target
+  report and its merge rule, the attribute keys and event, the stage, the profile × floor rule, the
   version number reached, and what Control must change — that last line is what
   the sync session reads.
