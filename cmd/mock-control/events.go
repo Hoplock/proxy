@@ -131,6 +131,12 @@ func (s *server) handleDebugRevoke(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case control.EventTypeHeartbeat, control.EventTypeResync:
+	case control.EventTypeConfigChanged:
+		// Refused here so the mock cannot announce a document it does not
+		// serve (0039's standard): publishing is pathDebugConfig's alone, which
+		// stores the document and derives the event from it.
+		writeError(w, http.StatusBadRequest, "invalid_request", "config_changed is published through "+pathDebugConfig)
+		return
 	default:
 		writeError(w, http.StatusBadRequest, "invalid_request", "unknown event type")
 		return

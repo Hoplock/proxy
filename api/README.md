@@ -9,7 +9,7 @@ companion. If the two disagree, the OpenAPI document wins.
   Control (PLAN §3).
 - Reference implementation: `cmd/mock-control` (see "Mock server" below).
 - Architecture and decisions referenced here: `docs/PLAN.md` (D2, D3, D5, D7,
-  D8, D9).
+  D8, D9, D18).
 
 ## Ground rules
 
@@ -100,6 +100,8 @@ mechanism above carries is the **next** vocabulary, not a previous one — see
 | `POST /v1/uids/lease` | Lease an exclusive block of ephemeral uids for one target | `200` | `LeaseUIDs` |
 | `POST /v1/logs/priority` | Ingest one critical record, immediately | `200` | `IngestPriorityLog` |
 | `GET /v1/proxies/{proxy_id}/events` | Subscribe to the revocation stream (NDJSON) | `200` | `StreamEvents` |
+| `GET /v1/proxies/{proxy_id}/config` | Fetch the proxy's desired configuration document | `200`, `204`, `304` | `FetchProxyConfig` |
+| `POST /v1/proxies/{proxy_id}/config/report` | Say which configuration document the proxy is running | `200` | `ReportProxyConfig` |
 
 Every endpoint can also answer `400` (malformed request), `401` (deny), and
 `500` (server failure).
@@ -186,6 +188,15 @@ Each field below names the phase that consumes it.
 | `concurrency` | **uncapped** | a per-subject and/or per-target ceiling; exceeding it is a **policy denial**, not an outage | 0019 |
 | `capabilities` (request) | the proxy **declares nothing**, so only rungs needing no capability may be chosen | the rungs this build can provide | — |
 | `policy_version` (request) | — (**required**; a request without it is refused) | the vocabulary the proxy implements | — |
+| `settings.<key>` (config document) | the proxy's **bootstrap value** for that setting | the fleet's value, for as long as the document is published | 0042 |
+| `running_version`/`running_hash` (config report) | the proxy runs on its **bootstrap file alone** | the document every setting of which is in force | 0042 |
+| `desired_version`/`desired_hash` (config report) | **nothing is published** for this proxy | the newest document the proxy knows of | 0042 |
+| `restart_required` (config report) | nothing is held for a restart | the settings keeping a `pending_restart` document from applying | 0042 |
+
+The last four rows are **not policy** and are outside `policy_version`: they
+belong to fleet configuration ("Fleet configuration" below), whose endpoints
+are not `/v1/authorize`. They are in this table because an absent value needs
+one documented meaning wherever it appears.
 
 Absence and emptiness are **not** the same thing, and the difference is the
 whole point: a server that says nothing about `permitted_requests` must not
@@ -877,6 +888,7 @@ damage of a cached allow. A server that issues cache hints must serve it.
 | `cache_invalidate` | Drop the decisions cached under `keys`, or for a `subject`, or `all`. `keys` and `all` reach host-key decisions too; `subject` does not, because a host-key decision is not made for a subject. Running sessions are untouched: they already hold their snapshot. |
 | `heartbeat` | Liveness only. A silent stream is indistinguishable from a healthy idle one, so a proxy that stops hearing these reconnects (default timeout 20s). It is the event that normally carries `heartbeat_interval_seconds` — see "The interval the server is keeping" below. |
 | `resync` | "You missed events that cannot be replayed": the proxy drops its entire cache and re-authorizes from scratch. |
+| `config_changed` | The proxy's desired configuration document moved (PLAN D18). It carries `version` and `hash` and **not the document**: the proxy fetches the current one. It touches no session and no cached decision. See "Fleet configuration" below. |
 
 **The interval the server is keeping.** Any event may carry
 `heartbeat_interval_seconds`, and a `heartbeat` normally does: it names the
@@ -931,6 +943,78 @@ The window in which a withdrawn authorization can still be honoured is therefore
 the entry's remaining TTL, and only while the stream is also down — which is why
 `ttl_seconds` belongs in seconds to low minutes.
 
+## Fleet configuration (PLAN D18, phase 0042)
+
+A proxy's YAML file is a **bootstrap**: what it needs to start and to reach
+Hoplock Control. Some settings above that are properties of the fleet rather
+than of the host, and Hoplock Control distributes them as one versioned
+**configuration document** per proxy. Three calls carry it:
+
+1. `config_changed` on the event stream says the desired document moved, by
+   `version` and `hash`.
+2. `GET /v1/proxies/{proxy_id}/config` returns the **current** desired
+   document.
+3. `POST /v1/proxies/{proxy_id}/config/report` says which document the proxy is
+   running.
+
+**Why the event is not the document.** The stream is replayable from a
+`last_event_id` (see "Revoking"), so a document carried inline would be
+replayed — and a replayed configuration is a stale configuration applied as if
+current. The event is a notification; the proxy always fetches the document
+desired **now**, so a replayed `config_changed` for an older version can at
+worst cause a fetch that answers `304`. A notification naming the document the
+proxy already holds causes no fetch at all. The proxy also fetches on every
+(re)connect of the stream and after `resync`, which is what covers a
+notification it never heard.
+
+**The fetch.**
+
+| Answer | Means | The proxy |
+| --- | --- | --- |
+| `200` + `ProxyConfigDocument` | the desired document; `ETag` is its `hash` | applies it, or rejects it whole |
+| `204` | nothing published | runs on its bootstrap file; fleet-owned settings go back to the file's values |
+| `304` | the `hash` sent as `If-None-Match` is still desired | does nothing — no re-fetch, no re-apply |
+| `404` `not_enrolled` | Hoplock Control has no proxy by this id | runs on its bootstrap file and retries |
+
+**Which settings a document may set.** Only the fleet-owned ones, by their
+dotted bootstrap key; `ProxyConfigDocument.settings` in `control.yaml` lists
+them, and `config.example.yaml` marks each one where an operator reads about
+it. Everything the proxy needs to **reach Hoplock Control** or be recognised by
+it (`control.base_url`, `control.token`, `proxy.id`), every **path to material
+on the host**, every **listener**, and the proxy's own judgement of whether it
+can still hear Control (`control.cache.stale_after`) is bootstrap-only: a proxy
+that could be told those remotely is one a bad document could cut off with no
+channel left to repair it over. A document naming any of them is rejected
+**whole**.
+
+**What "running" claims.** Two fleet-owned settings apply live
+(`control.cache.max_ttl`, `session.deadline_warning`); the rest take effect at
+startup. A document changing any startup-only setting is **held**: nothing in
+it is applied, the report says `pending_restart` with `restart_required`
+naming those settings, and `running_version` keeps naming the document that is
+really in force. A proxy runs exactly one document at a time. At startup it
+fetches before building anything, so a restart is what clears
+`pending_restart`.
+
+**A bad document never takes a proxy out of service.** One that cannot be
+parsed or applied is reported `rejected` with a `last_error` (keys, never
+values), and one that cannot be fetched is reported `fetch_failed` and retried.
+In both the proxy keeps serving on its running document. Configuration is not
+on the data path: no failure here ends a session, refuses a connection, or
+touches a cached decision. A proxy that cannot reach Hoplock Control at startup
+starts on its bootstrap file; the running document is not persisted across a
+restart.
+
+**Versioning.** None of this moves `policy_version`: the number governs
+`/v1/authorize` and nothing else. The new event type needs no bump either — a
+proxy ignores a type it does not recognise, so a proxy built before
+`config_changed` existed drops it and keeps working. `info.version` is
+**4.2.0**.
+
+**Publishing is not on this contract**, for the reason gap recovery is not
+observable through it: an operator's publish is not proxy-facing.
+`cmd/mock-control`'s `POST /debug/config` is the reference shape.
+
 ## Go types
 
 `internal/control` has one struct per payload; the JSON tags are the contract.
@@ -960,6 +1044,14 @@ absent-value defaults, and `TargetAuthMethod.Provisions` is what decides whether
 an applied rung is reachable on a route. `TargetCapabilities.Fresh` is where
 "stale and absent mean the same thing" lives, and `DefaultCapabilityTTL` is the
 window.
+
+Fleet configuration adds `ConfigChangedEvent`, `ProxyConfigDocument`,
+`ConfigRef`, `ConfigState`, `ProxyConfigReport`, and
+`ProxyConfigReportResponse`; `FetchProxyConfig` and `ReportProxyConfig` are on
+**`FleetConfigSource`**, which `*RESTClient` implements and `*CachingClient`
+deliberately does not — a document answered from memory is the stale document
+the design exists not to apply. `ConfigSync` is the proxy's loop over them, and
+`config.Fleet` is what applies a document.
 
 `ReportCapabilities` is on **`CapabilityReporter`**, a narrower interface than
 `Client`, and deliberately so: the report is made once a target leg is up, and
@@ -1034,6 +1126,7 @@ startup, and every problem in a file is reported at once.
 | `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision. Only a key already ruled on and accepted is hinted. |
 | `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). Every heartbeat advertises `heartbeat_interval_seconds` derived from `heartbeat_ms` itself — rounded **up** to the whole second, so the mock never claims an interval it does not keep — and a fixture that disables heartbeats advertises nothing. |
+| `fleet_config` | `enrolled` (proxy ids; empty means every id is enrolled, anything else is answered `404 not_enrolled`) and `document` (`version` plus `settings`, passed through uninterpreted — which keys a proxy accepts is the proxy's rule). Omit `document` and the fetch answers `204`. The hash is derived from the bytes served, and a new document is published only through `POST /debug/config`, so the mock cannot announce a version it does not serve. |
 | `uid_leases` | `uid_count` (block size, overriding what the proxy asks for), `term_seconds` (0 leaves the term to the proxy), and `range_min`/`range_max` (0 on either takes that bound from the proxy's own request, which is what a Control with no opinion about a fleet's uid conventions should do). The per-target cursor is in memory and **is not reset by `POST /debug/reset`** — rewinding it would grant a block overlapping one a proxy is still allocating from. |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to
@@ -1058,8 +1151,10 @@ These are **not** part of the contract; no production server implements them.
 | Path | Purpose |
 | --- | --- |
 | `GET /debug/logs` | Returns `{"batched":[…],"priority":[…]}` — everything ingested so far, for assertions. |
-| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, and the retained event history. |
-| `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. |
+| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, configuration reports, and the retained event history. The published configuration document is kept. |
+| `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. It refuses `config_changed`, which only `POST /debug/config` may publish. |
+| `POST /debug/config` | Publishes `{"version","settings"}` as the current document and emits `config_changed` from it. Returns `{"event_id","delivered","version","hash"}`. Stands in for Hoplock Control's publisher. |
+| `GET /debug/config/reports` | The last configuration report per proxy id. |
 
 The mock also keeps the **last capability report per target** in memory, so
 a test can assert the proxy reported at all. It answers `accepted` and decides

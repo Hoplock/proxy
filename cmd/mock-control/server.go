@@ -79,6 +79,10 @@ type server struct {
 	events         []control.RevocationEvent
 	evictedThrough int
 	idCounter      int
+	// fleetDoc is the configuration document currently published, nil when
+	// none is; configReports is the last configuration report per proxy.
+	fleetDoc      *control.ProxyConfigDocument
+	configReports map[string]control.ProxyConfigReport
 	// authorizations records every authorize call, so a test can assert that
 	// each hop of a chain asked for its own decision rather than inheriting
 	// one (D2, PLAN §6.1).
@@ -118,7 +122,11 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 		uidCursor:    make(map[string]int),
 		uidLeases:    make(map[string]int),
 		subs:         make(map[*subscriber]bool),
+		// The fixture document was built once by validate, so a malformed one
+		// never gets this far.
+		configReports: make(map[string]control.ProxyConfigReport),
 	}
+	s.fleetDoc, _ = buildConfigDocument(fx.FleetConfig.Document)
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -170,6 +178,10 @@ func (s *server) handler() http.Handler {
 	// The path constant is already a net/http wildcard pattern, so the proxy
 	// and the mock agree on the shape of the route as well as the string.
 	mux.HandleFunc("GET "+control.PathProxyEvents, s.handleProxyEvents)
+	mux.HandleFunc("GET "+control.PathProxyConfig, s.handleProxyConfig)
+	mux.HandleFunc("POST "+control.PathProxyConfigReport, s.handleProxyConfigReport)
+	mux.HandleFunc("POST "+pathDebugConfig, s.handleDebugConfig)
+	mux.HandleFunc("GET "+pathDebugConfigReports, s.handleDebugConfigReports)
 	mux.HandleFunc("GET "+pathDebugLogs, s.handleDebugLogs)
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
@@ -618,6 +630,10 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.mfa = make(map[string]*mfaChallenge)
 	s.hostKeys = make(map[string]bool)
 	s.capabilities = make(map[string]*control.TargetCapabilities)
+	// Configuration reports are per-run state; the published DOCUMENT is not
+	// reset, because rewinding it without an event would leave proxies holding
+	// a document the mock no longer serves and no notification that it moved.
+	s.configReports = make(map[string]control.ProxyConfigReport)
 	// THE UID CURSORS ARE NOT RESET, and that is the point of saying so here
 	// beside everything that is. Resetting one would REWIND it, and a rewound
 	// cursor grants a block that overlaps one a proxy is still allocating from —

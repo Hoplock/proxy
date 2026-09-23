@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -279,8 +280,10 @@ type shapeMapping struct {
 //
 // A CachingClient is safe for concurrent use.
 type CachingClient struct {
-	inner      Client
-	maxTTL     time.Duration
+	inner Client
+	// maxTTL is the local clamp. It is atomic because it is one of the two
+	// settings a fleet document applies live (PLAN D18, SetMaxTTL).
+	maxTTL     atomic.Int64
 	staleAfter time.Duration
 	maxEntries int
 	now        func() time.Time
@@ -313,11 +316,23 @@ var (
 	_ CapabilityReporter = (*CachingClient)(nil)
 )
 
+// SetMaxTTL changes the local clamp for decisions stored from now on
+// (CacheOptions.MaxTTL; zero honours the server exactly). It is how a fleet
+// document applies control.cache.max_ttl without a restart (PLAN D18). A
+// decision already held keeps the lifetime it was stored with: the clamp only
+// ever shortens, so a held entry was already inside whichever bound applied
+// when it was stored, and a later invalidation is still the server's to send.
+func (c *CachingClient) SetMaxTTL(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	c.maxTTL.Store(int64(d))
+}
+
 // NewCachingClient wraps inner with an authorize-decision cache.
 func NewCachingClient(inner Client, opts CacheOptions) *CachingClient {
 	c := &CachingClient{
 		inner:      inner,
-		maxTTL:     opts.MaxTTL,
 		staleAfter: opts.StaleAfter,
 		maxEntries: opts.MaxEntries,
 		now:        opts.Now,
@@ -326,6 +341,7 @@ func NewCachingClient(inner Client, opts CacheOptions) *CachingClient {
 		lru:        list.New(),
 		entries:    make(map[string]*cacheEntry),
 	}
+	c.maxTTL.Store(int64(opts.MaxTTL))
 	if c.staleAfter <= 0 {
 		c.staleAfter = DefaultStaleAfter
 	}
@@ -622,9 +638,10 @@ func (c *CachingClient) store(shape string, kind entryKind, subject string, hint
 	mapKey := entryKey(kind, hint.Key)
 	serverTTL := hint.TTL()
 	ttl := serverTTL
-	clamped := c.maxTTL > 0 && ttl > c.maxTTL
+	maxTTL := time.Duration(c.maxTTL.Load())
+	clamped := maxTTL > 0 && ttl > maxTTL
 	if clamped {
-		ttl = c.maxTTL // clamp down; never up
+		ttl = maxTTL // clamp down; never up
 	}
 
 	c.mu.Lock()

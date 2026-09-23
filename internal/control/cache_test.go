@@ -285,6 +285,33 @@ func TestCachingClientClampsTheTTLDownwardOnly(t *testing.T) {
 	}
 }
 
+// TestCachingClientSetMaxTTLAppliesLive: control.cache.max_ttl is one of the two
+// settings a fleet document applies without a restart (PLAN D18), so the clamp
+// must bind decisions stored after the change.
+func TestCachingClientSetMaxTTLAppliesLive(t *testing.T) {
+	c, inner, clock := newTestCache(CacheOptions{})
+	inner.authorize = func(*AuthorizeRequest) (*AuthorizeResponse, error) {
+		return testAuthorizeResponse("authz:alice:host", 300), nil
+	}
+	c.SetMaxTTL(10 * time.Second)
+	ctx := context.Background()
+	req := testAuthorizeRequest("alice@example.com", "host.company.com")
+	if _, err := c.Authorize(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(11 * time.Second)
+	c.StreamAlive(clock.Now())
+	if _, err := c.Authorize(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if got := inner.calledFor("Authorize"); got != 2 {
+		t.Errorf("server was asked %d times, want 2: the live clamp was not applied", got)
+	}
+	if c.Stats().Clamped == 0 {
+		t.Error("a clamp applied live was not counted")
+	}
+}
+
 // TestCachingClientReportsAClamp: shortening the server's lifetime is the one
 // place a local setting overrides the PDP, and a fleet where one proxy is
 // configured differently is unexplainable from the outside if that is silent.

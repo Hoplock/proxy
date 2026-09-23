@@ -4,6 +4,18 @@
 # start and reach Hoplock Control: every authentication, authorization,
 # routing, and filtering decision is made by Hoplock Control per
 # connection (see docs/PLAN.md, D2).
+#
+# Bootstrap and fleet settings (docs/PLAN.md, D18). A setting marked
+# "[fleet: live]" or "[fleet: restart]" may ALSO be set fleet-wide by a
+# configuration document Hoplock Control distributes; the document's value
+# replaces this file's for as long as the document is published. "live" takes
+# effect in a running proxy; "restart" is held until the process restarts, and
+# until then the proxy reports the document as pending, not running. EVERY
+# UNMARKED SETTING IS BOOTSTRAP-ONLY: a document naming one is rejected whole.
+# That covers everything the proxy needs to reach Hoplock Control or be
+# recognised by it, every path to material on this host, and every listener,
+# because a proxy that could be told those remotely is one a bad document could
+# cut off with no channel left to repair it over.
 
 proxy:
   # Identifier Hoplock Control knows this proxy by. It is on every
@@ -28,10 +40,13 @@ control:
     # Clamp on the server's lifetime. 0 (the default) honours it exactly; any
     # other value only makes this proxy ask more often than it was allowed to,
     # and every decision it shortens is counted and logged.
+    # [fleet: live]
     max_ttl: 0s
     # How long the revocation stream may be unheard before the cache stops
     # serving anything: every connection is re-authorized, and every target
-    # host key is re-reported.
+    # host key is re-reported. Bootstrap-only on purpose: it is this proxy's
+    # judgement of whether it can still hear Control, which is the one thing
+    # Control cannot vouch for about itself.
     stale_after: 30s
     # How many cached lookup paths this proxy holds. There are TWO KINDS and
     # they share this one number: one authorize path per (subject, login,
@@ -58,12 +73,15 @@ control:
     # Evicted counter is how a running proxy says this number is too small;
     # Expired says something else entirely — the server's TTLs are shorter
     # than the interval at which this proxy returns to the same target.
+    # [fleet: restart]
     max_entries: 0
 
 dial:
   # How long to wait for the target leg (dial plus SSH handshake). Optional.
+  # [fleet: restart]
   dial_timeout: 15s
   # Port used when Hoplock Control's route names none. Optional.
+  # [fleet: restart]
   default_target_port: 22
 
 session:
@@ -75,6 +93,7 @@ session:
   # channels. Optional; 0 means the engine default (1m), and a negative value
   # sends no warning at all, leaving only the message at expiry. A lead time
   # longer than the whole deadline warns nobody rather than warning at once.
+  # [fleet: live]
   deadline_warning: 1m
 
 logging:
@@ -88,20 +107,27 @@ logging:
   # an outage loses records.
   buffer_dir: "/var/lib/hoplock/proxy/logbuf"
   # How many records accumulate before a batch is shipped. Optional.
+  # [fleet: restart]
   batch_size: 64
   # How long a partial batch waits. Optional; negative ships only on a full
   # batch or a critical record.
+  # [fleet: restart]
   flush_interval: 5s
   # Records held between the capture points and the shipping goroutine.
   # Optional. A full queue spills to buffer_dir rather than blocking a session.
+  # [fleet: restart]
   queue_size: 4096
   # Bounds one delivery attempt. Optional.
+  # [fleet: restart]
   send_timeout: 10s
   # Backoff between drain attempts after an outage. Optional.
+  # [fleet: restart]
   retry_min: 1s
+  # [fleet: restart]
   retry_max: 30s
   # Caps one stream-capture record's payload; larger reads split across
   # records. Optional.
+  # [fleet: restart]
   max_payload_bytes: 32768
 
 routing:
@@ -129,6 +155,7 @@ chain:
   identity_cert_path: ""
   # Most proxies one session may traverse. 0 (the default) means 4. It can only
   # ever shorten a chain the server allowed, never lengthen one.
+  # [fleet: restart]
   max_hops: 4
 
   # Register an outbound relay connection with the proxy above this one, so it
@@ -138,6 +165,7 @@ chain:
   upstream:
     # host:port of the upstream proxy's registration listener. Empty (the
     # default) registers nowhere.
+    # [fleet: restart]
     address: ""
     # The upstream's expected SSH host public key. Required whenever address is
     # set: this registration is an inbound path for sessions, so an unverified
@@ -182,10 +210,13 @@ auth:
     # the proxy behaves while obeying them. All optional.
     mfa:
       # Floor on the server's requested polling interval.
+      # [fleet: restart]
       min_poll_interval: 500ms
       # How often the user is told the proxy is still waiting.
+      # [fleet: restart]
       progress_interval: 5s
       # Cap on the total wait. The server's expiry wins when it is sooner.
+      # [fleet: restart]
       max_wait: 2m
   # proxy -> target authentication (docs/PLAN.md §4.2).
   target:
