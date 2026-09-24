@@ -72,6 +72,22 @@ type Target struct {
 	// the account can do. Nil means both axes take their absent-value default —
 	// proxy-side enforcement only.
 	Enforcement *Enforcement
+	// AlgorithmProfile is the preset the route named for the proxy→target leg,
+	// and Algorithms is its expansion (control.AlgorithmProfile.Algorithms,
+	// phase 0043). Every connection an implementation opens to this target —
+	// the management login, a driver's privileged CLI, a teardown, a sweep —
+	// offers Algorithms, and every signer it authenticates the session leg with
+	// is restricted to Algorithms.PublicKeyAuths (internal/sshalg).
+	//
+	// They travel here for HostKeyCallback's reason: the decision is the
+	// server's, per route, and a provisioner that opened its own connection
+	// with the library's defaults would weaken — or strand — exactly the
+	// connection the route was written for. The profile is carried beside the
+	// lists only because the device mapping event names it; nothing dials by
+	// the name. A zero Algorithms offers the default profile, never the
+	// library's client defaults.
+	AlgorithmProfile control.AlgorithmProfile
+	Algorithms       control.Algorithms
 }
 
 // Addr is the "host:port" to dial.

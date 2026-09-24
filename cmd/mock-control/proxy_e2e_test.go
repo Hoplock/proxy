@@ -16,6 +16,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/hoplock/proxy/internal/auth/target"
+	"github.com/hoplock/proxy/internal/auth/target/device"
+	"github.com/hoplock/proxy/internal/auth/target/device/fortios"
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/config"
 	"github.com/hoplock/proxy/internal/control"
@@ -53,6 +55,9 @@ type e2eStack struct {
 	bufferDir string
 	// gate makes Hoplock Control unreachable on demand, for the outage test.
 	gate *controlGate
+	// device is the FortiGate stand-in behind the `alice#localhost` route,
+	// when e2eOptions.device asked for one (phase 0043).
+	device *sshtest.FakeFortiOS
 }
 
 // e2eOptions configure the stack. The zero value is the direct-route session
@@ -70,6 +75,11 @@ type e2eOptions struct {
 	password string
 	// logging adjusts the telemetry pipeline's options.
 	logging func(*logging.Options)
+	// device adds a second route, `alice#localhost`, to a fake FortiGate over
+	// the ephemeral-account method with a password credential and the
+	// legacy-device algorithm profile — the path whose records carry device
+	// configuration changes (phase 0043), wired to the same recorder.
+	device bool
 }
 
 // startE2E builds the whole path: fixtures naming this test's key and target,
@@ -128,6 +138,33 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 		}},
 		HostKeys: fixtureHostKeys{Decision: string(control.HostKeyAccept)},
 	}
+	var dev *sshtest.FakeFortiOS
+	if opts.device {
+		dev, err = sshtest.StartFortiOS(sshtest.FortiOSOptions{})
+		if err != nil {
+			t.Fatalf("StartFortiOS: %v", err)
+		}
+		t.Cleanup(func() { _ = dev.Close() })
+		fx.Routes = append(fx.Routes, fixtureRoute{
+			Login:             "alice",
+			Target:            "localhost",
+			RouteType:         string(control.RouteTypeDirect),
+			TargetPort:        dev.Port(),
+			Permissions:       "deployGroup",
+			PermittedChannels: permittedChannels,
+			FilterPolicy:      filterPolicy,
+			AlgorithmProfile:  string(control.AlgorithmProfileLegacyDevice),
+			TargetAuthLadder: &[]fixtureTargetAuth{{
+				Method: string(control.TargetAuthEphemeralAccount),
+				Params: map[string]string{
+					control.ParamUsername:       "alice",
+					control.ParamPlatform:       fortios.PlatformFortiGate,
+					control.ParamCredentialKind: string(control.CredentialKindPassword),
+					control.ParamExpiryPosture:  string(control.ExpiryPostureAcceptedRisk),
+				},
+			}},
+		})
+	}
 	gate := &controlGate{}
 	m := startGatedMock(t, fx, gate)
 
@@ -182,11 +219,16 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 		_ = recorder.Close(ctx)
 	})
 
+	var credentialPlane target.TargetAuthenticator = targetAuth
+	if dev != nil {
+		credentialPlane = deviceCredentialPlane(t, targetAuth, recorder)
+	}
+
 	server, err := proxy.New(proxy.Options{
 		HostKey:         sshtest.MustGenerateSigner(),
 		Authenticator:   userAuth,
 		Resolver:        resolver,
-		TargetAuth:      targetAuth,
+		TargetAuth:      credentialPlane,
 		Client:          m.client,
 		ProxyID:         "proxy-e2e",
 		TargetDelimiter: config.DefaultTargetDelimiter,
@@ -225,7 +267,42 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 		recorder:  recorder,
 		bufferDir: bufferDir,
 		gate:      gate,
+		device:    dev,
 	}
+}
+
+// deviceCredentialPlane is the credential plane of a proxy that also serves
+// devices: the static-key placeholder for the ordinary route, and the real
+// ephemeral-account provisioner with the real FortiGate driver for the device
+// route, whose events go to the stack's own recorder.
+func deviceCredentialPlane(t *testing.T, staticKey target.TargetAuthenticator, recorder *logging.Shipper) target.TargetAuthenticator {
+	t.Helper()
+	dialer, err := device.NewSSHShellDialer(device.SSHShellOptions{User: "hoplock-mgmt", Password: "mgmt-secret"})
+	if err != nil {
+		t.Fatalf("NewSSHShellDialer: %v", err)
+	}
+	drivers := device.NewRegistry()
+	if err := fortios.Register(drivers, fortios.Options{Dialer: dialer}); err != nil {
+		t.Fatalf("register the FortiGate driver: %v", err)
+	}
+	provisioner, err := target.NewDeviceAccountAuthenticator(target.DeviceAccountOptions{
+		ProxyID:        "proxy-e2e",
+		Drivers:        drivers,
+		AccessProfiles: map[string]string{fortios.PlatformFortiGate: "super_admin_readonly"},
+		Events:         recorder.DeviceSink(),
+		ReaperInterval: -1,
+	})
+	if err != nil {
+		t.Fatalf("NewDeviceAccountAuthenticator: %v", err)
+	}
+	selector, err := target.NewSelector(map[string]target.TargetAuthenticator{
+		target.MethodStaticKey:        staticKey,
+		target.MethodEphemeralAccount: provisioner,
+	}, target.MethodStaticKey, nil)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	return selector
 }
 
 // e2eBatchSize and e2eFlushInterval are deliberately unhelpful to a test that

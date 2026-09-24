@@ -678,6 +678,7 @@ hoplock/
 │   ├── filter/             # command policy engine (pure logic: the three tiers)
 │   │   └── inspect/        # the engine attached to the channel pipeline (SSH-facing)
 │   ├── logging/            # session capture, batching, priority flush, buffer
+│   ├── sshalg/             # applies a route's algorithm lists to an SSH client (0043)
 │   └── sshtest/            # test support: in-process SSH target + key helpers
 ├── api/                    # API contract (OpenAPI/JSON Schema) — source of truth
 ├── deploy/                 # docker-compose e2e topology + fixtures
@@ -852,9 +853,41 @@ fleet-wide knob weakens every leg in the fleet to serve the oldest device on it
 — and it is a named preset (`default`, `legacy-rsa-sha1`, `legacy-device`)
 rather than an algorithm list, so it cannot be widened one identifier at a time
 and the audit record names something a reviewer understands. Anything but
-`default` is a weakening and emits its own audit event, on D14's sibling rule
-for methods. The rung in force and the profile in force are both **audit facts,
+`default` is a weakening and the record says so, on D14's sibling rule for
+methods. The rung in force and the profile in force are both **audit facts,
 not user-facing ones** (D14): §4.3's disclosure rule does not apply to either.
+
+**As applied (phase 0043).** Until 0043 the field was parsed, validated and
+consumed by nothing — so a record naming it would have named a weakening the
+proxy never performed, the silent downgrade §6.5 forbids. It is now **applied,
+then recorded**. `control.AlgorithmProfile.Algorithms()` is the one expansion
+(plain strings, so `internal/control` stays free of `x/crypto/ssh`), and
+`internal/sshalg` the one applier, which never leaves an axis empty because an
+empty field is the library's client defaults. The lists ride
+`routing.Route.Algorithms()` → `target.Target.Algorithms` →
+`device.Endpoint.Algorithms` to **every connection the route causes to its
+target**: the session leg, the POSIX management login, a driver's privileged
+CLI, and the teardown and orphan sweeps after them — both reapers keep them on
+the bare endpoint they sweep from, because a device that needs SHA-1 to be
+provisioned needs it to be swept. The public-key axis has no client-side field
+in x/crypto and is applied by restricting each signer. Proxy→proxy legs (the
+hop, relay registration) are out of it: a hop peer is a Hoplock proxy, not
+appliance firmware.
+
+**`default` is the library's secure set** (the owner's decision on PR #64):
+`ssh.SupportedAlgorithms()` on every axis, as an explicit list, pinned by a test
+that fails the build when a library upgrade reclassifies something. It no longer
+offers what x/crypto's client defaults did — `diffie-hellman-group14-sha1`,
+`hmac-sha1-96`, `ssh-rsa`/`ssh-dss` host keys — and keeps `hmac-sha1`, which the
+library classes as supported. `legacy-rsa-sha1` adds `ssh-rsa` (host key and
+public-key auth); `legacy-device` adds that plus the SHA-1 key exchanges, the CBC
+ciphers, `hmac-sha1-96` and `ssh-dss` host keys; every addition goes after every
+secure entry on its axis, and no finer presets exist. It is a **tightening
+announced as a break** (`info.version` 4.3.0, `policy_version` unchanged, phase
+0028's precedent), and a target it strands fails as its own stage —
+`stageAlgorithmPolicy`, the outage branch of §4.3, never scored against the
+credential (0025) — with a `target.algorithm_policy_unmet` record naming the
+axis and what the target offered (§7). The record's side is §7's.
 
 **As collapsed (phase 0037): one live vocabulary, and the mechanism that
 carries the next.** Building the contract in phases meant each revision left the
@@ -1353,7 +1386,7 @@ The route names the platform; nothing is inferred from a banner.
 
 #### What is true today — read this before the layers below
 
-The rest of this section is **append-only**: nine `As <verb> (phase N)` blocks
+The rest of this section is **append-only**: ten `As <verb> (phase N)` blocks
 recording what each phase established, several of which supersede parts of
 earlier ones. Composing them costs ~8k tokens and is how a session ends up
 building against a rule that was overturned two phases later. This block is the
@@ -1443,7 +1476,18 @@ wherever a platform persists accounts and cannot expire them — and a failed
 sweep is an event on D8's priority path. `device.ResidueSweeper` is an
 **optional** driver interface for the second object, swept after the account
 pass under the same prefix scoping and first-seen grace period. The reaper
-sweeps a device it reaches from an **endpoint**, keyed on `host:port`.
+sweeps a device it reaches from an **endpoint**, keyed on `host:port`, and that
+endpoint keeps the route's **algorithm lists** as it keeps the host key: every
+connection to a device — provisioning, teardown, sweep — offers what the
+route's `algorithm_profile` expands to (§4.2), never the library's defaults.
+
+**Every change is a record.** Each mutating driver operation **returns** the
+changes it completed (`device.Change`); the provisioner and the reaper emit one
+`device.config.change` record per change, on the **batch** path at `info` — the
+drift reconciliation feed's producer (§7, §12). A failed operation reports what
+it did complete and nothing it only attempted; removing what is already gone is
+no change. The feed is not attribution, so it never refuses a route for want of
+a logging path.
 
 **Shipped platforms.**
 
@@ -2107,6 +2151,41 @@ FortiGate route, where naming the device's own authorizer is a policy choice
 rather than configuration in disguise. What did **not** change: no account is
 created with a scope nobody chose, no platform is handed a profile it cannot
 hold, and a route that did not choose a scope still says so in the record.
+
+**As recorded (phase 0043): a driver reports what it changed, and the route's
+algorithms reach every connection to the device.** Two changes to the seam, both
+from an upstream request by Hoplock Control's audit store (its M8).
+
+*The drift feed's producer.* The reconciliation feed this section proposes
+needs a record of every change Hoplock makes on a device, and D13 decides where
+it comes from: a driver **declares data** and performs a platform's vocabulary,
+so it does not hold a telemetry sink — one that did would put audit in the
+credential plane and make the declarative driver document and subprocess
+contract carry a sink too. Instead `CreateAccount`, `InstallCredential`,
+`RemoveAccount` and `ResidueSweeper.RemoveResidue` **return**
+`[]device.Change{Op, ObjectKind, Name}`, and the provisioner and the reaper turn
+them into `device.config.change` records through a third `DeviceEventSink`
+method, `ConfigChange`, in one function (`recordChanges`) every driver call goes
+through. The rule is the same on every path — provisioning, credential install,
+teardown, the proxy-enforced deadline, `removeQuietly`, the account sweep and
+the residue sweep: **a driver reports every change it completed, whether or not
+the operation succeeded, and never one it only attempted.** So a failed create
+that committed a schedule reports it, and the rollback's deletion of it; an
+object whose write failed is not reported; and removing something already gone
+is no change. A failure is still a sweep failure on the priority path and is not
+re-reported here. The records ride the **batch** path at `info` and never
+refuse a route (§7).
+
+*The algorithms on the endpoint.* `device.Endpoint` carries the route's
+expanded algorithm lists beside its host-key callback, for the callback's
+reason: the dialer is built once at startup and the choice is the server's, per
+route. `deviceReaper.observe` keeps them on the bare endpoint it sweeps from, and
+refreshes them on every provisioning (the latest route that reached the device
+is one known to reach it). `SSHShellOptions`' algorithm fields are only the
+fallback for a connection with none, and even then an empty axis is the default
+profile, never the library's defaults. A device the route's profile cannot
+reach fails at the management login — before anything is created — as
+`stageAlgorithmPolicy`, the same stage and record as a stranded session leg.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -2999,6 +3078,56 @@ expiry is neither a failure nor a revocation, and without a name of its own it
 would have been visible only as the absence of everything else. The name is
 query surface and is as load-bearing as any other attribute key.
 
+**The record says what the proxy actually did (phase 0043).** Three additions,
+and every name below is query surface — Hoplock Control's audit store indexes
+them, so they are as load-bearing as any key above.
+
+- **`algorithm_profile`** — the profile **in force** on the target leg: the one
+  every connection to the target was dialled under (§4.2), read from the same
+  route the dial read. It is on the session's `provisioning` record and on the
+  device account-mapping event, and it is **stamped always, `default`
+  included**. So its absence never means "default": it means the record is not
+  about a target leg (a hop, a failure before provisioning). This is how the
+  contract's promise that a weakening is audited is rendered — an attribute on
+  the records that already describe the leg, not a record of its own.
+- **`device.config.change`** — one record per configuration change the proxy
+  made on a device, the drift reconciliation feed's producer (§5.3, §12).
+  `kind: provisioning`, `severity: info`, with `platform`, `device_change_op`
+  (`create` | `modify` | `delete`), the object as `target_account` plus
+  `device_object_kind` when it is not an administrator (the spelling a sweep
+  failure already uses), the session id where there is one — a sweep belongs to
+  no session — and the route's `device_field.<name>` fields exactly as the
+  mapping event carries them. No credential material: installing a credential
+  is a `modify` of the administrator, and what was installed is not named.
+- **`target.algorithm_policy_unmet`** — a target the route's profile allows
+  nothing on some axis for: an `error` record at `warn`, with
+  `algorithm_profile`, `target_addr`, `algorithm_axis` (`key_exchange`,
+  `host_key`, `cipher`, `mac`, `compression`) and `target_algorithms_offered`
+  (what the target offered on that axis, comma-joined). It is how an operator
+  finds the devices the secure `default` no longer reaches, and which legacy
+  profile they need.
+
+**Batch or priority, for the device path.** The configuration-change feed rides
+the **batch** path at `info`, and that is the decision most easily got wrong:
+the account-mapping event is `critical` because on a constrained platform it is
+the only attribution there is, and a sweep failure is `critical` because it is a
+standing administrator nobody else will find; a feed emitted several times per
+session at that severity would dilute the priority path exactly as a service
+outage would. Both of those stay where they were. For the same reason the feed
+does **not** widen the fail-closed rule: `ErrNoLoggingPath` refuses a
+constrained-naming route because attribution would be lost, and a drift feed is
+not attribution, so a proxy with no logging path still serves every route it
+served before.
+
+**One name per field.** The credential method and ladder position leave this
+proxy as **`credential_method`** and **`credential_rung`** (counting from 1),
+D6a's and D14's words, and no other spelling of either is emitted anywhere — a
+test over the emitted attributes holds it. Hoplock Control's plan had named them
+`target_auth_method` and `target_auth_rung`, and it got those names from this
+repository's own contract text, which published them (0-based) while this code
+emitted the other pair; 0043 corrected the contract rather than the code,
+because two producers and every record already stored carry these.
+
 Still out of scope: tamper-evident/append-only storage at the destination
 (Section 12), and coalescing keystroke-sized chunks into fewer records.
 
@@ -3595,7 +3724,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0040 | Wait for the slot, not for the account  | a test-only race in `test/e2e`, found while driving 0039's PR: `testSessionBounds` waits for the held session's ephemeral account to disappear and then immediately opens the session that proves the concurrency slot came back — but `session.close()` removes the account and `Server.remove` releases the slot **afterwards**, so the third session can land in the gap and be refused, correctly, as a policy denial. The in-process test of the same property waits on `liveSessions() == 0` and does not race; the e2e suite has no equivalent observable from outside the container, so the assertion becomes the wait. Four sites share the assumption, not one. Test-only by construction: changing the teardown ordering is a different question and is out of scope. **Delivered:** all four sites, and no production code. `holdTheOnlySlot` makes ADMISSION the wait for the session that holds a cap's only slot — nothing outside the container can see the live-session registry, so an admitted session is one that provisioned an account and a refused one never gets that far — and the freed slot is proved by the next session SUCCEEDING inside a bounded `waitFor` rather than by one attempt made after an account count. The two precondition waits and the trailing one stay account waits and now say so: they are about nothing being provisioned on the target, never about a slot. Both refusal records are found by the refused session's own id, so the retries a still-held slot provokes cannot substitute one refusal for another, and the subject and target scopes cannot read each other's. Teardown ordering unchanged, and it is not wrong: see the learnings |
 | 0041 | A deadline already past ends the session before setup goes on | `session_deadline` is an absolute instant (D16) and a decision may be reused (D2, §6.4), so a route can legitimately arrive carrying a deadline that has **already passed** — and the proxy handles that today by accident rather than by design: `armDeadline` spawns the timer goroutine, `waitUntil` returns immediately on `d <= 0`, `expire` runs, and the whole thing races the rest of session setup with nothing testing it. Make the check **synchronous** and put it in front of capture, concurrency, provisioning and the target dial, then cover it — including the chained case, where `ShortenDeadline` can hand an inner hop an inherited instant that has expired. It is not a contract violation and must not become a denial or an outage: an expiry is §4.3's third case, and the end reason stays `deadline`. Raised from `hoplock/control` phase 0005, which found the path untested while reasoning about what a cached decision replays. **Delivered:** `armDeadline` returns whether setup may continue, ends an already-reached deadline through the ordinary `expire` path, and the call site returns on false — the authorize record is still written, no `stage` is introduced, and `end_reason` stays `session_deadline`. No warning: returning before the timer goroutine exists makes that structural rather than a predicate. The deterministic proof of the ordering is the `noTarget` case, which ended at stage `dial` before this phase and ends as an expiry after it; the chained case covers an inner hop whose inherited instant has already expired. `cmd/mock-control` now **allows a negative `session_deadline_seconds`** in both places that blocked it, as a fixture affordance for reaching a real proxy behaviour — it is not a knob an operator sets. No contract change |
 | 0042 | Fleet configuration distribution | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0006 in [Hoplock/control#27](https://github.com/Hoplock/control/pull/27). Control's M6 makes the fleet a graph and its registry now holds a **versioned configuration document** per proxy — immutable versions per zone and per proxy, composed into one effective document, first-class rollback, drift between desired and running visible in its fleet view. The argument is the one §8 already concedes in a word: a proxy's config is a *bootstrap*, and everything above it is a property of the fleet rather than of the host. What Control could not build is the delivery, and it did not invent it — `RevocationEvent.type` enumerates `session_kill`, `cache_invalidate`, `heartbeat`, `resync`, and none can say "your desired configuration moved" — so its publisher seam is defined, defaulted to a no-op, and visibly unwired. This phase answers the need, and the need is the tip of it: the prompt's four questions (which settings are fleet-owned and which stay bootstrap — **wants a new `D`**, since D2 speaks to policy and is silent on configuration; how the document arrives, given that an inline document on a replayable stream would be replayed as if current; how the running version gets back, given that this contract has no proxy→server call that could carry it; and what a proxy does with a document it cannot apply) are all ones Control's session could not answer, because answering them means reading this plan. `info.version` → **4.2.0**; `policy_version` stays **4** (the number governs `/v1/authorize` and nothing else), and the contract already licenses a new event type without a bump at all: "a proxy ignores a type it does not recognise". Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** **D18**. `config_changed` (version + hash, never the document); `GET /v1/proxies/{proxy_id}/config` (`200`, `204` nothing published, `304` on the held hash as `If-None-Match`, `404 not_enrolled`); `POST /v1/proxies/{proxy_id}/config/report` (`running_*`, `desired_*`, `state` of `applied`/`pending_restart`/`rejected`/`fetch_failed`, `restart_required`, `last_error`). Seventeen fleet-owned settings, two live; a document is applied whole or not at all, one naming a bootstrap setting is rejected whole, and one needing a restart applies nothing and is never reported running. The proxy fetches at startup before building anything, on every stream connect and `resync`, and on each new notification; `ConfigSync` retries a failed fetch and never touches a session or cached decision. The mock serves one document whose hash is derived from the bytes it serves and publishes only through `POST /debug/config` |
-| 0043 | The record says what the proxy actually did | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0010 in [Hoplock/control#32](https://github.com/Hoplock/control/pull/32) — the phase that built its tamper-evident audit store (its **M8**). Three shapes on the records this repository emits, and the surface is `internal/logging`'s attributes rather than `api/` (`attributes` is an open map, so none of it is a schema change). **`algorithm_profile` on the record** — and the request asks for less than it needs: nothing here *applies* the profile today, so the phase carries it onto `routing.Route`, expands the preset in one place, applies it to the session leg, the management login, the driver's privileged CLI connection and the reaper's sweep, and only then stamps it; a record naming a weakening the proxy never performed is the silent downgrade §6.5 forbids, and the sentence `api/control.yaml` already publishes — an operator learns a route runs on SHA-1 from the record — is true of nothing until this lands. **`device.config.change`** — the producer §12 already promises for the drift feed, emitted by the provisioner and the reaper from what a driver RETURNS (D13: a driver reports data, it does not hold a sink), on the batch path at `info` so the mapping event's priority path keeps its meaning. **One name per field** — `credential_method`/`credential_rung` against Control's `target_auth_*`; this repository owns what it emits, so it settles it and Control is told. **Amended by PR #64's review (the owner's decision):** `default` becomes the library's **secure set** as an explicit list on every axis. It had been x/crypto's client default, which offers SHA-1 key exchange, `hmac-sha1-96` and `ssh-rsa`/`ssh-dss` host keys. The legacy profiles add exactly what they say, and `legacy-device` also gains `ssh-dss` host keys; no finer presets are added, since bans trim a preset instead. That is a tightening announced as a break (`info.version` minor, `policy_version` unchanged, 0028's precedent), and a target it strands fails visibly as `target.algorithm_policy_unmet`, naming what the target offered. Carries a cross-repo obligation **back to the repository that raised it** |
+| 0043 | The record says what the proxy actually did | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0010 in [Hoplock/control#32](https://github.com/Hoplock/control/pull/32) — the phase that built its tamper-evident audit store (its **M8**). Three shapes on the records this repository emits, and the surface is `internal/logging`'s attributes rather than `api/` (`attributes` is an open map, so none of it is a schema change). **`algorithm_profile` on the record** — and the request asks for less than it needs: nothing here *applies* the profile today, so the phase carries it onto `routing.Route`, expands the preset in one place, applies it to the session leg, the management login, the driver's privileged CLI connection and the reaper's sweep, and only then stamps it; a record naming a weakening the proxy never performed is the silent downgrade §6.5 forbids, and the sentence `api/control.yaml` already publishes — an operator learns a route runs on SHA-1 from the record — is true of nothing until this lands. **`device.config.change`** — the producer §12 already promises for the drift feed, emitted by the provisioner and the reaper from what a driver RETURNS (D13: a driver reports data, it does not hold a sink), on the batch path at `info` so the mapping event's priority path keeps its meaning. **One name per field** — `credential_method`/`credential_rung` against Control's `target_auth_*`; this repository owns what it emits, so it settles it and Control is told. **Amended by PR #64's review (the owner's decision):** `default` becomes the library's **secure set** as an explicit list on every axis. It had been x/crypto's client default, which offers SHA-1 key exchange, `hmac-sha1-96` and `ssh-rsa`/`ssh-dss` host keys. The legacy profiles add exactly what they say, and `legacy-device` also gains `ssh-dss` host keys; no finer presets are added, since bans trim a preset instead. That is a tightening announced as a break (`info.version` minor, `policy_version` unchanged, 0028's precedent), and a target it strands fails visibly as `target.algorithm_policy_unmet`, naming what the target offered. Carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the profile is carried on `routing.Route`, expanded once (`control.AlgorithmProfile.Algorithms`), applied through `internal/sshalg` to the session leg, the management login, the driver's CLI and both reapers' sweeps (signers restricted for the public-key axis), then stamped as `algorithm_profile` on the provisioning record and the mapping event — always, `default` included; `default` is the pinned secure set, `info.version` **4.3.0**, `policy_version` still **4**; `stageAlgorithmPolicy` + `target.algorithm_policy_unmet` (warn, batch) on the session leg and at provisioning. Drivers return `[]device.Change` and `recordChanges` emits one `device.config.change` (info, batch) per completed change on every path, sweeps with no session id. **Naming verdict:** keep `credential_method`/`credential_rung`; the contract text that had published `target_auth_*` (0-based) was the source of the split and is corrected |
 | 0044 | Brokered certificates: a credential Control mints per session | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0011 in [Hoplock/control#35](https://github.com/Hoplock/control/pull/35) — the phase that built a complete per-tenant SSH **certificate authority** and could not reach a proxy with it: the ladder's `method` enum names four values and none of them is a certificate, so Control shipped the authority behind a seam that refuses on purpose and a tripwire that fires the day this method lands in its vendored copy. D6a's own closing sentence is what this phase makes true — a Control that mints credentials "slots in as another method rather than another breaking change" — so there is **no new `D`**. Two parts: the `brokered-certificate` method, and `POST /v1/credentials/certificate`, which signs a public key **the proxy generated for this session** (no private key travels, and `AuthorizeRequest` has nowhere to carry a public key). The request asked for the certificate, its serial and the CA bundle as **route parameters**, and that is the one part that changes: `target_auth_ladder` rides a **reusable** decision (D2, §6.4), so a certificate on it is replayed past its own expiry — the argument `POST /v1/uids/lease` already makes about a uid floor — and the value does not exist when the route is decided. The entry carries policy (`username` **required**, `key_type`, `lifetime_seconds`); the issuance response carries the artifacts, and the proxy still records the serial. Provisions nothing, so only **attested** rungs are reachable (§6.5); a failed issuance is **outage-class and never a walk to the next rung**. First `policy_version` revision since 0037: **4 → 5** for the enum value, while the endpoint is outside the number entirely. Contract change — carries a cross-repo obligation **back to the repository that raised it** |
 | 0045 | A floor under the target leg: `algorithm_floor` | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#36](https://github.com/Hoplock/control/pull/36) while it queued its post-quantum posture phase. `algorithm_profile` can only **weaken** the proxy→target leg, so policy can say a route may use SHA-1 and cannot say a route must negotiate a hybrid post-quantum key exchange. Taken as asked: `algorithm_floor`, a **sibling** of the profile (a floor is a minimum, a profile a weakening preset, and a route may want `default` and a floor), refused rather than coerced, and vocabulary — so `policy_version` moves to the next number above 0044's. Three corrections the requester could not see: the request's `sntrup761x25519-sha512` is **not implemented by `x/crypto/ssh`** (D9), so the floor is defined as a property whose one member this proxy offers today is `mlkem768x25519-sha256`; the attribute is `target_kex_algorithm`, because a record here describes three SSH legs and target-leg facts carry the `target_` prefix; and the profile × floor refusal is by **axis** — `legacy-device` (widens key exchange) is refused, `legacy-rsa-sha1` (signatures only) is accepted. **Amended in review** so an administrator can turn the floor like a dial: it is an **ordered ladder** `modern-kex` < `pq-hybrid-kex`, where each level accepts a subset of the one below, and that nesting is the contract's rule for adding a level (FIPS-like regimes that don't nest are not rungs). Each proxy **declares** the levels and per-build key exchanges it enforces on `AuthorizeRequest.capabilities`, and the server must not send an undeclared level. Proxies **report** the highest level each target was seen to meet on `TargetCapabilities.kex`, from every credential method, off the session path, merged without overwriting the rung observation. That gives Control an impact preview before it raises a floor. **Amended again:** `algorithm_bans`, per route and per axis, lets an administrator remove a vulnerable algorithm without waiting for a release. It is a list, but it can only narrow, and §4.2 gains the rule that a list may narrow a route but never widen it. Bans are applied last, subtracted from what the route would otherwise offer (never from the library's "supported" set, which would add algorithms), and pinned by a KEXINIT test. They are recorded per negotiated axis, and the emergency runbook is ban → `cache_invalidate` → `session_kill`. The review also found that x/crypto's client **default** offers a SHA-1 key exchange, `hmac-sha1-96`, and `ssh-rsa`/`ssh-dss` host keys, none of which this repository overrides today. **The owner decided** that `default` means the library's secure set, which 0043 builds as a break; 0045 extends 0043's `target.algorithm_policy_unmet` classifier to floors and bans. An unmet floor is the **outage** branch of §4.3, not a deny, never a ladder walk (D14) and never scored against the credential (0025). Depends on **0043**, which carries and expands the profile on every connection the floor must also reach. Contract change — carries a cross-repo obligation **back to the repository that raised it** |
 
@@ -4067,7 +4196,9 @@ Two other things kept their old names on purpose:
   for a customer's NCM or SIEM to correlate is downstream export, not a new
   subsystem: the proxy's job is to emit the device configuration-change event as
   a distinct, queryable audit kind (§7), and Control's store plus Enterprise's
-  SIEM export (E7) carry it the rest of the way.
+  SIEM export (E7) carry it the rest of the way. That event exists since phase
+  0043 — `event: device.config.change`, one per change, on the batch path — so
+  what remains out of scope here is only the export.
 - **Credential-vault mode for scanners.** Handing just-in-time credentials to a
   scanner that then connects to the target *directly*, rather than through the
   proxy, is a plausible and much easier-to-sell deployment for Qualys — and it

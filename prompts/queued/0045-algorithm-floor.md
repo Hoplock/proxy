@@ -317,8 +317,13 @@ more than it does. What it adds:
 The floor narrows 0043's expansion; it does not travel separately.
 
 - **One place.** Extend the function 0043 put in
-  `internal/control/algorithms.go` so it takes the floor as well as the profile
-  and returns the lists in force. Under a floor, the key-exchange list is
+  `internal/control/algorithms.go` (`AlgorithmProfile.Algorithms()`, returning
+  `control.Algorithms`) so it takes the floor as well as the profile and returns
+  the lists in force. Every connection already reads its lists through
+  `routing.Route.Algorithms()` → `target.Target.Algorithms` →
+  `device.Endpoint.Algorithms`, and applies them with `internal/sshalg`
+  (`Apply` for the four negotiated axes, `Signer` for public-key auth), so
+  narrowing the expansion there narrows every connection. Under a floor, the key-exchange list is
   **exactly** that level's accepted set, **ordered highest level first**. Under
   `pq-hybrid-kex` that is the hybrid set alone, not "hybrids first", which would
   let the target pick classical. Every other axis is the profile's answer,
@@ -330,10 +335,10 @@ The floor narrows 0043's expansion; it does not travel separately.
   first, the exchange that gets negotiated tells you the highest level this
   target meets among those offered. §5 depends on that inference, so assert the
   ordering in a test.
-  Note that `default` expands to *nothing* under 0043 (library defaults); with a
-  floor, the key-exchange list becomes explicit while the other axes may stay
-  library-default. Keep `internal/control` free of `x/crypto/ssh` as 0043
-  required: the algorithm name is a string constant there, and a test in a
+  Every profile, `default` included, already expands to an explicit list on
+  every axis under 0043 (`default` is the library's secure set), so a floor
+  narrows a concrete key-exchange list and no axis is ever library-default.
+  Keep `internal/control` free of `x/crypto/ssh` as 0043 required: the algorithm name is a string constant there, and a test in a
   package that does import x/crypto asserts it equals
   `ssh.KeyExchangeMLKEM768X25519` so the two cannot drift.
 - **Every connection the session causes to that target**, on exactly the path
@@ -520,8 +525,8 @@ narrowing (§2), then **remove every banned identifier**. A ban always wins,
 including over what `legacy-device` adds. It rides the same path to every
 connection the session causes to the target (§2's list: session leg,
 management login, driver CLI, reaper sweep).
-- An axis with **no** ban keeps 0043's behaviour exactly. `default` still
-  means "library defaults, no explicit list".
+- An axis with **no** ban keeps 0043's behaviour exactly: the profile's
+  explicit list (`default` being the library's secure set).
 - An axis **with** a ban has to become an explicit list, since the library has
   no "all defaults except X" option. **Subtract from what the route would have
   offered without the ban, never from `ssh.SupportedAlgorithms()`.** The two

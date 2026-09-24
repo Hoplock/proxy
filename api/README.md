@@ -75,9 +75,19 @@ it too.
 making an existing parameter required — adds no field and changes no field's
 meaning, so it is not expressible through the version at all: a proxy that was
 never told would parse the route exactly as it always did. A tightening is
-therefore announced as a **break** and refused at the first authorize call.
-`params.username`, required on every credential method this document defines, is
-the one such break the contract carries.
+therefore announced as a **break**. The contract carries two:
+
+- `params.username` is required on every credential method this document
+  defines, and a route without one is refused at the first authorize call.
+- `algorithm_profile: default` means the SSH library's **secure set**, as an
+  explicit list on every axis. The library's client defaults, which the proxy
+  used to fall through to, also offer the SHA-1 key exchange
+  `diffie-hellman-group14-sha1`, the `hmac-sha1-96` MAC, and `ssh-rsa`/`ssh-dss`
+  host keys; `default` offers none of them. No field changes meaning to a parser,
+  so `policy_version` does not move; the break bites at the handshake, where a
+  target that speaks only those algorithms fails as
+  `target.algorithm_policy_unmet` — an outage naming the axis and what the
+  target offered — and needs a legacy profile.
 
 **There is exactly one live vocabulary, and this document states it in the
 present tense.** Proxy and Hoplock Control ship together, so no peer older than
@@ -175,7 +185,7 @@ Each field below names the phase that consumes it.
 | `permitted_forwards` | destinations are **not policed** | an allow-list per direction; an empty direction denies it | 0009 |
 | `permitted_global_requests` | global requests are **relayed unpoliced** | an allow-list; `{}` denies all of them | 0009 |
 | `target_auth_ladder` | the proxy uses its **locally configured** method | an ordered ladder; `[]` **denies the session** | 0007, 0014 |
-| `algorithm_profile` | `default` — nothing beyond the library defaults | a named preset; anything but `default` is a weakening | 0014 |
+| `algorithm_profile` | `default` — the SSH library's secure set, an explicit list on every axis | a named preset; anything but `default` is a weakening | 0013, 0043 |
 | `hop.connection` | `dial` | `dial` or `relay` | 0008 |
 | `filter_policy.exec_mode` | `filtered` (the ordered rule list) | `filtered` or `restricted` | 0010 |
 | `enforcement` | **proxy-side enforcement only** — `execution: proxy-inspected`, `reach: proxy-channel-policy` | a rung per axis; a rung the proxy cannot provide is an **outage**, never a downgrade | 0019 |
@@ -345,8 +355,9 @@ The three shapes are read through one accessor (`AuthorizeResponse.Ladder`), so
 no caller has to remember which of them a nil pointer is.
 
 **The rung used is an audit fact, not a user-facing one.** The record and the
-operator surface carry `target_auth_method` and `target_auth_rung` (the 0-based
-index); the user is told nothing. This is the one place PLAN §4.3's disclosure
+operator surface carry `credential_method` and `credential_rung` (the entry's
+position, counting from 1); the user is told nothing. Those are this proxy's
+names for the two fields, and the only ones it emits. This is the one place PLAN §4.3's disclosure
 rule does not apply, and the reason is that the information is about the estate
 rather than about the user's own request: "you got the weaker credential" tells
 an attacker which targets are softest and tells an honest user nothing they can
@@ -451,13 +462,25 @@ Documented today:
 Much of that estate speaks key exchanges, ciphers, host-key algorithms, and MACs
 that a modern SSH library does not enable by default, and without a way to say
 so those routes simply do not connect. So the profile for the **proxy→target**
-leg is named by the server, per route.
+leg is named by the server, per route. The proxy applies it to **every**
+connection the route causes to that target: the session leg, the provisioning
+login, a device driver's privileged CLI, and the teardown and orphan sweeps
+after them — a device that needs SHA-1 to be provisioned needs it to be swept.
 
-| Profile | What it adds |
+| Profile | What it offers |
 | --- | --- |
-| `default` | Nothing. The absent-value default, and the only profile that is not a weakening |
-| `legacy-rsa-sha1` | RSA with SHA-1 signatures (`ssh-rsa`) for host keys and public-key auth |
-| `legacy-device` | `legacy-rsa-sha1` plus the SHA-1 key exchanges, CBC ciphers, and SHA-1 MACs that appliance firmware of that era offers |
+| `default` | The SSH library's **secure set**, as an explicit list on every axis. The absent-value default, and the only profile that is not a weakening. It offers **no** SHA-1 key exchange, no `hmac-sha1-96`, and no `ssh-rsa`/`ssh-dss` host key, all of which the library's client defaults offer. It **keeps `hmac-sha1`**: the library classes it as supported, and HMAC with SHA-1 is not broken the way a SHA-1 signature is |
+| `legacy-rsa-sha1` | `default` plus RSA with SHA-1 signatures: `ssh-rsa` (and `ssh-rsa-cert-v01@openssh.com`) host keys, and `ssh-rsa` for public-key authentication |
+| `legacy-device` | `legacy-rsa-sha1` plus the library's SHA-1 key exchanges, its CBC ciphers (`aes128-cbc`, `3des-cbc` — never RC4), `hmac-sha1-96`, and `ssh-dss` (and `ssh-dss-cert-v01@openssh.com`) host keys. DSA is not added for public-key authentication |
+
+Every addition comes **after** every secure algorithm on its axis, so a target
+that speaks anything modern negotiates it and the weakening is used only where
+it is the one thing the target has. `default` **follows the library's secure
+classification**: a library upgrade that moves an algorithm between its
+supported and insecure lists changes `default`, and the proxy pins the lists
+with a test so that such a change is reviewed rather than absorbed. No finer
+presets exist; an administrator who needs only part of `legacy-device` narrows
+it rather than adding a preset.
 
 Two properties make this safe and it needs both. It is **per route, named by the
 server** — never a proxy-wide config knob, which would weaken every leg in the
@@ -467,12 +490,22 @@ be widened one algorithm at a time by someone who does not know what they are
 enabling, and the audit record names something a reviewer understands rather
 than a string of identifiers they have to decode.
 
-Anything but `default` is a weakening and **emits its own audit event**
-(`algorithm_profile` in the record), on D14's sibling rule for credential
-methods: an operator learns that a route runs on SHA-1 from the record, not by
-reading policy. An unknown profile is refused rather than coerced — coercing to
-`default` would deny every route on the estate this exists for, and coercing to
-the widest would weaken a leg nobody asked to weaken.
+Anything but `default` is a weakening, and **the audit record says so**, on
+D14's sibling rule for credential methods: an operator learns that a route runs
+on SHA-1 from the record, not by reading policy. The proxy renders that as an
+attribute rather than a record of its own: `algorithm_profile` on the session's
+`provisioning` record and on the device account-mapping event, naming the
+profile **in force** — the one every connection was dialled under. It is stamped
+on every route, `default` included, so a weakening is a query over one
+attribute, and its absence means the record is not about a target leg, never
+"default". A target the route's profile allows nothing on some axis for fails
+the session as an outage and leaves a `warn` record,
+`event: target.algorithm_policy_unmet`, carrying `algorithm_profile`,
+`target_addr`, `algorithm_axis` and `target_algorithms_offered` — which is what
+an operator reads to choose the profile the route needs. An unknown profile is
+refused rather than coerced — coercing to `default` would deny every route on
+the estate this exists for, and coercing to the widest would weaken a leg nobody
+asked to weaken.
 
 ### Hop connection direction (`hop.connection`, D11, phase 0008)
 
@@ -1008,8 +1041,9 @@ restart.
 **Versioning.** None of this moves `policy_version`: the number governs
 `/v1/authorize` and nothing else. The new event type needs no bump either — a
 proxy ignores a type it does not recognise, so a proxy built before
-`config_changed` existed drops it and keeps working. `info.version` is
-**4.2.0**.
+`config_changed` existed drops it and keeps working. It moved `info.version`
+a minor, to 4.2.0; the `default` algorithm-profile tightening moved it again, to
+**4.3.0** (see "Versioning").
 
 **Publishing is not on this contract**, for the reason gap recovery is not
 observable through it: an operator's publish is not proxy-facing.

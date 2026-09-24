@@ -209,6 +209,9 @@ type harnessOptions struct {
 	sessionDeadline time.Duration
 	// routeType overrides the route type; empty means direct.
 	routeType control.RouteType
+	// algorithmProfile is the route's algorithm profile (phase 0043). Empty is
+	// the contract's absent value, which is the default profile.
+	algorithmProfile control.AlgorithmProfile
 	// authorize replaces the whole authorize behaviour.
 	authorize func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error)
 	// hostKey replaces the host-key decision.
@@ -296,6 +299,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 				RequireSessionCapture:   opts.requireSessionCapture,
 				Concurrency:             opts.concurrency,
 				GrantContext:            opts.grantContext,
+				AlgorithmProfile:        opts.algorithmProfile,
 				DecisionID:              "decision-1",
 			}, nil
 		}

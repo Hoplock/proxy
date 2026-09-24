@@ -256,7 +256,9 @@ routes:
   # that a device account is the only acceptable credential, which since D14 is
   # what a one-entry ladder means and is exactly D6a's original behaviour.
   #
-  # Scenarios: device session, device account created and removed.
+  # Scenarios: device session, device account created and removed, the
+  # algorithm profile applied and recorded, and the device configuration-change
+  # feed (phase 0043).
   - login: alice
     target: fortigate.company.com
     proxy_id: proxy-direct
@@ -264,6 +266,13 @@ routes:
     resolved_target: device
     target_port: 22
     permissions: networkAdminGroup
+    # A WEAKENING, named per route (phase 0043): the driver's privileged CLI
+    # login, the session leg and every sweep of this device offer the SHA-1 key
+    # exchanges, CBC ciphers, `hmac-sha1-96` and `ssh-rsa`/`ssh-dss` host keys
+    # after every secure algorithm. The fake device speaks modern SSH, so the
+    # handshake still lands on a secure algorithm — what the scenario proves is
+    # that a route carrying a profile is dialled and that the record names it.
+    algorithm_profile: legacy-device
     permitted_channels: [session]
     permitted_requests:
       types: [pty-req, shell, exec, env]

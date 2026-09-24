@@ -353,7 +353,10 @@ New file `brokeredcert.go`, one `TargetAuthenticator` implementation:
   Each failure is outage-class, nothing provisioned, and the error names the
   check — never the certificate and never the key.
 - It returns a `ProvisionedAccess` whose `ClientConfig` uses
-  `ssh.PublicKeys` over an `ssh.NewCertSigner`, with `User` set to the route's
+  `ssh.PublicKeys` over an `ssh.NewCertSigner` — restricted to the route's
+  algorithm profile with `sshalg.Signer(…, tgt.Algorithms)`, as every
+  session-leg signer is since phase 0043 (a certificate signer is restricted by
+  its underlying key's algorithms) — with `User` set to the route's
   `username`, and whose `Teardown` zeroes the private key and closes the leg —
   there is no remote state to undo (§5.2). Teardown stays safe to call twice.
 - Add `CertificateSerial string` to `ProvisionedAccess`, beside `Method`.

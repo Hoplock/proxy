@@ -49,14 +49,21 @@ info:
     changes no field's meaning, so it is not expressible through the version at
     all: a proxy that was never told would parse the route exactly as it always
     did. A tightening is therefore announced as a **break** and refused at
-    the first authorize call. `params.username`, required on every credential
-    method this document defines, is the one such break in force.
+    the first authorize call. Two such breaks are in force.
+    `params.username` is required on every credential method this document
+    defines. And `algorithm_profile: default` means the SSH library's **secure
+    set**, an explicit list on every axis: it no longer offers the SHA-1 key
+    exchange `diffie-hellman-group14-sha1`, the `hmac-sha1-96` MAC, or
+    `ssh-rsa`/`ssh-dss` host keys, all of which the library's client defaults
+    offer. A target that speaks only those needs a legacy profile, and the proxy
+    reports one that has none as `target.algorithm_policy_unmet`, naming what
+    the target offered.
 
     Adding a field to the vocabulary is a numbered revision that bumps
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.2.0
+  version: 4.3.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -1072,7 +1079,10 @@ components:
           enum: [default, legacy-rsa-sha1, legacy-device]
           description: |
             Which SSH algorithm set the proxy may offer on the **proxy→target**
-            leg for this route (applied by phase 0014).
+            leg for this route. It is applied to every connection the route
+            causes to that target: the session leg, the provisioning login, a
+            device driver's privileged CLI, and the teardown and orphan sweeps
+            after them.
 
             Much of the estate `ephemeral-account` exists to reach speaks key
             exchanges, host-key algorithms, ciphers, and MACs that a modern SSH
@@ -1087,20 +1097,38 @@ components:
             not know what they are enabling, and the audit record names
             something a reviewer understands.
 
-            - `default` — nothing beyond the library defaults. **Absent ⇒
-              `default`**, and it is the only profile that is not a weakening.
+            - `default` — the SSH library's **secure set**, as an explicit list
+              on every axis, so the library's client defaults (which offer a
+              SHA-1 key exchange, `hmac-sha1-96`, and `ssh-rsa`/`ssh-dss` host
+              keys) are never reached. It keeps `hmac-sha1`: the library classes
+              it as supported, and HMAC with SHA-1 is not broken the way a
+              SHA-1 signature is. **Absent ⇒ `default`**, and it is the only
+              profile that is not a weakening. It follows the library's secure
+              classification, so a library upgrade that moves an algorithm
+              between its supported and insecure lists changes it, as a
+              reviewed change.
             - `legacy-rsa-sha1` — additionally offers RSA with SHA-1 signatures
-              (`ssh-rsa`) for host keys and public-key authentication. Separate
-              from the profile below so a route needing only this does not also
-              get CBC and SHA-1 key exchange.
+              (`ssh-rsa`, and its certificate form) for host keys, and `ssh-rsa`
+              for public-key authentication. Separate from the profile below so
+              a route needing only this does not also get CBC and SHA-1 key
+              exchange.
             - `legacy-device` — `legacy-rsa-sha1` plus the SHA-1 key exchanges,
-              CBC ciphers, and SHA-1 MACs that appliance firmware of that era
-              offers.
+              the CBC ciphers (`aes128-cbc`, `3des-cbc`; never RC4), the
+              `hmac-sha1-96` MAC, and `ssh-dss` host keys (with their
+              certificate form) that appliance firmware of that era offers. DSA
+              is not added for public-key authentication.
 
-            Anything other than `default` is a **weakening and emits its own
-            audit event** (`algorithm_profile` in the record), on D14's sibling
-            rule for credential methods: an operator learns that a route runs on
-            SHA-1 from the record, not by reading policy. An unknown profile is
+            Every addition comes **after** every secure algorithm on its axis,
+            so a target that speaks anything modern negotiates it.
+
+            Anything other than `default` is a **weakening, and the audit record
+            says so**, on D14's sibling rule for credential methods: an operator
+            learns that a route runs on SHA-1 from the record, not by reading
+            policy. It is rendered as the attribute `algorithm_profile` on the
+            session's provisioning record, and on the device account-mapping
+            event, naming the profile **in force** — stamped on every route,
+            `default` included, so a weakening is a query over one attribute
+            rather than a record whose absence has to be interpreted. An unknown profile is
             refused rather than coerced — coercing to `default` would deny every
             route on the estate this exists for, and coercing to the widest
             would weaken a leg nobody asked to weaken.
@@ -1534,8 +1562,8 @@ components:
 
         The rung actually used is recorded as an **audit fact and not a
         user-facing one**: the record and the operator surface carry
-        `target_auth_method` and `target_auth_rung` (the 0-based index), and the
-        user is told nothing (D14). This is the one place PLAN §4.3's disclosure
+        `credential_method` and `credential_rung` (the entry's position,
+        counting from 1), and the user is told nothing (D14). This is the one place PLAN §4.3's disclosure
         rule does not apply, and the reason is that the information is about the
         estate rather than about the user's own request — "you got the weaker
         credential" tells an attacker which targets are softest and tells an

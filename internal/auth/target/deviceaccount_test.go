@@ -36,6 +36,19 @@ type recordingSink struct {
 	deliverable  bool
 	mappings     []AccountMapping
 	sweepFailure []SweepFailure
+	changes      []DeviceConfigChange
+}
+
+func (s *recordingSink) ConfigChange(ev DeviceConfigChange) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.changes = append(s.changes, ev)
+}
+
+func (s *recordingSink) configChanges() []DeviceConfigChange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]DeviceConfigChange(nil), s.changes...)
 }
 
 func (s *recordingSink) Deliverable() bool {

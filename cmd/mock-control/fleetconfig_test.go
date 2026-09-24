@@ -119,6 +119,16 @@ func TestAReplayedConfigChangedDoesNotApplyAStaleDocument(t *testing.T) {
 	waitUntil(t, "the first event to be processed", func() bool { return stream.LastEventID() != "" })
 	cancel1()
 	<-done1
+	// The client has gone, but the server notices a closed stream only when it
+	// next writes to it, so the subscription can outlive <-done1 by a moment —
+	// long enough to receive the notification this test needs it to miss. A
+	// probe that reaches nobody is the server agreeing the proxy is away. The
+	// probe is itself replayed on resume, which is harmless: it is not a
+	// configuration notification.
+	waitUntil(t, "the first subscription to be gone", func() bool {
+		return m.revoke(t, control.RevocationEvent{Type: control.EventTypeCacheInvalidate,
+			CacheInvalidate: &control.CacheInvalidateEvent{All: true}}).Delivered == 0
+	})
 	resumeFrom := stream.LastEventID()
 
 	// Published while the proxy cannot hear: two notifications to replay.

@@ -235,9 +235,9 @@ func (d *SwitchDriver) Capabilities() device.Capabilities {
 // because `edit` opens an existing entry as readily as it creates a new one and
 // two sessions sharing an administrator means the first teardown removes the
 // other's access.
-func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateRequest) (*device.Account, error) {
+func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateRequest) (*device.Account, []device.Change, error) {
 	if err := validateAccountNameWithin(req.Name, maxSwitchAccountNameLen); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(req.Fields) > 0 {
 		// The provisioner already checks a route's fields against
@@ -251,7 +251,7 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		return nil, fmt.Errorf("%w: this platform is one target and accepts no route fields, but the route carries %s",
+		return nil, nil, fmt.Errorf("%w: this platform is one target and accepts no route fields, but the route carries %s",
 			errInvalidValue, strings.Join(names, ", "))
 	}
 	if req.Lifetime > 0 {
@@ -261,7 +261,7 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 		// PLATFORM CANNOT, no retry and no different unit will change it — and
 		// a driver that silently dropped the lifetime would leave an audit
 		// record claiming a deadline the switch is not holding.
-		return nil, device.Unsupported(PlatformFortiSwitch,
+		return nil, nil, device.Unsupported(PlatformFortiSwitch,
 			"hold an administrator's deadline: `set schedule` exists but the `config firewall schedule` table its own documentation names does not exist on FortiSwitchOS")
 	}
 
@@ -270,44 +270,44 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 		profile = req.Profile
 	}
 	if profile == "" {
-		return nil, errors.New("auth/target/device/fortios: no access profile: " +
+		return nil, nil, errors.New("auth/target/device/fortios: no access profile: " +
 			"an administrator's scope must be named by the route or by " +
 			"`auth.target.ephemeral_account.access_profile.fortiswitchos`, and FortiSwitchOS's only built-in " +
 			"profile is `super_admin`, which has access to everything including administrator " +
 			"management")
 	}
 	if err := validateProfile(profile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkSwitchProfile(profile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var trust string
 	if req.SourceAddress != "" {
 		var err error
 		if trust, err = trustHost(req.SourceAddress); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	placeholder, err := randomSecret(placeholderSecretLen)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = s.Close() }()
 
 	exists, err := s.accountExists(ctx, req.Name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if exists {
-		return nil, fmt.Errorf("%w: %q is already an administrator on %s",
+		return nil, nil, fmt.Errorf("%w: %q is already an administrator on %s",
 			device.ErrAccountExists, req.Name, req.Host)
 	}
 
@@ -335,8 +335,7 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 	steps = append(steps, s.leaveAdminTable()...)
 
 	if err := s.run(ctx, steps); err != nil {
-		d.abandon(ctx, s, req.Name)
-		return nil, err
+		return nil, rolledBack(nil, d.abandon(ctx, s, req.Name)), err
 	}
 
 	return &device.Account{
@@ -345,7 +344,7 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 		// this stays zero and the reaper reads it as "age unknown"
 		// (device.Account).
 		Profile: profile,
-	}, nil
+	}, []device.Change{{Op: device.ChangeCreate, Name: req.Name}}, nil
 }
 
 // InstallCredential implements device.Driver.
@@ -357,33 +356,33 @@ func (d *SwitchDriver) CreateAccount(ctx context.Context, req device.CreateReque
 // and no client key store — so the credential would have had to be a password
 // whatever FortiSwitchOS accepts. Connecting to the switch directly is what
 // keeps `set ssh-public-key1` usable.
-func (d *SwitchDriver) InstallCredential(ctx context.Context, req device.CredentialRequest) error {
+func (d *SwitchDriver) InstallCredential(ctx context.Context, req device.CredentialRequest) ([]device.Change, error) {
 	if err := validateAccountNameWithin(req.Name, maxSwitchAccountNameLen); err != nil {
-		return err
+		return nil, err
 	}
 
 	var install step
 	switch req.Kind {
 	case control.CredentialKindPassword:
 		if err := validateSecret(req.Password); err != nil {
-			return err
+			return nil, err
 		}
 		install = step{command: "set password " + quote(req.Password), label: "set the administrator's password", secret: true}
 	case control.CredentialKindPublicKey:
 		key := strings.TrimSpace(req.PublicKey)
 		if err := validatePublicKey(key); err != nil {
-			return err
+			return nil, err
 		}
 		install = step{command: "set ssh-public-key1 " + quote(key), label: "install the administrator's public key"}
 	default:
 		// Never a substitution of the other kind: a password and a public key
 		// have materially different exposure and the server chose (D13).
-		return device.Unsupported(PlatformFortiSwitch, fmt.Sprintf("install a %q credential", req.Kind))
+		return nil, device.Unsupported(PlatformFortiSwitch, fmt.Sprintf("install a %q credential", req.Kind))
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = s.Close() }()
 
@@ -394,10 +393,9 @@ func (d *SwitchDriver) InstallCredential(ctx context.Context, req device.Credent
 	)
 	steps = append(steps, s.leaveAdminTable()...)
 	if err := s.run(ctx, steps); err != nil {
-		d.abandon(ctx, s, req.Name)
-		return err
+		return d.abandon(ctx, s, req.Name), err
 	}
-	return nil
+	return []device.Change{{Op: device.ChangeModify, Name: req.Name}}, nil
 }
 
 // RemoveAccount implements device.Driver.
@@ -408,21 +406,25 @@ func (d *SwitchDriver) InstallCredential(ctx context.Context, req device.Credent
 // panic, on signal, and from the reaper (PLAN §5.1): an administrator that is
 // already gone is the outcome this wanted. A device it cannot reach is a
 // different answer — a retryable failure, which the reaper finds again.
-func (d *SwitchDriver) RemoveAccount(ctx context.Context, req device.RemoveRequest) error {
+func (d *SwitchDriver) RemoveAccount(ctx context.Context, req device.RemoveRequest) ([]device.Change, error) {
 	if err := validateAccountNameWithin(req.Name, maxSwitchAccountNameLen); err != nil {
-		return err
+		return nil, err
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = s.Close() }()
 
 	steps := append(s.enterAdminTable(),
 		step{command: "delete " + quote(req.Name), label: "remove the administrator", notFoundIsSuccess: true},
 	)
-	return s.run(ctx, append(steps, s.leaveAdminTable()...))
+	removed, err := s.runRemoval(ctx, append(steps, s.leaveAdminTable()...))
+	if err != nil || !removed {
+		return nil, err
+	}
+	return []device.Change{{Op: device.ChangeDelete, Name: req.Name}}, nil
 }
 
 // ListAccounts implements device.Driver.
@@ -548,19 +550,24 @@ func (d *SwitchDriver) confirmSwitch(ctx context.Context, s *cliSession) error {
 // schedule onetime` to a FortiSwitch is an unknown command, so a shared
 // backstop would spend two refused commands per rollback pretending to clean up
 // an object class this platform does not have.
-func (d *SwitchDriver) abandon(ctx context.Context, s *cliSession, name string) {
+func (d *SwitchDriver) abandon(ctx context.Context, s *cliSession, name string) []device.Change {
 	// `abort` discards an uncommitted configuration block outright. Its own
 	// failure is swallowed: the session is being denied either way, and what it
-	// could not undo is what the reaper is for.
+	// could not undo is what the reaper is for. What it DID remove is returned,
+	// as the FortiGate's abandon does (device.Change).
+	var changes []device.Change
 	_, _ = s.send(ctx, "abort")
 	_, _ = s.send(ctx, "end")
 	for _, st := range s.enterAdminTable() {
 		_, _ = s.send(ctx, st.command)
 	}
-	_, _ = s.send(ctx, "delete "+quote(name))
+	if deleted(s.send(ctx, "delete "+quote(name))) {
+		changes = append(changes, device.Change{Op: device.ChangeDelete, Name: name})
+	}
 	for _, st := range s.leaveAdminTable() {
 		_, _ = s.send(ctx, st.command)
 	}
+	return changes
 }
 
 // switchBuiltinProfile is the only access profile FortiSwitchOS documents as

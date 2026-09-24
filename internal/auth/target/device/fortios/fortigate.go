@@ -288,9 +288,9 @@ type step struct {
 // a constrained platform an existing name is plausibly another live session's,
 // and adopting it means two sessions sharing an account whose first teardown
 // removes the other's access.
-func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*device.Account, error) {
+func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*device.Account, []device.Change, error) {
 	if err := validateAccountName(req.Name); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	profile := d.profile
 	if req.Profile != "" {
@@ -303,22 +303,22 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		// scoping an administrator, this proxy was simply never told which
 		// scope to use, and a rung skipped over a configuration gap would serve
 		// the session on a credential the server ranked lower.
-		return nil, errors.New("auth/target/device/fortios: no access profile: " +
+		return nil, nil, errors.New("auth/target/device/fortios: no access profile: " +
 			"an administrator's scope must be named by the route or by " +
 			"`auth.target.ephemeral_account.access_profile` for this platform, because no FortiOS built-in " +
 			"is a safe default (`super_admin_readonly` cannot run `diagnose` from 7.4.x " +
 			"and does not fit a per-VDOM account)")
 	}
 	if err := validateProfile(profile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	vdom, err := requestedVDOM(req.Fields)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if vdom != "" {
 		if err := checkVDOMProfile(profile); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -326,7 +326,7 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	if req.SourceAddress != "" {
 		var err error
 		if trust, err = trustHost(req.SourceAddress); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	// A lifetime means the DEVICE is to hold this account's deadline, and on
@@ -344,18 +344,21 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 	expiring := req.Lifetime > 0
 	if expiring {
 		if err := validateScheduleName(req.Name); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
+	// What this call has changed on the unit so far, in order (device.Change).
+	var changes []device.Change
+
 	placeholder, err := randomSecret(placeholderSecretLen)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = s.Close() }()
 
@@ -369,16 +372,16 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		// `set vdom` failing is still a failed attempt, and both paths are
 		// closed.
 		if err := d.checkVDOMExists(ctx, s, vdom); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	exists, err := s.accountExists(ctx, req.Name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if exists {
-		return nil, fmt.Errorf("%w: %q is already an administrator on %s",
+		return nil, nil, fmt.Errorf("%w: %q is already an administrator on %s",
 			device.ErrAccountExists, req.Name, req.Host)
 	}
 
@@ -391,11 +394,11 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		// session over a coincidence.
 		taken, err := d.listSchedules(ctx, s, req.Name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, name := range taken {
 			if name == req.Name {
-				return nil, fmt.Errorf("%w: %q is already a one-time schedule on %s",
+				return nil, nil, fmt.Errorf("%w: %q is already a one-time schedule on %s",
 					device.ErrAccountExists, req.Name, req.Host)
 			}
 		}
@@ -412,23 +415,23 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 			// device.ErrUnsupported — the platform can do this and so can this
 			// driver; this unit did not say what time it is, which fails the
 			// attempt rather than walking the session down to a weaker rung.
-			return nil, fmt.Errorf("%w: neither `%s`/`%s` nor `%s` reported a readable clock, and a one-time "+
+			return nil, nil, fmt.Errorf("%w: neither `%s`/`%s` nor `%s` reported a readable clock, and a one-time "+
 				"schedule's end is an absolute datetime in the unit's own local time — "+
 				"rendering one from this proxy's clock could hold the account open past its deadline",
 				ErrDeviceRefused, executeDateCommand, executeTimeCommand, vdomStatusCommand)
 		}
 		start, end, err := scheduleWindow(deviceNow, req.Lifetime)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := d.createSchedule(ctx, s, req.Name, start, end); err != nil {
 			// Nothing has been created in the administrator table yet, and the
 			// schedule's own sequence rolls itself back through run's
 			// stop-at-first-failure plus the abandon below, so the unit is left
 			// as it was found.
-			d.abandon(ctx, s, req.Name)
-			return nil, err
+			return nil, rolledBack(changes, d.abandon(ctx, s, req.Name)), err
 		}
+		changes = append(changes, device.Change{Op: device.ChangeCreate, ObjectKind: scheduleResidueKind, Name: req.Name})
 	}
 
 	steps := append(s.enterAdminTable(),
@@ -474,46 +477,46 @@ func (d *Driver) CreateAccount(ctx context.Context, req device.CreateRequest) (*
 		// delete afterwards is for the case where it failed after: belt and
 		// braces, on a device where a half-created administrator is a standing
 		// privileged account.
-		d.abandon(ctx, s, req.Name)
-		return nil, err
+		return nil, rolledBack(changes, d.abandon(ctx, s, req.Name)), err
 	}
+	changes = append(changes, device.Change{Op: device.ChangeCreate, Name: req.Name})
 
 	return &device.Account{
 		Name:    req.Name,
 		Profile: profile,
 		// FortiOS does not record when an administrator was created, so this
 		// stays zero and the reaper reads it as "age unknown" (device.Account).
-	}, nil
+	}, changes, nil
 }
 
 // InstallCredential implements device.Driver.
-func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialRequest) error {
+func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialRequest) ([]device.Change, error) {
 	if err := validateAccountName(req.Name); err != nil {
-		return err
+		return nil, err
 	}
 
 	var install step
 	switch req.Kind {
 	case control.CredentialKindPassword:
 		if err := validateSecret(req.Password); err != nil {
-			return err
+			return nil, err
 		}
 		install = step{command: "set password " + quote(req.Password), label: "set the administrator's password", secret: true}
 	case control.CredentialKindPublicKey:
 		key := strings.TrimSpace(req.PublicKey)
 		if err := validatePublicKey(key); err != nil {
-			return err
+			return nil, err
 		}
 		install = step{command: "set ssh-public-key1 " + quote(key), label: "install the administrator's public key"}
 	default:
 		// Never a substitution of the other kind: a password and a public key
 		// have materially different exposure and the server chose (D13).
-		return device.Unsupported(d.platform, fmt.Sprintf("install a %q credential", req.Kind))
+		return nil, device.Unsupported(d.platform, fmt.Sprintf("install a %q credential", req.Kind))
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = s.Close() }()
 
@@ -524,10 +527,13 @@ func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialReq
 	)
 	steps = append(steps, s.leaveAdminTable()...)
 	if err := s.run(ctx, steps); err != nil {
-		d.abandon(ctx, s, req.Name)
-		return err
+		// The credential was not installed, so that is not reported; what the
+		// rollback removed is.
+		return d.abandon(ctx, s, req.Name), err
 	}
-	return nil
+	// A modification of the administrator, and nothing about WHAT was
+	// installed: the record this becomes carries no credential material.
+	return []device.Change{{Op: device.ChangeModify, Name: req.Name}}, nil
 }
 
 // RemoveAccount implements device.Driver, and removes BOTH objects a session
@@ -538,22 +544,27 @@ func (d *Driver) InstallCredential(ctx context.Context, req device.CredentialReq
 // panic, on signal, and from the reaper (PLAN §5.1): an administrator that is
 // already gone is the outcome this wanted. A device it cannot reach is a
 // different answer — a retryable failure, which the reaper finds again.
-func (d *Driver) RemoveAccount(ctx context.Context, req device.RemoveRequest) error {
+func (d *Driver) RemoveAccount(ctx context.Context, req device.RemoveRequest) ([]device.Change, error) {
 	if err := validateAccountName(req.Name); err != nil {
-		return err
+		return nil, err
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = s.Close() }()
 
 	steps := append(s.enterAdminTable(),
 		step{command: "delete " + quote(req.Name), label: "remove the administrator", notFoundIsSuccess: true},
 	)
-	if err := s.run(ctx, append(steps, s.leaveAdminTable()...)); err != nil {
-		return err
+	var changes []device.Change
+	removed, err := s.runRemoval(ctx, append(steps, s.leaveAdminTable()...))
+	if err != nil {
+		return nil, err
+	}
+	if removed {
+		changes = append(changes, device.Change{Op: device.ChangeDelete, Name: req.Name})
 	}
 
 	// THE SECOND OBJECT, and it is removed second on purpose. Fortinet's
@@ -571,16 +582,20 @@ func (d *Driver) RemoveAccount(ctx context.Context, req device.RemoveRequest) er
 	// removing, and the reaper knows even less — the account may be the
 	// leftover of a session in a process that no longer exists. See
 	// removeSchedule.
-	if err := d.removeSchedule(ctx, s, req.Name); err != nil {
+	removed, err = d.removeSchedule(ctx, s, req.Name)
+	if err != nil {
 		// Named separately from the administrator, because the two outcomes
 		// need different responses and one error would hide which happened:
 		// the administrator IS gone, and what is left behind is a schedule that
 		// grants no access to anything. The residue sweep is what finds it
 		// again (schedule.go).
-		return fmt.Errorf("auth/target/device/fortios: the administrator %q was removed but its %s was not: %w",
+		return changes, fmt.Errorf("auth/target/device/fortios: the administrator %q was removed but its %s was not: %w",
 			req.Name, scheduleResidueKind, err)
 	}
-	return nil
+	if removed {
+		changes = append(changes, device.Change{Op: device.ChangeDelete, ObjectKind: scheduleResidueKind, Name: req.Name})
+	}
+	return changes, nil
 }
 
 // ListAccounts implements device.Driver.
@@ -927,10 +942,21 @@ func (d *Driver) open(ctx context.Context, ep device.Endpoint) (*cliSession, err
 // is emphatically not this driver (see fortiswitch.go). A helper that took a
 // receiver it never used would have had to be copied to be reused.
 func (s *cliSession) run(ctx context.Context, steps []step) error {
+	_, err := s.runRemoval(ctx, steps)
+	return err
+}
+
+// runRemoval is run for a sequence whose one notFoundIsSuccess step is a
+// delete, and reports whether that delete actually REMOVED something (phase
+// 0043). An object that was already gone is the outcome removal wanted and is
+// not an error — and it is not a configuration change either, so the drift
+// feed must not be told one happened (device.Change).
+func (s *cliSession) runRemoval(ctx context.Context, steps []step) (removed bool, err error) {
+	removed = true
 	for _, st := range steps {
 		out, err := s.send(ctx, st.command)
 		if err != nil {
-			return fmt.Errorf("auth/target/device/fortios: %s: %w", st.label, err)
+			return false, fmt.Errorf("auth/target/device/fortios: %s: %w", st.label, err)
 		}
 		if st.secret {
 			// The device echoes what it was given, and what it was given was a
@@ -938,18 +964,51 @@ func (s *cliSession) run(ctx context.Context, steps []step) error {
 			// reason string, so the only thing that can escape this step is the
 			// fact that it failed.
 			if checkOutput(st.label, out) != nil {
-				return fmt.Errorf("%w: %s", ErrDeviceRefused, st.label)
+				return false, fmt.Errorf("%w: %s", ErrDeviceRefused, st.label)
 			}
 			continue
 		}
 		if st.notFoundIsSuccess && isNotFound(out) {
+			removed = false
 			continue
 		}
 		if err := checkOutput(st.label, out); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return removed, nil
+}
+
+// deleted reports whether the device confirmed a best-effort `delete` — it
+// answered, and neither with "not found" nor with an error. It is how a
+// rollback reports what it actually removed (device.Change), without making
+// its own failure anything but swallowed.
+func deleted(out string, err error) bool {
+	return err == nil && !isNotFound(out) && checkOutput("", out) == nil
+}
+
+// rolledBack composes what a failed sequence changed: done is what it had
+// completed, deletions what the rollback then removed. A deletion of an object
+// done does not mention means the failed sequence HAD committed it — the name
+// was verified absent before anything was written — so the create is reported
+// before the delete rather than the feed seeing an object vanish that it never
+// saw appear.
+func rolledBack(done, deletions []device.Change) []device.Change {
+	out := append([]device.Change(nil), done...)
+	for _, del := range deletions {
+		created := false
+		for _, c := range done {
+			if c.Op == device.ChangeCreate && c.ObjectKind == del.ObjectKind && c.Name == del.Name {
+				created = true
+				break
+			}
+		}
+		if !created {
+			out = append(out, device.Change{Op: device.ChangeCreate, ObjectKind: del.ObjectKind, Name: del.Name})
+		}
+		out = append(out, del)
+	}
+	return out
 }
 
 // abandon backs out of a failed sequence.
@@ -959,7 +1018,11 @@ func (s *cliSession) run(ctx context.Context, steps []step) error {
 // wherever in it the session was, and the delete afterwards has to re-enter the
 // table through `config global` again or it deletes nothing — quietly, on the
 // one path whose whole job is to leave no administrator behind.
-func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) {
+//
+// It returns the deletions the device CONFIRMED, so the caller can report what
+// the failed operation actually left changed (device.Change).
+func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) []device.Change {
+	var changes []device.Change
 	// `abort` discards an uncommitted configuration block outright. Its own
 	// failure is swallowed: the session is being denied either way, and what it
 	// could not undo is what the reaper is for.
@@ -968,7 +1031,9 @@ func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) {
 	for _, st := range s.enterAdminTable() {
 		_, _ = s.send(ctx, st.command)
 	}
-	_, _ = s.send(ctx, "delete "+quote(name))
+	if deleted(s.send(ctx, "delete "+quote(name))) {
+		changes = append(changes, device.Change{Op: device.ChangeDelete, Name: name})
+	}
 	for _, st := range s.leaveAdminTable() {
 		_, _ = s.send(ctx, st.command)
 	}
@@ -980,10 +1045,13 @@ func (d *Driver) abandon(ctx context.Context, s *cliSession, name string) {
 	for _, st := range s.enterScheduleTable() {
 		_, _ = s.send(ctx, st.command)
 	}
-	_, _ = s.send(ctx, "delete "+quote(name))
+	if deleted(s.send(ctx, "delete "+quote(name))) {
+		changes = append(changes, device.Change{Op: device.ChangeDelete, ObjectKind: scheduleResidueKind, Name: name})
+	}
 	for _, st := range s.leaveScheduleTable() {
 		_, _ = s.send(ctx, st.command)
 	}
+	return changes
 }
 
 // accountExists reports whether an administrator of that name is on the device.

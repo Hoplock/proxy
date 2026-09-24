@@ -12,7 +12,8 @@ import (
 	"github.com/hoplock/proxy/internal/control"
 )
 
-// This file is where phase 0014's device events meet D8's transport, exactly as
+// This file is where phase 0014's device events (and phase 0043's
+// configuration-change feed) meet D8's transport, exactly as
 // audit.go is where phase 0010's command-policy event does. It changes where
 // each event goes, not what any field is called.
 
@@ -63,6 +64,12 @@ func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
 		SetBool(AttrPersistsAcrossReload, ev.PersistsAcrossReload)
 	if ev.Rung > 0 {
 		attrs = attrs.Set(AttrCredentialRung, strconv.Itoa(ev.Rung))
+	}
+	if ev.AlgorithmProfile != "" {
+		// The profile IN FORCE on every connection to the device (phase 0043).
+		// On a constrained device session this is the only record there is, so
+		// it is where an operator learns the route ran on SHA-1.
+		attrs = attrs.Set(AttrAlgorithmProfile, string(ev.AlgorithmProfile))
 	}
 	attrs = EnforcementAttrs(attrs, ev.Enforcement)
 	if ev.Lifetime > 0 {
@@ -152,6 +159,48 @@ func (d *deviceSink) SweepFailure(ev target.SweepFailure) {
 		Kind:       control.LogKindPolicyDecision,
 		Severity:   control.SeverityCritical,
 		Message:    message,
+		Target:     ev.Target,
+		Attributes: attrs,
+	})
+}
+
+// ConfigChange records one configuration change this proxy made on a device —
+// the drift reconciliation feed (PLAN §5.3, §12, phase 0043).
+//
+// It is INFO, which puts it on the BATCH path, and that is the decision this
+// function exists to hold. The mapping event is critical because on a
+// constrained platform it is the only attribution that exists; a sweep failure
+// is critical because it is a standing administrator nobody else will find.
+// This is neither: it is several records per session, emitted to let a
+// customer's NCM or SIEM close the alerts Hoplock's own changes raise, and on
+// the priority path it would dilute exactly the meaning PLAN §7 keeps that path
+// for — the reason a service outage is `warn`.
+//
+// Nothing here is credential material: the record names the object and what
+// happened to it, never what was installed on it.
+func (d *deviceSink) ConfigChange(ev target.DeviceConfigChange) {
+	attrs := Attrs{}.
+		Set(AttrEvent, EventDeviceConfigChange).
+		Set(AttrPlatform, ev.Platform).
+		Set(AttrDeviceChangeOp, string(ev.Op)).
+		Set(AttrTargetAccount, ev.Name)
+	if ev.ObjectKind != "" {
+		attrs = attrs.Set(AttrDeviceObjectKind, ev.ObjectKind)
+	}
+	for _, name := range sortedKeys(ev.Fields) {
+		attrs = attrs.Set(AttrDeviceFieldPrefix+name, ev.Fields[name])
+	}
+	kind := "administrator"
+	if ev.ObjectKind != "" {
+		kind = ev.ObjectKind
+	}
+	d.shipper.Record(control.LogRecord{
+		RecordID:   d.shipper.newRecordID(),
+		SessionID:  ev.SessionID,
+		Timestamp:  at(ev.At, d.shipper),
+		Kind:       control.LogKindProvisioning,
+		Severity:   control.SeverityInfo,
+		Message:    "device configuration changed: " + string(ev.Op) + " " + kind,
 		Target:     ev.Target,
 		Attributes: attrs,
 	})

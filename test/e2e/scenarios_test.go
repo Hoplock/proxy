@@ -1500,6 +1500,47 @@ func testDeviceCredentials(t *testing.T) {
 		}
 	})
 
+	// Phase 0043: the route names `legacy-device`, and the device path's
+	// records say what the proxy actually did — the profile the connections
+	// were dialled under, and one configuration-change record per change on
+	// the batch path, never the priority one.
+	t.Run("the device records name the profile and every change the proxy made", func(t *testing.T) {
+		s := aliceOn(proxyDirect, "fortigate.company.com")
+		s.stdin = "show system admin\nexit\n"
+		r := ssh(t, s)
+		wantExit(t, r, "ephemeral-account with an algorithm profile", 0)
+		created := deviceAccountIn(r.stdout)
+		if created == "" {
+			t.Fatalf("ephemeral-account with an algorithm profile: no account in the session's own view\n%s", r)
+		}
+
+		waitFor(t, "the create, install and delete records for the account", func() bool {
+			ops := map[string]bool{}
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.Attributes["event"] == "device.config.change" && rec.Attributes["target_account"] == created {
+					ops[rec.Attributes["device_change_op"]] = true
+				}
+			}
+			return ops["create"] && ops["modify"] && ops["delete"]
+		})
+		logs := fetchLogs(t)
+		for _, rec := range logs.Priority {
+			if rec.Attributes["event"] == "device.config.change" {
+				t.Errorf("a configuration change reached the priority endpoint: %+v", rec.Attributes)
+			}
+			if rec.Attributes["event"] == "device.account.mapping" && rec.Attributes["target_account"] == created &&
+				rec.Attributes["algorithm_profile"] != "legacy-device" {
+				t.Errorf("the mapping record names algorithm_profile %q, want legacy-device", rec.Attributes["algorithm_profile"])
+			}
+		}
+		for _, rec := range logs.Batched {
+			if rec.Kind == "provisioning" && rec.Attributes["target_account"] == created &&
+				rec.Attributes["event"] == "" && rec.Attributes["algorithm_profile"] != "legacy-device" {
+				t.Errorf("the provisioning record names algorithm_profile %q, want legacy-device", rec.Attributes["algorithm_profile"])
+			}
+		}
+	})
+
 	// Phase 0016: the same appliance running virtual domains, served by a
 	// second listener on the device node. What this watches is that the unit
 	// shape the driver used to REFUSE now gets a session, and that the

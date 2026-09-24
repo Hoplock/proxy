@@ -193,6 +193,11 @@ func (r *deviceReaper) sweepOnce(ctx context.Context, ep device.Endpoint, route 
 // removed.
 func (r *deviceReaper) Sweep(ctx context.Context, ep device.Endpoint, route *deviceRoute) ([]string, error) {
 	ep = r.pin(ep)
+	// A sweep belongs to no session, even when a provisioning is what
+	// triggered it: what it removes is somebody else's leftover, and a change
+	// record naming the triggering session would attribute that removal to the
+	// wrong person (phase 0043).
+	ep.SessionID = ""
 	prefix := route.naming.prefix
 
 	accounts, err := route.driver.ListAccounts(ctx, device.ListRequest{Endpoint: ep, Prefix: prefix})
@@ -222,7 +227,9 @@ func (r *deviceReaper) Sweep(ctx context.Context, ep device.Endpoint, route *dev
 		if !r.agedOut(ep, account, now) {
 			continue
 		}
-		if err := route.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: ep, Name: account.Name}); err != nil {
+		changes, err := route.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: ep, Name: account.Name})
+		r.auth.recordChanges(route.platform, ep, nil, changes)
+		if err != nil {
 			failures = append(failures, account.Name)
 			r.auth.reportSweepFailure(SweepFailure{
 				Target: addrOf(ep), Platform: route.platform, Account: account.Name,
@@ -301,7 +308,9 @@ func (r *deviceReaper) sweepResidue(ctx context.Context, ep device.Endpoint, rou
 		if !r.residueAgedOut(ep, object.Name, now) {
 			continue
 		}
-		if err := sweeper.RemoveResidue(ctx, device.RemoveRequest{Endpoint: ep, Name: object.Name}); err != nil {
+		changes, err := sweeper.RemoveResidue(ctx, device.RemoveRequest{Endpoint: ep, Name: object.Name})
+		r.auth.recordChanges(route.platform, ep, nil, changes)
+		if err != nil {
 			failures = append(failures, object.Name)
 			r.auth.reportSweepFailure(SweepFailure{
 				Target: addrOf(ep), Platform: route.platform, Account: object.Name,
@@ -382,12 +391,22 @@ func (r *deviceReaper) agedOut(ep device.Endpoint, account device.Account, now t
 // enumerate it with the same driver and prefix.
 func (r *deviceReaper) observe(ep device.Endpoint, route *deviceRoute) {
 	key := addrOf(ep)
-	bare := device.Endpoint{Host: ep.Host, Port: ep.Port, HostKeyCallback: ep.HostKeyCallback}
+	bare := device.Endpoint{Host: ep.Host, Port: ep.Port, HostKeyCallback: ep.HostKeyCallback,
+		// The algorithms survive the copy for the host-key callback's reason
+		// (phase 0043): a device that needs SHA-1 to be provisioned needs it to
+		// be swept, and a sweep that cannot dial leaves a standing privileged
+		// administrator on a customer's firewall — the failure D13 names. It is
+		// the endpoint's lists that are kept, not the profile's name, so
+		// whatever narrowed them for the session narrows the sweep too.
+		Algorithms: ep.Algorithms.Clone()}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if seen, ok := r.seen[key]; ok {
 		seen.route = route
+		// The latest provisioning's algorithms are the ones known to reach the
+		// device, so the sweep dials with those.
+		seen.ep.Algorithms = bare.Algorithms
 		return
 	}
 	r.seen[key] = &seenDevice{ep: bare, route: route}

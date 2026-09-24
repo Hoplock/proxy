@@ -22,6 +22,7 @@ import (
 	"github.com/hoplock/proxy/internal/auth/target/device"
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // MethodEphemeralAccount names the device provisioner (D13, PLAN §5.3).
@@ -131,6 +132,12 @@ type AccountMapping struct {
 	// user-facing one.
 	Method string
 	Rung   int
+	// AlgorithmProfile is the profile the driver's privileged connection and
+	// the session leg were dialled under (phase 0043) — the one IN FORCE, and
+	// never absent: the default is named as `default`. On a constrained device
+	// session this record is the only one there is, so it is where an operator
+	// learns that a route runs on SHA-1.
+	AlgorithmProfile control.AlgorithmProfile
 	// Enforcement is the rung actually IN FORCE on each axis, never the one the
 	// route asked for (PLAN §6.5, phase 0019). On a device it also carries the
 	// driver's caveat: vendor RBAC is coarse and named, so a record that says
@@ -193,7 +200,36 @@ type SweepFailure struct {
 	At         time.Time
 }
 
-// DeviceEventSink is where the device path's two must-not-be-lost events go.
+// DeviceConfigChange is one configuration change this proxy made on a device —
+// the record the drift reconciliation feed is built from (PLAN §5.3, §12, phase
+// 0043).
+//
+// It is emitted by the provisioner and the reaper from what a driver RETURNS
+// (device.Change), never by a driver: D13's driver declares data and performs
+// the platform's vocabulary, and holding a telemetry sink is neither. It carries
+// no credential material — installing a credential is a modification of the
+// administrator, and what was installed is not named.
+type DeviceConfigChange struct {
+	// Target and Platform are the device and the driver that changed it.
+	Target   string
+	Platform string
+	// SessionID is the session whose provisioning, teardown or deadline made
+	// the change. It is empty for a reaper sweep, which belongs to no session.
+	SessionID string
+	// Op, ObjectKind and Name are the change itself (device.Change).
+	Op         device.ChangeOp
+	ObjectKind string
+	Name       string
+	// Fields are the route's platform-specific fields, exactly as the mapping
+	// event carries them: on a partitioned unit the target string does not say
+	// which partition was changed. A sweep has no route, and carries none.
+	Fields map[string]string
+	// At is when the change was reported.
+	At time.Time
+}
+
+// DeviceEventSink is where the device path's events go: the two that must not
+// be lost, and the configuration-change feed.
 //
 // It is an interface here and implemented in internal/logging for the same
 // reason filter.Sink is: the credential plane should not have to know what a
@@ -208,6 +244,11 @@ type DeviceEventSink interface {
 	AccountMapping(AccountMapping)
 	// SweepFailure records an orphan that could not be removed.
 	SweepFailure(SweepFailure)
+	// ConfigChange records one configuration change on a device, on the BATCH
+	// path (phase 0043). It is not attribution — the mapping event is — so it
+	// never refuses a route for want of a logging path, and it never rides the
+	// priority path the two events above keep their meaning on.
+	ConfigChange(DeviceConfigChange)
 }
 
 // DeviceAccountOptions configures the device provisioner.
@@ -627,6 +668,9 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		Port:            tgt.Port,
 		SessionID:       tgt.SessionID,
 		HostKeyCallback: watcher.callback(),
+		// The route's algorithms, on every connection this session causes to
+		// the device — this one, teardown's, and the reaper's (phase 0043).
+		Algorithms: tgt.Algorithms.Clone(),
 	}
 	account, name, err := a.create(ctx, r, ep, r.profile)
 	if err != nil {
@@ -658,6 +702,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		Platform:             r.platform,
 		Method:               MethodEphemeralAccount,
 		Rung:                 tgt.Rung,
+		AlgorithmProfile:     tgt.AlgorithmProfile.Resolve(),
 		Enforcement:          r.enforcementResult(),
 		ExpiryPosture:        string(r.posture),
 		ExpiryMechanism:      r.expiryMechanism(),
@@ -728,7 +773,7 @@ func (a *DeviceAccountAuthenticator) create(ctx context.Context, r *deviceRoute,
 		if r.caps.PinsSourceAddress {
 			source = a.source
 		}
-		account, err := r.driver.CreateAccount(ctx, device.CreateRequest{
+		account, changes, err := r.driver.CreateAccount(ctx, device.CreateRequest{
 			Endpoint:      ep,
 			Name:          name,
 			Profile:       profile,
@@ -736,6 +781,9 @@ func (a *DeviceAccountAuthenticator) create(ctx context.Context, r *deviceRoute,
 			Lifetime:      r.deviceLifetime(),
 			Fields:        r.fields,
 		})
+		// Recorded whatever the outcome: a failed create reports what it DID
+		// write, never what it only attempted (device.Change).
+		a.recordChanges(r.platform, ep, r.fields, changes)
 		switch {
 		case err == nil:
 			return account, name, nil
@@ -767,9 +815,11 @@ func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *d
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := r.driver.InstallCredential(ctx, device.CredentialRequest{
+		changes, err := r.driver.InstallCredential(ctx, device.CredentialRequest{
 			Endpoint: ep, Name: name, Kind: r.kind, Password: string(secret),
-		}); err != nil {
+		})
+		a.recordChanges(r.platform, ep, r.fields, changes)
+		if err != nil {
 			zero(secret)
 			return nil, nil, err
 		}
@@ -802,12 +852,14 @@ func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *d
 			return nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
 		}
 		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
-		if err := r.driver.InstallCredential(ctx, device.CredentialRequest{
+		changes, err := r.driver.InstallCredential(ctx, device.CredentialRequest{
 			Endpoint: ep, Name: name, Kind: r.kind, PublicKey: line,
-		}); err != nil {
+		})
+		a.recordChanges(r.platform, ep, r.fields, changes)
+		if err != nil {
 			return nil, nil, err
 		}
-		return ssh.PublicKeys(signer), func() {}, nil
+		return ssh.PublicKeys(sshalg.Signer(signer, ep.Algorithms)), func() {}, nil
 
 	default:
 		// Unreachable while resolve holds its invariant; kept because the
@@ -826,7 +878,9 @@ func (a *DeviceAccountAuthenticator) teardown(ctx context.Context, r *deviceRout
 	// rather than re-running the session's callback, which calls Control and
 	// fails closed (PLAN §5.1, and target.pin for the POSIX half).
 	ep = a.reaper.pin(ep)
-	if err := r.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: ep, Name: name}); err != nil {
+	changes, err := r.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: ep, Name: name})
+	a.recordChanges(r.platform, ep, r.fields, changes)
+	if err != nil {
 		return fmt.Errorf("auth/target: ephemeral-account teardown of %s on %s:%d: %w", name, ep.Host, ep.Port, err)
 	}
 	a.logf("auth/target: ephemeral-account removed target=%s:%d platform=%s account=%s", ep.Host, ep.Port, r.platform, name)
@@ -837,7 +891,9 @@ func (a *DeviceAccountAuthenticator) teardown(ctx context.Context, r *deviceRout
 // swallowed: the session is being denied either way, and what it could not
 // remove is what the reaper is for.
 func (a *DeviceAccountAuthenticator) removeQuietly(ctx context.Context, r *deviceRoute, ep device.Endpoint, name string) {
-	if err := r.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: ep, Name: name}); err != nil {
+	changes, err := r.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: ep, Name: name})
+	a.recordChanges(r.platform, ep, r.fields, changes)
+	if err != nil {
 		a.logf("auth/target: ephemeral-account cleanup after a failed provisioning of %s: %v", name, err)
 	}
 }
@@ -864,6 +920,31 @@ func (a *DeviceAccountAuthenticator) enforceExpiry(r *deviceRoute, ep device.End
 			})
 		}
 	})
+}
+
+// recordChanges turns what a driver returned into the drift feed's records,
+// one per change (phase 0043). It is the ONE place both the provisioner and
+// the reaper emit them, so "one record per change, on every path that changes a
+// device" is a property of this function and of every driver call going
+// through it, rather than of each call site remembering.
+//
+// fields are the route's device fields; a sweep has no route and passes nil.
+func (a *DeviceAccountAuthenticator) recordChanges(platform string, ep device.Endpoint, fields map[string]string, changes []device.Change) {
+	if a.events == nil || len(changes) == 0 {
+		return
+	}
+	for _, c := range changes {
+		a.events.ConfigChange(DeviceConfigChange{
+			Target:     addrOf(ep),
+			Platform:   platform,
+			SessionID:  ep.SessionID,
+			Op:         c.Op,
+			ObjectKind: c.ObjectKind,
+			Name:       c.Name,
+			Fields:     fields,
+			At:         a.now(),
+		})
+	}
 }
 
 func (a *DeviceAccountAuthenticator) reportSweepFailure(f SweepFailure) {

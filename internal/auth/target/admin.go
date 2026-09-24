@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // DefaultAdminShell is the remote command the provisioning scripts are handed
@@ -165,7 +167,11 @@ func (d *sshAdminDialer) Dial(ctx context.Context, tgt Target) (AdminSession, er
 	var seen ssh.PublicKey
 	cfg := &ssh.ClientConfig{
 		User: d.user,
-		Auth: []ssh.AuthMethod{ssh.PublicKeys(d.signer)},
+		// The route's algorithms, on the most privileged connection this proxy
+		// makes (phase 0043): a target the route needs a legacy profile to
+		// reach is a target whose management login needs it too, and one the
+		// route does not weaken must not be weakened here.
+		Auth: []ssh.AuthMethod{ssh.PublicKeys(sshalg.Signer(d.signer, tgt.Algorithms))},
 		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 			if err := tgt.HostKeyCallback(hostname, remote, key); err != nil {
 				return err
@@ -175,6 +181,7 @@ func (d *sshAdminDialer) Dial(ctx context.Context, tgt Target) (AdminSession, er
 		},
 		Timeout: d.timeout,
 	}
+	sshalg.Apply(cfg, tgt.Algorithms)
 
 	addr := tgt.Addr()
 	dialer := net.Dialer{Timeout: d.timeout}

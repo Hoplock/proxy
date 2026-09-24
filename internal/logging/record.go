@@ -127,6 +127,27 @@ const (
 	// was not an administrator — `firewall schedule`, the entry a FortiGate
 	// carries an account's deadline in (device.Residue, phase 0017).
 	AttrDeviceObjectKind = "device_object_kind"
+	// AttrDeviceChangeOp is what a `device.config.change` record did to the
+	// object it names — create, modify or delete (device.ChangeOp, phase
+	// 0043). The object is AttrTargetAccount, and AttrDeviceObjectKind when it
+	// is not an administrator: the spelling a sweep failure already uses, so
+	// one query finds an object whatever happened to it.
+	AttrDeviceChangeOp = "device_change_op"
+	// AttrAlgorithmProfile is the route's algorithm profile IN FORCE on the
+	// target leg (phase 0043): the one every connection to the target was
+	// dialled under, never merely the one the route asked for. It is stamped
+	// on the provisioning record and the device mapping event ALWAYS, the
+	// default included — so its absence means the record is not about a
+	// target leg (a hop, a failure before provisioning), never "default".
+	AttrAlgorithmProfile = "algorithm_profile"
+	// AttrAlgorithmAxis and AttrTargetAlgorithmsOffered are what a
+	// `target.algorithm_policy_unmet` record names: which negotiated axis
+	// (key_exchange, host_key, cipher, mac, compression) the route's profile
+	// allowed nothing on, and the comma-separated list the TARGET offered
+	// there — which is what an operator reads to choose the profile the route
+	// needs (phase 0043).
+	AttrAlgorithmAxis           = "algorithm_axis"
+	AttrTargetAlgorithmsOffered = "target_algorithms_offered"
 	// AttrPersistsAcrossReload and AttrPersistenceReason carry a driver's
 	// persistence declaration onto the session it served, so a standing-account
 	// risk is recorded where the risk is taken (D13).
@@ -236,6 +257,19 @@ const (
 	// flavour of the two above: an expiry is neither a failure nor a
 	// revocation, it is a session ending exactly as it was authorized to.
 	EndReasonDeadline = "session_deadline"
+)
+
+// Event names this package's own producers stamp on AttrEvent (phase 0043).
+// They are query surface exactly as the attribute keys are.
+const (
+	// EventDeviceConfigChange is one configuration change this proxy made on a
+	// device: the drift reconciliation feed's producer (PLAN §5.3, §12). It
+	// is a `provisioning` record at `info`, on the BATCH path.
+	EventDeviceConfigChange = "device.config.change"
+	// EventAlgorithmPolicyUnmet is a target the route's algorithm profile
+	// allows nothing on some axis for. It is a `warn` error record, on the
+	// batch path: an outage, not a security event.
+	EventAlgorithmPolicyUnmet = "target.algorithm_policy_unmet"
 )
 
 // CaptureFormatRawChunk is the value of AttrCaptureFormat on every stream

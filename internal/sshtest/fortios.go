@@ -218,6 +218,10 @@ type FortiOSOptions struct {
 	Now func() time.Time
 	// Faults make it misbehave.
 	Faults FortiOSFaults
+	// Negotiation narrows what the device will negotiate, standing in for
+	// appliance firmware that speaks only legacy algorithms (phase 0043).
+	// Host-key algorithms follow from HostKey.
+	Negotiation Negotiation
 }
 
 // The units this fake can pretend to be.
@@ -475,6 +479,7 @@ func StartFortiOSOn(addr string, opts FortiOSOptions) (*FakeFortiOS, error) {
 			return nil, nil
 		},
 	}
+	opts.Negotiation.apply(cfg)
 	cfg.AddHostKey(hostKey)
 	d.config = cfg
 

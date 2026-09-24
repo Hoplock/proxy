@@ -469,8 +469,8 @@ const (
 // behaves exactly as D6a originally specified.
 //
 // The rung actually used is an AUDIT FACT AND NOT A USER-FACING ONE. It goes to
-// the record and the operator surface (attributes target_auth_method and
-// target_auth_rung, api/README.md); the user is told nothing. This is the one
+// the record and the operator surface (attributes credential_method and
+// credential_rung, api/README.md); the user is told nothing. This is the one
 // place PLAN §4.3's disclosure rule does not apply, and the reason is that the
 // information is about the estate rather than about the user's own request:
 // "you got the weaker credential" tells an attacker which targets are softest
@@ -493,7 +493,8 @@ func (l TargetAuthLadder) MarshalJSON() ([]byte, error) {
 }
 
 // AlgorithmProfile names the SSH algorithm set the proxy may offer on the
-// proxy→target leg for this route (applied by phase 0014).
+// proxy→target leg for this route. Phase 0043 applies it to every connection
+// the route causes to the target; the expansion is Algorithms (algorithms.go).
 //
 // Much of the estate D13 exists to reach speaks key exchanges, host-key
 // algorithms, ciphers, and MACs that golang.org/x/crypto/ssh does not enable by
@@ -510,15 +511,19 @@ func (l TargetAuthLadder) MarshalJSON() ([]byte, error) {
 //     enabling, and the audit record names something a reviewer understands
 //     rather than a string of identifiers they must decode.
 //
-// Anything other than AlgorithmProfileDefault is a WEAKENING and emits its own
-// audit event (api/README.md), on D14's sibling rule for methods: an operator
-// finds out that a route runs on SHA-1 from the record, not by reading policy.
+// Anything other than AlgorithmProfileDefault is a WEAKENING, and the record
+// says so (api/README.md), on D14's sibling rule for methods: an operator finds
+// out that a route runs on SHA-1 from the record, not by reading policy. The
+// rendering is the `algorithm_profile` attribute on the provisioning record and
+// the device mapping event, stamped on every route with the default included.
 type AlgorithmProfile string
 
 const (
-	// AlgorithmProfileDefault offers only what the SSH library enables by
-	// default. It is the absent-value default and the only profile that is not
-	// a weakening.
+	// AlgorithmProfileDefault offers the SSH library's SECURE SET, as an
+	// explicit list on every axis — never the library's client defaults, which
+	// also offer a SHA-1 key exchange, hmac-sha1-96, and ssh-rsa/ssh-dss host
+	// keys (phase 0043, the owner's decision on PR #64). It is the
+	// absent-value default and the only profile that is not a weakening.
 	AlgorithmProfileDefault AlgorithmProfile = "default"
 	// AlgorithmProfileLegacyRSASHA1 additionally offers RSA with SHA-1
 	// signatures (ssh-rsa) for host keys and public-key authentication. It is
@@ -527,9 +532,10 @@ const (
 	// only this does not also get CBC and SHA-1 key exchange.
 	AlgorithmProfileLegacyRSASHA1 AlgorithmProfile = "legacy-rsa-sha1"
 	// AlgorithmProfileLegacyDevice is AlgorithmProfileLegacyRSASHA1 plus the
-	// SHA-1 key exchanges, CBC ciphers, and SHA-1 MACs that appliance firmware
-	// of that era offers. It is the widest profile this contract defines and it
-	// is meant for the routes that connect on nothing else.
+	// SHA-1 key exchanges, CBC ciphers, hmac-sha1-96, and ssh-dss host keys
+	// that appliance firmware of that era offers. It is the widest profile this
+	// contract defines and it is meant for the routes that connect on nothing
+	// else.
 	AlgorithmProfileLegacyDevice AlgorithmProfile = "legacy-device"
 )
 

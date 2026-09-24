@@ -148,11 +148,13 @@ func (d *Driver) createSchedule(ctx context.Context, s *cliSession, name, start,
 // by a session in another process, before a restart, under a route this one has
 // never seen. Removal that only removed what the current route implies would
 // leave exactly the objects nobody is left to remember.
-func (d *Driver) removeSchedule(ctx context.Context, s *cliSession, name string) error {
+//
+// removed says whether there was one to delete (runRemoval).
+func (d *Driver) removeSchedule(ctx context.Context, s *cliSession, name string) (removed bool, err error) {
 	steps := append(s.enterScheduleTable(),
 		step{command: "delete " + quote(name), label: "remove the expiry schedule", notFoundIsSuccess: true},
 	)
-	return s.run(ctx, append(steps, s.leaveScheduleTable()...))
+	return s.runRemoval(ctx, append(steps, s.leaveScheduleTable()...))
 }
 
 // listSchedules reads the schedule table and returns the entries under a
@@ -249,19 +251,23 @@ func (d *Driver) ListResidue(ctx context.Context, req device.ListRequest) ([]dev
 // operation that quietly removed a privileged account as a side effect of
 // tidying a schedule would be the reaper doing its most consequential work
 // through the path nobody reviews.
-func (d *Driver) RemoveResidue(ctx context.Context, req device.RemoveRequest) error {
+func (d *Driver) RemoveResidue(ctx context.Context, req device.RemoveRequest) ([]device.Change, error) {
 	if err := validateScheduleName(req.Name); err != nil {
-		return err
+		return nil, err
 	}
 
 	s, err := d.open(ctx, req.Endpoint)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := d.removeSchedule(ctx, s, req.Name); err != nil {
-		return fmt.Errorf("auth/target/device/fortios: remove the orphaned %s %q: %w", scheduleResidueKind, req.Name, err)
+	removed, err := d.removeSchedule(ctx, s, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("auth/target/device/fortios: remove the orphaned %s %q: %w", scheduleResidueKind, req.Name, err)
 	}
-	return nil
+	if !removed {
+		return nil, nil
+	}
+	return []device.Change{{Op: device.ChangeDelete, ObjectKind: scheduleResidueKind, Name: req.Name}}, nil
 }

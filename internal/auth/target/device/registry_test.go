@@ -26,15 +26,17 @@ type fixtureDriver struct {
 func (d fixtureDriver) Platform() string           { return d.platform }
 func (d fixtureDriver) Capabilities() Capabilities { return d.caps }
 
-func (d fixtureDriver) CreateAccount(context.Context, CreateRequest) (*Account, error) {
-	return nil, Unsupported(d.platform, "create an account (fixture driver)")
+func (d fixtureDriver) CreateAccount(context.Context, CreateRequest) (*Account, []Change, error) {
+	return nil, nil, Unsupported(d.platform, "create an account (fixture driver)")
 }
 
-func (d fixtureDriver) InstallCredential(context.Context, CredentialRequest) error {
-	return Unsupported(d.platform, "install a credential (fixture driver)")
+func (d fixtureDriver) InstallCredential(context.Context, CredentialRequest) ([]Change, error) {
+	return nil, Unsupported(d.platform, "install a credential (fixture driver)")
 }
 
-func (d fixtureDriver) RemoveAccount(context.Context, RemoveRequest) error { return nil }
+func (d fixtureDriver) RemoveAccount(context.Context, RemoveRequest) ([]Change, error) {
+	return nil, nil
+}
 
 func (d fixtureDriver) ListAccounts(context.Context, ListRequest) ([]Account, error) {
 	return nil, nil
@@ -224,7 +226,7 @@ func TestCapabilitiesAreDataNotBehaviour(t *testing.T) {
 func TestUnsupportedIsDistinguishableFromAFailedAttempt(t *testing.T) {
 	d := wellBehaved("fortios")
 
-	err := d.InstallCredential(context.Background(), CredentialRequest{
+	_, err := d.InstallCredential(context.Background(), CredentialRequest{
 		Endpoint: Endpoint{Host: "fw-01", Port: 22, SessionID: "sess-1"},
 		Name:     "hl-ab12-cd34",
 		Kind:     control.CredentialKindPublicKey,

@@ -80,7 +80,7 @@ func TestLifecycleAgainstTheDevice(t *testing.T) {
 	ctx := context.Background()
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	acct, err := h.driver.CreateAccount(ctx, device.CreateRequest{
+	acct, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{
 		Endpoint:      h.ep,
 		Name:          name,
 		SourceAddress: "198.51.100.7",
@@ -119,7 +119,7 @@ func TestLifecycleAgainstTheDevice(t *testing.T) {
 	placeholder := on.Password
 
 	const secret = "correct-horse-battery-staple-42"
-	if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+	if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h.ep, Name: name,
 		Kind: control.CredentialKindPassword, Password: secret,
 	}); err != nil {
@@ -141,7 +141,7 @@ func TestLifecycleAgainstTheDevice(t *testing.T) {
 		t.Fatalf("ListAccounts returned %v, want just %q — the prefix is what keeps one proxy out of another's accounts", found, name)
 	}
 
-	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("RemoveAccount: %v", err)
 	}
 	if _, ok := h.dev.Accounts()[name]; ok {
@@ -159,7 +159,7 @@ func TestRemovalIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: "hl-a1b2-ghost-00000000"}); err != nil {
+		if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: "hl-a1b2-ghost-00000000"}); err != nil {
 			t.Fatalf("removing an account that is already gone (attempt %d): %v", i+1, err)
 		}
 	}
@@ -173,7 +173,7 @@ func TestCreateNeverAdoptsAnExistingAccount(t *testing.T) {
 		Accounts: []sshtest.FortiOSAccount{{Name: name, Profile: "super_admin", Password: "someone-elses"}},
 	})
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
 	if !errors.Is(err, device.ErrAccountExists) {
 		t.Fatalf("CreateAccount over an existing name returned %v, want ErrAccountExists — adopting it would give two sessions one account, and the first teardown would remove the other's access", err)
 	}
@@ -188,7 +188,7 @@ func TestNameTooLongIsRefusedByTheDevice(t *testing.T) {
 	h := newHarness(t, sshtest.FortiOSOptions{Faults: sshtest.FortiOSFaults{MaxNameLen: 12}})
 
 	name := "hl-a1b2-" + strings.Repeat("z", 20)
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
 	if err == nil {
 		t.Fatal("a name the device rejected was reported as a successful creation")
 	}
@@ -211,7 +211,7 @@ func TestConfigModeErrorLeavesNothingBehind(t *testing.T) {
 	})
 
 	const name = "hl-a1b2-alice-0f0f0f0f"
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
 	if err == nil {
 		t.Fatal("a rejected access profile was reported as a successful creation")
 	}
@@ -249,7 +249,7 @@ func TestUnreachableDeviceIsARetryableFailure(t *testing.T) {
 	})
 	h.dev.SetUnreachable(true)
 
-	err := h.driver.RemoveAccount(context.Background(), device.RemoveRequest{Endpoint: h.ep, Name: "hl-a1b2-alice-0f0f0f0f"})
+	_, err := h.driver.RemoveAccount(context.Background(), device.RemoveRequest{Endpoint: h.ep, Name: "hl-a1b2-alice-0f0f0f0f"})
 	if err == nil {
 		t.Fatal("removal against an unreachable device reported success; the account is still there and nothing will look for it again")
 	}
@@ -265,11 +265,11 @@ func TestPublicKeyIsInstalledAndPasswordIsNot(t *testing.T) {
 	ctx := context.Background()
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
 	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterialForTests hoplock"
-	if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+	if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h.ep, Name: name,
 		Kind: control.CredentialKindPublicKey, PublicKey: key,
 	}); err != nil {
@@ -279,7 +279,7 @@ func TestPublicKeyIsInstalledAndPasswordIsNot(t *testing.T) {
 		t.Errorf("device holds public key %q, want %q", got, key)
 	}
 
-	err := h.driver.InstallCredential(ctx, device.CredentialRequest{Endpoint: h.ep, Name: name, Kind: "certificate"})
+	_, err := h.driver.InstallCredential(ctx, device.CredentialRequest{Endpoint: h.ep, Name: name, Kind: "certificate"})
 	if !errors.Is(err, device.ErrUnsupported) {
 		t.Errorf("an unknown credential kind returned %v, want ErrUnsupported so the rung is skipped rather than substituted", err)
 	}
@@ -297,7 +297,7 @@ func TestNoCredentialReachesAnErrorOrACommandLog(t *testing.T) {
 
 	// The create path fails at `next`, which is after the placeholder password
 	// was sent — so whatever the error says, it says it having seen one.
-	_, createErr := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name})
+	_, _, createErr := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name})
 	if createErr == nil {
 		t.Fatal("expected the create sequence to fail at `next`")
 	}
@@ -306,10 +306,10 @@ func TestNoCredentialReachesAnErrorOrACommandLog(t *testing.T) {
 	}
 
 	h2 := newHarness(t, sshtest.FortiOSOptions{})
-	if _, err := h2.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h2.ep, Name: name}); err != nil {
+	if _, _, err := h2.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h2.ep, Name: name}); err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	err := h2.driver.InstallCredential(ctx, device.CredentialRequest{
+	_, err := h2.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h2.ep, Name: name, Kind: control.CredentialKindPassword, Password: secret,
 	})
 	if err != nil {
@@ -470,7 +470,7 @@ func TestAPartitionedUnitIsServedThroughGlobalConfiguration(t *testing.T) {
 			h := newHarness(t, sshtest.FortiOSOptions{VDOMMode: mode})
 			const name = "hl-a1b2-alice-0f0f0f0f"
 
-			account, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+			account, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
 			if err != nil {
 				t.Fatalf("CreateAccount against a %s unit: %v", mode, err)
 			}
@@ -539,7 +539,7 @@ func TestAVDOMScopedAdministratorIsCreatedInItsVirtualDomain(t *testing.T) {
 	})
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	if _, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep,
 		Name:     name,
 		// A per-VDOM administrator "must use either the `prof_admin`
@@ -574,7 +574,7 @@ func TestAnUnknownVDOMIsRefusedBeforeAnythingIsCreated(t *testing.T) {
 	})
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: name, Profile: "prof_admin",
 		Fields: map[string]string{FieldVDOM: "customer-a"},
 	})
@@ -606,7 +606,7 @@ func TestAVDOMOnAUnitWithoutVirtualDomainsIsRefused(t *testing.T) {
 	h := newHarness(t, sshtest.FortiOSOptions{})
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: name, Profile: "prof_admin",
 		Fields: map[string]string{FieldVDOM: "customer-a"},
 	})
@@ -634,7 +634,7 @@ func TestAGlobalProfileIsRefusedForAVDOMScopedAdministrator(t *testing.T) {
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
 	for _, profile := range []string{"super_admin", "super_admin_readonly"} {
-		_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+		_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 			Endpoint: h.ep, Name: name, Profile: profile,
 			Fields: map[string]string{FieldVDOM: "root"},
 		})
@@ -654,7 +654,7 @@ func TestAGlobalProfileIsRefusedForAVDOMScopedAdministrator(t *testing.T) {
 func TestAnUndeclaredRouteFieldIsRefused(t *testing.T) {
 	h := newHarness(t, sshtest.FortiOSOptions{VDOMMode: sshtest.FortiOSVDOMMultiple})
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: "hl-a1b2-alice-0f0f0f0f",
 		Fields: map[string]string{"accprofile": "super_admin"},
 	})
@@ -692,10 +692,10 @@ func TestEveryOperationAddressesTheGlobalAdminTable(t *testing.T) {
 	ctx := context.Background()
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
-	if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+	if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h.ep, Name: name, Kind: control.CredentialKindPassword, Password: "device-password-1",
 	}); err != nil {
 		t.Fatalf("InstallCredential: %v", err)
@@ -707,7 +707,7 @@ func TestEveryOperationAddressesTheGlobalAdminTable(t *testing.T) {
 	if len(accounts) != 1 || accounts[0].Name != name {
 		t.Fatalf("ListAccounts = %v, want just %q", accounts, name)
 	}
-	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("RemoveAccount: %v", err)
 	}
 	if _, ok := h.dev.Accounts()[name]; ok {
@@ -733,10 +733,10 @@ func TestTheSessionIsNeverLeftInConfigurationMode(t *testing.T) {
 			ctx := context.Background()
 			const name = "hl-a1b2-alice-0f0f0f0f"
 
-			if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
+			if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
 				t.Fatalf("CreateAccount: %v", err)
 			}
-			if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+			if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 				Endpoint: h.ep, Name: name, Kind: control.CredentialKindPassword, Password: "device-password-1",
 			}); err != nil {
 				t.Fatalf("InstallCredential: %v", err)
@@ -744,7 +744,7 @@ func TestTheSessionIsNeverLeftInConfigurationMode(t *testing.T) {
 			if _, err := h.driver.ListAccounts(ctx, device.ListRequest{Endpoint: h.ep, Prefix: "hl-"}); err != nil {
 				t.Fatalf("ListAccounts: %v", err)
 			}
-			if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
+			if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
 				t.Fatalf("RemoveAccount: %v", err)
 			}
 			if n := h.dev.StrandedSessions(); n != 0 {
@@ -821,7 +821,7 @@ func TestAFailedSequenceIsUnwoundOnAPartitionedUnit(t *testing.T) {
 	})
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name}); err == nil {
+	if _, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name}); err == nil {
 		t.Fatal("a create whose profile step the device refused was reported as a success")
 	}
 	if _, ok := h.dev.Accounts()[name]; ok {
@@ -842,7 +842,7 @@ func TestAFailedSequenceIsUnwoundOnAPartitionedUnit(t *testing.T) {
 func TestAnUnreadableVDOMModeIsStillRefused(t *testing.T) {
 	h := newHarness(t, sshtest.FortiOSOptions{VDOMMode: "enable"})
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: "hl-a1b2-alice-0f0f0f0f",
 	})
 	if !errors.Is(err, ErrMultiVDOM) {
@@ -864,7 +864,7 @@ func TestAUnitThatWillNotSayIsRefused(t *testing.T) {
 		Faults: sshtest.FortiOSFaults{FailCommand: regexp.MustCompile(`^get system status$`)},
 	})
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: "hl-a1b2-alice-0f0f0f0f",
 	})
 	if err == nil {
@@ -936,7 +936,7 @@ func TestAnIPv6SourceAddressIsRefusedRatherThanMisrendered(t *testing.T) {
 	h := newHarness(t, sshtest.FortiOSOptions{})
 	const name = "hl-a1b2-alice-0f0f0f0f"
 
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: name, SourceAddress: "2001:db8::7",
 	})
 	if err == nil {
@@ -967,7 +967,7 @@ func TestAnUnnamedAccessProfileIsRefused(t *testing.T) {
 	}
 
 	const name = "hl-a1b2-alice-0f0f0f0f"
-	_, err = unconfigured.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+	_, _, err = unconfigured.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
 	if err == nil {
 		t.Fatal("an administrator was created with no access profile at all")
 	}
@@ -1006,12 +1006,12 @@ func TestTheDeclaredNameLimitIsTheDocumentedOne(t *testing.T) {
 	ctx := context.Background()
 
 	atLimit := "hl-" + strings.Repeat("a", FortiOSMaxNameLenDeclared-3)
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: atLimit}); err != nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: atLimit}); err != nil {
 		t.Errorf("a name of exactly %d characters was refused: %v", FortiOSMaxNameLenDeclared, err)
 	}
 
 	overLimit := atLimit + "a"
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: overLimit}); err == nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: overLimit}); err == nil {
 		t.Errorf("a name of %d characters was accepted; the field stops at %d", len(overLimit), FortiOSMaxNameLenDeclared)
 	}
 }
