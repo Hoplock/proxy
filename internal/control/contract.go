@@ -292,8 +292,8 @@ type AuthorizeResponse struct {
 	// absent one, turning a denial into a locally configured credential.
 	TargetAuthLadder *TargetAuthLadder `json:"target_auth_ladder,omitempty"`
 	// AlgorithmProfile names the SSH algorithm set the proxy may offer on the
-	// proxy→target leg for this route (applied by phase 0014).
-	// Empty means AlgorithmProfileDefault: nothing beyond the library defaults.
+	// proxy→target leg for this route (applied by phase 0043).
+	// Empty means AlgorithmProfileDefault: the library's secure set.
 	// Anything else is a weakening and is audited as one.
 	AlgorithmProfile AlgorithmProfile `json:"algorithm_profile,omitempty"`
 	FilterPolicy     FilterPolicy     `json:"filter_policy"`

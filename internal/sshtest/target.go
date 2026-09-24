@@ -41,6 +41,10 @@ type Options struct {
 	// that accepts everything cannot produce a real credential rejection, and a
 	// rejection is what internal/auth/target's classifier has to be held to.
 	AuthorizedKeys []ssh.PublicKey
+	// Negotiation narrows the key exchanges, ciphers and MACs the target will
+	// negotiate — the stand-in for a target that speaks only legacy
+	// algorithms (phase 0043). Host-key algorithms follow from HostKey.
+	Negotiation Negotiation
 }
 
 // Target is an in-process SSH server standing in for a target host. It accepts
@@ -121,6 +125,7 @@ func StartTarget(opts Options) (*Target, error) {
 			return &ssh.Permissions{}, nil
 		},
 	}
+	opts.Negotiation.apply(t.config)
 	t.config.AddHostKey(hostKey)
 
 	l, err := net.Listen("tcp", "127.0.0.1:0")

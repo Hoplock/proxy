@@ -24,6 +24,7 @@ import (
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/filter"
 	"github.com/hoplock/proxy/internal/logging"
+	"github.com/hoplock/proxy/internal/sshtest"
 )
 
 // This file is phase 0011's end-to-end test: a real SSH client, a real proxy
@@ -468,7 +469,11 @@ func TestAnOutageBuffersToDiskAndLosesNothing(t *testing.T) {
 func TestTheInitialAuthPasswordIsNeverWritten(t *testing.T) {
 	const password = "correct-horse-battery-staple"
 
-	stack := startE2E(t, e2eOptions{password: password})
+	// device adds the ephemeral-account route to a FortiGate stand-in, so the
+	// credentials the PROXY generates and installs on a device are held to the
+	// same rule, on every record the device path emits — the mapping event and
+	// phase 0043's configuration-change feed included.
+	stack := startE2E(t, e2eOptions{password: password, device: true})
 
 	client, err := ssh.Dial("tcp", stack.addr, &ssh.ClientConfig{
 		User: "alice" + "#" + stack.target.Host(),
@@ -501,22 +506,49 @@ func TestTheInitialAuthPasswordIsNeverWritten(t *testing.T) {
 	_ = session.Close()
 	_ = client.Close()
 
+	// The device session: provisioned, dialled under legacy-device, and torn
+	// down when the client leaves.
+	runDeviceSession(t, stack, password)
+
 	logs := stack.awaitLogs(t, func(l debugLogs) bool {
-		return kinds(append(l.Batched, l.Priority...))[control.LogKindAuth] > 0
-	}, "the authentication record")
+		all := append(append([]control.LogRecord{}, l.Batched...), l.Priority...)
+		deletes := 0
+		for _, r := range all {
+			if r.Attributes[logging.AttrEvent] == logging.EventDeviceConfigChange &&
+				r.Attributes[logging.AttrDeviceChangeOp] == "delete" {
+				deletes++
+			}
+		}
+		return kinds(all)[control.LogKindAuth] > 0 && deletes > 0
+	}, "the authentication record and the device teardown's change record")
 
 	all := append(append([]control.LogRecord{}, logs.Batched...), logs.Priority...)
 	if len(all) == 0 {
 		t.Fatal("no records at all; the test would pass vacuously")
 	}
+	// Every secret this run put anywhere: the user's password, and every
+	// credential the driver sent the device — the placeholder and the session
+	// password alike, read back off the device's own command log.
+	secrets := append([]string{password}, deviceSecrets(t, stack.device)...)
+	changes := 0
 	for _, rec := range all {
+		if rec.Attributes[logging.AttrEvent] == logging.EventDeviceConfigChange {
+			changes++
+		}
 		encoded, err := json.Marshal(rec)
 		if err != nil {
 			t.Fatalf("marshal record: %v", err)
 		}
-		if bytes.Contains(encoded, []byte(password)) {
-			t.Fatalf("the initial-auth password is in a %s record: %s", rec.Kind, encoded)
+		for _, secret := range secrets {
+			if bytes.Contains(encoded, []byte(secret)) {
+				t.Fatalf("a credential is in a %s record: %s", rec.Kind, encoded)
+			}
 		}
+	}
+	// create, credential install, teardown: the new producer ran, so the scan
+	// above covered it rather than passing vacuously.
+	if changes != 3 {
+		t.Errorf("%d device.config.change records, want 3 (create, install, delete)", changes)
 	}
 
 	// The authentication record exists and says how the user authenticated,
@@ -537,11 +569,85 @@ func TestTheInitialAuthPasswordIsNeverWritten(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if bytes.Contains(content, []byte(password)) {
-			t.Fatalf("the initial-auth password is in the disk buffer file %s", path)
+		for _, secret := range secrets {
+			if bytes.Contains(content, []byte(secret)) {
+				t.Fatalf("a credential is in the disk buffer file %s", path)
+			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("walk the buffer directory: %v", err)
 	}
+}
+
+// runDeviceSession logs in over the stack's device route and ends the session
+// from the client side, which is what tears the device account down.
+func runDeviceSession(t *testing.T, stack *e2eStack, password string) {
+	t.Helper()
+	client, err := ssh.Dial("tcp", stack.addr, &ssh.ClientConfig{
+		User: "alice#localhost",
+		Auth: []ssh.AuthMethod{ssh.KeyboardInteractive(
+			func(_, _ string, questions []string, _ []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range answers {
+					answers[i] = password
+				}
+				return answers, nil
+			},
+		)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("dial the proxy for the device route: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession on the device route: %v", err)
+	}
+	session.Stdin = strings.NewReader("get system status\nexit\n")
+	var out bytes.Buffer
+	session.Stdout = &out
+	if err := session.Shell(); err != nil {
+		t.Fatalf("Shell on the device route: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the device session did not end; it printed %q", out.String())
+	}
+	_ = session.Close()
+	_ = client.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for len(stack.device.Accounts()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the device account outlived its session: %v", stack.device.Accounts())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// deviceSecrets reads every credential the driver sent the device off the
+// device's own command log: each quoted `set password` value.
+func deviceSecrets(t *testing.T, dev *sshtest.FakeFortiOS) []string {
+	t.Helper()
+	var secrets []string
+	for _, line := range dev.Commands() {
+		const prefix = "set password "
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		v := strings.Trim(strings.TrimPrefix(line, prefix), `"`)
+		if v != "" && v != "mgmt-secret" {
+			secrets = append(secrets, v)
+		}
+	}
+	if len(secrets) < 2 {
+		t.Fatalf("found %d device credentials in the command log, want the placeholder and the session password", len(secrets))
+	}
+	return secrets
 }

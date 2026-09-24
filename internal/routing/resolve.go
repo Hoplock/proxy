@@ -86,6 +86,13 @@ type Route struct {
 	// axes take their absent-value default: the proxy decides at the exec
 	// request, and forwarding policy covers SSH channels only.
 	Enforcement *control.EnforcementPolicy
+	// AlgorithmProfile is the SSH algorithm preset Hoplock Control named for
+	// the proxy→target leg (phase 0043), resolved through
+	// AuthorizeResponse.Profile — so it is never empty on a resolved route,
+	// and absent on the wire reads as control.AlgorithmProfileDefault. Read
+	// the lists every connection offers through Algorithms, never by expanding
+	// the name at a call site: phase 0045 narrows them there.
+	AlgorithmProfile control.AlgorithmProfile
 	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
 	// (D16, enforced by phase 0024). Nil means the server set no deadline, which
 	// is not the same as zero: absent leaves the session unbounded.
@@ -250,6 +257,15 @@ func (r *Route) EnforcedExecution() control.ExecutionRung {
 // rule.
 func (r *Route) EnforcedReach() control.ReachRung { return r.Enforcement.ReachRung() }
 
+// Algorithms is what every connection this route causes to its target may
+// offer (phase 0043): the session leg, the management login, the driver's
+// privileged CLI, and the teardown and sweeps after them. It is a fresh copy
+// per call, because a decision may be cached and shared across sessions
+// (PLAN §6.4).
+func (r *Route) Algorithms() control.Algorithms {
+	return r.AlgorithmProfile.Resolve().Algorithms()
+}
+
 // ExecMode reports which tier decides an exec request on this connection (D12,
 // enforced by phase 0010), resolving the absent-value default to
 // control.ExecModeFiltered.
@@ -367,6 +383,7 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		TargetAuthLadder:        resp.TargetAuthLadder.Clone(),
 		Filter:                  resp.FilterPolicy.Clone(),
 		Enforcement:             resp.Enforcement.Clone(),
+		AlgorithmProfile:        resp.Profile(),
 		SessionDeadline:         cloneInstant(resp.SessionDeadline),
 		RequireSessionCapture:   resp.RequireSessionCapture,
 		Concurrency:             resp.Concurrency.Clone(),

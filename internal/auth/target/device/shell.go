@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // DefaultShellTimeout bounds one privileged CLI session on a device.
@@ -59,13 +62,33 @@ type SSHShellOptions struct {
 	Signer ssh.Signer
 	// Timeout bounds the dial and the login. Zero means DefaultShellTimeout.
 	Timeout time.Duration
-	// HostKeyAlgorithms narrows what the device may present. Empty means the
-	// library's defaults; a fleet of appliances too old for them is what the
-	// route's algorithm profile is for.
+	// HostKeyAlgorithms, KeyExchanges, Ciphers and MACs are the FALLBACK for a
+	// connection whose endpoint carries no algorithms (phase 0043). A session,
+	// its teardown and the reaper's sweeps all carry the route's own
+	// (Endpoint.Algorithms), so these are reached only by a caller that has no
+	// route. An axis left empty here takes the default profile's list, never
+	// the library's client defaults. There is deliberately no field that
+	// widens a route: a fleet of appliances too old for the default is what
+	// the route's algorithm profile is for.
 	HostKeyAlgorithms []string
-	// KeyExchanges and Ciphers likewise, for the same reason.
-	KeyExchanges []string
-	Ciphers      []string
+	KeyExchanges      []string
+	Ciphers           []string
+	MACs              []string
+}
+
+// algorithms is what a connection to ep offers: the endpoint's own, or else
+// this dialer's fallback. sshalg.Apply fills whatever is still empty from the
+// default profile.
+func (d *sshShellDialer) algorithms(ep Endpoint) control.Algorithms {
+	if !ep.Algorithms.IsZero() {
+		return ep.Algorithms
+	}
+	return control.Algorithms{
+		KeyExchanges: d.opts.KeyExchanges,
+		Ciphers:      d.opts.Ciphers,
+		MACs:         d.opts.MACs,
+		HostKeys:     d.opts.HostKeyAlgorithms,
+	}
 }
 
 type sshShellDialer struct {
@@ -96,9 +119,10 @@ func (d *sshShellDialer) Shell(ctx context.Context, ep Endpoint) (Shell, error) 
 		return nil, errors.New("auth/target/device: the device management connection has no host key policy")
 	}
 
+	algs := d.algorithms(ep)
 	var auth []ssh.AuthMethod
 	if d.opts.Signer != nil {
-		auth = append(auth, ssh.PublicKeys(d.opts.Signer))
+		auth = append(auth, ssh.PublicKeys(sshalg.Signer(d.opts.Signer, algs)))
 	}
 	if d.opts.Password != "" {
 		auth = append(auth, ssh.Password(d.opts.Password))
@@ -115,11 +139,9 @@ func (d *sshShellDialer) Shell(ctx context.Context, ep Endpoint) (Shell, error) 
 			seen = key
 			return nil
 		},
-		HostKeyAlgorithms: d.opts.HostKeyAlgorithms,
-		Timeout:           d.opts.Timeout,
+		Timeout: d.opts.Timeout,
 	}
-	cfg.KeyExchanges = d.opts.KeyExchanges
-	cfg.Ciphers = d.opts.Ciphers
+	sshalg.Apply(cfg, algs)
 
 	addr := net.JoinHostPort(ep.Host, strconv.Itoa(ep.Port))
 	dialer := net.Dialer{Timeout: d.opts.Timeout}
@@ -134,6 +156,15 @@ func (d *sshShellDialer) Shell(ctx context.Context, ep Endpoint) (Shell, error) 
 		// The error is not wrapped with the login name or anything from the
 		// credential: a failed device login is one of the few places where a
 		// helpful message is a disclosure.
+		//
+		// The one cause that IS carried is an algorithm negotiation failure
+		// (phase 0043). It names algorithms and nothing else, and it is what
+		// tells an operator reading a failed sweep that the route's profile —
+		// not the device, not the network — is why the proxy cannot reach it.
+		var neg *ssh.AlgorithmNegotiationError
+		if errors.As(err, &neg) {
+			return nil, fmt.Errorf("auth/target/device: management login to %s failed: %w", addr, neg)
+		}
 		return nil, fmt.Errorf("auth/target/device: management login to %s failed", addr)
 	}
 	_ = conn.SetDeadline(time.Time{})

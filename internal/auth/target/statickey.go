@@ -14,6 +14,7 @@ import (
 
 	"github.com/hoplock/proxy/internal/config"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // MethodStaticKey names the placeholder implementation below. It is the config
@@ -135,7 +136,8 @@ func (a *StaticKeyAuthenticator) Provision(_ context.Context, id *identity.Ident
 		Enforcement: enforcement,
 		ClientConfig: &ssh.ClientConfig{
 			User: username,
-			Auth: []ssh.AuthMethod{ssh.PublicKeys(a.signer)},
+			// Restricted to the route's profile (phase 0043).
+			Auth: []ssh.AuthMethod{ssh.PublicKeys(sshalg.Signer(a.signer, tgt.Algorithms))},
 			// HostKeyCallback is intentionally nil: the proxy sets the
 			// trust-on-first-use callback that reports keys to the management
 			// server (D7). x/crypto refuses to dial without one, so forgetting

@@ -366,7 +366,10 @@ func (r *Reaper) parseDiscovery(out []byte) []orphan {
 // approved.
 func (r *Reaper) observe(tgt Target, hostKey ssh.PublicKey) {
 	key := tgt.Addr()
-	bare := Target{Host: tgt.Host, Port: tgt.Port}
+	// The route's algorithms survive the copy (phase 0043): a target the route
+	// needed a legacy profile to reach is a target the sweep's management
+	// login needs it for too.
+	bare := Target{Host: tgt.Host, Port: tgt.Port, AlgorithmProfile: tgt.AlgorithmProfile, Algorithms: tgt.Algorithms.Clone()}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -374,6 +377,7 @@ func (r *Reaper) observe(tgt Target, hostKey ssh.PublicKey) {
 		if hostKey != nil {
 			seen.hostKey = hostKey
 		}
+		seen.tgt.AlgorithmProfile, seen.tgt.Algorithms = bare.AlgorithmProfile, bare.Algorithms
 		return
 	}
 	r.seen[key] = &seenTarget{tgt: bare, hostKey: hostKey}

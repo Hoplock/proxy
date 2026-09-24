@@ -14,6 +14,7 @@ import (
 
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // MethodBrokeredKey names the session-scoped credential method (D6a).
@@ -138,7 +139,7 @@ func (a *BrokeredKeyAuthenticator) Provision(ctx context.Context, id *identity.I
 	}
 
 	held := &heldCredential{cred: cred}
-	auth, err := authMethodFor(cred)
+	auth, err := authMethodFor(cred, tgt.Algorithms)
 	if err != nil {
 		held.zero()
 		return nil, err
@@ -185,7 +186,7 @@ func (h *heldCredential) zero() {
 // remains is the parsed key inside the signer, which x/crypto owns and which
 // goes away with the session; a password has no parsed form and is held, and
 // zeroed, by the caller's heldCredential.
-func authMethodFor(cred *Credential) (ssh.AuthMethod, error) {
+func authMethodFor(cred *Credential, algs control.Algorithms) (ssh.AuthMethod, error) {
 	switch {
 	case len(cred.PrivateKey) > 0:
 		var (
@@ -206,7 +207,8 @@ func authMethodFor(cred *Credential) (ssh.AuthMethod, error) {
 			// material, which is what makes this safe to return.
 			return nil, fmt.Errorf("auth/target: parse brokered credential: %w", err)
 		}
-		return ssh.PublicKeys(signer), nil
+		// Restricted to the route's profile (phase 0043).
+		return ssh.PublicKeys(sshalg.Signer(signer, algs)), nil
 	case len(cred.Password) > 0:
 		return ssh.PasswordCallback(func() (string, error) {
 			if len(cred.Password) == 0 {

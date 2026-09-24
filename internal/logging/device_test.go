@@ -103,3 +103,95 @@ func TestASweepFailureSaysWhichObjectWasLeftBehind(t *testing.T) {
 		}
 	}
 }
+
+// TestAConfigChangeRidesTheBatchPath is the decision phase 0043 had to hold:
+// the drift feed is several records per session, and on the priority path it
+// would dilute the meaning PLAN §7 keeps that path for. The mapping event and
+// a sweep failure stay where they were; this asserts both halves, because
+// "the new record is batched" alone would pass on a change that also moved
+// the old ones.
+func TestAConfigChangeRidesTheBatchPath(t *testing.T) {
+	shipper, server := newTestShipper(t, nil)
+	sink := shipper.DeviceSink()
+
+	sink.ConfigChange(target.DeviceConfigChange{
+		Target: "fgt-1:22", Platform: "fortios", SessionID: "sess-1",
+		Op: "create", Name: "hl-a1b2-alice-0f0f0f0f",
+		Fields: map[string]string{"vdom": "root"},
+	})
+	sink.ConfigChange(target.DeviceConfigChange{
+		Target: "fgt-1:22", Platform: "fortios",
+		Op: "delete", ObjectKind: "firewall schedule", Name: "hl-a1b2-ghost-11111111",
+	})
+	sink.AccountMapping(target.AccountMapping{Account: "hl-a1b2-alice-0f0f0f0f", SessionID: "sess-1", Platform: "fortios",
+		AlgorithmProfile: control.AlgorithmProfileLegacyDevice})
+	sink.SweepFailure(target.SweepFailure{Target: "fgt-1:22", Platform: "fortios", Account: "hl-x", Reason: "refused"})
+
+	eventually(t, func() bool { return len(server.priorityRecords()) == 2 }, "the mapping event and the sweep failure on the priority path")
+	flush(t, shipper)
+	for _, rec := range server.priorityRecords() {
+		if rec.Attributes[AttrEvent] == EventDeviceConfigChange {
+			t.Fatal("a configuration change reached the priority endpoint")
+		}
+		if rec.Attributes[AttrEvent] == "device.account.mapping" && rec.Attributes[AttrAlgorithmProfile] != "legacy-device" {
+			t.Errorf("mapping event algorithm_profile = %q, want legacy-device", rec.Attributes[AttrAlgorithmProfile])
+		}
+	}
+
+	var changes []control.LogRecord
+	for _, rec := range server.batchedRecords() {
+		if rec.Attributes[AttrEvent] == EventDeviceConfigChange {
+			changes = append(changes, rec)
+		}
+	}
+	if len(changes) != 2 {
+		t.Fatalf("batched %d configuration changes, want 2", len(changes))
+	}
+	create, del := changes[0], changes[1]
+	if create.Kind != control.LogKindProvisioning || create.Severity != control.SeverityInfo {
+		t.Errorf("change record %s/%s, want provisioning/info", create.Kind, create.Severity)
+	}
+	if create.SessionID != "sess-1" || create.Target != "fgt-1:22" {
+		t.Errorf("change record session %q target %q", create.SessionID, create.Target)
+	}
+	want := map[string]string{
+		AttrPlatform: "fortios", AttrDeviceChangeOp: "create", AttrTargetAccount: "hl-a1b2-alice-0f0f0f0f",
+		AttrDeviceFieldPrefix + "vdom": "root",
+	}
+	for k, v := range want {
+		if create.Attributes[k] != v {
+			t.Errorf("create record %s = %q, want %q", k, create.Attributes[k], v)
+		}
+	}
+	if _, ok := create.Attributes[AttrDeviceObjectKind]; ok {
+		t.Error("an administrator's change carries an object kind")
+	}
+	if del.Attributes[AttrDeviceObjectKind] != "firewall schedule" || del.Attributes[AttrDeviceChangeOp] != "delete" || del.SessionID != "" {
+		t.Errorf("sweep's schedule removal recorded as %+v (session %q)", del.Attributes, del.SessionID)
+	}
+}
+
+// TestExactlyOneNamePerFieldIsEmitted is the naming verdict held by a test
+// rather than by a reviewer's grep (phase 0043): this proxy emits
+// credential_method and credential_rung, and the other spelling of each —
+// target_auth_method and target_auth_rung, which Hoplock Control's plan uses —
+// is not an attribute key anywhere this package defines or its producers
+// stamp.
+func TestExactlyOneNamePerFieldIsEmitted(t *testing.T) {
+	shipper, server := newTestShipper(t, nil)
+	sink := shipper.DeviceSink()
+	sink.AccountMapping(target.AccountMapping{Account: "hl-a", SessionID: "s", Platform: "fortios", Method: "ephemeral-account", Rung: 2})
+	eventually(t, func() bool { return len(server.priorityRecords()) == 1 }, "the mapping event")
+	attrs := server.priorityRecords()[0].Attributes
+	if attrs[AttrCredentialMethod] != "ephemeral-account" || attrs[AttrCredentialRung] != "2" {
+		t.Fatalf("mapping event method/rung = %q/%q", attrs[AttrCredentialMethod], attrs[AttrCredentialRung])
+	}
+	for _, other := range []string{"target_auth_method", "target_auth_rung"} {
+		if _, ok := attrs[other]; ok {
+			t.Errorf("the record also carries %q", other)
+		}
+	}
+	if AttrCredentialMethod != "credential_method" || AttrCredentialRung != "credential_rung" {
+		t.Errorf("the emitted names moved: %q, %q", AttrCredentialMethod, AttrCredentialRung)
+	}
+}

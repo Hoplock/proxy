@@ -73,6 +73,14 @@ const (
 	// estate, and only the second one explains why nothing appears in the
 	// target's logs.
 	stageTargetWithheld stage = "target-auth-withheld"
+	// stageAlgorithmPolicy is a target the route's algorithm profile allows
+	// nothing on some negotiated axis for (phase 0043): it answered and spoke
+	// SSH, and what failed is that the profile offers no key exchange, host
+	// key, cipher or MAC the target does. Reported as stageDial it would send
+	// an operator to the network; the fix is the route's profile. It is an
+	// outage (§4.3) and never scored against a credential (0025). Phase 0045
+	// extends it to floors and bans.
+	stageAlgorithmPolicy stage = "algorithm-policy"
 	// stageCapture is a route that may only run if the session is recorded,
 	// reaching a proxy with no logging path at all (D16, bounds.go). It is
 	// outage-class: the estate cannot record, the user asked for nothing wrong,
@@ -164,6 +172,12 @@ func outageDetail(err error) string {
 		// ticket: this is the proxy's credential, so it is not the user's to
 		// fix and a different key of theirs will not help.
 		return "the proxy's own credential for this target was refused"
+	case stageAlgorithmPolicy:
+		// Says what is true and what points at the fix — the target and this
+		// route's allowed algorithms do not meet — and nothing about which
+		// algorithms, which profile, or what the target offered: those are the
+		// operator's, on the record (PLAN §4.3).
+		return "the target does not support the algorithms this route allows"
 	case stageTargetWithheld:
 		// The same non-disclosure, plus the one thing that distinguishes it:
 		// nothing was attempted. An operator who reads "refused" and finds no

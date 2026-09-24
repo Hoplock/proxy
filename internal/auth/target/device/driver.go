@@ -59,18 +59,21 @@ type Driver interface {
 	// name that already exists is reported with ErrAccountExists so the caller
 	// can retry with a fresh token; the retry budget is the provisioner's, not
 	// the driver's.
-	CreateAccount(ctx context.Context, req CreateRequest) (*Account, error)
+	//
+	// Every mutating operation RETURNS the configuration changes it made on the
+	// device (phase 0043), including on failure — see Change for the rule.
+	CreateAccount(ctx context.Context, req CreateRequest) (*Account, []Change, error)
 
 	// InstallCredential installs one credential on an account this driver
 	// created. The kind must be one the platform accepts
 	// (Capabilities.CredentialKinds); anything else is ErrUnsupported and never
 	// a substitution of the other kind.
-	InstallCredential(ctx context.Context, req CredentialRequest) error
+	InstallCredential(ctx context.Context, req CredentialRequest) ([]Change, error)
 
 	// RemoveAccount removes an account this proxy created. It must be
 	// IDEMPOTENT: teardown runs on the normal path, on error, and from the
 	// reaper, and an account that is already gone is a success, not a failure.
-	RemoveAccount(ctx context.Context, req RemoveRequest) error
+	RemoveAccount(ctx context.Context, req RemoveRequest) ([]Change, error)
 
 	// ListAccounts enumerates the accounts on the device that belong to this
 	// proxy, so the reaper can find what a crashed session left behind.
@@ -79,6 +82,47 @@ type Driver interface {
 	// driver's own guess: one proxy's reaper deleting another's live accounts
 	// on a shared device is the failure this argument exists to prevent.
 	ListAccounts(ctx context.Context, req ListRequest) ([]Account, error)
+}
+
+// ChangeOp is what a Change did to an object.
+type ChangeOp string
+
+const (
+	ChangeCreate ChangeOp = "create"
+	ChangeModify ChangeOp = "modify"
+	ChangeDelete ChangeOp = "delete"
+)
+
+// Change is one configuration change a driver made on a device (phase 0043).
+//
+// Drivers REPORT DATA; they do not emit. The provisioner and the reaper turn
+// what a driver returns into the `device.config.change` record — the producer
+// of the drift reconciliation feed (PLAN §5.3, §12) — through
+// target.DeviceEventSink. A driver that held a telemetry sink would put audit in
+// the credential plane, and would make the declarative driver document and the
+// subprocess contract D13 defers carry a sink too; returning the change is
+// what keeps a driver a description of a platform.
+//
+// THE RULE, the same for every operation: a driver reports every change it
+// COMPLETED, whether or not the operation as a whole succeeded, and never one
+// it only attempted. So a create that wrote a schedule and then failed on the
+// administrator reports the schedule; a rollback that then deleted it reports
+// that too; and an object whose write failed is not reported, because nothing
+// changed — what such a failure leaves behind is the reaper's, whose removal
+// is a change of its own. Deleting an object that was already gone is not a
+// change, which is how idempotent removal stays honest in the feed.
+//
+// A Change carries no credential material, ever: installing a credential is a
+// ChangeModify on the administrator, and the password or key is not named.
+type Change struct {
+	// Op is what happened to the object.
+	Op ChangeOp
+	// ObjectKind is empty for an administrator, which is what a driver
+	// creates, and otherwise names the object — Residue.Kind's vocabulary,
+	// "firewall schedule" for the entry a FortiGate carries a deadline in.
+	ObjectKind string
+	// Name is the object's name on the device.
+	Name string
 }
 
 // Endpoint is the device an operation is performed against, and the identity of
@@ -115,6 +159,16 @@ type Endpoint struct {
 	// its own trust decision to describe, and describing it as an SSH callback
 	// would be worse than leaving this field unread.
 	HostKeyCallback ssh.HostKeyCallback
+	// Algorithms is what the driver's privileged connection may negotiate,
+	// expanded from the route's algorithm profile (phase 0043).
+	//
+	// It rides here beside HostKeyCallback and for the same reason: the dialer
+	// is built once at startup and the choice is the server's, per route. A
+	// device that needs SHA-1 to be provisioned needs it to be swept, so the
+	// reaper keeps it on the endpoint it sweeps from — a sweep that cannot dial
+	// leaves a standing administrator on a customer's firewall. Zero means the
+	// dialer's own SSHShellOptions, and failing those the default profile.
+	Algorithms control.Algorithms
 }
 
 // CreateRequest asks a driver to create one short-lived administrator.
@@ -457,7 +511,7 @@ type ResidueSweeper interface {
 
 	// RemoveResidue removes one object this proxy created. Like RemoveAccount
 	// it is IDEMPOTENT: an object that is already gone is a success.
-	RemoveResidue(ctx context.Context, req RemoveRequest) error
+	RemoveResidue(ctx context.Context, req RemoveRequest) ([]Change, error)
 }
 
 // RoleValidator is implemented by a driver whose platform can rule an

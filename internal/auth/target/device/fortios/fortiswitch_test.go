@@ -74,7 +74,7 @@ func TestSwitchLifecycleAgainstTheDevice(t *testing.T) {
 	ctx := context.Background()
 	const name = "hl-p1-alice-abc123"
 
-	acct, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name})
+	acct, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestSwitchLifecycleAgainstTheDevice(t *testing.T) {
 		t.Fatalf("created %+v, want name %q profile %q", acct, name, testSwitchProfile)
 	}
 
-	if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+	if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h.ep, Name: name,
 		Kind: control.CredentialKindPassword, Password: "s3cret-value",
 	}); err != nil {
@@ -100,7 +100,7 @@ func TestSwitchLifecycleAgainstTheDevice(t *testing.T) {
 		t.Fatalf("listed %+v, want just %q", found, name)
 	}
 
-	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if _, ok := h.dev.Accounts()[name]; ok {
@@ -108,7 +108,7 @@ func TestSwitchLifecycleAgainstTheDevice(t *testing.T) {
 	}
 	// Removal is idempotent because teardown runs on the normal path, on
 	// error, and from the reaper.
-	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("second remove: %v", err)
 	}
 	if n := h.dev.StrandedSessions(); n != 0 {
@@ -128,7 +128,7 @@ func TestSwitchInstallsAPublicKey(t *testing.T) {
 	ctx := context.Background()
 	const name = "hl-p1-bob-def456"
 
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	signer, err := sshtest.GenerateSigner()
@@ -136,7 +136,7 @@ func TestSwitchInstallsAPublicKey(t *testing.T) {
 		t.Fatalf("key: %v", err)
 	}
 	authorized := string(ssh.MarshalAuthorizedKey(signer.PublicKey()))
-	if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+	if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h.ep, Name: name,
 		Kind: control.CredentialKindPublicKey, PublicKey: authorized,
 	}); err != nil {
@@ -181,7 +181,7 @@ func TestSwitchRefusesAUnitThatIsNotOne(t *testing.T) {
 		if err != nil {
 			t.Fatalf("driver: %v", err)
 		}
-		_, err = driver.CreateAccount(context.Background(), device.CreateRequest{
+		_, _, err = driver.CreateAccount(context.Background(), device.CreateRequest{
 			Endpoint: device.Endpoint{
 				Host: dev.Host(), Port: dev.Port(), SessionID: "sess-1",
 				HostKeyCallback: ssh.FixedHostKey(dev.HostKey()),
@@ -204,7 +204,7 @@ func TestSwitchRefusesAUnitThatIsNotOne(t *testing.T) {
 
 	t.Run("a unit that will not say what it is", func(t *testing.T) {
 		h := newSwitchHarness(t, sshtest.FortiOSOptions{Faults: sshtest.FortiOSFaults{HideIdentity: true}})
-		_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: "hl-p1-eve-bbb222"})
+		_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: "hl-p1-eve-bbb222"})
 		if !errors.Is(err, ErrNotAFortiSwitch) {
 			t.Fatalf("create returned %v, want ErrNotAFortiSwitch", err)
 		}
@@ -229,7 +229,7 @@ func TestSwitchRefusesFortiOSBuiltinProfiles(t *testing.T) {
 			// And it is refused BEFORE anything is dialled, so the mistake
 			// never leaves a half-created administrator behind.
 			h := newSwitchHarness(t, sshtest.FortiOSOptions{})
-			_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+			_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 				Endpoint: h.ep, Name: "hl-p1-carol-ccc333", Profile: profile,
 			})
 			if err == nil {
@@ -263,7 +263,7 @@ func TestSwitchDeclaresNoExpiryAndRefusesALifetime(t *testing.T) {
 	}
 
 	h := newSwitchHarness(t, sshtest.FortiOSOptions{})
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: "hl-p1-dave-ddd444", Lifetime: time.Hour,
 	})
 	// ErrUnsupported here and NOT on the misrouted-unit path above: this one
@@ -301,7 +301,7 @@ func TestSwitchRefusesRouteFields(t *testing.T) {
 		t.Fatalf("FortiSwitchOS declares route fields %+v", fields)
 	}
 	h := newSwitchHarness(t, sshtest.FortiOSOptions{})
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: "hl-p1-erin-eee555",
 		Fields: map[string]string{"switch": "S248EPTF19000001"},
 	})
@@ -330,7 +330,7 @@ func TestSwitchNameLimitIsTheDeclaredOne(t *testing.T) {
 
 	h := newSwitchHarness(t, sshtest.FortiOSOptions{})
 	long := "hl-p1-" + strings.Repeat("z", sshtest.FortiSwitchMaxNameLen)
-	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: long}); err == nil {
+	if _, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: long}); err == nil {
 		t.Fatal("create accepted a name longer than the platform's limit")
 	}
 }
@@ -341,7 +341,7 @@ func TestSwitchNeverAdopts(t *testing.T) {
 	h := newSwitchHarness(t, sshtest.FortiOSOptions{
 		Accounts: []sshtest.FortiOSAccount{{Name: name, Profile: "super_admin", Password: "somebody-elses"}},
 	})
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{Endpoint: h.ep, Name: name})
 	if !errors.Is(err, device.ErrAccountExists) {
 		t.Fatalf("create returned %v, want device.ErrAccountExists", err)
 	}
@@ -361,7 +361,7 @@ func TestSwitchUnreachableIsRetryableAndNotASilentSuccess(t *testing.T) {
 	ctx := context.Background()
 	h.dev.SetUnreachable(true)
 
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: "hl-p1-gina-ggg777"}); err == nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: "hl-p1-gina-ggg777"}); err == nil {
 		t.Fatal("create against an unreachable switch reported success")
 	} else if errors.Is(err, device.ErrUnsupported) {
 		// A device that is down is a RETRYABLE failure. Reporting it as
@@ -377,7 +377,57 @@ func TestSwitchUnreachableIsRetryableAndNotASilentSuccess(t *testing.T) {
 	}
 
 	h.dev.SetUnreachable(false)
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: "hl-p1-gina-ggg777"}); err != nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: "hl-p1-gina-ggg777"}); err != nil {
 		t.Fatalf("create after the switch came back: %v", err)
+	}
+}
+
+// TestSwitchReportsWhatItChanged is the switch's half of phase 0043's driver
+// contract: each mutating operation returns the changes it completed, an
+// idempotent removal of something already gone returns none, and nothing
+// returned names a credential.
+func TestSwitchReportsWhatItChanged(t *testing.T) {
+	h := newSwitchHarness(t, sshtest.FortiOSOptions{})
+	ctx := context.Background()
+	name := "hl-p1-carol-c0ffee"
+
+	_, created, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+		Endpoint: h.ep, Name: name, Kind: control.CredentialKindPassword, Password: "S3cret-for-the-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		what string
+		got  []device.Change
+		want []device.Change
+	}{
+		{"create", created, []device.Change{{Op: device.ChangeCreate, Name: name}}},
+		{"install", installed, []device.Change{{Op: device.ChangeModify, Name: name}}},
+		{"remove", removed, []device.Change{{Op: device.ChangeDelete, Name: name}}},
+		{"remove again", again, nil},
+	} {
+		if len(c.got) != len(c.want) {
+			t.Errorf("%s reported %+v, want %+v", c.what, c.got, c.want)
+			continue
+		}
+		for i := range c.got {
+			if c.got[i] != c.want[i] {
+				t.Errorf("%s reported %+v, want %+v", c.what, c.got, c.want)
+			}
+		}
 	}
 }

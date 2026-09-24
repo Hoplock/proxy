@@ -23,6 +23,7 @@ import (
 	"github.com/hoplock/proxy/internal/identity"
 	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/routing"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // failureDeliveryGrace is how long a failed session waits for the client to
@@ -334,6 +335,11 @@ func (s *session) setup() {
 		// The route's enforcement choice, deep-copied: the decision may be a
 		// cached one shared with other sessions (PLAN §6.4).
 		Enforcement: target.EnforcementFrom(route.Enforcement, route.Filter),
+		// The route's algorithm profile and its expansion, so every connection
+		// the credential plane opens to this target offers what the session
+		// leg below offers (phase 0043).
+		AlgorithmProfile: route.AlgorithmProfile.Resolve(),
+		Algorithms:       route.Algorithms(),
 	})
 	if err != nil {
 		s.failSetup(s.provisionError(err))
@@ -371,6 +377,16 @@ func (s *session) provisionError(err error) error {
 		// guarantee inherits nothing from a torn-down one, which is an estate
 		// fact and not a fault of this session's credentials.
 		return &setupError{stage: stageProvisionUID, err: err}
+	}
+	if target.IsAlgorithmPolicyUnmet(err) {
+		// The credential plane's own connection to the target — the ephemeral
+		// method's management login, a device driver's privileged CLI — could
+		// not agree an algorithm under the route's profile (phase 0043). On a
+		// device route that is where a stranded target is found, before any
+		// session leg exists, and it is the same failure with the same fix as
+		// the one dialTarget classifies: the route's profile.
+		s.recordAlgorithmPolicyUnmet(err)
+		return &setupError{stage: stageAlgorithmPolicy, err: err}
 	}
 	return &setupError{stage: stageProvision, err: err}
 }
@@ -470,6 +486,12 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 	cfg := *access.ClientConfig
 	cfg.HostKeyCallback = s.hostKeyCallback
 	cfg.Timeout = s.srv.dialTimeout
+	// The route's algorithm profile, on every axis (phase 0043). Set here and
+	// not by the authenticator because the session leg is the engine's to dial,
+	// as the host-key policy above is; the authenticator restricted its signer
+	// to the same profile. Never left empty: an empty field is the library's
+	// client defaults, which offer SHA-1 on three axes.
+	sshalg.Apply(&cfg, s.route.Algorithms())
 
 	addr := s.route.Addr()
 	dialer := net.Dialer{Timeout: s.srv.dialTimeout}
@@ -492,6 +514,16 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 			// credential was refused, so it must not be scored as if it had
 			// been.
 			return &setupError{stage: stageHostKey, err: hostKeyErr}
+		}
+		// Second: the target and the route's profile have no algorithm in
+		// common on some axis (phase 0043). Authentication was never reached,
+		// so this is never scored against the credential (0025) — it is
+		// classified before DialOutcome, which would not score it either, so
+		// that the two cannot come apart. It sends the operator to the route's
+		// profile rather than to the network.
+		if target.IsAlgorithmPolicyUnmet(err) {
+			s.recordAlgorithmPolicyUnmet(err)
+			return &setupError{stage: stageAlgorithmPolicy, err: err}
 		}
 		// The credential plane is told what the handshake did and decides
 		// whether it was a refusal; the engine asks the same package which it

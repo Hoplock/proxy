@@ -18,6 +18,7 @@ import (
 
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/identity"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // MethodEphemeralUser names the just-in-time provisioner (D6).
@@ -382,7 +383,9 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 	return &ProvisionedAccess{
 		ClientConfig: &ssh.ClientConfig{
 			User: principal,
-			Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
+			// Restricted to the route's profile (phase 0043); the other axes
+			// are applied by the engine when it dials.
+			Auth: []ssh.AuthMethod{ssh.PublicKeys(sshalg.Signer(signer, tgt.Algorithms))},
 			// HostKeyCallback is the proxy's to set (D7), as on every
 			// implementation of this interface.
 		},

@@ -165,7 +165,33 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 		// softest and tells an honest user nothing they can act on.
 		attrs = attrs.Set(logging.AttrCredentialRung, strconv.Itoa(access.Rung))
 	}
+	// The algorithm profile the target leg is dialled under — the one
+	// dialTarget applies from the same route, so the record and the handshake
+	// cannot name different profiles (phase 0043). Stamped always, `default`
+	// included, so absence never has to be read as a value. An audit fact and
+	// not a user-facing one, like the rung above.
+	attrs = attrs.Set(logging.AttrAlgorithmProfile, string(route.AlgorithmProfile.Resolve()))
 	s.rec.Provisioning(fmt.Sprintf("target access provisioned by %s", method), attrs)
+}
+
+// recordAlgorithmPolicyUnmet captures a target the route's algorithm profile
+// allows nothing on some axis for (phase 0043).
+//
+// It is WARN, on the batch path: an outage and not a security event, for the
+// reason PLAN §7 gives a service outage — though it is the event that finds the
+// devices the default profile no longer reaches. The offered list is what an
+// operator reads to move the route to the right legacy profile. It names
+// algorithms, never material.
+func (s *session) recordAlgorithmPolicyUnmet(err error) {
+	axis, offered, _ := target.AlgorithmPolicyUnmet(err)
+	attrs := logging.Attrs{}.
+		Set(logging.AttrEvent, logging.EventAlgorithmPolicyUnmet).
+		Set(logging.AttrStage, string(stageAlgorithmPolicy)).
+		Set(logging.AttrTargetAddr, s.route.Addr()).
+		Set(logging.AttrAlgorithmProfile, string(s.route.AlgorithmProfile.Resolve())).
+		Set(logging.AttrAlgorithmAxis, axis).
+		Set(logging.AttrTargetAlgorithmsOffered, strings.Join(offered, ","))
+	s.rec.Failure("the target supports none of the algorithms this route allows", attrs)
 }
 
 // recordCredentialRejected captures the TARGET refusing the proxy's own

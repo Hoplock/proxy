@@ -480,7 +480,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		string(HopConnectionDial), string(HopConnectionRelay),
 		// The credential plane (D13, D14).
 		"target_auth_ladder", "algorithm_profile", "platform", "credential_kind",
-		"expiry_posture", "lifetime_seconds", "target_auth_rung",
+		"expiry_posture", "lifetime_seconds", "credential_rung",
 		string(TargetAuthEphemeralAccount),
 		string(CredentialKindPassword), string(CredentialKindPublicKey),
 		string(ExpiryPostureTargetEnforced), string(ExpiryPostureProxyEnforced),

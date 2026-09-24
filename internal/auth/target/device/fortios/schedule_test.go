@@ -6,6 +6,7 @@ package fortios
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func expiringHarness(t *testing.T, opts sshtest.FortiOSOptions) *harness {
 
 func createExpiring(t *testing.T, h *harness, lifetime time.Duration) {
 	t.Helper()
-	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	if _, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep,
 		Name:     expiringAccount,
 		Lifetime: lifetime,
@@ -130,7 +131,7 @@ func TestTeardownRemovesBothObjects(t *testing.T) {
 	ctx := context.Background()
 	createExpiring(t, h, time.Hour)
 
-	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
+	if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
 		t.Fatalf("RemoveAccount: %v", err)
 	}
 	if _, ok := h.dev.Accounts()[expiringAccount]; ok {
@@ -142,7 +143,7 @@ func TestTeardownRemovesBothObjects(t *testing.T) {
 
 	// And removal stays idempotent with two objects, because teardown runs on
 	// the normal path, on error, and from the reaper.
-	if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
+	if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
 		t.Errorf("removing an account whose objects are already gone: %v", err)
 	}
 }
@@ -159,7 +160,7 @@ func TestRemovalSweepsAScheduleFromAnAccountItNeverCreated(t *testing.T) {
 		Accounts:  []sshtest.FortiOSAccount{{Name: expiringAccount, Profile: testAccessProfile, Schedule: expiringAccount}},
 		Schedules: []sshtest.FortiOSSchedule{{Name: expiringAccount, Start: "09:00 2031/03/04", End: "17:00 2031/03/04"}},
 	})
-	if err := h.driver.RemoveAccount(context.Background(), device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
+	if _, err := h.driver.RemoveAccount(context.Background(), device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
 		t.Fatalf("RemoveAccount: %v", err)
 	}
 	if _, ok := h.dev.Schedules()[expiringAccount]; ok {
@@ -193,7 +194,7 @@ func TestAnOrphanedScheduleIsResidue(t *testing.T) {
 		t.Error("residue with no kind: an operator reading a failed sweep has to know which object is still on their firewall")
 	}
 
-	if err := h.driver.RemoveResidue(ctx, device.RemoveRequest{Endpoint: h.ep, Name: residue[0].Name}); err != nil {
+	if _, err := h.driver.RemoveResidue(ctx, device.RemoveRequest{Endpoint: h.ep, Name: residue[0].Name}); err != nil {
 		t.Fatalf("RemoveResidue: %v", err)
 	}
 	left := h.dev.Schedules()
@@ -246,7 +247,7 @@ func TestAnUnreadableDeviceClockRefusesTheExpiry(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	_, err := h.driver.CreateAccount(ctx, device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{
 		Endpoint: h.ep, Name: expiringAccount, Lifetime: time.Hour,
 	})
 	if err == nil {
@@ -264,7 +265,7 @@ func TestAnUnreadableDeviceClockRefusesTheExpiry(t *testing.T) {
 
 	// The same unit still serves a route that does not need a clock, because
 	// nothing else in the driver depends on one.
-	if _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
+	if _, _, err := h.driver.CreateAccount(ctx, device.CreateRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
 		t.Errorf("a route with no device-held deadline was refused over the same missing clock: %v", err)
 	}
 }
@@ -276,7 +277,7 @@ func TestAnUnreadableDeviceClockRefusesTheExpiry(t *testing.T) {
 // refuses instead, and refuses before it has dialled anything.
 func TestALifetimeFinerThanTheScheduleIsRefused(t *testing.T) {
 	h := expiringHarness(t, sshtest.FortiOSOptions{})
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: expiringAccount, Lifetime: 30 * time.Second,
 	})
 	if err == nil {
@@ -328,7 +329,7 @@ func TestAnExistingScheduleIsACollisionNotAnAdoption(t *testing.T) {
 	h := expiringHarness(t, sshtest.FortiOSOptions{
 		Schedules: []sshtest.FortiOSSchedule{{Name: expiringAccount, Start: "09:00 2031/03/04", End: "09:31 2031/03/04"}},
 	})
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: expiringAccount, Lifetime: time.Hour,
 	})
 	if !errors.Is(err, device.ErrAccountExists) {
@@ -351,7 +352,7 @@ func TestAnExistingScheduleIsACollisionNotAnAdoption(t *testing.T) {
 // 0014 shipped.
 func TestNoLifetimeWritesNoSecondObject(t *testing.T) {
 	h := expiringHarness(t, sshtest.FortiOSOptions{})
-	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	if _, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: expiringAccount,
 	}); err != nil {
 		t.Fatalf("CreateAccount: %v", err)
@@ -383,7 +384,7 @@ func TestTheDeviceRefusesTheAccountOutsideItsWindow(t *testing.T) {
 	createExpiring(t, h, 10*time.Minute)
 
 	const secret = "not-the-placeholder-abcdefghij"
-	if err := h.driver.InstallCredential(ctx, device.CredentialRequest{
+	if _, err := h.driver.InstallCredential(ctx, device.CredentialRequest{
 		Endpoint: h.ep, Name: expiringAccount, Kind: control.CredentialKindPassword, Password: secret,
 	}); err != nil {
 		t.Fatalf("InstallCredential: %v", err)
@@ -425,7 +426,7 @@ func TestAScheduleInUseIsNotDeletable(t *testing.T) {
 	ctx := context.Background()
 	createExpiring(t, h, time.Hour)
 
-	if err := h.driver.RemoveResidue(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err == nil {
+	if _, err := h.driver.RemoveResidue(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err == nil {
 		t.Error("a schedule an administrator still references was deleted; the driver removes the administrator first for exactly this reason")
 	}
 	if _, ok := h.dev.Schedules()[expiringAccount]; !ok {
@@ -456,7 +457,7 @@ func TestTheScheduleIsReachedThroughGlobalScopeOnAPartitionedUnit(t *testing.T) 
 				t.Errorf("the administrator references %q, want %q", on.Schedule, expiringAccount)
 			}
 
-			if err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
+			if _, err := h.driver.RemoveAccount(ctx, device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount}); err != nil {
 				t.Fatalf("RemoveAccount: %v", err)
 			}
 			if len(h.dev.Schedules()) != 0 || len(h.dev.Accounts()) != 0 {
@@ -490,7 +491,7 @@ func TestAScheduleNameOverTheObjectLimitIsRefusedBeforeAnythingIsCreated(t *test
 	if len(name32) != maxScheduleNameLen+1 {
 		t.Fatalf("this test's fixture is %d characters, not %d", len(name32), maxScheduleNameLen+1)
 	}
-	_, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	_, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: name32, Lifetime: time.Hour,
 	})
 	if err == nil {
@@ -502,7 +503,7 @@ func TestAScheduleNameOverTheObjectLimitIsRefusedBeforeAnythingIsCreated(t *test
 
 	// The same name is fine on a route with no device-held deadline, because
 	// nothing there is named after it.
-	if _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+	if _, _, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
 		Endpoint: h.ep, Name: name32,
 	}); err != nil {
 		t.Errorf("a 32-character administrator was refused on a route that creates no schedule: %v", err)
@@ -568,5 +569,37 @@ func TestThePreExpirationWarningIsSilenced(t *testing.T) {
 	if sched.ExpirationDays != 0 {
 		t.Errorf("expiration-days is %d, want 0: at the device's default of %d this schedule is born inside its own pre-expiration window",
 			sched.ExpirationDays, sshtest.FortiOSDefaultExpirationDays)
+	}
+}
+
+// TestAFailedCreateReportsWhatItWroteAndWhatItUnwound is phase 0043's rule on
+// the one path that writes two objects: a create that committed the schedule
+// and then failed on the administrator reports the schedule's creation AND the
+// rollback's deletion of it — the drift feed sees an object appear and go,
+// rather than never being told about a change that did happen — and nothing
+// for the administrator, which never existed.
+func TestAFailedCreateReportsWhatItWroteAndWhatItUnwound(t *testing.T) {
+	h := expiringHarness(t, sshtest.FortiOSOptions{Faults: sshtest.FortiOSFaults{FailCommand: regexp.MustCompile(`^set schedule `)}})
+	_, changes, err := h.driver.CreateAccount(context.Background(), device.CreateRequest{
+		Endpoint: h.ep, Name: expiringAccount, Lifetime: time.Hour,
+	})
+	if err == nil {
+		t.Fatal("CreateAccount succeeded against a device refusing the schedule reference")
+	}
+	want := []device.Change{
+		{Op: device.ChangeCreate, ObjectKind: scheduleResidueKind, Name: expiringAccount},
+		{Op: device.ChangeDelete, ObjectKind: scheduleResidueKind, Name: expiringAccount},
+	}
+	if len(changes) != len(want) || changes[0] != want[0] || changes[1] != want[1] {
+		t.Fatalf("failed create reported %+v, want %+v", changes, want)
+	}
+	if len(h.dev.Accounts()) != 0 || len(h.dev.Schedules()) != 0 {
+		t.Fatalf("the rollback left %v / %v", h.dev.Accounts(), h.dev.Schedules())
+	}
+
+	// And a removal of something already gone reports nothing.
+	gone, err := h.driver.RemoveAccount(context.Background(), device.RemoveRequest{Endpoint: h.ep, Name: expiringAccount})
+	if err != nil || len(gone) != 0 {
+		t.Fatalf("removing nothing reported %+v, %v", gone, err)
 	}
 }
