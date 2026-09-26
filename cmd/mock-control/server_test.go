@@ -1327,16 +1327,15 @@ routes:
 	}
 }
 
-// TestTheVersionGateIsTheMechanismForTheNextBump is the regression test that
-// protects the NEXT vocabulary. There is one live vocabulary today, so a proxy
-// declaring it gets every route and a proxy declaring anything lower gets the
-// 500 — but the gate is answered per ROUTE (vocabularyVersion), so when a
-// revision tiers its fields above the baseline, only the routes that use them
-// become unservable to a proxy a revision behind.
+// TestTheVersionGateIsAnsweredPerRoute is the regression test for the
+// mechanism phase 0037 kept and phase 0044 is the first to use: vocabulary 5
+// adds the brokered-certificate METHOD, and the gate is answered per ROUTE
+// (vocabularyVersion) — so a proxy one revision behind is refused exactly the
+// routes it could not read, and served every other one.
 //
 // The refusal is an OUTAGE and never a deny: the proxy is not forbidden, the
 // two ends disagree about what can be said.
-func TestTheVersionGateIsTheMechanismForTheNextBump(t *testing.T) {
+func TestTheVersionGateIsAnsweredPerRoute(t *testing.T) {
 	m := startMock(t, nil, serverOptions{})
 
 	authorizeAs := func(t *testing.T, target string, version int) (int, string) {
@@ -1364,23 +1363,38 @@ func TestTheVersionGateIsTheMechanismForTheNextBump(t *testing.T) {
 		payload, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(payload)
 	}
-
-	for _, target := range []string{"anything.company.com", "crown-fw-01.company.com", "edge-fw-01.company.com"} {
-		// A proxy declaring the release vocabulary is served.
-		if got, body := authorizeAs(t, target, control.PolicyVersion); got != http.StatusOK {
-			t.Errorf("%s to a current proxy = %d (%s), want %d", target, got, body, http.StatusOK)
-		}
-		// One below it is not, and is told why rather than handed policy it
-		// would refuse as a protocol error three lines later.
-		got, body := authorizeAs(t, target, control.PolicyVersion-1)
+	refused := func(t *testing.T, target string, version int) {
+		t.Helper()
+		got, body := authorizeAs(t, target, version)
 		if got != http.StatusInternalServerError {
-			t.Errorf("%s to a proxy one vocabulary behind = %d, want %d",
-				target, got, http.StatusInternalServerError)
+			t.Errorf("%s to a proxy on vocabulary %d = %d, want %d", target, version, got, http.StatusInternalServerError)
 		}
 		if !strings.Contains(body, "policy_version") {
 			t.Errorf("body = %s, want it to name the version mismatch", body)
 		}
 	}
+	served := func(t *testing.T, target string, version int) {
+		t.Helper()
+		if got, body := authorizeAs(t, target, version); got != http.StatusOK {
+			t.Errorf("%s to a proxy on vocabulary %d = %d (%s), want %d", target, version, got, body, http.StatusOK)
+		}
+	}
+
+	// Routes with nothing newer than the baseline in them: served to a proxy on
+	// the current vocabulary AND to one a revision behind, which is the
+	// property that keeps a fleet mid-upgrade out of an outage.
+	for _, target := range []string{"anything.company.com", "crown-fw-01.company.com", "edge-fw-01.company.com"} {
+		served(t, target, control.PolicyVersion)
+		served(t, target, baselineVocabulary)
+		// Below the baseline nothing is expressible.
+		refused(t, target, baselineVocabulary-1)
+	}
+
+	// The route that names brokered-certificate: served at 5, refused at 4 —
+	// the proxy that does not know the method must never be sent it.
+	const certified = "pki-fw-01.company.com"
+	served(t, certified, control.PolicyVersion)
+	refused(t, certified, baselineVocabulary)
 
 	// And a proxy that declares NOTHING is refused outright: policy_version has
 	// no absent-value default, because guessing one decides which restrictions
@@ -1391,6 +1405,33 @@ func TestTheVersionGateIsTheMechanismForTheNextBump(t *testing.T) {
 	}
 	if !strings.Contains(body, "policy_version") {
 		t.Errorf("body = %s, want it to name the missing field", body)
+	}
+}
+
+// TestTheMocksHighestTierIsTheClientsVocabulary keeps the server half and the
+// client half of the version mechanism in step. A revision that bumps
+// control.PolicyVersion without tiering its addition here would answer a proxy
+// one revision behind with policy it refuses; one that tiered it without the
+// bump would refuse the proxy that can read it.
+func TestTheMocksHighestTierIsTheClientsVocabulary(t *testing.T) {
+	if vocabularyBrokeredCertificate != control.PolicyVersion {
+		t.Errorf("the mock's highest tier is %d and the client declares %d; tier the new vocabulary in vocabularyVersion",
+			vocabularyBrokeredCertificate, control.PolicyVersion)
+	}
+	if baselineVocabulary >= control.PolicyVersion {
+		t.Errorf("baselineVocabulary = %d is not below the client's %d; the tiering would refuse nothing",
+			baselineVocabulary, control.PolicyVersion)
+	}
+	certified := &control.AuthorizeResponse{TargetAuthLadder: &control.TargetAuthLadder{
+		{Method: control.TargetAuthBrokeredKey, Params: map[string]string{control.ParamUsername: "netadmin"}},
+		{Method: control.TargetAuthBrokeredCertificate, Params: map[string]string{control.ParamUsername: "netadmin"}},
+	}}
+	if got := vocabularyVersion(certified); got != vocabularyBrokeredCertificate {
+		t.Errorf("a ladder naming brokered-certificate on ANY rung needs vocabulary %d, got %d",
+			vocabularyBrokeredCertificate, got)
+	}
+	if got := vocabularyVersion(&control.AuthorizeResponse{}); got != baselineVocabulary {
+		t.Errorf("a response with no ladder needs vocabulary %d, got %d", baselineVocabulary, got)
 	}
 }
 

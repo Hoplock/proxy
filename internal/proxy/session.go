@@ -331,6 +331,7 @@ func (s *session) setup() {
 		Port:            route.Port,
 		Ladder:          route.TargetAuthLadder,
 		SessionID:       s.id,
+		DecisionID:      route.DecisionID, // correlation for a certificate issuance only (PLAN §5.4)
 		HostKeyCallback: s.hostKeyCallback,
 		// The route's enforcement choice, deep-copied: the decision may be a
 		// cached one shared with other sessions (PLAN §6.4).

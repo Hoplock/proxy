@@ -59,6 +59,15 @@ type Target struct {
 	// place the account is tied to anything, and an event that cannot be joined
 	// to a session is not attribution (PLAN §5.3).
 	SessionID string
+	// DecisionID is the authorize decision this session is served by, or empty
+	// when the decision carried none (it is optional on the wire).
+	//
+	// It is CORRELATION for the brokered-certificate issuance call (PLAN §5.4)
+	// and for nothing else: Hoplock Control may cross-check an issuance against
+	// its own decision. No method may decide anything from it — a decision
+	// reused across connections (§6.4) hands every one of them the same id,
+	// which is exactly why the certificate is issued per SESSION instead.
+	DecisionID string
 	// Rung is which entry of Ladder produced Auth, counting from one. It is set
 	// by the Selector and read for the audit record: D14 makes the rung in
 	// force an audit fact, and the user is told nothing about it.
@@ -178,6 +187,16 @@ type ProvisionedAccess struct {
 	// Every field of it is a HANDLE. Nothing here may be, or be derived from,
 	// credential material.
 	Credential RejectionKey
+	// CertificateSerial is the serial of the certificate this access presents,
+	// as the decimal string Hoplock Control issued it under, or empty for a
+	// method that presents none (phase 0044).
+	//
+	// It goes on the authorize record beside Method, because it is what an
+	// operator joins to Control's own row for the certificate. It is the ONE
+	// fact about the certificate that reaches a record: a serial names a
+	// credential without being one, and the certificate itself never leaves
+	// the ClientConfig.
+	CertificateSerial string
 
 	breaker *RejectionBreaker
 	once    sync.Once

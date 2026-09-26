@@ -23,12 +23,22 @@ var ErrNoCredential = errors.New("auth/target: no brokered credential for this t
 // CredentialSource yields the credential a brokered-key session logs into its
 // target with (D6a, PLAN §5.2).
 //
-// THIS IS THE SEAM Hoplock Control's own plan expects to implement. Today the
-// implementations in this file read local material — a directory of key files,
-// or the process environment — selected by the route's opaque
-// `credential_ref`. A future Control that MINTS a per-session credential
-// implements this same interface and arrives as another `target_auth` method,
-// not as another change to everything that touches a credential.
+// The implementations in this file read local material — a directory of key
+// files, or the process environment — selected by the route's opaque
+// `credential_ref`.
+//
+// This comment used to say it was THE SEAM a Hoplock Control that mints
+// per-session credentials would implement. Phase 0044 built that Control's
+// method and answered NO, on purpose (PLAN §5.4): this interface asks "what
+// material do I already hold for this reference", takes no public key and no
+// session correlation, and returns material the proxy did not generate. A
+// minted certificate inverts all three — the proxy generates the key pair, sends
+// only the public half, and gets back a certificate bound to one session — so it
+// arrived as its own method (brokered-certificate, brokeredcert.go) over
+// control.CertificateIssuer, and this interface was deliberately NOT widened:
+// widening it would change every implementation for something none of them
+// does. The half of the promise that held is D6a's: another method, not another
+// breaking change.
 //
 // Two rules bind every implementation, and both are the point of the method
 // rather than hygiene:

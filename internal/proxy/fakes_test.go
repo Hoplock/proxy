@@ -212,6 +212,11 @@ type harnessOptions struct {
 	// algorithmProfile is the route's algorithm profile (phase 0043). Empty is
 	// the contract's absent value, which is the default profile.
 	algorithmProfile control.AlgorithmProfile
+	// targetAuthLadder is the route's credential ladder (D14). Nil is the
+	// contract's absent value: the proxy's locally configured method.
+	targetAuthLadder *control.TargetAuthLadder
+	// cache is the decision's reuse hint (PLAN §6.4). Nil is not cacheable.
+	cache *control.CacheHint
 	// authorize replaces the whole authorize behaviour.
 	authorize func(*control.AuthorizeRequest) (*control.AuthorizeResponse, error)
 	// hostKey replaces the host-key decision.
@@ -300,6 +305,8 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 				Concurrency:             opts.concurrency,
 				GrantContext:            opts.grantContext,
 				AlgorithmProfile:        opts.algorithmProfile,
+				TargetAuthLadder:        opts.targetAuthLadder,
+				Cache:                   opts.cache,
 				DecisionID:              "decision-1",
 			}, nil
 		}

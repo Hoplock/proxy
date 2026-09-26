@@ -316,6 +316,16 @@ var (
 	_ CapabilityReporter = (*CachingClient)(nil)
 )
 
+// Three calls are deliberately NOT on CachingClient at all, rather than passed
+// through: LeaseUIDs (UIDLeaser, phase 0035), IssueCertificate
+// (CertificateIssuer, phase 0044) and the fleet-configuration pair
+// (FleetConfigSource, phase 0042). Each answers something that is wrong the
+// moment it is replayed — a floor, a certificate over one session's key, a
+// document — so a caller must hold the REST client to make them, and wiring
+// this decorator in instead is a compile error. A pass-through would be
+// harmless today and one "optimisation" away from a replayed credential;
+// absence cannot be optimised. lease_test.go and certificate_test.go assert it.
+
 // SetMaxTTL changes the local clamp for decisions stored from now on
 // (CacheOptions.MaxTTL; zero honours the server exactly). It is how a fleet
 // document applies control.cache.max_ttl without a restart (PLAN D18). A

@@ -94,6 +94,15 @@ may ever name it: those scenarios leave the proxy's breaker **open** on that
 credential for the rest of the run, and a second route on the same credential
 would inherit an outage nobody asked for. `test/topology` asserts both halves.
 
+**A user CA, whose private half only the mock Control holds.** `keys/user_ca`
+is mounted into `control` alone (`compose.yaml`) and signs each
+`brokered-certificate` session's public key (phase 0044); `keys/user_ca.pub` is
+what `target` trusts as sshd's `TrustedUserCAKeys` (`target/entrypoint.sh`). No
+proxy mounts either — a proxy generates a key pair per session and never sees the
+CA's key. `certified.company.com` is the route that uses it, on the same
+standing `netadmin` account as the brokered-key routes. `test/topology` pins the
+four files together.
+
 One consequence for re-runs: the breaker's cooldown in `proxy/proxy-direct.yaml`
 is ten minutes, long enough that no assertion in a run can be overtaken by it.
 Re-running `TestTopology/target_credential_rejection` against a rig that has

@@ -144,6 +144,13 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 	attrs := logging.Attrs{}.
 		Set(logging.AttrCredentialMethod, method).
 		Set(logging.AttrTargetAccount, account)
+	if access.CertificateSerial != "" {
+		// The join key to Hoplock Control's own record of the certificate it
+		// minted for this session (phase 0044). A correlation fact rather than
+		// a security event, so it rides this ordinary record on the batch path
+		// (D8). The serial only: the certificate itself is never recorded.
+		attrs = attrs.Set(logging.AttrCredentialCertificateSerial, access.CertificateSerial)
+	}
 	if access.AccountUID > 0 {
 		// The uid outlives the account name, which teardown deletes. Without it
 		// the join key PLAN §5.1 promises between a target's own audit trail and

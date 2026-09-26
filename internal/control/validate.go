@@ -169,6 +169,14 @@ func (a *TargetAuth) validate(where string) error {
 	}
 	switch a.Method {
 	case TargetAuthEphemeralUser, TargetAuthBrokeredKey, TargetAuthStaticKey:
+	case TargetAuthBrokeredCertificate:
+		// username is required below, like every method's; key_type and
+		// lifetime_seconds are permitted and their VALUES are the
+		// authenticator's to parse, exactly as on ephemeral-user. What this
+		// method must never carry — the certificate, its serial, the CA
+		// bundle — is refused at provisioning time as an unknown parameter
+		// (ErrUnknownParam in internal/auth/target), on the split policy.go
+		// states: vocabulary here, parameters there, neither duplicated.
 	case TargetAuthEphemeralAccount:
 		if err := a.validateEphemeralAccount(where); err != nil {
 			return err

@@ -337,9 +337,13 @@ func (s *Selector) resolve(auth *control.TargetAuth) (TargetAuthenticator, error
 
 // implemented reports whether this build has the named method at all, as
 // opposed to having it and lacking the material to run it.
+//
+// brokered-certificate is implemented by every build; what a build may lack is
+// the issuer, and then the rung is ErrMethodUnavailable and skipped exactly as
+// a brokered-key rung on a proxy with no credential source is.
 func implemented(name string) bool {
 	switch name {
-	case MethodEphemeralUser, MethodEphemeralAccount, MethodBrokeredKey, MethodStaticKey:
+	case MethodEphemeralUser, MethodEphemeralAccount, MethodBrokeredKey, MethodBrokeredCertificate, MethodStaticKey:
 		return true
 	default:
 		return false

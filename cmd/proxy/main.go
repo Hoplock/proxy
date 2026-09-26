@@ -179,6 +179,14 @@ func run(configPath string, logger *log.Logger) error {
 		// exists to prevent. CachingClient implements no UIDLeaser, so this is
 		// a compile-time property rather than a convention.
 		Leaser: rest,
+		// Hoplock Control signs each brokered-certificate session's public key
+		// (PLAN §5.4). REST and never the caching client, for the lease's kind
+		// of reason: a certificate answered from memory would be one session's
+		// certificate replayed into another, over a key that session does not
+		// hold. CachingClient implements no CertificateIssuer either. Every
+		// build carries the method; a nil issuer is what would make its rung a
+		// skipped one.
+		Issuer: rest,
 	})
 	if err != nil {
 		return err

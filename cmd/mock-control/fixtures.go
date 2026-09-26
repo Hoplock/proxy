@@ -58,6 +58,10 @@ type fixtures struct {
 	// FleetConfig is the configuration document served to the fleet
 	// (PLAN D18).
 	FleetConfig fixtureFleetConfig `yaml:"fleet_config"`
+	// CertificateAuthority signs brokered-certificate sessions' public keys
+	// (PLAN §5.4). Absent means this server has no authority, and the issuance
+	// endpoint answers 503.
+	CertificateAuthority fixtureCertificateAuthority `yaml:"certificate_authority"`
 }
 
 // fixtureEvents tunes the server→proxy event stream.
@@ -217,6 +221,11 @@ type fixtureRoute struct {
 	// Cache authorises the proxy to reuse this decision. Absent (or a zero
 	// ttl_seconds) means the decision is not cacheable.
 	Cache fixtureCacheHint `yaml:"cache"`
+	// CertificateFault makes the certificates issued against this route's
+	// decisions deliberately wrong in one way (certificate.go). Mock-only: it
+	// is never on the wire, and it is refused on a route whose ladder names no
+	// brokered-certificate rung, where it could do nothing.
+	CertificateFault string `yaml:"certificate_fault"`
 }
 
 // fixtureEnforcement mirrors control.EnforcementPolicy in YAML form.
@@ -316,8 +325,8 @@ type fixtureGlobalRequestPolicy struct {
 
 // fixtureTargetAuth mirrors control.TargetAuth in YAML form.
 type fixtureTargetAuth struct {
-	// Method is "ephemeral-user", "brokered-key", "ephemeral-account", or
-	// "static-key".
+	// Method is "ephemeral-user", "brokered-key", "brokered-certificate",
+	// "ephemeral-account", or "static-key".
 	Method string `yaml:"method"`
 	// Params are method-scoped parameters. Fixture values are never real
 	// secrets — credential_ref names local material, it does not carry it.
@@ -506,7 +515,7 @@ func (f *fixtures) validate() error {
 	// "the route's method" ambiguous the moment there is more than one.
 	checkMethod := func(where, method string) {
 		switch control.TargetAuthMethod(method) {
-		case control.TargetAuthEphemeralUser, control.TargetAuthBrokeredKey,
+		case control.TargetAuthEphemeralUser, control.TargetAuthBrokeredKey, control.TargetAuthBrokeredCertificate,
 			control.TargetAuthEphemeralAccount, control.TargetAuthStaticKey:
 		default:
 			add("%s.method %q is not a known method", where, method)
@@ -593,10 +602,18 @@ func (f *fixtures) validate() error {
 			add("routes[%d].hop_connection %q must be %q or %q", i, r.HopConnection,
 				control.HopConnectionDial, control.HopConnectionRelay)
 		}
+		namesCertificate := false
 		if r.TargetAuthLadder != nil {
 			for j, entry := range *r.TargetAuthLadder {
 				checkMethod(fmt.Sprintf("routes[%d].target_auth_ladder[%d]", i, j), entry.Method)
+				namesCertificate = namesCertificate || entry.Method == string(control.TargetAuthBrokeredCertificate)
 			}
+		}
+		if err := validCertificateFault(r.CertificateFault); err != nil {
+			add("routes[%d].certificate_fault %q %v", i, r.CertificateFault, err)
+		} else if r.CertificateFault != "" && !namesCertificate {
+			add("routes[%d].certificate_fault is set but the ladder names no %s rung", i,
+				control.TargetAuthBrokeredCertificate)
 		}
 		switch control.AlgorithmProfile(r.AlgorithmProfile) {
 		case "", control.AlgorithmProfileDefault, control.AlgorithmProfileLegacyRSASHA1,
@@ -684,6 +701,12 @@ func (f *fixtures) validate() error {
 	}
 
 	if _, err := buildConfigDocument(f.FleetConfig.Document); err != nil {
+		add("%v", err)
+	}
+	if f.CertificateAuthority.LifetimeSeconds < 0 {
+		add("certificate_authority.lifetime_seconds must not be negative")
+	}
+	if err := f.CertificateAuthority.load(); err != nil {
 		add("%v", err)
 	}
 	for i, id := range f.FleetConfig.Enrolled {
@@ -989,29 +1012,42 @@ func (u *fixtureUser) chainIdentity(hop string) *control.Identity {
 	return id
 }
 
+// baselineVocabulary is the vocabulary every response this mock can build is
+// expressible in, unless it uses something tiered above it in
+// vocabularyVersion. It is the release vocabulary phase 0037 collapsed the
+// contract to, and it is NAMED rather than read from control.PolicyVersion on
+// purpose: the client's number moves the moment a revision lands, and a
+// baseline that moved with it would refuse a proxy one revision behind EVERY
+// route, including the ones with nothing new in them — the opposite of what
+// the tiering is for.
+const baselineVocabulary = 4
+
+// vocabularyBrokeredCertificate is the vocabulary that added the
+// brokered-certificate credential method (phase 0044).
+const vocabularyBrokeredCertificate = 5
+
 // vocabularyVersion reports the lowest policy vocabulary that can express this
-// response. A proxy that declared an older version refuses a field it does not
-// know rather than dropping it, so the mock has to know when it is about to
-// send one — see server.go, which answers a 500 rather than policy the proxy
-// would refuse three lines later.
+// response. A proxy that declared an older version refuses a field — or an
+// enum value — it does not know rather than dropping it, so the mock has to
+// know when it is about to send one: see server.go, which answers a 500 rather
+// than policy the proxy would refuse three lines later.
 //
 // It answers per RESPONSE and not per build, which is the whole point: the
 // refusal is per route, so a proxy one revision behind still gets every route
-// it CAN read.
+// it CAN read. Today that means a proxy on vocabulary 4 is served every route
+// except one whose ladder names brokered-certificate — a METHOD it would refuse
+// the whole response for, since an unknown method is unreadable vocabulary and
+// not a rung to skip.
 //
-// There is exactly ONE live vocabulary, so every response this mock can build
-// today is expressible in control.PolicyVersion and this returns that baseline
-// for all of them. It is not vestigial. The NEXT revision tiers its own fields
-// ABOVE the baseline, here, as a case that runs first:
-//
-//	switch {
-//	case r.SomeFieldAddedInVocabulary5 != nil:
-//		return 5
-//	}
-//
-// Every field added to the contract needs such a case, or the mock hands it to
-// a proxy that fails the session closed on it.
+// The next revision adds its own case ABOVE these, highest first. Every
+// addition to the vocabulary needs one, or the mock hands it to a proxy that
+// fails the session closed on it.
 func vocabularyVersion(r *control.AuthorizeResponse) int {
-	_ = r
-	return control.PolicyVersion
+	rungs, _ := r.Ladder()
+	for _, rung := range rungs {
+		if rung.Method == control.TargetAuthBrokeredCertificate {
+			return vocabularyBrokeredCertificate
+		}
+	}
+	return baselineVocabulary
 }

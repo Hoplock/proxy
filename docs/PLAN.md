@@ -73,7 +73,7 @@ three times and you only learn that several hundred words in.
 | **D5** | Generic channel passthrough first, inspection pipeline later | live, **widened by D5a** | §6.2 |
 | **D5a** | Policy has three axes (channel types, in-channel ops, destinations), not one | amends D5 (0006) | §6.2, §6.3 |
 | **D6** | Ephemeral just-in-time target users, created and removed per session | live | §5.1 |
-| **D6a** | Two credential methods, chosen by the **server** per route | amends D6 (0006), **amended by D14** | §5.1, §5.2 |
+| **D6a** | Two credential methods, chosen by the **server** per route | amends D6 (0006), **amended by D14**; its "a Control that mints credentials slots in as another method" is **rendered, not amended**, by 0044's `brokered-certificate` | §5.1, §5.2, §5.4 |
 | **D7** | Host-key policy comes from the server; TOFU in the prototype, every new key reported | live | §6.4 |
 | **D8** | Logs batch to Control; security events go on a **priority path**; disk is a buffer only | live | §7 |
 | **D9** | Go ≥1.26, `x/crypto/ssh`, YAML bootstrap, JSON/HTTPS API | live | §8 |
@@ -769,10 +769,10 @@ type ProvisionedAccess struct {
 }
 ```
 
-There are **three production implementations** (D6a, D13), and Hoplock Control
-picks between them per route in its authorize response — never proxy-local
-config, because one proxy routinely fronts estates that need different
-methods. Since D14 the response carries an **ordered list** rather than a single
+There are **four production implementations** (D6a, D13, and phase 0044's
+`brokered-certificate`), and Hoplock Control picks between them per route in its
+authorize response — never proxy-local config, because one proxy routinely
+fronts estates that need different methods. Since D14 the response carries an **ordered list** rather than a single
 method, and the proxy uses the first entry it can satisfy:
 
 | Method | What it does | For |
@@ -780,6 +780,7 @@ method, and the proxy uses the first entry it can satisfy:
 | `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it afterwards (D6, §5) | Linux/BSD fleets that accept a provisioning account |
 | `brokered-key` | Uses a per-target credential held for the session and never written to disk | Appliances, network and OT gear: anything that cannot create users |
 | `ephemeral-account` | Creates a short-lived administrator on a device through a platform driver and removes it afterwards (D13, §5.3) | Network, security and OT appliances that can create accounts but are not POSIX hosts |
+| `brokered-certificate` | Logs into an existing account with a certificate Hoplock Control minted for **this session**, over a key pair the proxy generated (§5.4) | Anything that trusts a user CA and cannot, or should not, be administered: the brokered estate, with a per-session credential instead of a standing one |
 
 `static-key` remains as the development placeholder from phase 0005 —
 `brokered-key` is what it grows into. A method the proxy does not implement, or
@@ -922,6 +923,24 @@ authorize request, with no absent-value default: a proxy that cannot say what it
 reads is one the server would have to guess for, and the guess decides which
 restrictions get silently dropped.
 
+**As extended (phase 0044).** D6a's closing sentence came true: a Hoplock
+Control that mints target credentials arrived as a **fourth method**,
+`brokered-certificate`, and not as a breaking change. Its entry carries
+**policy only** — `username` (required, like every method's), and the
+`key_type` and `lifetime_seconds` `ephemeral-user` already defines, meaning the
+same two things — and the per-session **artifacts** (the certificate, its
+serial, the CA bundle) come back from a new endpoint,
+`POST /v1/credentials/certificate`, which signs a public key the proxy generated
+for the session. So "no credential material travels on the API" stays literally
+true of `target_auth_ladder`: the entry rides a cacheable decision, and a
+certificate on it would be replayed (§5.4). The method is an **enum value inside
+the strictly decoded response**, which is vocabulary exactly as a field is — an
+unknown method refuses the whole response — so it moved `policy_version`
+**4 → 5**, and the mock tiers it (`vocabularyVersion`), so a proxy still on 4 is
+refused only the routes that name it. The endpoint moved nothing: the number
+governs `/v1/authorize` alone. `target.Target` gained `DecisionID`, correlation
+for the issuance and nothing else.
+
 Both interfaces take/return `identity.Identity` (not booleans) so that AD/Okta
 claims flow through unchanged (D4/D8-answers question 8).
 
@@ -1022,7 +1041,7 @@ tooling that parses the stream is not corrupted.
 ## 5. Target credentials (D6, D6a)
 
 **What a target owes the proxy before any of this works (phase 0025).** All
-three methods below end in the proxy authenticating to the target, and a
+the methods below end in the proxy authenticating to the target, and a
 decrypting proxy is a **single source address** to every target it fronts —
 which is the deployment model, not an artefact of any one topology. A target's
 per-source abuse defences are built on the opposite assumption, so
@@ -1345,8 +1364,9 @@ prerequisite is an account that already exists on it. The proxy is handed
 
 - The credential **never touches disk on the proxy** and never appears in a
   log, an error, or a config file. Where it comes from is a seam — a local
-  secret store today, a Hoplock Control server that mints per-session credentials
-  later (the same credential object grows a method, D6a).
+  secret store. A Hoplock Control that mints per-session credentials is **not**
+  another source behind it but its own method, §5.4 — the credential object grew
+  a method, as D6a said it would.
 - `Teardown` still exists and is still guaranteed, but its job is zeroing the
   in-memory credential and closing the leg — there is no remote state to undo,
   which is exactly why this method works on a device the proxy cannot
@@ -1363,9 +1383,15 @@ prerequisite is an account that already exists on it. The proxy is handed
 carries the target, the route's opaque `credential_ref`, the account name, and
 the subject. Two local implementations ship — a directory of files and the
 process environment, both keyed by the reference and read on demand rather than
-cached. **A Hoplock Control that mints per-session credentials implements this
-interface**; it arrives as another credential method plus a source, and
-nothing that touches a credential changes.
+cached. This paragraph used to promise that **a Hoplock Control that mints
+per-session credentials implements this interface**. Phase 0044 built that
+Control's method and answered **no**, on purpose: `CredentialSource` asks "what
+material do I already hold for this reference", takes no public key and no
+session correlation, and returns material the proxy did not generate — and a
+minted certificate inverts all three. Widening the interface would change every
+implementation for something none of them does, so the method has its own seam,
+`control.CertificateIssuer` (§5.4). The half of the promise that held is D6a's:
+another method, not another breaking change.
 
 **Who the account is (phase 0028).** The route's `username`, or the operator's
 `auth.target.brokered_key.username`, and otherwise the route is refused
@@ -2210,6 +2236,110 @@ consume neither, and rejected as the default: it caps concurrency per device,
 leaves a pool member holding a live credential after a proxy crash, and demotes
 the product's claim from "no standing accounts" to "no standing credentials",
 which is a materially weaker sentence.
+
+### 5.4 `brokered-certificate` — a credential Hoplock Control mints per session (D6a)
+
+The lifecycle is §5.2's, not §5.1's: **nothing is created on the target and
+nothing is removed.** The target already trusts the tenant's user CA and already
+has the account. For each session the proxy generates a key pair, sends the
+public half to Hoplock Control to be signed, logs in with the certificate that
+comes back, and zeroes the private half on teardown. There is no remote state to
+undo, which is exactly why the method reaches devices the proxy cannot
+administer — and unlike §5.2 the credential is **minted for one session and
+expires on its own**, rather than standing and shared.
+
+**The private half never leaves the proxy.** It is generated in memory per
+session (`key_type`, `ed25519` by default, `rsa` for a target too old for it —
+the same vocabulary as `ephemeral-user`'s), is never written to disk, logged, or
+sent anywhere, and teardown overwrites it. Only the public key crosses the API,
+and no private key crosses it in either direction by construction: an authority
+that wanted a private key would have to generate it, and then it would not be
+the proxy's.
+
+**Why the artifacts are not route parameters.** The request that raised this
+phase asked for the certificate, its serial and the CA bundle as `params` on the
+ladder entry. The entry rides the authorize decision, which is **reusable** on a
+server-set TTL (D2, §6.4) — so a certificate on it would be replayed to every
+connection the decision serves, presented past its own `valid_before`, naming one
+serial in many sessions' records, and carrying a trust bundle from before a
+rotation. That is `POST /v1/uids/lease`'s argument (§5.1) about a second
+per-session artifact — *anything cacheable is disqualified* — and it holds harder,
+because a certificate has an expiry of its own. It also could not be otherwise:
+the certificate is signed over a key **that does not exist when the authorize
+call is answered**. So the entry carries **policy** (`username`, `key_type`,
+`lifetime_seconds`), `POST /v1/credentials/certificate` carries the
+**artifacts**, one call per session, and a decision reused for two connections
+produces two issuances over two keys under two serials.
+
+**What the proxy checks before it presents anything.** The certificate must
+parse, be a **user** certificate, certify **the public key just submitted**, have
+a `valid_before` in the future that the response states truthfully, and — when
+the route set `lifetime_seconds` — expire no later than that bound from now: the
+bound is an upper one, which a server may shorten and may not widen. A
+certificate that never expires is refused too; the method's premise is a
+credential that ends on its own. What the proxy does **not** check is what the
+certificate asserts — its principals and extensions are Hoplock Control's to
+decide and the target's to enforce.
+
+**The failure rule, and it is the one judgement the method makes.** A rung is
+**skipped** only when this build structurally cannot satisfy it: here, a proxy
+built with no issuer, which then does not construct the method at all (D14's
+ordinary walk). **A failed issuance is not that.** A transient Control failure,
+a refusal — a `401` included, because the authorization decision was already
+made — and a certificate failing a check above all end the session as an
+**outage** (§4.3), with nothing provisioned, and never walk on to the next rung.
+Walking on would connect with a weaker, standing credential the server did not
+choose for this attempt — the silent downgrade D12-as-amended and D14 both
+forbid — and would do it precisely when Control is unreachable and least able to
+say otherwise.
+
+**It does not provision, and that decides its enforcement.**
+`TargetAuthMethod.Provisions()` answers `false`, as for `brokered-key`: the proxy
+configures nothing on the target, so no **applied** rung is reachable on a route
+that names only this method and only **attested** rungs are (§6.5, D12 as
+amended). Nothing special-cases it; the existing `RequiresProvisioning` check
+does the whole job.
+
+**Attribution, stated carefully.** This is the first method whose credential the
+**target's own audit trail** can tell apart session by session: a standing
+brokered key is one login from the proxy however many people are behind it
+(§5.2), where a certificate minted for one session is a different credential
+every time. What a certificate *asserts* about who it was minted for is Hoplock
+Control's to decide, and this plan claims nothing about it. What it can state is
+the shape — a per-session credential, minted for one session, expiring on its
+own — and that the proxy records the certificate's **serial** beside the method
+(`credential_certificate_serial`, §7), which is the key an operator joins to
+Control's own row for the certificate. The certificate itself is never recorded.
+
+**What it deliberately does not do.** It does not revoke a certificate
+mid-session — the revocation stream's `session_kill` (§6.4) already ends the
+session, which is the coarser answer and the one that exists; a certificate
+revocation event, or a revocation-list check on the session path, is a possible
+later phase. It does not publish the CA bundle to a target: `ca_public_keys` is
+decoded and carried and acted on by nothing, because configuring a target's
+trusted CAs is a provisioning act on a method that provisions nothing. And it is
+a **user** certificate on the proxy→target leg only; target host keys stay on
+D7 and phase 0023's footing.
+
+**As built (phase 0044).** `internal/control` holds the method constant
+(`TargetAuthBrokeredCertificate`, requiring `username`, `Provisions()` false as
+its own declared case), the payloads (`CertificateRequest`,
+`CertificateResponse` with a decimal-string serial read through
+`SerialNumber`), and `CertificateIssuer`, which the REST client implements and
+the caching client deliberately does **not** — as with `UIDLeaser`, wiring the
+cache in is a compile error rather than a replayed credential.
+`internal/auth/target`'s `BrokeredCertificateAuthenticator` refuses an
+unreadable route before generating anything (a missing `username`, an unknown
+parameter — the certificate smuggled in as one included), generates the key,
+calls the issuer, runs the checks, and presents `ssh.NewCertSigner` over the key,
+restricted to the route's algorithm profile like every session-leg signer since
+0043. Its breaker handle is the principal (`principal:<username>`), because what
+a target keeps refusing when it does not trust the CA is every certificate for
+that account. A certificate's expiry may pass the route's bound by at most
+`CertificateClockSkew` (30s), because the bound is measured on the proxy's clock
+and the certificate is dated on Control's. The method has no proxy-local
+configuration and cannot be `auth.target.method`: with no route there is no
+account to mint a certificate for.
 
 ---
 
@@ -3128,6 +3258,16 @@ repository's own contract text, which published them (0-based) while this code
 emitted the other pair; 0043 corrected the contract rather than the code,
 because two producers and every record already stored carry these.
 
+**A certificate's serial, and nothing else about it (phase 0044).** A
+`brokered-certificate` session's provisioning record — the one naming
+`credential_method` — also carries **`credential_certificate_serial`**: the
+decimal serial Hoplock Control issued, which is what an operator joins to
+Control's own row for the certificate (§5.4). It is a correlation fact, not a
+security event, so it rides that ordinary `info` record on the **batch** path
+(D8). The certificate and both halves of the session key are never recorded,
+logged, or put in an error; the serial is the one fact about the credential that
+leaves the proxy.
+
 Still out of scope: tamper-evident/append-only storage at the destination
 (Section 12), and coalescing keystroke-sized chunks into fewer records.
 
@@ -3725,7 +3865,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0041 | A deadline already past ends the session before setup goes on | `session_deadline` is an absolute instant (D16) and a decision may be reused (D2, §6.4), so a route can legitimately arrive carrying a deadline that has **already passed** — and the proxy handles that today by accident rather than by design: `armDeadline` spawns the timer goroutine, `waitUntil` returns immediately on `d <= 0`, `expire` runs, and the whole thing races the rest of session setup with nothing testing it. Make the check **synchronous** and put it in front of capture, concurrency, provisioning and the target dial, then cover it — including the chained case, where `ShortenDeadline` can hand an inner hop an inherited instant that has expired. It is not a contract violation and must not become a denial or an outage: an expiry is §4.3's third case, and the end reason stays `deadline`. Raised from `hoplock/control` phase 0005, which found the path untested while reasoning about what a cached decision replays. **Delivered:** `armDeadline` returns whether setup may continue, ends an already-reached deadline through the ordinary `expire` path, and the call site returns on false — the authorize record is still written, no `stage` is introduced, and `end_reason` stays `session_deadline`. No warning: returning before the timer goroutine exists makes that structural rather than a predicate. The deterministic proof of the ordering is the `noTarget` case, which ended at stage `dial` before this phase and ends as an expiry after it; the chained case covers an inner hop whose inherited instant has already expired. `cmd/mock-control` now **allows a negative `session_deadline_seconds`** in both places that blocked it, as a fixture affordance for reaching a real proxy behaviour — it is not a knob an operator sets. No contract change |
 | 0042 | Fleet configuration distribution | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0006 in [Hoplock/control#27](https://github.com/Hoplock/control/pull/27). Control's M6 makes the fleet a graph and its registry now holds a **versioned configuration document** per proxy — immutable versions per zone and per proxy, composed into one effective document, first-class rollback, drift between desired and running visible in its fleet view. The argument is the one §8 already concedes in a word: a proxy's config is a *bootstrap*, and everything above it is a property of the fleet rather than of the host. What Control could not build is the delivery, and it did not invent it — `RevocationEvent.type` enumerates `session_kill`, `cache_invalidate`, `heartbeat`, `resync`, and none can say "your desired configuration moved" — so its publisher seam is defined, defaulted to a no-op, and visibly unwired. This phase answers the need, and the need is the tip of it: the prompt's four questions (which settings are fleet-owned and which stay bootstrap — **wants a new `D`**, since D2 speaks to policy and is silent on configuration; how the document arrives, given that an inline document on a replayable stream would be replayed as if current; how the running version gets back, given that this contract has no proxy→server call that could carry it; and what a proxy does with a document it cannot apply) are all ones Control's session could not answer, because answering them means reading this plan. `info.version` → **4.2.0**; `policy_version` stays **4** (the number governs `/v1/authorize` and nothing else), and the contract already licenses a new event type without a bump at all: "a proxy ignores a type it does not recognise". Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** **D18**. `config_changed` (version + hash, never the document); `GET /v1/proxies/{proxy_id}/config` (`200`, `204` nothing published, `304` on the held hash as `If-None-Match`, `404 not_enrolled`); `POST /v1/proxies/{proxy_id}/config/report` (`running_*`, `desired_*`, `state` of `applied`/`pending_restart`/`rejected`/`fetch_failed`, `restart_required`, `last_error`). Seventeen fleet-owned settings, two live; a document is applied whole or not at all, one naming a bootstrap setting is rejected whole, and one needing a restart applies nothing and is never reported running. The proxy fetches at startup before building anything, on every stream connect and `resync`, and on each new notification; `ConfigSync` retries a failed fetch and never touches a session or cached decision. The mock serves one document whose hash is derived from the bytes it serves and publishes only through `POST /debug/config` |
 | 0043 | The record says what the proxy actually did | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0010 in [Hoplock/control#32](https://github.com/Hoplock/control/pull/32) — the phase that built its tamper-evident audit store (its **M8**). Three shapes on the records this repository emits, and the surface is `internal/logging`'s attributes rather than `api/` (`attributes` is an open map, so none of it is a schema change). **`algorithm_profile` on the record** — and the request asks for less than it needs: nothing here *applies* the profile today, so the phase carries it onto `routing.Route`, expands the preset in one place, applies it to the session leg, the management login, the driver's privileged CLI connection and the reaper's sweep, and only then stamps it; a record naming a weakening the proxy never performed is the silent downgrade §6.5 forbids, and the sentence `api/control.yaml` already publishes — an operator learns a route runs on SHA-1 from the record — is true of nothing until this lands. **`device.config.change`** — the producer §12 already promises for the drift feed, emitted by the provisioner and the reaper from what a driver RETURNS (D13: a driver reports data, it does not hold a sink), on the batch path at `info` so the mapping event's priority path keeps its meaning. **One name per field** — `credential_method`/`credential_rung` against Control's `target_auth_*`; this repository owns what it emits, so it settles it and Control is told. **Amended by PR #64's review (the owner's decision):** `default` becomes the library's **secure set** as an explicit list on every axis. It had been x/crypto's client default, which offers SHA-1 key exchange, `hmac-sha1-96` and `ssh-rsa`/`ssh-dss` host keys. The legacy profiles add exactly what they say, and `legacy-device` also gains `ssh-dss` host keys; no finer presets are added, since bans trim a preset instead. That is a tightening announced as a break (`info.version` minor, `policy_version` unchanged, 0028's precedent), and a target it strands fails visibly as `target.algorithm_policy_unmet`, naming what the target offered. Carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the profile is carried on `routing.Route`, expanded once (`control.AlgorithmProfile.Algorithms`), applied through `internal/sshalg` to the session leg, the management login, the driver's CLI and both reapers' sweeps (signers restricted for the public-key axis), then stamped as `algorithm_profile` on the provisioning record and the mapping event — always, `default` included; `default` is the pinned secure set, `info.version` **4.3.0**, `policy_version` still **4**; `stageAlgorithmPolicy` + `target.algorithm_policy_unmet` (warn, batch) on the session leg and at provisioning. Drivers return `[]device.Change` and `recordChanges` emits one `device.config.change` (info, batch) per completed change on every path, sweeps with no session id. **Naming verdict:** keep `credential_method`/`credential_rung`; the contract text that had published `target_auth_*` (0-based) was the source of the split and is corrected |
-| 0044 | Brokered certificates: a credential Control mints per session | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0011 in [Hoplock/control#35](https://github.com/Hoplock/control/pull/35) — the phase that built a complete per-tenant SSH **certificate authority** and could not reach a proxy with it: the ladder's `method` enum names four values and none of them is a certificate, so Control shipped the authority behind a seam that refuses on purpose and a tripwire that fires the day this method lands in its vendored copy. D6a's own closing sentence is what this phase makes true — a Control that mints credentials "slots in as another method rather than another breaking change" — so there is **no new `D`**. Two parts: the `brokered-certificate` method, and `POST /v1/credentials/certificate`, which signs a public key **the proxy generated for this session** (no private key travels, and `AuthorizeRequest` has nowhere to carry a public key). The request asked for the certificate, its serial and the CA bundle as **route parameters**, and that is the one part that changes: `target_auth_ladder` rides a **reusable** decision (D2, §6.4), so a certificate on it is replayed past its own expiry — the argument `POST /v1/uids/lease` already makes about a uid floor — and the value does not exist when the route is decided. The entry carries policy (`username` **required**, `key_type`, `lifetime_seconds`); the issuance response carries the artifacts, and the proxy still records the serial. Provisions nothing, so only **attested** rungs are reachable (§6.5); a failed issuance is **outage-class and never a walk to the next rung**. First `policy_version` revision since 0037: **4 → 5** for the enum value, while the endpoint is outside the number entirely. Contract change — carries a cross-repo obligation **back to the repository that raised it** |
+| 0044 | Brokered certificates: a credential Control mints per session | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0011 in [Hoplock/control#35](https://github.com/Hoplock/control/pull/35) — the phase that built a complete per-tenant SSH **certificate authority** and could not reach a proxy with it: the ladder's `method` enum names four values and none of them is a certificate, so Control shipped the authority behind a seam that refuses on purpose and a tripwire that fires the day this method lands in its vendored copy. D6a's own closing sentence is what this phase makes true — a Control that mints credentials "slots in as another method rather than another breaking change" — so there is **no new `D`**. Two parts: the `brokered-certificate` method, and `POST /v1/credentials/certificate`, which signs a public key **the proxy generated for this session** (no private key travels, and `AuthorizeRequest` has nowhere to carry a public key). The request asked for the certificate, its serial and the CA bundle as **route parameters**, and that is the one part that changes: `target_auth_ladder` rides a **reusable** decision (D2, §6.4), so a certificate on it is replayed past its own expiry — the argument `POST /v1/uids/lease` already makes about a uid floor — and the value does not exist when the route is decided. The entry carries policy (`username` **required**, `key_type`, `lifetime_seconds`); the issuance response carries the artifacts, and the proxy still records the serial. Provisions nothing, so only **attested** rungs are reachable (§6.5); a failed issuance is **outage-class and never a walk to the next rung**. First `policy_version` revision since 0037: **4 → 5** for the enum value, while the endpoint is outside the number entirely. Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the method (`TargetAuthBrokeredCertificate`; `username` required, `key_type` and `lifetime_seconds` permitted; `Provisions()` false as its own case) and `POST /v1/credentials/certificate` (`{session_id, decision_id, target, username, public_key}` → `{certificate, serial (a decimal string), valid_before, ca_public_keys}`); `policy_version` **5** and `info.version` **4.4.0**, with the mock tiering the method so a v4 proxy is refused only the routes naming it. `BrokeredCertificateAuthenticator` generates a key per session, checks what it is issued (parses, user certificate, over the submitted key, stated expiry true, not expired, not forever, within the route's bound plus 30s of clock skew) and zeroes the key on teardown; every failure — a `401` from issuance included — is an outage and never a walk down the ladder, while a build with no issuer skips the rung. `CachingClient` implements no `CertificateIssuer`. The serial rides the provisioning record as `credential_certificate_serial`. `CredentialSource` was **not** widened: §5.2's promise that a minting Control would implement it is corrected there, with the reasoning, and the method has its own seam. The mock is a minimal CA (ed25519 key from the material directory, the route's username as sole principal, a rising serial, deliberate faults per route) and the e2e target trusts it via `TrustedUserCAKeys` |
 | 0045 | A floor under the target leg: `algorithm_floor` | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#36](https://github.com/Hoplock/control/pull/36) while it queued its post-quantum posture phase. `algorithm_profile` can only **weaken** the proxy→target leg, so policy can say a route may use SHA-1 and cannot say a route must negotiate a hybrid post-quantum key exchange. Taken as asked: `algorithm_floor`, a **sibling** of the profile (a floor is a minimum, a profile a weakening preset, and a route may want `default` and a floor), refused rather than coerced, and vocabulary — so `policy_version` moves to the next number above 0044's. Three corrections the requester could not see: the request's `sntrup761x25519-sha512` is **not implemented by `x/crypto/ssh`** (D9), so the floor is defined as a property whose one member this proxy offers today is `mlkem768x25519-sha256`; the attribute is `target_kex_algorithm`, because a record here describes three SSH legs and target-leg facts carry the `target_` prefix; and the profile × floor refusal is by **axis** — `legacy-device` (widens key exchange) is refused, `legacy-rsa-sha1` (signatures only) is accepted. **Amended in review** so an administrator can turn the floor like a dial: it is an **ordered ladder** `modern-kex` < `pq-hybrid-kex`, where each level accepts a subset of the one below, and that nesting is the contract's rule for adding a level (FIPS-like regimes that don't nest are not rungs). Each proxy **declares** the levels and per-build key exchanges it enforces on `AuthorizeRequest.capabilities`, and the server must not send an undeclared level. Proxies **report** the highest level each target was seen to meet on `TargetCapabilities.kex`, from every credential method, off the session path, merged without overwriting the rung observation. That gives Control an impact preview before it raises a floor. **Amended again:** `algorithm_bans`, per route and per axis, lets an administrator remove a vulnerable algorithm without waiting for a release. It is a list, but it can only narrow, and §4.2 gains the rule that a list may narrow a route but never widen it. Bans are applied last, subtracted from what the route would otherwise offer (never from the library's "supported" set, which would add algorithms), and pinned by a KEXINIT test. They are recorded per negotiated axis, and the emergency runbook is ban → `cache_invalidate` → `session_kill`. The review also found that x/crypto's client **default** offers a SHA-1 key exchange, `hmac-sha1-96`, and `ssh-rsa`/`ssh-dss` host keys, none of which this repository overrides today. **The owner decided** that `default` means the library's secure set, which 0043 builds as a break; 0045 extends 0043's `target.algorithm_policy_unmet` classifier to floors and bans. An unmet floor is the **outage** branch of §4.3, not a deny, never a ladder walk (D14) and never scored against the credential (0025). Depends on **0043**, which carries and expands the profile on every connection the floor must also reach. Contract change — carries a cross-repo obligation **back to the repository that raised it** |
 | 0046 | A bounded log buffer, and a refused record that no longer blocks the rest | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#39](https://github.com/Hoplock/control/pull/39) by the sync that followed 0043. The shipper has one failure branch: any error spills, and the drain retries the oldest segment until the server takes it, so one record Control refuses with a `400` stops all of a proxy's delivery, critical records included, while nothing bounds the disk. The request asks for a window that evicts the oldest records, with every eviction reported, and for a refused record to be set aside instead of retried. **Taken as asked:** the window, reported eviction, priority records evicted after batch ones, isolation by splitting the batch, and `5xx`/transport/`401` unchanged. **Corrected:** the window is **bytes, not age**. Eviction goes by class (set-aside, then stream, then other batch, then priority, oldest first within each), because a flooded terminal must not push other sessions' metadata out. A session under `require_session_capture`, and one whose constrained mapping event is its only attribution, is **pinned and never evicted**, which keeps D16's "recorded, not even to its disk buffer" true, and `Deliverable()` goes false only when pinned records fill the window. A refusal is exactly `400` (or a middlebox's `413`), never `ErrBadRequest`, which covers every 4xx but `401`. Isolation is by bisection and adds no contract field. The report is one `logging.gap` record (`kind: error`, because Control refuses unknown kinds) per affected session. **Two more triggers the request could not see:** Control's ingest accepts `session_id: ""` only on `error`, which refuses this proxy's `policy_decision` sweep failure on the priority path, and this repository's own mock refuses `""` on both endpoints. So the contract states that `""` means no session and MUST be accepted on any kind. **D8 amended in place**, D16 not amended; the window setting is bootstrap under D18; `info.version` next minor, `policy_version` unchanged. Contract change: carries a cross-repo obligation **back to the repository that raised it** |
 

@@ -67,8 +67,17 @@ type server struct {
 	// test can assert "one call per block, not per session".
 	uidCursor map[string]int
 	uidLeases map[string]int
-	batched   []control.LogRecord
-	priority  []control.LogRecord
+	// certGrants is what each decision naming brokered-certificate licensed,
+	// by decision id, so an issuance is cross-checked against the decision it
+	// cites (certificate.go). certSerial is the last serial issued: it only
+	// ever rises, and POST /debug/reset leaves it alone for the uid cursor's
+	// reason — a serial issued twice is a join key that joins two sessions.
+	// certIssued counts issuances per session.
+	certGrants map[string]certificateGrant
+	certSerial uint64
+	certIssued map[string]int
+	batched    []control.LogRecord
+	priority   []control.LogRecord
 	// logSinkDown makes both log endpoints answer 503 (pathDebugLogSink). It is
 	// a property of the mock and of nothing in the contract.
 	logSinkDown bool
@@ -121,6 +130,8 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 		capabilities: make(map[string]*control.TargetCapabilities),
 		uidCursor:    make(map[string]int),
 		uidLeases:    make(map[string]int),
+		certGrants:   make(map[string]certificateGrant),
+		certIssued:   make(map[string]int),
 		subs:         make(map[*subscriber]bool),
 		// The fixture document was built once by validate, so a malformed one
 		// never gets this far.
@@ -173,6 +184,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+control.PathReportHostKey, s.handleReportHostKey)
 	mux.HandleFunc("POST "+control.PathReportCapabilities, s.handleReportCapabilities)
 	mux.HandleFunc("POST "+control.PathLeaseUIDs, s.handleLeaseUIDs)
+	mux.HandleFunc("POST "+control.PathIssueCertificate, s.handleIssueCertificate)
 	mux.HandleFunc("POST "+control.PathIngestLogBatch, s.handleIngestLogBatch)
 	mux.HandleFunc("POST "+control.PathIngestPriorityLog, s.handleIngestPriorityLog)
 	// The path constant is already a net/http wildcard pattern, so the proxy
@@ -400,14 +412,19 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// three lines later.
 	//
 	// The version is the ROUTE's, not the build's, so a proxy one revision
-	// behind still gets every route it CAN read. With one live vocabulary that
-	// is every route; the next revision is what makes the distinction bite
-	// again (vocabularyVersion).
+	// behind still gets every route it CAN read: a proxy on vocabulary 4 is
+	// refused only the routes whose ladder names brokered-certificate
+	// (vocabularyVersion).
 	if needed := vocabularyVersion(resp); req.PolicyVersion < needed {
 		writeError(w, http.StatusInternalServerError, "policy_version",
 			fmt.Sprintf("this route needs policy vocabulary %d; the proxy declared %d",
 				needed, req.PolicyVersion))
 		return
+	}
+	// A decision naming brokered-certificate is what a later issuance cites.
+	// It is remembered only once it is actually answered.
+	if grant, ok := grantFor(resp, route.CertificateFault); ok {
+		s.rememberCertificateGrant(decisionID, grant)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

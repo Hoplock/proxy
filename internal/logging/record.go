@@ -95,6 +95,13 @@ const (
 	AttrAccessProfile    = "access_profile"     // the platform's own scope for a device account
 	AttrLifetimeSeconds  = "lifetime_seconds"   // how long a provisioned credential was meant to live
 	AttrNameConstrained  = "name_constrained"   // true when the account name had to drop its login segment
+	// AttrCredentialCertificateSerial goes beside AttrCredentialMethod on the
+	// provisioning record: the serial of the certificate a brokered-certificate
+	// session presented, as the decimal string Hoplock Control issued it under
+	// (phase 0044). It is what an operator joins to Control's own row for the
+	// certificate, and the one fact about the certificate any record carries —
+	// never the certificate, never a key.
+	AttrCredentialCertificateSerial = "credential_certificate_serial"
 	// AttrTargetAddr is the "host:port" the proxy dialled, which is what a
 	// credential rejection is a fact about — the record's own Target field is
 	// the name the USER asked for, and a route resolves it to something else.

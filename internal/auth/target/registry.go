@@ -46,6 +46,18 @@ type Options struct {
 	// range is the block and the floor is the target's own mark — which a
 	// restarted proxy cannot fully trust. Production always supplies one.
 	Leaser control.UIDLeaser
+	// Issuer has Hoplock Control sign each brokered-certificate session's
+	// public key (PLAN §5.4, phase 0044). It is the REST client and never the
+	// caching one, for a reason of the same kind as Leaser's: a certificate
+	// answered from memory is one certificate replayed into a second session,
+	// over a key that session does not hold. CachingClient implements no
+	// CertificateIssuer, so this is a compile-time property.
+	//
+	// Nil means this build has NO MATERIAL for the method, so it is not
+	// constructed and a rung naming it is SKIPPED by the ordinary D14 walk —
+	// the one way this method is ever passed over. A failed issuance is not
+	// that, and ends the session (BrokeredCertificateAuthenticator.Provision).
+	Issuer control.CertificateIssuer
 }
 
 // NewFromConfig builds the proxy's target credential plane.
@@ -94,6 +106,22 @@ func NewFromConfig(cfg config.TargetAuth, opts Options) (TargetAuthenticator, er
 			return nil, err
 		}
 		methods[MethodBrokeredKey] = method
+	}
+
+	if opts.Issuer != nil {
+		// No proxy-local configuration at all: the certificate authority is
+		// Hoplock Control's, and everything the method needs from the route
+		// arrives on the route. Which is also why it cannot be the locally
+		// configured fallback (auth.target.method) — with no route there is no
+		// account to mint a certificate for.
+		method, err := NewBrokeredCertificateAuthenticator(BrokeredCertificateOptions{
+			Issuer: opts.Issuer,
+			Logger: opts.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		methods[MethodBrokeredCertificate] = method
 	}
 
 	if deviceConfigured(cfg.EphemeralAccount) {

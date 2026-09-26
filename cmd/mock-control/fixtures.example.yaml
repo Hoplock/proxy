@@ -230,6 +230,40 @@ routes:
                 # a boundary.
                 optional: true
 
+  # A certificate minted per SESSION (brokered-certificate, PLAN §5.4). The
+  # target already trusts the tenant's CA and already has the account; the
+  # proxy generates a key pair for the session, this server signs its public
+  # half through POST /v1/credentials/certificate, and nothing is created or
+  # removed on the target.
+  #
+  # The entry carries POLICY only. The certificate, its serial and the CA
+  # bundle are NOT params — this decision is cacheable, and a certificate on
+  # it would be replayed to every connection it serves. lifetime_seconds is an
+  # UPPER bound: this server may shorten it and may not widen it.
+  #
+  # The method is vocabulary 5, so a proxy declaring 4 is answered a 500 for
+  # this route and served every other one (vocabularyVersion). Issuance needs
+  # `certificate_authority` below; without it this server answers 503 and the
+  # proxy reports an outage — never a walk down the ladder.
+  - login: svc-deploy
+    target: pki-fw-01.company.com
+    route_type: direct
+    permissions: applianceReadOnly
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+    target_auth_ladder:
+      - method: brokered-certificate
+        params:
+          username: monitor
+          key_type: ed25519
+          lifetime_seconds: "600"
+    filter_policy:
+      mode: whitelist
+      rules:
+        - match: "show version"
+          action: allow_and_log
+
   # A DEVICE, reached with the credential ladder (D14). The server
   # authors the degradation and the proxy never invents it: a short-lived
   # administrator created through the `fortios` driver first, and the standing
@@ -602,6 +636,18 @@ uid_leases:
   # them rather than clamping it.
   range_min: 0
   range_max: 0
+
+# The certificate authority behind POST /v1/credentials/certificate (phase 0044,
+# PLAN §5.4). The mock signs the submitted public key with the route's username
+# as the only principal and a serial that only ever rises, for no longer than
+# the route's lifetime_seconds. No revocation, no rotation: a reference, not a
+# second product. Omit key_path (as this example does, so it parses anywhere)
+# and issuance answers 503 — a tenant with no authority. The e2e topology points
+# it at an ed25519 key deploy/gen-material.sh generates.
+certificate_authority:
+  key_path: ""
+  # Validity when the route names no lifetime_seconds. 0 means five minutes.
+  lifetime_seconds: 300
 
 # Fleet configuration (phase 0042, PLAN D18).
 #
