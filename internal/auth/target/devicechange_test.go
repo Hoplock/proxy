@@ -172,11 +172,15 @@ func TestTheDeadlineRemovalAndAFailedProvisioningEmitToo(t *testing.T) {
 	name := access.ClientConfig.User
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, still := h.dev.Accounts()[name]; !still {
+		// The device drops the account while the driver's Delete is still
+		// running, and the change is recorded only once it returns — so wait for
+		// the RECORD, which is what is asserted, not for the device's table.
+		_, still := h.dev.Accounts()[name]
+		if !still && len(changesOf(h.events.configChanges())) >= 3 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the proxy-enforced deadline did not remove the account")
+			t.Fatal("the proxy-enforced deadline did not remove the account and record it")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

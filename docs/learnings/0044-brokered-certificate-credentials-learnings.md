@@ -95,12 +95,14 @@ old `## 6.` window, §5.4's "As built (phase 0044)" layer was counted as §5.3's
 - An e2e assertion that the target's **own** sshd log names the serial (the
   attribution claim end to end). Left out because the log format could not be
   verified in this session.
-- **A pre-existing flake, not this phase's:**
+- **A pre-existing flake, fixed here at the owner's request:**
   `TestTheDeadlineRemovalAndAFailedProvisioningEmitToo`
-  (`internal/auth/target/devicechange_test.go`, phase 0043) fails under
+  (`internal/auth/target/devicechange_test.go`, phase 0043) failed under
   `go test -race` about 6 runs in 20 on an untouched `main` (measured here with
-  `-count=20`). It waits for the account to vanish from the fake device and then
-  asserts the `delete` change record — but the device drops the account while
-  the driver's `Delete` is still running, before the provisioner records the
-  change. The fix is to wait on the asserted condition (three change records)
-  instead of on the device's table. Not changed here: it is outside this phase.
+  `-count=20`), and once in this PR's CI. It waited for the account to vanish
+  from the fake device and then asserted the `delete` change record — but the
+  device drops the account while the driver's `Delete` is still running, before
+  the provisioner records the change. It now waits on the asserted condition
+  (three change records) as well as the device's table: 0 failures in 110
+  `-race` runs. Test-only; the provisioner was right, and its second half
+  (the rollback) is synchronous and never raced.
