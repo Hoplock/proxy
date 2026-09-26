@@ -21,8 +21,9 @@ import (
 )
 
 // mapCredentialSource is a CredentialSource over material a test holds, and the
-// shortest possible demonstration of the seam: a Hoplock Control that mints
-// per-session credentials implements this same interface.
+// shortest possible demonstration of the seam. (A Hoplock Control that mints
+// per-session credentials does NOT implement it: that is brokered-certificate,
+// its own method — see credentials.go for why.)
 type mapCredentialSource struct {
 	creds map[string]*Credential
 	calls []CredentialRequest

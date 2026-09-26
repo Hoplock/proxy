@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -78,6 +79,7 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 		PathIngestPriorityLog:    "200",
 		PathReportCapabilities:   "200",
 		PathLeaseUIDs:            "200",
+		PathIssueCertificate:     "200",
 		PathProxyConfigReport:    "200",
 	}
 
@@ -212,6 +214,7 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 		// The credential plane (D6a, D13, D14).
 		{"TargetAuth", "method", []string{
 			string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
+			string(TargetAuthBrokeredCertificate),
 			string(TargetAuthEphemeralAccount), string(TargetAuthStaticKey)}},
 		{"AuthorizeResponse", "algorithm_profile", []string{
 			string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
@@ -457,7 +460,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 	for _, path := range []string{
 		PathAuthenticateCert, PathAuthenticatePassword, PathPollMFA, PathAuthorize,
 		PathReportHostKey, PathIngestLogBatch, PathIngestPriorityLog, PathProxyEvents,
-		PathProxyConfig, PathProxyConfigReport,
+		PathProxyConfig, PathProxyConfigReport, PathLeaseUIDs, PathIssueCertificate,
 	} {
 		if !strings.Contains(readme, path) {
 			t.Errorf("%s does not document the path %q", readmePath, path)
@@ -472,7 +475,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		"restricted_exec", "next_proxy_id", "subsystems",
 		"direct_tcpip", "forwarded_tcpip", "port_range",
 		string(TargetAuthEphemeralUser), string(TargetAuthBrokeredKey),
-		string(TargetAuthStaticKey),
+		string(TargetAuthStaticKey), string(TargetAuthBrokeredCertificate),
 		string(ExecModeFiltered), string(ExecModeRestricted),
 		string(CommandFormExact), string(CommandFormPositional),
 		string(ArgumentLiteral), string(ArgumentPrefix), string(ArgumentOneOf),
@@ -495,6 +498,8 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		"report_after_seconds", "enforcement_execution", "enforcement_reach",
 		// The revocation stream's liveness claim (phase 0039).
 		"heartbeat_interval_seconds",
+		// Brokered certificates (phase 0044).
+		"valid_before", "ca_public_keys", "credential_certificate_serial",
 		// Fleet configuration (PLAN D18, phase 0042).
 		string(EventTypeConfigChanged), "running_version", "desired_version",
 		"restart_required", "last_error", "If-None-Match",
@@ -510,4 +515,44 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 			t.Errorf("%s does not document %q", readmePath, name)
 		}
 	}
+}
+
+// TestSpecDocumentsTheCertificatePayloads keeps the issuance endpoint's two
+// payloads and the Go struct tags in step, field by field, and pins the one
+// type choice a server author is most likely to "fix": the serial is a STRING.
+// An SSH serial is a uint64 and a JSON number is not safely integral above
+// 2^53, so the document saying "integer" would license a server to send a
+// join key that silently loses its low digits (phase 0044).
+func TestSpecDocumentsTheCertificatePayloads(t *testing.T) {
+	doc := loadSpec(t)
+
+	for schema, fields := range map[string][]string{
+		"CertificateRequest":  jsonFields(CertificateRequest{}),
+		"CertificateResponse": jsonFields(CertificateResponse{}),
+	} {
+		for _, field := range fields {
+			ref := "#/components/schemas/" + schema + "/properties/" + field
+			if _, ok := resolveRef(doc, ref); !ok {
+				t.Errorf("%s does not document %q, which the Go type sends or reads", schema, field)
+			}
+		}
+	}
+
+	node, ok := resolveRef(doc, "#/components/schemas/CertificateResponse/properties/serial/type")
+	if !ok || node != "string" {
+		t.Errorf("CertificateResponse.serial has type %v; it must be a string, never a JSON number", node)
+	}
+}
+
+// jsonFields lists the JSON names a struct's fields travel under.
+func jsonFields(v any) []string {
+	var names []string
+	rt := reflect.TypeOf(v)
+	for i := 0; i < rt.NumField(); i++ {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
 }

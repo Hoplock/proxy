@@ -457,6 +457,69 @@ func testTargetCredentials(t *testing.T) {
 		}
 	})
 
+	// Phase 0044: the same standing account, reached on a certificate the mock
+	// Control minted for THIS session over a key pair the proxy generated. The
+	// target trusts the tenant CA (deploy/target/entrypoint.sh) and nothing is
+	// created or removed on it — the lifecycle is brokered-key's — but the
+	// credential is per session, and the record carries its serial.
+	t.Run("brokered-certificate logs in on a certificate minted for the session", func(t *testing.T) {
+		const snapshot = "cat /etc/passwd; cat /home/netadmin/.ssh/authorized_keys; ls -la /home/netadmin /home/netadmin/.ssh"
+		// The same wait as the brokered-key scenario above, for the same
+		// reason: an earlier session's account teardown landing between the
+		// snapshots would read as this session modifying the target.
+		waitFor(t, "the previous session's ephemeral account to be removed", func() bool {
+			return !strings.Contains(execIn(t, nodeTarget, "getent", "passwd").stdout, "hl-")
+		})
+		before := execIn(t, nodeTarget, "sh", "-c", snapshot)
+		if before.code != 0 {
+			t.Fatalf("snapshot the target: %v", before)
+		}
+
+		s := svcOn(proxyDirect, "certified.company.com")
+		s.command = "/usr/bin/id -un"
+		r := ssh(t, s)
+		wantExit(t, r, "brokered-certificate", 0)
+		if got := strings.TrimSpace(r.stdout); got != "netadmin" {
+			t.Errorf("brokered-certificate: logged in as %q, want the route's standing account netadmin\n%s", got, r)
+		}
+
+		after := execIn(t, nodeTarget, "sh", "-c", snapshot)
+		if after.stdout != before.stdout {
+			t.Errorf("brokered-certificate modified the target:\n--- before ---\n%s\n--- after ---\n%s",
+				before.stdout, after.stdout)
+		}
+
+		id := sessionIDOf(r)
+		if id == "" {
+			t.Fatalf("brokered-certificate: no session id in the proxy's banner\n%s", r)
+		}
+		var method, serial string
+		waitFor(t, "the provisioning record for this session to be delivered", func() bool {
+			for _, rec := range fetchLogs(t).Batched {
+				if rec.SessionID != id || rec.Kind != "provisioning" || rec.Attributes["credential_method"] == "" {
+					continue
+				}
+				method = rec.Attributes["credential_method"]
+				serial = rec.Attributes["credential_certificate_serial"]
+				return true
+			}
+			return false
+		})
+		if method != "brokered-certificate" {
+			t.Errorf("the provisioning record names credential_method %q, want brokered-certificate", method)
+		}
+		if _, err := strconv.ParseUint(serial, 10, 64); err != nil {
+			t.Errorf("the provisioning record carries credential_certificate_serial %q, want the decimal serial "+
+				"the mock issued: %v", serial, err)
+		}
+		// The serial is the ONE fact about the certificate a record may carry.
+		for _, rec := range recordsOfSession(t, id) {
+			if rec.mentions("-cert-v01@openssh.com") {
+				t.Errorf("a %s record for %s carries a certificate", rec.Kind, id)
+			}
+		}
+	})
+
 	// Phase 0028. The account the proxy logs into a target as never comes from
 	// `identity.Login` — the string the user typed at her own SSH client — so a
 	// session where nothing else names one is REFUSED rather than served on a

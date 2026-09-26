@@ -29,6 +29,15 @@ install_key() {
 install_key /material/management_key.pub /root/.ssh/authorized_keys root:root
 # brokered-key (D6a): the credential for the account that already exists.
 install_key /material/brokered_key.pub /home/netadmin/.ssh/authorized_keys netadmin:netadmin
+# brokered-certificate (phase 0044): the tenant CA the SAME standing account's
+# certificates are signed by. It is sshd's TrustedUserCAKeys, so it lives under
+# /etc/ssh, root-owned — not in the account's .ssh, where StrictModes would
+# judge it by the account's ownership instead. A certificate is then accepted
+# for netadmin only when netadmin is among its principals, which is sshd's
+# default with no AuthorizedPrincipalsFile, and exactly one the mock mints.
+# Only the PUBLIC half is read here; the private half is the mock Control's.
+install_key /material/user_ca.pub /etc/ssh/hoplock_user_ca.pub root:root
+chmod 644 /etc/ssh/hoplock_user_ca.pub
 
 # Generated at start rather than at build: a host key baked into an image is a
 # host key shared by everyone who pulls it. Trust-on-first-use (D7) is what the
@@ -65,6 +74,10 @@ ssh-keygen -A >/dev/null
 # an unknown keyword.
 conf=/etc/ssh/sshd_config.d/hoplock.conf
 : > "$conf"
+# Not in the tolerant loop below: every sshd this image can carry understands it,
+# and a target that silently dropped it would fail the brokered-certificate
+# scenario as a refused credential rather than as the misconfiguration it is.
+printf '%s\n' "TrustedUserCAKeys /etc/ssh/hoplock_user_ca.pub" >> "$conf"
 for directive in \
 	"PerSourcePenalties no" \
 	"PerSourceMaxStartups none" \

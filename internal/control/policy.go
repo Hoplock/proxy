@@ -254,6 +254,19 @@ const (
 	// session and never written to disk (PLAN §5.2), for the appliances, network
 	// gear, and OT devices the proxy cannot administer.
 	TargetAuthBrokeredKey TargetAuthMethod = "brokered-key"
+	// TargetAuthBrokeredCertificate logs into an account that already exists,
+	// on a target that already trusts the tenant's CA, with a certificate
+	// Hoplock Control minted for ONE session over a key pair the proxy
+	// generated for it (PLAN §5.4, phase 0044). Like TargetAuthBrokeredKey it
+	// creates and removes nothing on the target; unlike it, the credential is
+	// per session and expires on its own.
+	//
+	// The route carries POLICY only — username, key_type, lifetime_seconds. The
+	// certificate, its serial and the CA bundle are per-session ARTIFACTS and
+	// are answered by PathIssueCertificate, never here: this entry rides a
+	// cacheable decision, and a certificate on it would be replayed to every
+	// connection the decision serves (certificate.go).
+	TargetAuthBrokeredCertificate TargetAuthMethod = "brokered-certificate"
 	// TargetAuthEphemeralAccount creates a short-lived administrator on a
 	// device through a platform driver and removes it afterwards (D13, PLAN
 	// §5.3). It is the same lifecycle as TargetAuthEphemeralUser in a different
@@ -289,10 +302,15 @@ const (
 //
 // The function is kept rather than folded into a constant `true` because the
 // set is the thing being stated: a method added later declares its own answer
-// here instead of inheriting one nobody chose.
+// here instead of inheriting one nobody chose. brokered-certificate (phase
+// 0044) is the first to arrive that way, and it answers true on the reason
+// above: the account is the principal the certificate is minted for, which is
+// the server's to name — never defaulted to Login, and, like brokered-key,
+// never drawn from identity.Principals either.
 func (m TargetAuthMethod) requiresUsername() bool {
 	switch m {
-	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount, TargetAuthStaticKey, TargetAuthBrokeredKey:
+	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount, TargetAuthStaticKey, TargetAuthBrokeredKey,
+		TargetAuthBrokeredCertificate:
 		return true
 	default:
 		return false
@@ -309,10 +327,19 @@ func (m TargetAuthMethod) requiresUsername() bool {
 // development label: both log into an account somebody else made, so neither
 // can carry a rung the proxy has to render. Attested rungs are unaffected —
 // nobody here applies them (PLAN §6.5).
+//
+// brokered-certificate answers false, and it is a case of its own rather than
+// a fall into default on requiresUsername's reason: a method added later
+// declares its answer instead of inheriting one nobody chose. It configures
+// nothing on the target — the target already trusts the CA and already has
+// the account — so, exactly like brokered-key, only attested rungs are
+// reachable on its routes, and RequiresProvisioning does the whole job.
 func (m TargetAuthMethod) Provisions() bool {
 	switch m {
 	case TargetAuthEphemeralUser, TargetAuthEphemeralAccount:
 		return true
+	case TargetAuthBrokeredKey, TargetAuthBrokeredCertificate, TargetAuthStaticKey:
+		return false
 	default:
 		return false
 	}
@@ -334,10 +361,13 @@ const (
 	// ParamUsername names the account on the target. Required on every method
 	// this contract defines (see requiresUsername).
 	ParamUsername = "username"
-	// ParamKeyType selects the ephemeral key algorithm (ephemeral-user).
+	// ParamKeyType selects the algorithm of the key pair the proxy generates
+	// for the session (ephemeral-user, brokered-certificate).
 	ParamKeyType = "key_type"
 	// ParamLifetimeSeconds bounds how long the provisioned credential stays
-	// valid, in whole seconds.
+	// valid, in whole seconds. On brokered-certificate it is an UPPER BOUND on
+	// the certificate Control mints: a shorter certificate is accepted, a
+	// longer one refused.
 	ParamLifetimeSeconds = "lifetime_seconds"
 	// ParamCredentialRef selects which local material a brokered-key session
 	// uses. It is an opaque handle, never credential material (D6a).
@@ -557,9 +587,10 @@ const (
 type TargetAuth struct {
 	// Method names the credential method.
 	Method TargetAuthMethod `json:"method"`
-	// Params are method-specific parameters, open on purpose so a future
-	// Hoplock Control that mints per-session credentials is another method
-	// rather than another breaking change.
+	// Params are method-specific parameters, open on purpose so a Hoplock
+	// Control that mints per-session credentials is another method rather than
+	// another breaking change — which is how brokered-certificate arrived
+	// (phase 0044).
 	//
 	// Parameter names are scoped to their method (api/README.md lists the ones
 	// defined today). A proxy that implements the named method must refuse a

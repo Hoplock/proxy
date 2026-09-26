@@ -50,7 +50,14 @@ const (
 // is the recipe, and the mock's vocabularyVersion is the server half — a field
 // tiered above this baseline there is one an older proxy is answered a 500 for
 // rather than policy it would refuse.
-const PolicyVersion = 4
+//
+// 5 is the first revision since the collapse to one vocabulary (phase 0037),
+// and it adds an ENUM VALUE rather than a field: TargetAuthBrokeredCertificate
+// (phase 0044). A method this client does not know refuses the whole response
+// (validate.go), so a method is vocabulary exactly as a field is. The endpoint
+// its certificates are issued through, PathIssueCertificate, is outside the
+// number — it governs /v1/authorize and nothing else.
+const PolicyVersion = 5
 
 // QueryLastEventID is the query parameter carrying the last event the proxy
 // processed, so the server can replay the gap after a reconnect (PLAN §6.4).

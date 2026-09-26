@@ -47,6 +47,10 @@ services:
       - "/var/log/hoplock"
     volumes:
       - ./control/fixtures.yaml:/etc/hoplock/fixtures.yaml:ro
+      # The user CA's private key, for brokered-certificate issuance (phase
+      # 0044). Mounted here and nowhere else: the target gets the public half
+      # through its own /material mount, and no proxy mounts either.
+      - ./keys/user_ca:/etc/hoplock/user_ca:ro
     networks: [edge, core]
     ports:
       # The scenario suite reads /debug/logs from the host. Bound to loopback:

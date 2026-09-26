@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -640,5 +641,49 @@ func routeNaming(body []byte, platform string) ([]byte, bool) {
 		if bytes.Contains(block, want) {
 			return block, true
 		}
+	}
+}
+
+// TestTheCertificateAuthorityIsWiredEndToEnd pins the brokered-certificate
+// arrangement (phase 0044), which is spread across four files and is invisible
+// in any one of them: gen-material.sh generates the user CA, compose.yaml mounts
+// its PRIVATE half into the mock Control and nowhere else, the fixtures load it
+// from that path and route one target through the method, and the target trusts
+// the PUBLIC half. Break any link and the scenario fails as a refused credential
+// or an outage rather than as the configuration fault it is.
+func TestTheCertificateAuthorityIsWiredEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	read := func(parts ...string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(append([]string{deployDir}, parts...)...))
+		if err != nil {
+			t.Fatalf("read %s: %v", filepath.Join(parts...), err)
+		}
+		return string(body)
+	}
+	script := read("gen-material.sh")
+	compose := read("compose.yaml")
+	fixtures := read("control", "fixtures.template.yaml")
+	entrypoint := read("target", "entrypoint.sh")
+
+	if !strings.Contains(script, "gen user_ca") {
+		t.Error("gen-material.sh no longer generates the user CA")
+	}
+	const mount = "./keys/user_ca:/etc/hoplock/user_ca:ro"
+	if got := strings.Count(compose, "keys/user_ca:"); got != 1 || !strings.Contains(compose, mount) {
+		t.Errorf("compose.yaml mounts the CA's private half %d time(s); want exactly once, into control, as %q", got, mount)
+	}
+	if !strings.Contains(fixtures, "key_path: /etc/hoplock/user_ca") {
+		t.Error("the fixtures do not load the CA from where compose.yaml mounts it")
+	}
+	if !strings.Contains(fixtures, "method: brokered-certificate") {
+		t.Error("no route in the fixtures names brokered-certificate; the scenario has nothing to reach")
+	}
+	if !strings.Contains(entrypoint, "/material/user_ca.pub") || !strings.Contains(entrypoint, "TrustedUserCAKeys") {
+		t.Error("the target does not trust the user CA's public half")
+	}
+	if strings.Contains(entrypoint, "/material/user_ca ") || strings.Contains(entrypoint, "/material/user_ca\n") {
+		t.Error("the target entrypoint reads the CA's PRIVATE half; only the mock Control may")
 	}
 }

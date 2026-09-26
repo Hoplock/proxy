@@ -370,7 +370,10 @@ func TestAliasCollisionCountIsCurrent(t *testing.T) {
 func TestDeviceSeamHeaderCountsItsLayers(t *testing.T) {
 	t.Parallel()
 	plan := readDoc(t, "PLAN.md")
-	lines := section(t, plan, "### 5.3 ", "## 6.")
+	// §5.3 ends where §5.4 begins (phase 0044). Scanning on to §6 would count
+	// §5.4's own `As <verb> (phase N)` layers as the device seam's and fail
+	// with a message about §5.3 that has nothing to do with it.
+	lines := section(t, plan, "### 5.3 ", "### 5.4 ")
 
 	layers := 0
 	for _, l := range lines {

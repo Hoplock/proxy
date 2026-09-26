@@ -20,14 +20,17 @@ info:
 
     A `401` from any endpoint is a **decision**, not a failure: it means "deny
     this user/session". Transport failures and `5xx` responses are separate and
-    must never be interpreted as a deny.
+    must never be interpreted as a deny. One endpoint is the stated exception:
+    `POST /v1/credentials/certificate` is called after the session was already
+    authorized, so every non-`200` from it — a `401` included — is an outage,
+    never a second denial (see that path).
 
     ## Versioning
 
     A proxy declares the highest **policy vocabulary** it implements in
     `AuthorizeRequest.policy_version`, and the server **MUST NOT answer with
     policy fields introduced after that version**. The current vocabulary is
-    `4`, exported as `control.PolicyVersion`.
+    `5`, exported as `control.PolicyVersion`.
 
     That rule is what makes the proxy's fail-closed decoding safe. The
     authorize response is decoded **strictly**: a field the proxy does not
@@ -42,7 +45,12 @@ info:
     restriction. A field on another endpoint is outside it — a proxy that has
     never heard of `HostKeyReportResponse.cache` ignores it and keeps reporting
     every connection, which is correct rather than a dropped restriction — and a
-    whole new endpoint is outside it too.
+    whole new endpoint is outside it too. A new **enum value** inside the
+    authorize response is not: an unknown `target_auth_ladder[].method` refuses
+    the whole response, so a method is vocabulary exactly as a field is, and
+    `brokered-certificate` is what moved the number to `5` while the
+    endpoint it is issued through, `POST /v1/credentials/certificate`, moved
+    nothing.
 
     **The number says what a proxy can READ, never what it requires.** A
     *tightening* — making an existing parameter required — adds no field and
@@ -63,7 +71,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.3.0
+  version: 4.4.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -95,6 +103,10 @@ tags:
     description: |
       exclusive blocks of ephemeral uids, leased per proxy per target
       (PLAN §5.1).
+  - name: credentials
+    description: |
+      per-session target credentials Hoplock Control mints on request
+      (PLAN §5.4).
 
 paths:
   /v1/auth/cert:
@@ -447,6 +459,104 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/ServerError'
+
+  /v1/credentials/certificate:
+    post:
+      tags: [credentials]
+      operationId: issueCertificate
+      summary: Sign a public key the proxy generated for one session.
+      description: |
+        Called by a proxy serving a `brokered-certificate` ladder entry
+        (PLAN §5.4), once per session, after the route is decided and before
+        the target leg is dialled. The proxy generates a key pair **for this
+        session only**, sends the public half here, and logs into the target
+        with the certificate returned. The private half never leaves the
+        proxy: no private key crosses this API, in either direction, by
+        construction.
+
+        ### Why the artifacts are not on the authorize decision
+
+        `/v1/authorize` is **cacheable** (`cache`, PLAN §6.4), and a cached
+        decision is served to every connection it covers — while this server is
+        unreachable, too. A certificate carried on it would be **replayed** to
+        each of those sessions: presented after its own `valid_before`, naming
+        one serial in many sessions' records, and carrying a trust bundle from
+        before a rotation. It is `POST /v1/uids/lease`'s argument applied a
+        second time — *anything cacheable is disqualified* — and it holds harder
+        here, because a certificate has an expiry of its own. It also cannot be
+        otherwise: the certificate is signed over a key **that does not exist
+        when the authorize call is answered**. So the ladder entry carries policy
+        (`username`, `key_type`, `lifetime_seconds`) and this response carries
+        the artifacts, fresh, per session.
+
+        A proxy therefore makes **one call per session**, never answers it from
+        memory, and never reuses a certificate for a second session — even one
+        served by the same cached decision.
+
+        ### What the server binds
+
+        `target` and `username` are what the route named, sent so the server can
+        bind the certificate to them and cross-check them against its own
+        decision. `decision_id` is sent when the decision carried one; a server
+        that requires it refuses a call without it.
+
+        ### What the proxy checks before using the answer
+
+        The certificate must parse, be a **user** certificate, certify **the
+        public key just submitted**, and expire — a certificate valid
+        "forever" is not a per-session credential — at an instant in the
+        future that `valid_before` states truthfully and, when the route set
+        `lifetime_seconds`, no later than that bound from now (the proxy
+        allows 30 seconds of clock skew between the two parties). A server
+        may **shorten** a route's bound and may not widen it. A certificate
+        failing any of these is refused. What the certificate asserts — its
+        principals and extensions — is this server's to decide and the
+        target's to enforce; the proxy does not check it.
+
+        ### Every failure is an outage
+
+        Every non-`200` answer — and every certificate the proxy refuses — is
+        treated **identically**: an outage-class failure with nothing
+        provisioned (PLAN §4.3), and **never a walk to the next ladder entry**.
+        A walk would connect with a weaker, standing credential the server did
+        not choose for this attempt, precisely when the server is least able to
+        say otherwise (D14). The status codes below exist for the operator
+        reading this server's log, not for proxy behaviour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CertificateRequest'
+      responses:
+        '200':
+          description: The public key was signed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CertificateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            The server will not issue for this session — for example, the
+            `decision_id` names no decision it made for this identity and
+            target. The proxy treats it as every other non-`200`: an outage,
+            not a denial, because the authorization decision was already made.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          description: |
+            No certificate authority is configured for this tenant. An
+            operator's fix; the proxy reports an outage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /v1/logs/batch:
     post:
@@ -1002,7 +1112,7 @@ components:
           minimum: 1
           description: |
             The highest **policy vocabulary** version this proxy implements.
-            The current vocabulary is `4`, exported as `control.PolicyVersion`.
+            The current vocabulary is `5`, exported as `control.PolicyVersion`.
 
             **It is REQUIRED**, and a request that omits it is refused. There is
             no absent-value default and deliberately so: a proxy that cannot say
@@ -1021,7 +1131,7 @@ components:
             It governs `/v1/authorize` only — that is the response decoded
             strictly — and it says what the proxy can **read**, never what it
             requires. See the versioning notes in `info.description`.
-          example: 4
+          example: 5
         capabilities:
           $ref: '#/components/schemas/ProxyCapabilities'
         conn:
@@ -1395,13 +1505,20 @@ components:
       properties:
         method:
           type: string
-          enum: [ephemeral-user, brokered-key, ephemeral-account, static-key]
+          enum: [ephemeral-user, brokered-key, brokered-certificate, ephemeral-account, static-key]
           description: |
             `ephemeral-user` — create a short-lived OS user and key on the
             target and remove them afterwards (D6, PLAN §5.1).
             `brokered-key` — use a per-target credential held only for the
             session and never written to disk (PLAN §5.2), for devices the
             proxy cannot administer.
+            `brokered-certificate` — generate a key pair for this session only,
+            have this server sign its public half through
+            `POST /v1/credentials/certificate`, and log into an account that
+            already exists on a target that already trusts the tenant's CA
+            (PLAN §5.4). Like `brokered-key` it creates and removes nothing on
+            the target; unlike it, the credential is minted for one session and
+            expires on its own.
             `ephemeral-account` — create a short-lived administrator on a device
             through a platform driver and remove it afterwards (D13, PLAN §5.3).
             The same lifecycle as `ephemeral-user` in a different vocabulary
@@ -1417,9 +1534,10 @@ components:
             type: string
           description: |
             Method-specific parameters. The object is **open on purpose**: a
-            future Hoplock Control that mints per-session target credentials
-            itself arrives as another `method` plus its own parameters, not as
-            another breaking change to this schema.
+            Hoplock Control that mints per-session target credentials itself
+            arrives as another `method` plus its own parameters, not as another
+            breaking change to this schema — `brokered-certificate` is that
+            method.
 
             Parameter names are scoped to their method. A proxy that implements
             the named method MUST refuse a parameter name it does not know, for
@@ -1428,8 +1546,8 @@ components:
             access.
 
             **`username` is REQUIRED on every method this document defines** —
-            `ephemeral-user`, `ephemeral-account`, `static-key` and
-            `brokered-key` alike. It is never defaulted to the identity's
+            `ephemeral-user`, `ephemeral-account`, `static-key`, `brokered-key`
+            and `brokered-certificate` alike. It is never defaulted to the identity's
             `login`, which is a **client-typed string** the proxy must never
             base an authorization decision on; letting it name an OS or device
             account would be that rule leaking through the back door. A route
@@ -1452,6 +1570,20 @@ components:
               naming local material on the proxy). No credential material
               travels on this API — `credential_ref` selects it, it does not
               carry it.
+            - `brokered-certificate` (PLAN §5.4): `username` (**required**: the
+              account on the target the certificate is presented for),
+              `key_type` (the algorithm of the key pair the proxy generates for
+              the session, e.g. `ed25519`; absent leaves the proxy's default),
+              and `lifetime_seconds` (an **upper bound** on the certificate's
+              validity; absent leaves it unbounded by the route). The two
+              optional names mean what they mean for `ephemeral-user`. The
+              certificate, its serial and the CA trust bundle are **not**
+              parameters, and a server must not try to carry them here: this
+              entry rides a **cacheable** decision, so a certificate on it would
+              be replayed to every connection the decision serves, past its own
+              expiry — the same reason `POST /v1/uids/lease` exists rather than a
+              field. They are answered per session by
+              `POST /v1/credentials/certificate`.
             - `ephemeral-account` (D13, PLAN §5.3): `username` (**required**),
               `platform` (**required**: which driver; it is **never inferred**
               from a banner, because guessing wrong means running configuration
@@ -2089,6 +2221,94 @@ components:
             than buying freshness, because the uids are non-reusable either
             way.
           example: 86400
+
+    CertificateRequest:
+      type: object
+      required: [session_id, public_key]
+      properties:
+        session_id:
+          type: string
+          description: |
+            The proxy's session id — the same one on every log record the
+            session produces, and the one the user is given as a support
+            reference. One issuance is made per session.
+          example: 7f3c2a90-5b1e-4d0a-9c1f-2e8b6d4a1c33
+        decision_id:
+          type: string
+          description: |
+            The `decision_id` of the authorize decision this session is served
+            by, when that decision carried one (it is optional there, so the
+            proxy cannot promise it). Correlation only: a decision reused across
+            connections sends the same value from each of them, and each still
+            gets its own certificate.
+          example: dec-0a1b2c
+        target:
+          type: string
+          description: |
+            The target the route named, so the server can bind the certificate
+            to it and cross-check it against its own decision.
+          example: host.company.com
+        username:
+          type: string
+          description: |
+            The account the route named (`params.username`) — the principal the
+            certificate is presented for.
+          example: netadmin
+        public_key:
+          type: string
+          description: |
+            The public half of the key pair the proxy generated for this
+            session, in `authorized_keys` form. The private half never leaves
+            the proxy.
+          example: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB1c2Vzc2lvbiBrZXkgZXhhbXBsZQ== hoplock-session
+
+    CertificateResponse:
+      type: object
+      required: [certificate, serial, valid_before]
+      properties:
+        certificate:
+          type: string
+          description: |
+            One OpenSSH **user** certificate in `authorized_keys` form, over the
+            submitted public key. The proxy refuses a host certificate, a
+            certificate over any other key, and one that does not parse.
+          example: ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29t
+        serial:
+          type: string
+          pattern: '^[0-9]{1,20}$'
+          description: |
+            The certificate's serial as a **decimal string**, not a JSON number.
+            An SSH certificate serial is a `uint64` and JSON numbers are not
+            safely integral above 2^53, so a serial sent as a number can
+            silently lose its low digits in any peer's parser — and a serial
+            that has lost digits is a join key that no longer joins. Do not
+            "fix" this to an integer. The proxy records it on the session's
+            authorize record (`credential_certificate_serial`), which is how an
+            operator matches a session to the certificate this server issued.
+          example: '10427'
+        valid_before:
+          type: string
+          format: date-time
+          description: |
+            When the certificate stops being valid, RFC 3339 — the same shape as
+            `session_deadline`. It is the certificate's own `valid before`
+            instant, to the second, and the proxy refuses a response where the
+            two differ. It must be in the future and, when the route set
+            `lifetime_seconds`, no later than that bound from now: a server may
+            shorten a route's bound and may not widen it.
+          example: '2026-09-22T11:04:00Z'
+        ca_public_keys:
+          type: array
+          items:
+            type: string
+          description: |
+            Optional: the tenant's CA public keys in `authorized_keys` form, one
+            per element, answered here rather than on the route so a rotation
+            reaches the proxy fresh. A `brokered-certificate` session
+            administers nothing on the target, so the proxy decodes and carries
+            this bundle and acts on none of it.
+          example:
+            - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGNhIGtleSBleGFtcGxlIG9ubHk= tenant-ca
 
     CacheHint:
       type: object

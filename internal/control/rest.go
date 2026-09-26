@@ -60,6 +60,8 @@ type RESTClient struct {
 var (
 	_ Client             = (*RESTClient)(nil)
 	_ CapabilityReporter = (*RESTClient)(nil)
+	_ UIDLeaser          = (*RESTClient)(nil)
+	_ CertificateIssuer  = (*RESTClient)(nil)
 )
 
 // NewRESTClient validates opts and returns a client for the Control API.
@@ -267,6 +269,30 @@ func (c *RESTClient) LeaseUIDs(ctx context.Context, req *UIDLeaseRequest) (*UIDL
 		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: proxy_id is required", ErrBadRequest)}
 	}
 	return post[UIDLeaseResponse](ctx, c, op, PathLeaseUIDs, req, http.StatusOK)
+}
+
+// IssueCertificate implements CertificateIssuer (phase 0044).
+//
+// Like LeaseUIDs it is not on Client, and CachingClient does NOT forward it: a
+// certificate answered from memory is one certificate replayed into a second
+// session whose key it does not certify (certificate.go). The response is
+// checked for shape here and for everything SSH-specific by the authenticator.
+func (c *RESTClient) IssueCertificate(ctx context.Context, req *CertificateRequest) (*CertificateResponse, error) {
+	const op = "IssueCertificate"
+	if req == nil || req.SessionID == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: session_id is required", ErrBadRequest)}
+	}
+	if req.PublicKey == "" {
+		return nil, &APIError{Op: op, Cause: fmt.Errorf("%w: public_key is required", ErrBadRequest)}
+	}
+	resp, err := post[CertificateResponse](ctx, c, op, PathIssueCertificate, req, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkIssued(op, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // IngestLogBatch implements Client.

@@ -40,7 +40,9 @@ before reading the code.
 > **ephemeral-account**, takes the ephemeral model onto gear that has no
 > `useradd` at all: it creates a short-lived *administrator* on a device through
 > a per-platform driver — FortiGate and FortiSwitch today — and removes it
-> afterwards. Hoplock
+> afterwards. A fourth, **brokered-certificate**, logs into an existing account
+> with a certificate Hoplock Control mints for the one session, over a key pair
+> the proxy generated and never sends. Hoplock
 > Control chooses between them per route, and sends an ordered **ladder** of
 > methods rather than a single one: the proxy walks it top-down,
 > stops at the first entry it can satisfy, and records which one that was. It
@@ -126,6 +128,20 @@ would be scored against it. Containment is keyed on the credential and the
 target, never on the user or the route: a different credential to the same
 target keeps working throughout. See `auth.target.rejection` in
 [`config.example.yaml`](config.example.yaml).
+
+### What `brokered-certificate` needs on a target
+
+Two things, and the proxy provides neither. The account a route names must
+already exist, as for `brokered-key`; and sshd must trust the tenant's **user
+CA** — `TrustedUserCAKeys` naming the CA's public key, root-owned, outside any
+account's `.ssh` — so that a certificate whose principals include that account
+is accepted for it (sshd's default with no `AuthorizedPrincipalsFile`). The
+proxy configures nothing on the target: it generates a key pair per session,
+Hoplock Control signs the public half, and the private half is zeroed when the
+session ends. `deploy/target/entrypoint.sh` shows it applied. A target that does
+not trust the CA refuses every certificate from the proxy's single source
+address, which is the rejection containment above — keyed on the account the
+certificates are minted for.
 
 ### What `ephemeral-user` needs on a target
 

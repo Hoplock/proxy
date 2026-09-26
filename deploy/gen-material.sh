@@ -66,6 +66,14 @@ gen stale_key
 cp "$keys/stale_key" "$keys/brokered/stale-fleet.key"
 chmod 600 "$keys/brokered/stale-fleet.key"
 
+# brokered-certificate (phase 0044): the tenant's user CA. The PRIVATE half is
+# mounted into the mock Hoplock Control only (deploy/compose.yaml), which signs
+# each session's public key with it; the PUBLIC half is what the target trusts
+# as TrustedUserCAKeys (deploy/target/entrypoint.sh). The proxy holds neither:
+# it generates a key pair per session and never sees the CA's key.
+gen user_ca
+chmod 600 "$keys/user_ca"
+
 # The relay hub's authorized_keys. The COMMENT is the proxy id the key may
 # register as — a key naming no id could register as any proxy and start
 # receiving its sessions (config.example.yaml, chain.accept).

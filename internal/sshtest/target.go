@@ -41,6 +41,15 @@ type Options struct {
 	// that accepts everything cannot produce a real credential rejection, and a
 	// rejection is what internal/auth/target's classifier has to be held to.
 	AuthorizedKeys []ssh.PublicKey
+	// TrustedUserCAKeys makes the target accept USER CERTIFICATES signed by one
+	// of these CAs — sshd's TrustedUserCAKeys, and the stand-in for the target
+	// a brokered-certificate route reaches (phase 0044). A certificate is then
+	// checked the way OpenSSH checks one: the login must be among its
+	// principals and the time inside its validity window. A plain key is
+	// accepted only if AuthorizedKeys names it, so a target that trusts a CA
+	// refuses everything else — which is what makes a certificate login here a
+	// proof and not a formality.
+	TrustedUserCAKeys []ssh.PublicKey
 	// Negotiation narrows the key exchanges, ciphers and MACs the target will
 	// negotiate — the stand-in for a target that speaks only legacy
 	// algorithms (phase 0043). Host-key algorithms follow from HostKey.
@@ -59,6 +68,7 @@ type Target struct {
 	shell      ShellFunc
 	allowed    map[string]bool
 	authorized map[string]bool
+	userCAs    map[string]bool
 
 	wg     sync.WaitGroup
 	closed chan struct{}
@@ -66,6 +76,7 @@ type Target struct {
 	mu         sync.Mutex
 	logins     []string
 	keys       []ssh.PublicKey
+	serials    []uint64
 	commands   []string
 	ptys       int
 	envs       []string
@@ -110,6 +121,18 @@ func StartTarget(opts Options) (*Target, error) {
 		}
 	}
 
+	if len(opts.TrustedUserCAKeys) > 0 {
+		t.userCAs = make(map[string]bool, len(opts.TrustedUserCAKeys))
+		for _, ca := range opts.TrustedUserCAKeys {
+			t.userCAs[string(ca.Marshal())] = true
+		}
+		if t.authorized == nil {
+			// Trusting a CA is a statement about what to accept; it must not
+			// leave the "accept anything" default on underneath it.
+			t.authorized = map[string]bool{}
+		}
+	}
+
 	t.config = &ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			t.record(func() {
@@ -119,6 +142,17 @@ func StartTarget(opts Options) (*Target, error) {
 			// The attempt is recorded before it is judged: a test asserting
 			// that a key was OFFERED needs it either way, and a refused login
 			// is exactly the case where that matters.
+			if cert, ok := key.(*ssh.Certificate); ok && t.userCAs != nil {
+				checker := &ssh.CertChecker{
+					IsUserAuthority: func(auth ssh.PublicKey) bool { return t.userCAs[string(auth.Marshal())] },
+				}
+				perms, err := checker.Authenticate(conn, key)
+				if err != nil {
+					return nil, fmt.Errorf("sshtest: certificate not accepted for %q: %w", conn.User(), err)
+				}
+				t.record(func() { t.serials = append(t.serials, cert.Serial) })
+				return perms, nil
+			}
 			if t.authorized != nil && !t.authorized[string(key.Marshal())] {
 				return nil, fmt.Errorf("sshtest: key not authorized for %q", conn.User())
 			}
@@ -175,6 +209,15 @@ func (t *Target) Keys() []ssh.PublicKey {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]ssh.PublicKey(nil), t.keys...)
+}
+
+// CertificateSerials are the serials of the user certificates the target
+// ACCEPTED, in order — what the target's own log would name, and the join key
+// a brokered-certificate session's record carries (phase 0044).
+func (t *Target) CertificateSerials() []uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]uint64(nil), t.serials...)
 }
 
 // Commands are the exec requests the target received, in order.

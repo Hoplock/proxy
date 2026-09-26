@@ -18,6 +18,11 @@
   - **§5.3** — read **"What is true today"** first, then only the reaper as the
     primary removal path: the driver's privileged connection and the sweep dial
     the same device the session does.
+  - **§5.4** (`brokered-certificate`, phase 0044) — only its "As built"
+    paragraph: the fourth credential method, whose session-leg signer is a
+    **certificate** signer restricted to the route's profile by the same
+    `sshalg.Signer` a `public_key_auth` ban must reach, and whose routes have a
+    key exchange to report like every other method's.
   - **§6.4** — an authorize decision is reusable on a server-set TTL, so
     anything on it is replayed. A floor is policy, not a per-session artifact,
     so replay is harmless — but say so rather than leave it for a reviewer.

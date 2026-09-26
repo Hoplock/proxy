@@ -31,7 +31,11 @@ companion. If the two disagree, the OpenAPI document wins.
   budget" below.
 - **`401` is a decision, not a failure.** It means *deny*. Transport failures,
   timeouts, and `5xx` are different, and a caller must never treat them as
-  either a deny or an allow — it fails the session closed. The two are also
+  either a deny or an allow — it fails the session closed. The one exception is
+  `POST /v1/credentials/certificate`: it is called after the session was already
+  authorized, so a `401` there is the server declining to mint, and the proxy
+  reports it as an outage like every other non-`200` ("Brokered certificates"
+  below). The two are also
   reported to the end user differently, and never collapsed into one message: a
   deny is deliberately vague, an outage says plainly that it is an outage
   (PLAN §4.3). Failing closed is not the same as failing silently.
@@ -44,7 +48,7 @@ companion. If the two disagree, the OpenAPI document wins.
 ## Versioning: one live vocabulary, and a proxy that fails closed
 
 `POST /v1/authorize` answers in a **policy vocabulary**, and a proxy declares the
-one it implements in `AuthorizeRequest.policy_version`; the current value is `4`,
+one it implements in `AuthorizeRequest.policy_version`; the current value is `5`,
 exported as `control.PolicyVersion`. It is **required** and has no absent-value
 default: a request that omits it is refused, because a proxy that cannot say what
 it reads is one the server would have to guess for — and the guess decides which
@@ -68,8 +72,16 @@ decoded strictly, and so the only place an unknown field could be a restriction.
 A field on another endpoint is outside it — `HostKeyReportResponse.cache` is the
 worked example: a proxy that has never heard of it ignores it and keeps
 reporting every connection, which is correct behaviour and not a dropped
-restriction. A whole new endpoint, `POST /v1/uids/lease` among them, is outside
-it too.
+restriction. A whole new endpoint, `POST /v1/uids/lease` and
+`POST /v1/credentials/certificate` among them, is outside it too.
+
+**A new enum value inside the authorize response is inside it.** An unknown
+`target_auth_ladder[].method` is a contract violation that refuses the whole
+response, not a rung to skip, so a method is vocabulary exactly as a field is.
+That is why `brokered-certificate` moved the number from `4` to `5` while the
+endpoint its certificates are issued through moved nothing: a proxy that does not
+know the method must never be sent it, and the version is the only thing that can
+tell a server so.
 
 **And it says what a proxy can READ, never what it requires.** A *tightening* —
 making an existing parameter required — adds no field and changes no field's
@@ -108,6 +120,7 @@ mechanism above carries is the **next** vocabulary, not a previous one — see
 | `POST /v1/capabilities/report` | Report the enforcement rungs a target can take | `200` | `ReportCapabilities` |
 | `POST /v1/logs/batch` | Ingest a batch of log records | `202` | `IngestLogBatch` |
 | `POST /v1/uids/lease` | Lease an exclusive block of ephemeral uids for one target | `200` | `LeaseUIDs` |
+| `POST /v1/credentials/certificate` | Sign a public key the proxy generated for one session | `200` | `IssueCertificate` |
 | `POST /v1/logs/priority` | Ingest one critical record, immediately | `200` | `IngestPriorityLog` |
 | `GET /v1/proxies/{proxy_id}/events` | Subscribe to the revocation stream (NDJSON) | `200` | `StreamEvents` |
 | `GET /v1/proxies/{proxy_id}/config` | Fetch the proxy's desired configuration document | `200`, `204`, `304` | `FetchProxyConfig` |
@@ -185,6 +198,8 @@ Each field below names the phase that consumes it.
 | `permitted_forwards` | destinations are **not policed** | an allow-list per direction; an empty direction denies it | 0009 |
 | `permitted_global_requests` | global requests are **relayed unpoliced** | an allow-list; `{}` denies all of them | 0009 |
 | `target_auth_ladder` | the proxy uses its **locally configured** method | an ordered ladder; `[]` **denies the session** | 0007, 0014 |
+| `params.key_type` on `brokered-certificate` | the proxy's default, `ed25519` | the algorithm of the key pair the proxy generates for the session (`ed25519` or `rsa`) | 0044 |
+| `params.lifetime_seconds` on `brokered-certificate` | the certificate's validity is **not bounded by the route**; the server's own lifetime stands | an **upper bound**: a certificate valid for longer is refused (**outage**), a shorter one is accepted | 0044 |
 | `algorithm_profile` | `default` — the SSH library's secure set, an explicit list on every axis | a named preset; anything but `default` is a weakening | 0013, 0043 |
 | `hop.connection` | `dial` | `dial` or `relay` | 0008 |
 | `filter_policy.exec_mode` | `filtered` (the ordered rule list) | `filtered` or `restricted` | 0010 |
@@ -288,12 +303,14 @@ is the list they ride in and the walk over it.
 | --- | --- | --- |
 | `ephemeral-user` | Creates a short-lived OS user + key on the target and removes it (D6, PLAN §5.1) | `username` (**required**), `key_type`, `lifetime_seconds` |
 | `brokered-key` | Uses a per-target credential held for the session and never written to disk (PLAN §5.2) | `username` (**required**), `credential_ref` |
+| `brokered-certificate` | Logs into an existing account with a certificate Hoplock Control minted for **this session**, over a key pair the proxy generated and never sends (PLAN §5.4); see "Brokered certificates" below | `username` (**required**), `key_type`, `lifetime_seconds` |
 | `ephemeral-account` | Creates a short-lived administrator on a device through a platform driver and removes it (D13, PLAN §5.3) | `username`, `platform`, `credential_kind`, `expiry_posture` (**all required**), `lifetime_seconds` |
 | `static-key` | The phase 0005 development placeholder; not a production method | `username` (**required**) |
 
-`params` is an open string map **on purpose**: a future Hoplock Control that
-mints per-session target credentials arrives as another `method` plus its own
-parameters, not as another breaking change. Parameter names are scoped to their
+`params` is an open string map **on purpose**: a Hoplock Control that mints
+per-session target credentials arrives as another `method` plus its own
+parameters, not as another breaking change — and `brokered-certificate` is that
+method. Parameter names are scoped to their
 method, and a proxy that implements the named method must refuse a parameter it
 does not know — an unknown parameter may be a constraint. `credential_ref` is an
 opaque handle naming material the proxy already holds; **no credential material
@@ -784,6 +801,71 @@ A server that does not implement the endpoint refuses the proxy's
 `ephemeral-user` routes in practice, because the proxy fails **closed** rather
 than falling back to a floor it cannot trust.
 
+### Brokered certificates
+
+`POST /v1/credentials/certificate` signs **a public key the proxy generated for
+one session**, for a route whose ladder names `brokered-certificate`
+(PLAN §5.4). The proxy makes the key pair, sends the public half with the
+session id, the decision id, the target and the route's `username`, and logs
+into the target with the certificate it gets back. The private half never leaves
+the proxy, so no private key crosses this API in either direction.
+
+```json
+{"session_id": "…", "decision_id": "…", "target": "host.example.com",
+ "username": "netadmin", "public_key": "ssh-ed25519 AAAA… hoplock-session"}
+```
+
+```json
+{"certificate": "ssh-ed25519-cert-v01@openssh.com AAAA…", "serial": "10427",
+ "valid_before": "2026-09-22T11:04:00Z", "ca_public_keys": ["ssh-ed25519 AAAA… ca"]}
+```
+
+**`serial` is a decimal string, not a JSON number.** An SSH certificate serial
+is a `uint64`, and JSON numbers are not safely integral above 2^53: a serial
+that silently loses its low digits in some peer's parser is a join key that
+stops joining. The proxy puts it on the session's authorize record as
+`credential_certificate_serial`, which is how an operator matches a session to
+the row this server keeps for the certificate. The certificate itself is never
+recorded.
+
+**Why the certificate is not a route parameter**, which is the shape a server
+author reaches for first: `target_auth_ladder` rides the authorize decision,
+which is **cacheable** and served to every connection it covers. A certificate on
+it would be replayed to each of them — presented past its own `valid_before`,
+naming one serial in many sessions' records, and carrying a trust bundle from
+before a rotation. It is the lease's argument above applied to a second
+per-session artifact, and it holds harder: a certificate has an expiry of its
+own, and it is signed over a key that does not exist when the authorize call is
+answered. So the ladder entry carries policy (`username`, `key_type`,
+`lifetime_seconds`) and this endpoint carries the artifacts, and *no credential
+material travels on `target_auth_ladder`* stays literally true. A proxy makes
+**one call per session**, and a decision reused across connections still gets a
+fresh certificate for each.
+
+**What the proxy checks before it uses the answer.** The certificate must parse,
+be a **user** certificate, certify **the public key just submitted**, and expire
+(never "forever") at an instant in the future that `valid_before` states to the
+second — no later than `lifetime_seconds` from now when the route set one, with
+30 seconds allowed for the two clocks to disagree. A server may shorten a route's
+bound, never widen it. What the certificate asserts — principals, extensions — is
+the server's to decide and the target's to enforce, and the proxy does not check
+it.
+
+**Every failure is an outage, and never a walk down the ladder.** Every
+non-`200` answer (`400`, `401`, `500`, and `503` for a tenant with no authority
+configured) and every certificate that fails a check above ends the session as
+an outage with nothing provisioned (PLAN §4.3). The codes are for the operator
+reading a server log, not for proxy behaviour — a `401` here is not a denial,
+because the authorization decision was already made. Walking on to the next
+rung would connect with a weaker, standing credential the server did not choose
+for this attempt, exactly when the server is least able to say otherwise (D14).
+A proxy build with **no issuer** at all is different: it cannot serve the method,
+so the rung is skipped like any method without local material.
+
+`ca_public_keys` is optional and is carried, not acted on: a
+`brokered-certificate` session administers nothing, and publishing a trust bundle
+to a target is a provisioning act this method does not perform.
+
 ### Host keys
 
 The proxy reports every target host key it sees before completing the target
@@ -1079,6 +1161,14 @@ an applied rung is reachable on a route. `TargetCapabilities.Fresh` is where
 "stale and absent mean the same thing" lives, and `DefaultCapabilityTTL` is the
 window.
 
+Brokered certificates add `CertificateRequest` and `CertificateResponse`, and
+`IssueCertificate` is on **`CertificateIssuer`**, which `*RESTClient` implements
+and `*CachingClient` deliberately does not — as with `UIDLeaser`, a certificate
+answered from memory is one replayed into a session whose key it does not
+certify, so the shape of the interfaces makes that a compile error.
+`CertificateResponse.SerialNumber` parses the decimal-string serial; call it
+rather than converting the string yourself.
+
 Fleet configuration adds `ConfigChangedEvent`, `ProxyConfigDocument`,
 `ConfigRef`, `ConfigState`, `ProxyConfigReport`, and
 `ProxyConfigReportResponse`; `FetchProxyConfig` and `ReportProxyConfig` are on
@@ -1146,7 +1236,7 @@ startup, and every problem in a file is reported at once.
 | `routes[].permitted_requests` | `types` (from `pty-req`, `shell`, `exec`, `env`, `x11-req`, `auth-agent-req`) and `subsystems` (by name). **Omit the key** to leave requests unpoliced; write `{}` to deny every one. |
 | `routes[].permitted_forwards` | `direct_tcpip` and `forwarded_tcpip`, each a list of `host` + optional `port` or `port_range` (`from`/`to`). Omit the key to leave destinations unpoliced; an empty direction denies it. |
 | `routes[].permitted_global_requests` | `types`, e.g. `[tcpip-forward]`. Omit the key to relay everything; `types: []` denies all of them. |
-| `routes[].target_auth_ladder` | The ordered ladder: a list of entries, each `method` (`ephemeral-user`, `brokered-key`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method; write `[]` to deny the session. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
+| `routes[].target_auth_ladder` | The ordered ladder: a list of entries, each `method` (`ephemeral-user`, `brokered-key`, `brokered-certificate`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method; write `[]` to deny the session. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
 | `routes[].target_auth_ladder[].params` | Method-scoped; `ephemeral-account` also takes the open `device_field.<name>` namespace, e.g. `device_field.vdom: customer-a`. |
 | `routes[].algorithm_profile` | `default` (the default), `legacy-rsa-sha1`, or `legacy-device`. |
 | `routes[].hop_connection` | `dial` (default) or `relay` for a nexthop route. `relay` requires `next_proxy_id`. |
@@ -1157,10 +1247,12 @@ startup, and every problem in a file is reported at once.
 | `routes[].require_session_capture` | `true` makes a proxy with no recording path at all refuse the route. |
 | `routes[].grant_context` | `system`, `reference`, `window_start`/`window_end` (RFC 3339), and **one** of `additional_context_text` or `additional_context_fields` — the wire field is a string or an object, so setting both fails at startup. All of it is test data the proxy logs and never reads. |
 | `routes[].concurrency` | `max_sessions_per_subject` and/or `max_sessions_per_target`. Absent or `0` is uncapped. |
+| `routes[].certificate_fault` | **Mock-only**, never on the wire: makes the certificates issued against this route's decisions deliberately wrong — `exceeds-lifetime`, `wrong-key`, `expired` or `malformed` — so a proxy's refusal is provable against a real server answer. Refused at startup on a route whose ladder names no `brokered-certificate` rung. |
 | `routes[].cache` | `ttl_seconds` (0 or absent: not cacheable) and an optional `key`. An unset key derives one per (subject, target); set it explicitly to model a server that shares one decision across targets. |
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision. Only a key already ruled on and accepted is hinted. |
 | `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). Every heartbeat advertises `heartbeat_interval_seconds` derived from `heartbeat_ms` itself — rounded **up** to the whole second, so the mock never claims an interval it does not keep — and a fixture that disables heartbeats advertises nothing. |
 | `fleet_config` | `enrolled` (proxy ids; empty means every id is enrolled, anything else is answered `404 not_enrolled`) and `document` (`version` plus `settings`, passed through uninterpreted — which keys a proxy accepts is the proxy's rule). Omit `document` and the fetch answers `204`. The hash is derived from the bytes served, and a new document is published only through `POST /debug/config`, so the mock cannot announce a version it does not serve. |
+| `certificate_authority` | `key_path` (an ed25519 private key, OpenSSH format, loaded at startup; empty means **no authority**, and `POST /v1/credentials/certificate` answers `503`) and `lifetime_seconds` (validity when the route names no `lifetime_seconds`; 0 is five minutes — a route's bound always wins when shorter). The mock signs with the route's `username` as the only principal and a serial that only rises, issues only against a decision it made naming `brokered-certificate` and only for that decision's target and account (`401` otherwise), and does not revoke or rotate. The serial is **not reset by `POST /debug/reset`**: a serial issued twice is a join key that joins two sessions. |
 | `uid_leases` | `uid_count` (block size, overriding what the proxy asks for), `term_seconds` (0 leaves the term to the proxy), and `range_min`/`range_max` (0 on either takes that bound from the proxy's own request, which is what a Control with no opinion about a fleet's uid conventions should do). The per-target cursor is in memory and **is not reset by `POST /debug/reset`** — rewinding it would grant a block overlapping one a proxy is still allocating from. |
 
 Defaults: `identity.subject` falls back to the login and `identity.source` to
@@ -1205,14 +1297,20 @@ process exits.
 3. Run `go test ./...` — `internal/control` cross-checks the client's paths and
    enums against `control.yaml` and this file, and `cmd/mock-control` is driven
    end-to-end through the real client.
-4. If the change adds a field to `AuthorizeResponse` or anything it contains:
-   give it a documented absent-value default, add it to `clone.go` and to the
-   mutation test, and bump `control.PolicyVersion`. A proxy fails closed on a
+4. If the change adds a field — **or an enum value** — to `AuthorizeResponse` or
+   anything it contains: give a field a documented absent-value default, add it
+   to `clone.go` and to the mutation test, and bump `control.PolicyVersion`. An
+   enum value counts because an unknown one refuses the whole response exactly
+   as an unknown field does; `brokered-certificate` (vocabulary 5) was the first
+   revision of that kind. A proxy fails closed on a
    field it does not know, so the version is what lets a fleet upgrade without
    an outage while it is mid-way.
 
-   Also tier the new field in `cmd/mock-control`'s `vocabularyVersion`, above
-   the current baseline. That is the server half: a proxy still on the old
+   Also tier the addition in `cmd/mock-control`'s `vocabularyVersion`, above
+   the tiers already there (`baselineVocabulary`, then
+   `vocabularyBrokeredCertificate`), and move the mock's highest tier with the
+   client's number — `TestTheMocksHighestTierIsTheClientsVocabulary` fails until
+   both agree. That is the server half: a proxy still on the old
    number is then answered a `500` naming the mismatch, rather than policy it
    would refuse as a protocol error three lines later.
 

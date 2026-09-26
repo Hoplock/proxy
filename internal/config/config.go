@@ -46,8 +46,9 @@ const (
 )
 
 // Brokered credential sources (D6a). The source is where the proxy's LOCAL
-// material lives; a future Hoplock Control that mints per-session credentials
-// is another target_auth method, not another entry here.
+// material lives. A Hoplock Control that mints per-session credentials is
+// another target_auth method, not another entry here — brokered-certificate
+// (phase 0044), which needs no local configuration at all.
 const (
 	// BrokeredSourceDir reads one file per credential reference.
 	BrokeredSourceDir = "dir"
