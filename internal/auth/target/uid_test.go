@@ -6,6 +6,7 @@ package target
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hoplock/proxy/internal/control"
@@ -191,6 +192,43 @@ func TestUIDAllocatorDoesNotRepeatWithinTheProcess(t *testing.T) {
 	}
 	if other.uid != 2000 {
 		t.Errorf("a second target allocated %d, want the bottom of its own range, 2000", other.uid)
+	}
+}
+
+// TestUIDAllocatorDoesNotRepeatUnderConcurrency is the same property for
+// sessions that allocate at the same instant. The floor and its advance were
+// once taken under two acquisitions of the lock, so sessions that both read the
+// floor between them were handed one uid. A real target's useradd refuses the
+// second, which costs it a fallback candidate; the fake target has no such
+// lock, and TestConcurrentSessionsDoNotShareAUID failed intermittently.
+func TestUIDAllocatorDoesNotRepeatUnderConcurrency(t *testing.T) {
+	const rounds, sessions = 200, 8
+	for round := 0; round < rounds; round++ {
+		a := testAllocator(t, 2000, 2999)
+		start := make(chan struct{})
+		uids := make([]int, sessions)
+		var wg sync.WaitGroup
+		for i := 0; i < sessions; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				plan, err := a.allocate("target:22", census(0), wholeRange(a))
+				if err != nil {
+					t.Errorf("allocate: %v", err)
+				}
+				uids[i] = plan.uid
+			}()
+		}
+		close(start)
+		wg.Wait()
+		seen := map[int]bool{}
+		for _, uid := range uids {
+			if seen[uid] {
+				t.Fatalf("round %d: sessions allocating at once were handed uid %d twice: %v", round, uid, uids)
+			}
+			seen[uid] = true
+		}
 	}
 }
 

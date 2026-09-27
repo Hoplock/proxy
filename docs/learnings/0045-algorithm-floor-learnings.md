@@ -10,7 +10,7 @@
 - Version: **`policy_version` 5 → 6**, `info.version` **4.5.0**, mock tier `vocabularyAlgorithmFloor = 6`. Register unchanged.
 - Key code: `internal/control/{algorithms,policy,validate,enforcement}.go` (`AlgorithmFloor`, `AlgorithmBans`, `AlgorithmPolicy{Algorithms, Cause, CauseWhere, FloorMet, UnmatchedBans}`), `internal/sshalg` (`NegotiatedOn`, `PublicKeys`, `Permitted`, `SignatureUnmet`), `internal/auth/target/{algpolicy,kexreport}.go`, `internal/proxy/session.go`, `internal/logging/algorithms.go`, `internal/sshtest/kexinit.go`.
 - Gotcha: x/crypto adds `curve25519-sha256@libssh.org` on the wire by itself, so every list, declaration and ban handles both spellings as one exchange. A signing failure has **no type**; it is matched by text with a real-handshake tripwire.
-- Next session: `TestConcurrentSessionsDoNotShareAUID` is flaky under `-race` because of a **pre-existing** uid-allocator race (not this phase's code). Root cause and patch are under Details.
+- Next session: a **pre-existing** uid-allocator race (concurrent sessions handed one uid) was fixed here at the user's request; it made `TestConcurrentSessionsDoNotShareAUID` flaky. The fake host's `useradd` still has no lock, so a test of two *provisioners* racing on one target would see a shared uid where a real target refuses one (Details).
 - **What Control must change:** re-vendor at `policy_version` 6, and send a floor or ban only to a proxy declaring 6. Rank floors, and never promise sntrup761. Never send an undeclared level. Merge `kex` beside the rungs, and plan the impact preview and runbook. Read `target_kex_algorithm` (not `kex_algorithm`) and the keys above. Refuse what the proxy refuses, and **warn** on a ban name no proxy declared. Accept `legacy-rsa-sha1` + floor.
 
 ## Details
@@ -112,29 +112,34 @@
   `e2e` tag. The preinstalled v2.5.0 was built with Go 1.25 and refuses the
   module.
 
-### Found, not fixed: the uid allocator hands concurrent sessions the same uid
+### Fixed outside the prompt, at the user's request: concurrent sessions handed one uid
 
-Pre-existing (phase 0027/0035 code; this branch does not touch `uid.go`) and out
-of scope. It surfaced as one `-race` failure of
-`TestConcurrentSessionsDoNotShareAUID` in a whole-tree run. It then passed 20/20
-alone and in 8/8 whole-package runs on this branch, and 6/6 on base.
+Pre-existing phase 0027/0035 code, out of this prompt's scope, fixed in this PR
+because the user asked for it after review. It surfaced as one `-race` failure
+of `TestConcurrentSessionsDoNotShareAUID` in a whole-tree run.
 
-- **Root cause.** `uidAllocator.allocate` calls `observedFloor`, which takes and
-  **releases** `a.mu`, and then takes `a.mu` again to compute
-  `next = floor + 1` and advance `a.high`. Two sessions can both read the same
-  `a.high` before either advances it, so both get the same first candidate. A
+- **Root cause.** `uidAllocator.allocate` called `observedFloor`, which took
+  and **released** `a.mu`, and then took `a.mu` again to compute
+  `next = floor + 1` and advance `a.high`. Two sessions could both read the same
+  `a.high` before either advanced it, so both got the same first candidate. A
   scratch test on base commit 4582c39 (8 goroutines, `-race`) saw a duplicate in
   **2202 of 5000** rounds.
-- **Why production is not reusing uids.** A real `useradd -u` locks the account
-  database and refuses a uid already held (exit 4), so the loser falls to the
-  next of its 8 fallback candidates. The fake host's `useradd`
-  (`fakehost_test.go`) checks and then appends without a lock, so both succeed
-  and the test sees a shared uid. The cost in production is a wasted candidate
-  and a lost-race retry that should never happen within one process.
-- **Proposed patch.** Hold `a.mu` once across both steps: make `observedFloor`
-  an unlocked helper that `allocate` calls with the lock held. Optionally make
-  the fake `useradd` take a lock (`flock` on the passwd file) so the fake models
-  the real serialisation.
+- **Why production was not reusing uids.** A real `useradd -u` locks the
+  account database and refuses a uid already held (exit 4), so the loser fell to
+  the next of its 8 fallback candidates. Those candidates exist for another
+  *provisioner's* race, not for this process racing itself.
+- **The fix.** `allocate` holds `a.mu` from reading the floor to advancing it,
+  through `observedFloorLocked`. `observedFloor` keeps its own locking for its
+  other caller, the lease request's floor in `allocateUID`.
+  `TestUIDAllocatorDoesNotRepeatUnderConcurrency` (200 rounds × 8 sessions)
+  fails 6/6 on the old code, with and without `-race`, and passes on the fix.
+- **Left as it is: the fake host's `useradd`** (`fakehost_test.go`) checks for
+  a duplicate uid and then appends without a lock, so it can end with two
+  accounts on one uid, which a real target never does. That is why the race
+  showed up as a shared uid rather than a fallback. Giving it a lock would be
+  more faithful, but it would also let the end-to-end test pass if the allocator
+  regressed. The unit test above is now the guard. A future test of two
+  provisioners racing on one target needs that lock first.
 
 ### Follow-ups (not built, per the prompt's out-of-scope list)
 

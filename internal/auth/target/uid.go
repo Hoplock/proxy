@@ -285,11 +285,16 @@ var errUIDBlockSpent = fmt.Errorf("%w: the leased uid block is spent", ErrUIDUna
 // RESTARTED proxy with nothing: the leased block's own floor is below none of
 // these and is held where neither the target nor this process can lower it.
 func (a *uidAllocator) observedFloor(addr string, c uidCensus) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.observedFloorLocked(addr, c)
+}
+
+// observedFloorLocked is observedFloor for a caller that already holds a.mu.
+func (a *uidAllocator) observedFloorLocked(addr string, c uidCensus) (int, error) {
 	if !c.read {
 		return 0, fmt.Errorf("%w: the target's uid census could not be read", ErrUIDUnavailable)
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	floor := c.watermark
 	if h := a.high[addr]; h > floor {
 		floor = h
@@ -336,16 +341,22 @@ func (a *uidAllocator) observedFloor(addr string, c uidCensus) (int, error) {
 // exactly one effect — reintroducing the defect — and the range is already the
 // honest knob for an operator who needs more uids.
 func (a *uidAllocator) allocate(addr string, c uidCensus, b control.UIDBlock) (uidPlan, error) {
-	floor, err := a.observedFloor(addr, c)
+	// ONE critical section from reading the floor to advancing it. Taking the
+	// lock twice — once for the floor, once for the advance — let two sessions
+	// provisioning at once read the same a.high[addr] and be handed the same
+	// uid. The target's own useradd refuses the second and sends it to a
+	// fallback candidate, but the candidates exist for another PROVISIONER's
+	// race, not for this process racing itself.
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	floor, err := a.observedFloorLocked(addr, c)
 	if err != nil {
 		return uidPlan{}, err
 	}
 	if b.Empty() {
 		return uidPlan{}, fmt.Errorf("%w: no uid block is held for this target", ErrUIDUnavailable)
 	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	next := b.From
 	if floor >= next {
