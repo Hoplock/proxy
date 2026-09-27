@@ -377,6 +377,47 @@ type ProxyCapabilities struct {
 	Execution []ExecutionRung `json:"execution,omitempty"`
 	// Reach are the reach-axis rungs this build implements.
 	Reach []ReachRung `json:"reach,omitempty"`
+	// AlgorithmFloors are the algorithm_floor levels this build ENFORCES, each
+	// with the key exchanges that level accepts in this build (phase 0045;
+	// AlgorithmFloorCapabilities builds it). The server MUST NOT send a level
+	// the requesting proxy did not declare: it is the per-level form of the
+	// policy_version rule, covering what the number cannot — a level added in
+	// a later build — and the per-build member lists are what a fleet view
+	// shows while a rolling upgrade has two builds accepting different
+	// exchanges for the same level.
+	AlgorithmFloors []AlgorithmFloorCapability `json:"algorithm_floors,omitempty"`
+	// Algorithms is every identifier this build can put in an offer, per axis,
+	// under any profile or floor level (OfferableAlgorithms), so Hoplock
+	// Control can warn about a ban that matches nothing anywhere in the fleet
+	// BEFORE it is saved — the check a typo in a ban otherwise escapes.
+	Algorithms *Algorithms `json:"algorithms,omitempty"`
+}
+
+// AlgorithmFloorCapability declares one algorithm_floor level a build enforces
+// and the key exchanges it accepts there, in the wire form the leg offers.
+type AlgorithmFloorCapability struct {
+	// Level is the algorithm_floor value.
+	Level AlgorithmFloor `json:"level"`
+	// KeyExchanges are the exchanges the level accepts in this build.
+	KeyExchanges []string `json:"key_exchanges"`
+}
+
+// DeclaresFloor reports whether this build declared that it enforces level f.
+// No floor needs no declaration. A nil ProxyCapabilities declares nothing, which
+// is the fail-safe answer: a server must then send no floor at all.
+func (c *ProxyCapabilities) DeclaresFloor(f AlgorithmFloor) bool {
+	if f == "" {
+		return true
+	}
+	if c == nil {
+		return false
+	}
+	for _, have := range c.AlgorithmFloors {
+		if have.Level == f {
+			return true
+		}
+	}
+	return false
 }
 
 // ProvidesExecution reports whether this build can provide an execution rung.
@@ -437,19 +478,74 @@ func (c *ProxyCapabilities) ProvidesReach(rung ReachRung) bool {
 // fails the session as an outage if it cannot provide it (PLAN §4.3), so the
 // worst a stale record can cause is a refused session — never a session running
 // below the rung its own audit record claims.
+//
+// It carries TWO OBSERVATIONS, each with its own date, and a server merges them
+// independently (phase 0045): the RUNG OBSERVATION — Execution, Reach and
+// Detail, dated by ObservedAt — which the ephemeral-user probe makes, and the
+// KEY-EXCHANGE OBSERVATION, Kex, which every target handshake makes. A report
+// carries the rung observation exactly when it carries ObservedAt, and the other
+// exactly when it carries Kex; the server replaces a stored observation only
+// with one a report carries and leaves the other untouched. So a key-exchange
+// report, which has no rungs in it, never reads as "this target can take no
+// enforcement rungs". The proxy sends the two as separate reports.
 type TargetCapabilities struct {
 	// Execution are the execution-axis rungs this target can take.
 	Execution []ExecutionRung `json:"execution,omitempty"`
 	// Reach are the reach-axis rungs this target can take.
 	Reach []ReachRung `json:"reach,omitempty"`
-	// ObservedAt is when the proxy probed. A record with no observation time is
-	// treated as stale, because a capability with no date is a capability with
-	// no shelf life.
-	ObservedAt time.Time `json:"observed_at"`
+	// ObservedAt is when the proxy probed, and its presence is what says the
+	// report carries a rung observation at all. A stored rung observation with
+	// no observation time is treated as stale, because a capability with no
+	// date is a capability with no shelf life.
+	ObservedAt time.Time `json:"observed_at,omitzero"`
 	// Detail is free-form observation for an operator reading the console —
 	// which init the target runs, which module was missing. It is never parsed
 	// and never the basis of a decision.
 	Detail map[string]string `json:"detail,omitempty"`
+	// Kex is what this target's key exchange was seen to be (phase 0045), or
+	// nil in a report that does not carry one.
+	Kex *KexObservation `json:"kex,omitempty"`
+}
+
+// CarriesRungs reports whether this report carries a rung observation, which is
+// exactly whether it carries an observation time: the merge rule's test for the
+// rung half (see TargetCapabilities). Rungs or detail WITHOUT one are a report
+// the server refuses — an undated observation cannot be placed against the one
+// it holds — and UndatedRungs is that test.
+func (c *TargetCapabilities) CarriesRungs() bool {
+	return c != nil && !c.ObservedAt.IsZero()
+}
+
+// UndatedRungs reports whether this report has rung content and no observation
+// time, which the contract refuses.
+func (c *TargetCapabilities) UndatedRungs() bool {
+	return c != nil && c.ObservedAt.IsZero() && (c.Execution != nil || c.Reach != nil || c.Detail != nil)
+}
+
+// KexObservation is one target's key exchange, as the proxy saw it on a handshake
+// (phase 0045): what lets Hoplock Control show which targets raising a route's
+// algorithm_floor would break BEFORE anyone raises it. The proxy is the only
+// party that sees a target's key exchange, and it sees one on every handshake,
+// for every credential method.
+//
+// It is an observation and grants nothing, like the rest of the record: the
+// authorize response is the authority for a floor, and the live handshake
+// re-checks it every time, so a stale or wrong report can cost a refused
+// session and never a session below its floor.
+type KexObservation struct {
+	// FloorMet is the HIGHEST algorithm_floor level the target was observed to
+	// meet, or KexFloorNone (AlgorithmPolicy.FloorMet derives it).
+	FloorMet string `json:"floor_met"`
+	// Negotiated is the exchange a successful handshake used; empty after a
+	// failed one, which negotiated nothing.
+	Negotiated string `json:"negotiated,omitempty"`
+	// Offered is the target's whole key-exchange list when the proxy knows it —
+	// a failed negotiation returns it — and nil otherwise: a successful
+	// handshake does not expose the peer's list, and the proxy does not parse
+	// KEXINIT off the wire to get it.
+	Offered []string `json:"offered,omitempty"`
+	// ObservedAt is when the handshake happened, on the proxy's clock.
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 // DefaultCapabilityTTL is how long a target capability record stays usable

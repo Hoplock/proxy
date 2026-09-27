@@ -30,7 +30,7 @@ info:
     A proxy declares the highest **policy vocabulary** it implements in
     `AuthorizeRequest.policy_version`, and the server **MUST NOT answer with
     policy fields introduced after that version**. The current vocabulary is
-    `5`, exported as `control.PolicyVersion`.
+    `6`, exported as `control.PolicyVersion`.
 
     That rule is what makes the proxy's fail-closed decoding safe. The
     authorize response is decoded **strictly**: a field the proxy does not
@@ -50,7 +50,18 @@ info:
     the whole response, so a method is vocabulary exactly as a field is, and
     `brokered-certificate` is what moved the number to `5` while the
     endpoint it is issued through, `POST /v1/credentials/certificate`, moved
-    nothing.
+    nothing. `algorithm_floor` and `algorithm_bans`, two fields on the
+    response, moved it to `6` in one revision; what a proxy **declares** on the
+    request (`capabilities.algorithm_floors`, `capabilities.algorithms`) and
+    what it **reports** (`TargetCapabilities.kex`) are outside it.
+
+    **A route whose policy carries a floor or a ban MUST NOT be served to a
+    proxy declaring an older vocabulary with either omitted.** The server
+    refuses such a request rather than thinning the policy: omitting a floor or
+    a ban is a dropped restriction, which is the exact failure this mechanism
+    exists to prevent. Likewise the server MUST NOT send an `algorithm_floor`
+    level the proxy did not declare in `capabilities.algorithm_floors` — the
+    per-level form of the same rule, covering a level added in a later build.
 
     **The number says what a proxy can READ, never what it requires.** A
     *tightening* — making an existing parameter required — adds no field and
@@ -71,7 +82,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.4.0
+  version: 4.5.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -332,6 +343,11 @@ paths:
         cannot provide it (PLAN §4.3). The worst a stale record can cause is a
         refused session — never a session running below the rung its own audit
         record claims.
+
+        A report may instead — or also — carry a **key-exchange observation**
+        (`capabilities.kex`), which the proxy makes on every target handshake,
+        for every credential method; the two are merged independently (see
+        `TargetCapabilities`). This endpoint is outside `policy_version`.
       requestBody:
         required: true
         content:
@@ -1112,7 +1128,7 @@ components:
           minimum: 1
           description: |
             The highest **policy vocabulary** version this proxy implements.
-            The current vocabulary is `5`, exported as `control.PolicyVersion`.
+            The current vocabulary is `6`, exported as `control.PolicyVersion`.
 
             **It is REQUIRED**, and a request that omits it is refused. There is
             no absent-value default and deliberately so: a proxy that cannot say
@@ -1131,7 +1147,7 @@ components:
             It governs `/v1/authorize` only — that is the response decoded
             strictly — and it says what the proxy can **read**, never what it
             requires. See the versioning notes in `info.description`.
-          example: 5
+          example: 6
         capabilities:
           $ref: '#/components/schemas/ProxyCapabilities'
         conn:
@@ -1242,6 +1258,70 @@ components:
             refused rather than coerced — coercing to `default` would deny every
             route on the estate this exists for, and coercing to the widest
             would weaken a leg nobody asked to weaken.
+        algorithm_floor:
+          type: string
+          enum: [modern-kex, pq-hybrid-kex]
+          description: |
+            The **minimum** key exchange the **proxy→target** leg must
+            negotiate for this route. **Absent ⇒ no floor**, which is exactly
+            the behaviour of a route that never names one.
+
+            A **sibling** of `algorithm_profile`, not a value inside it: a
+            profile is a named *weakening* preset and a floor is a *minimum*,
+            and a route may want `default` **and** a floor, which one field
+            cannot express. Like the profile it is a named value, never an
+            algorithm list.
+
+            The levels are an **ordered ladder**, lowest first, compared by
+            rank alone, and each is defined by the key exchanges it accepts:
+
+            - `modern-kex` (rank 1) — every key exchange the proxy's SSH
+              library implements **except the SHA-1 ones**. Under `default` and
+              `legacy-rsa-sha1` that is already exactly what the leg offers, so
+              the level changes nothing on the wire there; what it adds is a
+              commitment that holds under policy change (the route can never be
+              moved onto `legacy-device`), a rung for the target report, and a
+              promise defined by this contract as "no SHA-1 key exchange".
+            - `pq-hybrid-kex` (rank 2) — the leg **MUST** negotiate a hybrid
+              post-quantum key exchange **that this proxy implements**. Today
+              that is exactly `mlkem768x25519-sha256`: the proxy's SSH library
+              does not implement `sntrup761x25519-sha512`, so a target offering
+              only that hybrid does **not** meet this level. In practice it
+              requires OpenSSH 9.9 or later (or firmware offering ML-KEM-768
+              hybrid) on the target.
+
+            **The rule for adding a level** is the invariant that makes this a
+            dial: every key exchange a level accepts is accepted by every level
+            below it, so raising the floor can only shrink what the leg offers
+            and lowering it can only grow it. A new level goes **above** the
+            top only if it keeps that invariant, and is an ordinary vocabulary
+            revision. A regime whose accepted set does not nest — FIPS forbids
+            `curve25519-sha256`, which `modern-kex` accepts, yet sits neither
+            above nor below `pq-hybrid-kex` — is not a level. Widening a
+            level's set to a hybrid the library gains later (sntrup761) keeps
+            the value's meaning and is a description change, not a revision.
+
+            Under a floor the key-exchange offer is exactly that level's
+            accepted set, highest level first; every other axis is the
+            profile's. It applies to every connection the route causes to its
+            target, exactly as the profile does.
+
+            A floor the target cannot meet **fails the session** — the outage
+            branch, never a deny, never a retry with a wider list, never a walk
+            to the next credential rung — and is reported as
+            `target.algorithm_policy_unmet`. It is refused rather than coerced
+            when unknown. `legacy-device` with any floor is **refused**:
+            `legacy-device` widens the key-exchange axis the floor narrows, so
+            the pair describes a leg that can never connect.
+            `legacy-rsa-sha1` changes only signatures, a different axis, and is
+            accepted with a floor.
+
+            The server MUST NOT send a level the requesting proxy did not
+            declare in `capabilities.algorithm_floors`. It rides a reusable
+            decision like everything here (`cache`), and a replayed floor is
+            the same floor.
+        algorithm_bans:
+          $ref: '#/components/schemas/AlgorithmBans'
         filter_policy:
           $ref: '#/components/schemas/FilterPolicy'
         enforcement:
@@ -2035,18 +2115,180 @@ components:
           items:
             type: string
           example: [proxy-channel-policy, account-network-isolated]
+        algorithm_floors:
+          type: array
+          description: |
+            The `algorithm_floor` levels this build **enforces**, one entry per
+            level, each with the key exchanges that level accepts **in this
+            build**, as the leg offers them on the wire. A level's members can
+            change with a release — sntrup761 arriving is exactly that — so
+            during a rolling upgrade two builds may accept different exchanges
+            for the same level; this is where that shows.
+
+            The server **MUST NOT** send a level the requesting proxy did not
+            declare. Absent declares nothing, so no floor may be sent at all.
+            It rides the request, which `policy_version` does not govern.
+          items:
+            $ref: '#/components/schemas/AlgorithmFloorCapability'
+        algorithms:
+          $ref: '#/components/schemas/OfferableAlgorithms'
+
+    AlgorithmFloorCapability:
+      type: object
+      description: One `algorithm_floor` level a proxy build enforces.
+      required: [level, key_exchanges]
+      properties:
+        level:
+          type: string
+          enum: [modern-kex, pq-hybrid-kex]
+        key_exchanges:
+          type: array
+          description: |
+            The key exchanges this level accepts in this build, highest level
+            first, including `curve25519-sha256@libssh.org` wherever
+            `curve25519-sha256` is accepted (see `AlgorithmBans`).
+          items:
+            type: string
+          example: [mlkem768x25519-sha256]
+
+    OfferableAlgorithms:
+      type: object
+      description: |
+        Every identifier this proxy build can put in an offer on the
+        proxy→target leg, per axis, under **any** profile or floor level. It is
+        built from the same expansion every connection dials with, so it cannot
+        name anything the build does not offer.
+
+        It is how a server warns about a ban that matches nothing anywhere in
+        the fleet **before** it is saved: a ban naming something no build
+        offers is accepted (see `AlgorithmBans`), and a typo in one looks
+        exactly like a working ban. It rides the request, which
+        `policy_version` does not govern.
+      properties:
+        key_exchanges:
+          type: array
+          items:
+            type: string
+        ciphers:
+          type: array
+          items:
+            type: string
+        macs:
+          type: array
+          items:
+            type: string
+        host_keys:
+          type: array
+          items:
+            type: string
+        public_key_auth:
+          type: array
+          items:
+            type: string
+
+    AlgorithmBans:
+      type: object
+      description: |
+        SSH algorithm identifiers the proxy **MUST NOT offer** on the
+        **proxy→target** leg of this route, one optional list per axis, each
+        spelled exactly as SSH spells it. **Absent ⇒ nothing is banned**, and so
+        is an object whose lists are all empty.
+
+        It is the one algorithm **list** in this vocabulary, and it is admitted
+        by the rule that **a list may narrow a route, never widen it**: the
+        objection to algorithm lists is to lists that add, and a ban can only
+        remove. It is per axis because some identifiers live on more than one —
+        `ssh-rsa` is both a host-key and a public-key algorithm, and banning it
+        for one need not ban it for the other. It is per route: a ban
+        "everywhere" is the server applying it to every route it serves, and
+        no proxy setting can lift one.
+
+        **It is applied last.** The proxy computes the lists in force as the
+        profile's expansion, then the floor's narrowing, then removes every
+        banned identifier — so a ban always wins, including over what
+        `legacy-device` adds. It is subtracted from what the route would
+        otherwise have offered, never from the library's "supported" set, so a
+        ban on something the route never offered changes nothing on the wire,
+        and an axis with no ban offers exactly what it would without this
+        field. `curve25519-sha256@libssh.org` is the pre-standard name of
+        `curve25519-sha256`: the proxy's SSH library offers it immediately
+        after `curve25519-sha256` and cannot offer either alone, so a ban on
+        either name removes both. `public_key_auth` restricts the signature
+        algorithms the proxy authenticates with.
+
+        **Refused** at authorize (a contract violation, never a deny; the
+        server MUST NOT send it): a ban that leaves an axis nothing to offer;
+        a ban that removes every key exchange the route's `algorithm_floor`
+        accepts (`mlkem768x25519-sha256` under `pq-hybrid-kex` describes a leg
+        that can never connect); an empty identifier; the same identifier
+        twice on one axis.
+
+        **Not refused: a name this build does not implement.** Banning what the
+        proxy never offers is already satisfied, and refusing it would turn a
+        same-day ban issued after an advisory into an outage on every build
+        that never had the algorithm. It is made visible instead: the record
+        names it in `algorithm_bans_unmatched`, and each proxy declares what it
+        can offer in `capabilities.algorithms`.
+
+        A ban rides a reusable decision (`cache`), so until a cached decision's
+        TTL runs out it keeps the policy it was issued with; that is why the
+        emergency runbook's second step is `cache_invalidate` (see
+        `api/README.md`). Sessions already running keep what they negotiated.
+      properties:
+        key_exchanges:
+          type: array
+          items:
+            type: string
+          example: [diffie-hellman-group14-sha256]
+        ciphers:
+          type: array
+          items:
+            type: string
+          example: [aes128-cbc]
+        macs:
+          type: array
+          items:
+            type: string
+        host_keys:
+          type: array
+          items:
+            type: string
+          example: [ssh-rsa]
+        public_key_auth:
+          type: array
+          items:
+            type: string
+          example: [ssh-rsa]
 
     TargetCapabilities:
       type: object
       description: |
-        The enforcement rungs one **target** can take, as the proxy found them
-        by connecting to it (probed by phase 0019).
+        What one **target** was observed to be, as the proxy found it by
+        connecting to it. It carries **two observations, each with its own
+        date**, and a server merges them independently:
 
-        Whether a target runs systemd, whether cgroup v2 is mounted, whether
-        SELinux is enforcing, whether netfilter is reachable, whether it is a
-        Linux host at all — none of that is knowable from a policy database,
-        and all of it decides which rungs are real.
-      required: [observed_at]
+        - the **rung observation** — `execution`, `reach` and `detail`, dated by
+          `observed_at` — the enforcement rungs the target can take, probed by
+          the `ephemeral-user` method (phase 0019). Whether a target runs
+          systemd, whether cgroup v2 is mounted, whether netfilter is reachable,
+          whether it is a Linux host at all — none of that is knowable from a
+          policy database, and all of it decides which rungs are real;
+        - the **key-exchange observation** — `kex`, dated by `kex.observed_at`
+          — which the proxy makes on every target handshake, for every
+          credential method.
+
+        **The merge rule, which the server implements.** A report carries the
+        rung observation exactly when it carries `observed_at`, and the
+        key-exchange observation exactly when it carries `kex`. The server
+        replaces a stored observation only with one a report carries, and an
+        absent one leaves the stored one **untouched** — so a key-exchange
+        report, which has no rungs in it, never reads as "this target can take
+        no enforcement rungs", and a rung report never erases a target's
+        key-exchange level. `execution`, `reach` or `detail` without
+        `observed_at` is refused (`400`): an undated observation cannot be
+        placed against the one the server holds. A report carrying neither
+        observation is refused too. The proxy sends the two as separate
+        reports.
       properties:
         execution:
           type: array
@@ -2062,10 +2304,11 @@ components:
           type: string
           format: date-time
           description: |
-            When the proxy probed. A record with **no observation time is
-            treated as stale**, because a capability with no date has no shelf
-            life — and a stale record and an absent one mean the same thing to
-            anyone choosing a rung from it.
+            When the proxy probed, and what says the report carries a rung
+            observation at all. A stored rung observation with **no observation
+            time is treated as stale**, because a capability with no date has
+            no shelf life — and a stale record and an absent one mean the same
+            thing to anyone choosing a rung from it.
         detail:
           type: object
           additionalProperties:
@@ -2077,6 +2320,61 @@ components:
           example:
             init: systemd-257
             cgroup: v2
+        kex:
+          $ref: '#/components/schemas/KexObservation'
+
+    KexObservation:
+      type: object
+      description: |
+        One target's key exchange, as the proxy saw it on a handshake. It is
+        what lets a server show which targets raising a route's
+        `algorithm_floor` would break **before** anyone raises it: the proxy is
+        the only party that sees a target's key exchange, and it sees one on
+        every handshake.
+
+        The proxy reports it only when it holds no fresh observation for the
+        target, or when `floor_met` **changed** — a change is news, and a
+        target whose level dropped is news a security team wants — and never
+        on the session path. It honours `report_after_seconds`.
+
+        It is still **an observation and grants nothing**: the authorize
+        response is the authority for a floor, and the live handshake
+        re-checks it every time, so a stale or wrong report can cost a refused
+        session, never a session below its floor.
+      required: [floor_met, observed_at]
+      properties:
+        floor_met:
+          type: string
+          enum: [none, modern-kex, pq-hybrid-kex]
+          description: |
+            The **highest** `algorithm_floor` level the target was observed to
+            meet, or `none`. After a failed key-exchange negotiation it is
+            computed exactly from `offered`. After a success it is the highest
+            level containing `negotiated`, which is sound because the proxy
+            always offers the highest level's exchanges first: a target that
+            negotiated a classical exchange was offered every hybrid first. A
+            success under an offer a ban reduced is not an observation and is
+            not reported, because it cannot say what the target would have
+            picked.
+        negotiated:
+          type: string
+          description: The key exchange a successful handshake used; absent after a failed one.
+          example: mlkem768x25519-sha256
+        offered:
+          type: array
+          description: |
+            The target's whole key-exchange list, when the proxy knows it — a
+            failed negotiation returns it — and absent otherwise: a successful
+            handshake does not expose the peer's list, and the proxy does not
+            parse it off the wire. SSH extension signals (`ext-info-s`,
+            `kex-strict-s-v00@openssh.com`) are not key exchanges and are left
+            out.
+          items:
+            type: string
+          example: [sntrup761x25519-sha512, curve25519-sha256, ecdh-sha2-nistp256]
+        observed_at:
+          type: string
+          format: date-time
 
     CapabilityReportRequest:
       type: object

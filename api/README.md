@@ -48,7 +48,7 @@ companion. If the two disagree, the OpenAPI document wins.
 ## Versioning: one live vocabulary, and a proxy that fails closed
 
 `POST /v1/authorize` answers in a **policy vocabulary**, and a proxy declares the
-one it implements in `AuthorizeRequest.policy_version`; the current value is `5`,
+one it implements in `AuthorizeRequest.policy_version`; the current value is `6`,
 exported as `control.PolicyVersion`. It is **required** and has no absent-value
 default: a request that omits it is refused, because a proxy that cannot say what
 it reads is one the server would have to guess for — and the guess decides which
@@ -81,7 +81,19 @@ response, not a rung to skip, so a method is vocabulary exactly as a field is.
 That is why `brokered-certificate` moved the number from `4` to `5` while the
 endpoint its certificates are issued through moved nothing: a proxy that does not
 know the method must never be sent it, and the version is the only thing that can
-tell a server so.
+tell a server so. `algorithm_floor` and `algorithm_bans` — two fields on the
+response, shipped in one revision — moved it to `6`. What a proxy **declares** on
+the request (`capabilities.algorithm_floors`, `capabilities.algorithms`) and what
+it **reports** (`TargetCapabilities.kex`) are outside it, and moved `info.version`
+only.
+
+**A route whose policy carries a floor or a ban MUST NOT be served to a proxy
+declaring an older vocabulary with either omitted.** The server refuses the
+request rather than thinning the policy — the mock answers a `500` — because an
+omitted floor or ban is a dropped restriction, the exact failure the number
+exists to prevent. The per-level form of the same rule: the server MUST NOT send
+an `algorithm_floor` level the proxy did not declare in
+`capabilities.algorithm_floors`.
 
 **And it says what a proxy can READ, never what it requires.** A *tightening* —
 making an existing parameter required — adds no field and changes no field's
@@ -201,6 +213,8 @@ Each field below names the phase that consumes it.
 | `params.key_type` on `brokered-certificate` | the proxy's default, `ed25519` | the algorithm of the key pair the proxy generates for the session (`ed25519` or `rsa`) | 0044 |
 | `params.lifetime_seconds` on `brokered-certificate` | the certificate's validity is **not bounded by the route**; the server's own lifetime stands | an **upper bound**: a certificate valid for longer is refused (**outage**), a shorter one is accepted | 0044 |
 | `algorithm_profile` | `default` — the SSH library's secure set, an explicit list on every axis | a named preset; anything but `default` is a weakening | 0013, 0043 |
+| `algorithm_floor` | **no floor** — the leg negotiates whatever the profile offers | a minimum key-exchange level; a target that cannot meet it fails the session (**outage**) | 0045 |
+| `algorithm_bans` | **nothing is banned** (an object whose lists are all empty means the same) | identifiers the leg must never offer, per axis, removed after the profile and the floor | 0045 |
 | `hop.connection` | `dial` | `dial` or `relay` | 0008 |
 | `filter_policy.exec_mode` | `filtered` (the ordered rule list) | `filtered` or `restricted` | 0010 |
 | `enforcement` | **proxy-side enforcement only** — `execution: proxy-inspected`, `reach: proxy-channel-policy` | a rung per axis; a rung the proxy cannot provide is an **outage**, never a downgrade | 0019 |
@@ -212,6 +226,9 @@ Each field below names the phase that consumes it.
 | `grant_context` | **no external grant context** | opaque context copied to every log record; never parsed, never matched, never a decision | 0019 |
 | `concurrency` | **uncapped** | a per-subject and/or per-target ceiling; exceeding it is a **policy denial**, not an outage | 0019 |
 | `capabilities` (request) | the proxy **declares nothing**, so only rungs needing no capability may be chosen | the rungs this build can provide | — |
+| `capabilities.algorithm_floors` (request) | the proxy **declares no floor level**, so no `algorithm_floor` may be sent | the levels this build enforces, each with its key exchanges in this build | 0045 |
+| `capabilities.algorithms` (request) | the proxy **declares nothing it can offer**; a ban is judged by the server alone | every identifier this build can put in an offer, per axis | 0045 |
+| `capabilities.kex` (target report) | the report carries **no key-exchange observation**, and the stored one is left untouched | the target's observed key-exchange level | 0045 |
 | `policy_version` (request) | — (**required**; a request without it is refused) | the vocabulary the proxy implements | — |
 | `settings.<key>` (config document) | the proxy's **bootstrap value** for that setting | the fleet's value, for as long as the document is published | 0042 |
 | `running_version`/`running_hash` (config report) | the proxy runs on its **bootstrap file alone** | the document every setting of which is in force | 0042 |
@@ -497,7 +514,7 @@ classification**: a library upgrade that moves an algorithm between its
 supported and insecure lists changes `default`, and the proxy pins the lists
 with a test so that such a change is reviewed rather than absorbed. No finer
 presets exist; an administrator who needs only part of `legacy-device` narrows
-it rather than adding a preset.
+it with `algorithm_bans` (below) rather than adding a preset.
 
 Two properties make this safe and it needs both. It is **per route, named by the
 server** — never a proxy-wide config knob, which would weaken every leg in the
@@ -519,10 +536,241 @@ attribute, and its absence means the record is not about a target leg, never
 the session as an outage and leaves a `warn` record,
 `event: target.algorithm_policy_unmet`, carrying `algorithm_profile`,
 `target_addr`, `algorithm_axis` and `target_algorithms_offered` — which is what
-an operator reads to choose the profile the route needs. An unknown profile is
+an operator reads to choose the profile the route needs (the whole record, floors
+and bans included, is under "When the target cannot meet the algorithm policy"
+below). An unknown profile is
 refused rather than coerced — coercing to `default` would deny every route on
 the estate this exists for, and coercing to the widest would weaken a leg nobody
 asked to weaken.
+
+### Algorithm floor (`algorithm_floor`, phase 0045)
+
+A profile can only **weaken** the proxy→target leg, so policy could say "this
+route may use RSA with SHA-1" and had no way to say "this route must negotiate a
+post-quantum key exchange". `algorithm_floor` is that minimum: a **sibling** of
+the profile rather than a value inside it, because a profile is a named
+weakening preset and a floor is a minimum, and a route may want `default` **and**
+a floor, which one field cannot express. Like the profile it is a named value,
+not an algorithm list, so it cannot be tuned one identifier at a time and a
+reviewer reads a word rather than decoding one.
+
+The floor is a **dial, not a switch**: an ordered ladder of named levels, lowest
+first, that an administrator turns up or down as an estate is upgraded or as
+compliance requires. Each level is defined by the set of key exchanges it
+accepts, and levels are compared by rank alone:
+
+| Rank | Level | Accepts (this build) | Excludes |
+| --- | --- | --- | --- |
+| 0 | *(absent)* | whatever the profile offers | nothing |
+| 1 | `modern-kex` | every key exchange the proxy's SSH library implements **except** the SHA-1 ones: `mlkem768x25519-sha256`, `curve25519-sha256` (and its pre-standard name `curve25519-sha256@libssh.org`), `ecdh-sha2-nistp256/384/521`, `diffie-hellman-group14-sha256`, `diffie-hellman-group16-sha512`, `diffie-hellman-group-exchange-sha256` | SHA-1 key exchange |
+| 2 | `pq-hybrid-kex` | the hybrid post-quantum exchanges this proxy implements: today exactly `mlkem768x25519-sha256` | every classical exchange |
+
+**The rule for adding a level**, and the invariant that makes this a dial: every
+key exchange a level accepts is also accepted by every level below it. Raising
+the floor can only shrink what the leg offers and lowering it can only grow it,
+so "tune up or down" means one thing. A future level — a pure post-quantum
+exchange, a larger ML-KEM parameter set — goes in **above** the current top only
+if it keeps the invariant, and is an ordinary vocabulary revision.
+
+**What is deliberately not a level.** A regime whose accepted set does not nest
+with the others cannot be placed on this ladder. FIPS is the obvious case: it
+forbids `curve25519-sha256`, which `modern-kex` accepts, yet sits neither above
+nor below `pq-hybrid-kex`. Such a regime is a different construct, not a rung,
+and nothing here tries to squeeze one in.
+
+**`pq-hybrid-kex` means ML-KEM-768 hybrid, and not sntrup761.** The proxy's SSH
+library (`golang.org/x/crypto/ssh`) implements `mlkem768x25519-sha256` and does
+not implement `sntrup761x25519-sha512` at all, so the level is defined by a
+property — a hybrid post-quantum exchange **this proxy implements** — whose one
+member today is ML-KEM-768. A target offering only sntrup761 (OpenSSH
+9.0–9.8's default hybrid, a large installed base) does **not** meet it, and in
+practice the level requires **OpenSSH 9.9 or later** (or device firmware offering
+ML-KEM-768 hybrid) on the target. That is the fact to check before turning the
+floor on across an estate. When the library gains sntrup761 it joins the level:
+the value keeps its meaning, so that is a description change and **not** a
+vocabulary revision.
+
+**What `modern-kex` does on the wire.** `default` is already the library's secure
+set, so under `default` and `legacy-rsa-sha1` the key-exchange offer is already
+exactly the `modern-kex` set and the level changes nothing on the wire for those
+routes. What it adds is a **commitment that holds under policy change** — a later
+edit moving the route onto `legacy-device` is refused rather than applied, which
+is where a statement such as "no SHA-1 key exchange, anywhere" is written; a
+**rung for the target report** ("meets `modern-kex`" separates a target that needs
+`legacy-device` from one that does not); and **independence from the library's
+classification** — `default` follows it, while `modern-kex` is defined by this
+contract as "no SHA-1 key exchange".
+
+**How it is applied.** The floor narrows the profile's expansion; it does not
+travel separately. Under a floor the key-exchange offer is **exactly** that
+level's accepted set, highest level first — under `pq-hybrid-kex` the hybrid
+alone, not "hybrids first", which would let the target pick a classical one —
+and every other axis is the profile's answer, unchanged. Every offer, floor or
+no floor, lists the highest level's exchanges first (so under `legacy-device`
+every SHA-1 exchange comes after every modern one), which is what lets a
+handshake's negotiated exchange name the target's level. It applies to every
+connection the route causes to the target, as the profile does: the session leg,
+the provisioning login, a driver's privileged CLI, and the teardown and sweeps
+after them. There is no proxy-wide floor, and no proxy setting can lower one.
+
+**Profile × floor, by axis.** Profiles and the floor act on different axes, and
+the rule is the axis, not the word "legacy":
+
+| `algorithm_profile` | with any `algorithm_floor` |
+| --- | --- |
+| `default` (or absent) | accepted |
+| `legacy-rsa-sha1` | accepted — it adds SHA-1 **signatures**, a different axis |
+| `legacy-device` | **refused** — it widens the very key-exchange axis the floor narrows, so the pair describes a leg that can never connect |
+
+"Refused" means what an unknown profile means: a contract violation the proxy
+fails closed on, outage-class, never a deny, and the server **MUST NOT** send it.
+An unknown `algorithm_floor` is refused rather than coerced, because coercing it
+to "no floor" silently drops a restriction.
+
+**A floor the target cannot meet fails the session, and never falls back.** No
+retry with a wider list, and no walk to the next credential rung: every rung
+dials the same target under the same floor, and the ladder is about credentials,
+not transport. It is the **outage** branch of the disclosure rule, not a deny —
+nothing was refused to the user; the target could not meet policy, and "access
+denied" would send them to file an access request no approval can fix. The user
+is told, with the session id, that the target does not support the key exchange
+the route requires, which discloses nothing `ssh -vv` against the target would
+not. It is never scored against the proxy's credential. The record is
+`target.algorithm_policy_unmet` (below).
+
+It rides a reusable decision (`cache`) like everything here; a replayed floor is
+the same floor, so caching changes nothing about it.
+
+**Recording it.** Every session whose target leg came up carries
+`target_kex_algorithm` — the key exchange **negotiated** on the proxy→target leg,
+floor or no floor, read from the established connection and never from what was
+offered — on its `target.algorithms_negotiated` record, together with the policy
+in force. `algorithm_floor` names the floor **in force** wherever
+`algorithm_profile` is stamped (the provisioning record and the device
+account-mapping event), and is **omitted** when there is none. The attribute is
+`target_kex_algorithm` rather than `kex_algorithm` because a record here can
+describe three SSH legs, and every proxy→target fact carries the `target_`
+prefix. On the device account-mapping event it is the exchange the driver's own
+privileged connection negotiated.
+
+### Banned algorithms (`algorithm_bans`, phase 0045)
+
+An administrator needs to take a vulnerable algorithm off a route **the day an
+advisory lands**, without waiting for a proxy release — which levels cannot do,
+since they move in named steps that ship with the software. `algorithm_bans` is a
+per-route object with one optional list per axis (`key_exchanges`, `ciphers`,
+`macs`, `host_keys`, `public_key_auth`) of identifiers the proxy **must not
+offer**, spelled exactly as SSH spells them:
+
+```yaml
+algorithm_bans:
+  key_exchanges:   [diffie-hellman-group14-sha256]
+  ciphers:         [aes128-cbc]
+  host_keys:       [ssh-rsa]
+  public_key_auth: [ssh-rsa]
+```
+
+It is a list of identifiers, and the argument against lists above is an argument
+against lists that **widen** a route. A ban can only remove: **a list may narrow
+a route, never widen it.** It cannot weaken a route one identifier at a time,
+and it names exactly the fact an auditor wants to see. It is per axis because
+some identifiers live on more than one: `ssh-rsa` is both a host-key and a
+public-key algorithm, and an administrator may ban it for one and not the other.
+It is Hoplock Control's policy, per route (D2): banning an algorithm "everywhere"
+is Control applying the ban to every route it serves. No proxy setting can
+un-ban anything.
+
+**Applied last, subtracted, never rebuilt.** The lists in force are the profile's
+expansion, then the floor's narrowing, then every banned identifier removed — so
+a ban always wins, including over what `legacy-device` adds. A ban is subtracted
+from what the route would otherwise have offered, never from the library's
+"supported" set, which would make a ban **add** algorithms the route never
+offered. So an axis with no ban offers exactly what it did without this field,
+and a ban on something the route never offered (`diffie-hellman-group1-sha1`
+under `default`) changes nothing on the wire. `curve25519-sha256@libssh.org` is
+the pre-standard name of `curve25519-sha256`; the proxy's SSH library offers it
+immediately after `curve25519-sha256` and cannot offer either alone, so banning
+either name bans both. `public_key_auth` restricts the signature algorithms the
+proxy's own key authenticates with, on the same mechanism `legacy-rsa-sha1` uses.
+
+**Refused at authorize** (a contract violation, the server **MUST NOT** send it):
+
+- a ban that leaves an axis with **nothing** to offer;
+- a ban that removes **every** key exchange the route's `algorithm_floor`
+  accepts — banning `mlkem768x25519-sha256` under `pq-hybrid-kex` describes a leg
+  that can never connect;
+- an empty identifier, or the same identifier twice on one axis.
+
+**Not refused: a name this build does not implement.** Banning what the proxy
+never offers is already satisfied, and refusing it would turn a same-day ban into
+an outage on every build that never had the algorithm. But a typo in a ban looks
+exactly like a working ban, so it is never **silent**: the provisioning record
+carries `algorithm_bans_unmatched`, listing each banned name no profile or level
+of this build can offer as `<axis>:<name>`, and every proxy declares everything
+it can offer in `capabilities.algorithms` so that Control can warn about a ban
+matching nothing anywhere in the fleet **before** it is saved.
+
+**Recorded, so a ban is verifiable per session.** A ban can be on any axis, so
+every target leg that comes up records what was negotiated on each axis the SSH
+library exposes, on the `target.algorithms_negotiated` record:
+`target_kex_algorithm`, `target_host_key_algorithm`, `target_cipher_out` and
+`target_cipher_in` (proxy→target and target→proxy), and `target_mac_out` and
+`target_mac_in` (omitted when an AEAD cipher makes the MAC implicit). The library
+does not expose which public-key algorithm authentication used, so the record
+names what the proxy **offered** instead, as
+`target_public_key_algorithms_offered`. Each non-empty ban axis is stamped as
+`algorithm_bans.<axis>` (sorted, comma-joined) — one attribute per axis, so
+"which sessions ran under a ban on X" is a filter rather than a substring search
+— on the provisioning record, the `target.algorithms_negotiated` record and the
+device account-mapping event.
+
+A ban on the **key-exchange** axis also means a successful handshake cannot say
+what the target would have picked, so it produces no `floor_met` observation
+(below); a failed one still does, because the target's whole list comes back.
+
+**The emergency runbook**, for the day an advisory lands:
+
+1. Control adds the ban to the affected routes' policy.
+2. Control sends `cache_invalidate` with `all`. A cached decision otherwise keeps
+   the old policy until its TTL runs out, and the proxy never overrides a
+   decision (D2), so this step is what makes the ban take effect **at the next
+   connection**.
+3. Sessions already running keep the algorithms they negotiated: SSH re-keys
+   within a session's existing configuration, so the ban does not reach them. To
+   end them, Control sends `session_kill`, finding them by the negotiated
+   attributes above — for example, every open session whose `target_cipher_out`
+   is the banned cipher. The `reason` is shown to the user, so it should say why.
+
+### When the target cannot meet the algorithm policy
+
+A profile that allows nothing the target offers, a floor it cannot reach, and a
+ban that removed everything it offered on some axis are **one failure class**
+with one outcome: the session fails at setup as an outage, never a deny, never a
+fallback, never scored against the proxy's credential. The record is a `warn`
+`error` record on the batch path, `event: target.algorithm_policy_unmet`,
+carrying:
+
+- `algorithm_axis` — the axis that could not be agreed (`key_exchange`,
+  `host_key`, `cipher`, `mac`, `compression`), or `public_key_auth` when the
+  route's policy left the proxy's own key no signature algorithm the target
+  accepts — a `public_key_auth` ban, say, on the only algorithm the key can sign
+  with;
+- `algorithm_policy_cause` — **which step** of the expansion removed the last
+  algorithm the target offered there: `profile`, `floor` or `ban`, which is the
+  thing to change;
+- `target_algorithms_offered` — what the **target** offered on that axis,
+  comma-joined (public protocol metadata, never credential material; it says
+  whether the fix is an OpenSSH upgrade or a change on the target). It is absent
+  for `public_key_auth`, which is not negotiated in the key-exchange init and
+  whose accepted list the SSH library does not report;
+- the policy in force: `algorithm_profile`, `algorithm_floor` when there is one,
+  and `algorithm_bans.<axis>` for each banned axis; and `target_addr`.
+
+It is `warn` and not `critical` on §7's rule for an outage: an unmet floor is a
+fact about the target's posture, not a security event. Key-exchange negotiation
+is covered by the exchange hash the host key signs, and the host key is checked
+before anything else (D7), so an on-path attacker cannot strip the hybrid from
+the offer without failing host-key verification first.
 
 ### Hop connection direction (`hop.connection`, D11, phase 0008)
 
@@ -734,12 +982,44 @@ netfilter is reachable, whether it is a Linux host at all.
 
 - **Per proxy**: `AuthorizeRequest.capabilities` — the rungs this *build*
   implements, beside `policy_version` on the same pattern. Absent declares
-  nothing.
+  nothing. It also declares the `algorithm_floor` levels this build enforces,
+  each with the key exchanges that level accepts **in this build**
+  (`algorithm_floors`), and everything the build can put in an offer, per axis
+  (`algorithms`). The server **MUST NOT** send a floor level the proxy did not
+  declare — the per-level form of the `policy_version` rule, covering a level
+  added in a later build — and the per-build member lists are what a fleet view
+  shows while a rolling upgrade has two builds accepting different exchanges for
+  one level. All of this rides the request, which `policy_version` does not
+  govern (it governs the response), so it moved `info.version` and not the
+  vocabulary number.
 - **Per target**: `POST /v1/capabilities/report` — the rungs this *target* can
   take, discovered by probing it. It takes the shape of `/v1/hostkeys/report`
   (D7) because authorize happens **before** the proxy has ever touched the
   target, so a first-ever connection has nothing to put on the request.
   `report_after_seconds` lets the server own the freshness of its own record.
+- **Per target, from every handshake**: the same endpoint carries a
+  **key-exchange observation**, `kex: {floor_met, negotiated, offered,
+  observed_at}` — the highest `algorithm_floor` level the target was seen to
+  meet (or `none`), the exchange used, and the target's whole list when a failed
+  negotiation revealed it. The proxy is the only party that sees a target's key
+  exchange and it sees one on every handshake, for **every** credential method,
+  so this is what lets Control show which targets raising a floor would break
+  **before** anyone raises it. The proxy reports it off the session path
+  (fire-and-forget, never delaying setup), only when it holds no fresh
+  observation of the target or when `floor_met` **changed** — a target whose
+  level dropped is news — and it honours `report_after_seconds`. A successful
+  handshake under a key-exchange ban is not an observation and is not reported.
+
+**Merge, don't clobber.** A report carries the **rung observation** (`execution`,
+`reach`, `detail`, dated by `observed_at`) exactly when it carries `observed_at`,
+and the **key-exchange observation** exactly when it carries `kex`; each has its
+own date. The server replaces a stored observation only with one a report
+carries and leaves the other **untouched**, so a key-exchange report never reads
+as "this target can take no enforcement rungs". Rungs or detail without
+`observed_at` are refused (`400`), and so is a report carrying neither. The proxy
+sends the two observations as **separate reports**, which this rule makes safe:
+the probe runs on the provisioning login and the key exchange is observed on the
+session leg, later.
 
 **Stale and absent both fail safe, and they mean the same thing.** A record with
 no `observed_at`, one older than its TTL, and no record at all are treated
@@ -752,7 +1032,9 @@ The reason this is safe rather than merely convenient: **a report is an
 observation and grants nothing.** The authority for a rung is the authorize
 response, and the proxy re-checks the rung against the live target when it
 provisions. So the worst a stale record can cause is a refused session — never a
-session running below the rung its own audit record claims.
+session running below the rung its own audit record claims. The same holds for a
+key-exchange observation: the handshake re-checks the floor every time, so a
+stale or wrong one costs a refused session, never a session below its floor.
 
 ### Session bounds (D16, phase 0019/0024)
 
@@ -1239,6 +1521,8 @@ startup, and every problem in a file is reported at once.
 | `routes[].target_auth_ladder` | The ordered ladder: a list of entries, each `method` (`ephemeral-user`, `brokered-key`, `brokered-certificate`, `ephemeral-account`, `static-key`) plus method-scoped `params`. Omit to leave the proxy on its configured method; write `[]` to deny the session. Fixture params are test data — `credential_ref` names local material, it never carries a secret. |
 | `routes[].target_auth_ladder[].params` | Method-scoped; `ephemeral-account` also takes the open `device_field.<name>` namespace, e.g. `device_field.vdom: customer-a`. |
 | `routes[].algorithm_profile` | `default` (the default), `legacy-rsa-sha1`, or `legacy-device`. |
+| `routes[].algorithm_floor` | `modern-kex` or `pq-hybrid-kex`; absent means no floor. With `legacy-device` it fails at startup, exactly as the client would refuse the pair. A proxy whose request does not declare the level in `capabilities.algorithm_floors` is answered a `500`, as for an older vocabulary. |
+| `routes[].algorithm_bans` | `key_exchanges`, `ciphers`, `macs`, `host_keys`, `public_key_auth` — lists of identifiers the proxy must not offer. A ban that empties an axis or the floor's level, an empty identifier, or a duplicate fails at startup; a name no build implements is accepted, as the client accepts it. |
 | `routes[].hop_connection` | `dial` (default) or `relay` for a nexthop route. `relay` requires `next_proxy_id`. |
 | `routes[].filter_policy` | `mode` plus ordered `rules` (each `match` + `action` + optional `message`), and `exec_mode` (`filtered`, the default, or `restricted`) with `restricted_exec`. Setting `restricted_exec` beside a rule list fails at startup, exactly as the client would refuse it. |
 | `routes[].filter_policy.restricted_exec` | `commands[]`: `executable` plus either `form: exact` with `argv`, or `form: positional` with `args[]` (`kind` of `literal`/`prefix`/`oneof`/`any`, `value`/`values`, `optional`). Anything not covered by a spec is denied. |
@@ -1268,7 +1552,9 @@ Route fixtures are validated at startup with the **client's own**
 serve a policy a real proxy would refuse. And a route needing vocabulary the
 proxy did not declare is answered with a `500` rather than with policy that
 proxy would reject three lines later — `vocabularyVersion` in `fixtures.go` is
-where the next revision's fields get tiered above the current baseline.
+where the next revision's fields get tiered above the current baseline. A route
+naming an `algorithm_floor` level the request's `capabilities.algorithm_floors`
+does not declare is answered a `500` on the same reasoning.
 
 ### Mock-only endpoints
 
@@ -1281,10 +1567,15 @@ These are **not** part of the contract; no production server implements them.
 | `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. It refuses `config_changed`, which only `POST /debug/config` may publish. |
 | `POST /debug/config` | Publishes `{"version","settings"}` as the current document and emits `config_changed` from it. Returns `{"event_id","delivered","version","hash"}`. Stands in for Hoplock Control's publisher. |
 | `GET /debug/config/reports` | The last configuration report per proxy id. |
+| `GET /debug/capabilities` | What the mock holds about each target — the merged rung and key-exchange observations — keyed by host, or `host:port` for a port other than 22. |
 
-The mock also keeps the **last capability report per target** in memory, so
-a test can assert the proxy reported at all. It answers `accepted` and decides
-nothing: a capability report is an observation, not a request for a decision.
+The mock also keeps the **last capability report per target** in memory — a
+target being a host and, when it is not 22, a port — so a test can assert the
+proxy reported at all, and merges it exactly as the contract says a server
+must: the rung observation and the key-exchange observation are replaced
+independently, each only by a report carrying it. It answers `accepted` and
+decides nothing: a capability report is an observation, not a request for a
+decision.
 
 With `-log-dir`, ingested records are also mirrored to `batch.jsonl` and
 `priority.jsonl` in that directory, so a scenario can inspect them after the
@@ -1308,7 +1599,8 @@ process exits.
 
    Also tier the addition in `cmd/mock-control`'s `vocabularyVersion`, above
    the tiers already there (`baselineVocabulary`, then
-   `vocabularyBrokeredCertificate`), and move the mock's highest tier with the
+   `vocabularyBrokeredCertificate`, then `vocabularyAlgorithmFloor`), and move
+   the mock's highest tier with the
    client's number — `TestTheMocksHighestTierIsTheClientsVocabulary` fails until
    both agree. That is the server half: a proxy still on the old
    number is then answered a `500` naming the mismatch, rather than policy it

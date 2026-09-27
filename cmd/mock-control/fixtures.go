@@ -179,6 +179,15 @@ type fixtureRoute struct {
 	// leg: "default" (the absent-value default), "legacy-rsa-sha1", or
 	// "legacy-device".
 	AlgorithmProfile string `yaml:"algorithm_profile"`
+	// AlgorithmFloor is the route's minimum key-exchange level (phase 0045):
+	// "modern-kex" or "pq-hybrid-kex"; empty means no floor. With
+	// legacy-device it is refused at startup, as the client refuses the pair.
+	AlgorithmFloor string `yaml:"algorithm_floor"`
+	// AlgorithmBans are identifiers the proxy must never offer on this route,
+	// per axis (phase 0045). Absent, and present with every list empty, both
+	// mean nothing is banned — and the mock sends neither, so a route with no
+	// ban needs nothing above the baseline vocabulary.
+	AlgorithmBans *fixtureAlgorithmBans `yaml:"algorithm_bans"`
 	// HopConnection is "dial" or "relay" for a nexthop route (D11). Empty
 	// means "dial".
 	HopConnection string `yaml:"hop_connection"`
@@ -226,6 +235,35 @@ type fixtureRoute struct {
 	// is never on the wire, and it is refused on a route whose ladder names no
 	// brokered-certificate rung, where it could do nothing.
 	CertificateFault string `yaml:"certificate_fault"`
+}
+
+// fixtureAlgorithmBans mirrors control.AlgorithmBans in YAML form.
+type fixtureAlgorithmBans struct {
+	KeyExchanges  []string `yaml:"key_exchanges"`
+	Ciphers       []string `yaml:"ciphers"`
+	MACs          []string `yaml:"macs"`
+	HostKeys      []string `yaml:"host_keys"`
+	PublicKeyAuth []string `yaml:"public_key_auth"`
+}
+
+// wire returns the bans as the contract carries them, or nil when nothing is
+// banned: absent and empty mean the same, and sending an empty object would
+// only make a route need a vocabulary it says nothing in.
+func (b *fixtureAlgorithmBans) wire() *control.AlgorithmBans {
+	if b == nil {
+		return nil
+	}
+	bans := &control.AlgorithmBans{
+		KeyExchanges:   b.KeyExchanges,
+		Ciphers:        b.Ciphers,
+		MACs:           b.MACs,
+		HostKeys:       b.HostKeys,
+		PublicKeyAuths: b.PublicKeyAuth,
+	}
+	if bans.IsZero() {
+		return nil
+	}
+	return bans.Clone()
 }
 
 // fixtureEnforcement mirrors control.EnforcementPolicy in YAML form.
@@ -782,6 +820,8 @@ func (r *fixtureRoute) authorizeResponse(target string, hopTrail []string) *cont
 		PermittedGlobalRequests: r.PermittedGlobalRequests.wire(),
 		TargetAuthLadder:        ladderWire(r.TargetAuthLadder),
 		AlgorithmProfile:        control.AlgorithmProfile(r.AlgorithmProfile),
+		AlgorithmFloor:          control.AlgorithmFloor(r.AlgorithmFloor),
+		AlgorithmBans:           r.AlgorithmBans.wire(),
 		FilterPolicy:            r.FilterPolicy.wire(),
 		Enforcement:             r.Enforcement.wire(),
 		RequireSessionCapture:   r.RequireSessionCapture,
@@ -1026,6 +1066,10 @@ const baselineVocabulary = 4
 // brokered-certificate credential method (phase 0044).
 const vocabularyBrokeredCertificate = 5
 
+// vocabularyAlgorithmFloor is the vocabulary that added algorithm_floor and
+// algorithm_bans (phase 0045), two fields in one revision.
+const vocabularyAlgorithmFloor = 6
+
 // vocabularyVersion reports the lowest policy vocabulary that can express this
 // response. A proxy that declared an older version refuses a field — or an
 // enum value — it does not know rather than dropping it, so the mock has to
@@ -1034,15 +1078,23 @@ const vocabularyBrokeredCertificate = 5
 //
 // It answers per RESPONSE and not per build, which is the whole point: the
 // refusal is per route, so a proxy one revision behind still gets every route
-// it CAN read. Today that means a proxy on vocabulary 4 is served every route
-// except one whose ladder names brokered-certificate — a METHOD it would refuse
-// the whole response for, since an unknown method is unreadable vocabulary and
-// not a rung to skip.
+// it CAN read. Today that means a proxy on vocabulary 5 is served every route
+// except one carrying an algorithm floor or ban, and a proxy on 4 is refused
+// those and any whose ladder names brokered-certificate too — a METHOD it would
+// refuse the whole response for, since an unknown method is unreadable
+// vocabulary and not a rung to skip.
 //
 // The next revision adds its own case ABOVE these, highest first. Every
 // addition to the vocabulary needs one, or the mock hands it to a proxy that
 // fails the session closed on it.
 func vocabularyVersion(r *control.AuthorizeResponse) int {
+	// A floor or a ban is served ONLY to a proxy that reads it. Thinning the
+	// policy for an older one would be a dropped restriction — the exact
+	// failure the version exists to prevent — so such a proxy is refused the
+	// route instead (phase 0045).
+	if r.AlgorithmFloor != "" || r.AlgorithmBans != nil {
+		return vocabularyAlgorithmFloor
+	}
 	rungs, _ := r.Ladder()
 	for _, rung := range rungs {
 		if rung.Method == control.TargetAuthBrokeredCertificate {

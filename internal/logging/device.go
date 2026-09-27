@@ -6,6 +6,7 @@ package logging
 import (
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hoplock/proxy/internal/auth/target"
@@ -66,11 +67,16 @@ func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
 		attrs = attrs.Set(AttrCredentialRung, strconv.Itoa(ev.Rung))
 	}
 	if ev.AlgorithmProfile != "" {
-		// The profile IN FORCE on every connection to the device (phase 0043).
-		// On a constrained device session this is the only record there is, so
-		// it is where an operator learns the route ran on SHA-1.
-		attrs = attrs.Set(AttrAlgorithmProfile, string(ev.AlgorithmProfile))
+		// The policy IN FORCE on every connection to the device: the profile
+		// (phase 0043), and its floor and bans (phase 0045). On a constrained
+		// device session this is the only record there is, so it is where an
+		// operator learns the route ran on SHA-1 — or under a floor.
+		attrs = AlgorithmPolicyAttrs(attrs, control.AlgorithmPolicy{
+			Profile: ev.AlgorithmProfile, Floor: ev.AlgorithmFloor, Bans: ev.AlgorithmBans})
 	}
+	// The key exchange the driver's own privileged connection negotiated
+	// (phase 0045); absent when the dialer could not say.
+	attrs = attrs.Set(AttrTargetKexAlgorithm, ev.KexAlgorithm)
 	attrs = EnforcementAttrs(attrs, ev.Enforcement)
 	if ev.Lifetime > 0 {
 		attrs = attrs.Set(AttrLifetimeSeconds, strconv.Itoa(int(ev.Lifetime.Seconds())))
@@ -138,7 +144,11 @@ func (d *deviceSink) SweepFailure(ev target.SweepFailure) {
 		Set(AttrEvent, "device.account.sweep_failed").
 		Set(AttrPlatform, ev.Platform).
 		Set(AttrTargetAccount, ev.Account).
-		Set(AttrError, ev.Reason)
+		Set(AttrError, ev.Reason).
+		// A device that no longer offers what it was provisioned under (phase
+		// 0045): which axis, and what it offers there now.
+		Set(AttrAlgorithmAxis, ev.AlgorithmAxis).
+		Set(AttrTargetAlgorithmsOffered, strings.Join(ev.AlgorithmsOffered, ","))
 
 	// An administrator left behind and one of the objects that carried its
 	// deadline left behind are not the same event, and the record says which.

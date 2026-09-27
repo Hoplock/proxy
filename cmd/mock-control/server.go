@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,11 @@ const (
 	// — stopping the whole server instead would stop the session being authorized
 	// at all, so the check under test would never run.
 	pathDebugLogSink = "/debug/logs/sink"
+	// pathDebugCapabilities returns what the server holds about each target —
+	// the merged rung and key-exchange observations (phase 0045) — so the e2e
+	// topology can assert that a proxy reported a target's key exchange, for
+	// every credential method, without the two observations clobbering.
+	pathDebugCapabilities = "/debug/capabilities"
 )
 
 // serverOptions are the knobs main passes to the server.
@@ -49,10 +56,13 @@ type serverOptions struct {
 // remembers — MFA challenges, seen host keys, ingested logs — lives here, in
 // memory, for the lifetime of the process.
 type server struct {
-	fx     *fixtures
-	logDir string
-	logger *log.Logger
-	now    func() time.Time
+	fx *fixtures
+	// routesMu guards fx.Routes, the one part of the fixtures a test edits
+	// while the server runs (editRoute).
+	routesMu sync.RWMutex
+	logDir   string
+	logger   *log.Logger
+	now      func() time.Time
 
 	mu       sync.Mutex
 	mfa      map[string]*mfaChallenge
@@ -198,6 +208,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
 	mux.HandleFunc("POST "+pathDebugLogSink, s.handleDebugLogSink)
+	mux.HandleFunc("GET "+pathDebugCapabilities, s.handleDebugCapabilities)
 	return mux
 }
 
@@ -383,8 +394,13 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	s.recordAuthorize(&req)
 
+	// Routes are read under routesMu because a test may edit one while the
+	// server runs — the emergency runbook's first step is exactly that — and
+	// the response is built from the route before the lock is released.
+	s.routesMu.RLock()
 	route, ok := s.fx.route(req.Identity.Login, req.Target, req.Conn.ProxyID)
 	if !ok {
+		s.routesMu.RUnlock()
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no route permits this identity to reach the target")
 		return
 	}
@@ -404,6 +420,8 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// contract carries an absolute instant and a fixture cannot hold one that
 	// is still in the future tomorrow.
 	resp.SessionDeadline = route.deadline(s.now())
+	certificateFault := route.CertificateFault
+	s.routesMu.RUnlock()
 
 	// A proxy declaring an older vocabulary must not be answered with fields it
 	// cannot read: it fails such a response closed, by contract. A real server
@@ -421,9 +439,19 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				needed, req.PolicyVersion))
 		return
 	}
+	// The per-level form of the same rule (phase 0045): a floor level this
+	// proxy did not declare in capabilities.algorithm_floors is one this BUILD
+	// may not enforce — a level added in a later build — and the version cannot
+	// say so. Refused for the version's reason, never sent without the floor.
+	if !req.Capabilities.DeclaresFloor(resp.AlgorithmFloor) {
+		writeError(w, http.StatusInternalServerError, "algorithm_floor",
+			fmt.Sprintf("this route needs algorithm_floor %q; the proxy did not declare that level in capabilities.algorithm_floors",
+				resp.AlgorithmFloor))
+		return
+	}
 	// A decision naming brokered-certificate is what a later issuance cites.
 	// It is remembered only once it is actually answered.
-	if grant, ok := grantFor(resp, route.CertificateFault); ok {
+	if grant, ok := grantFor(resp, certificateFault); ok {
 		s.rememberCertificateGrant(decisionID, grant)
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -474,13 +502,20 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleReportCapabilities records what a target can enforce.
+// handleReportCapabilities records what a target can enforce, and what its key
+// exchange was seen to be.
 //
 // A real Control accumulates these per target and constrains policy authoring
-// by them. The mock keeps the last report per target so a test can assert the
-// proxy reported at all, and answers `accepted` — there is nothing to decide,
-// which is the point: a capability report is an observation, not a request for
-// a decision.
+// by them. The mock keeps the latest of each observation per target so a test
+// can assert the proxy reported at all, and answers `accepted` — there is
+// nothing to decide, which is the point: a capability report is an
+// observation, not a request for a decision.
+//
+// It MERGES, exactly as the contract says a server must (TargetCapabilities,
+// phase 0045): the rung observation and the key-exchange observation are
+// replaced independently, each only by a report that carries it, so a
+// key-exchange report never reads as "this target can take no rungs" and a
+// probe never erases a target's key-exchange level.
 func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProxy(w, r) {
 		return
@@ -493,23 +528,68 @@ func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_request", "target is required")
 		return
 	}
-	if req.Capabilities.ObservedAt.IsZero() {
-		// An undated record is a stale one by contract, so a server that stored
-		// it would be storing something nobody may use.
+	if req.Capabilities.UndatedRungs() {
+		// An undated rung observation cannot be placed against the one the
+		// server holds, and a stale record is one nobody may use anyway.
 		writeError(w, http.StatusBadRequest, "invalid_request",
-			"capabilities.observed_at is required")
+			"capabilities.observed_at is required with execution, reach or detail")
+		return
+	}
+	carriesRungs, carriesKex := req.Capabilities.CarriesRungs(), req.Capabilities.Kex != nil
+	if !carriesRungs && !carriesKex {
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"the report carries neither a rung observation (observed_at) nor a key-exchange observation (kex)")
+		return
+	}
+	if k := req.Capabilities.Kex; k != nil && (k.FloorMet == "" || k.ObservedAt.IsZero()) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "capabilities.kex requires floor_met and observed_at")
 		return
 	}
 
+	key := capabilityKey(req.Target, req.TargetPort)
 	s.mu.Lock()
-	s.capabilities[req.Target] = req.Capabilities.Clone()
+	stored := s.capabilities[key]
+	if stored == nil {
+		stored = &control.TargetCapabilities{}
+	}
+	merged := stored.Clone()
+	if carriesRungs {
+		merged.Execution, merged.Reach = req.Capabilities.Execution, req.Capabilities.Reach
+		merged.ObservedAt, merged.Detail = req.Capabilities.ObservedAt, req.Capabilities.Detail
+	}
+	if carriesKex {
+		merged.Kex = req.Capabilities.Kex
+	}
+	s.capabilities[key] = merged.Clone()
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, control.CapabilityReportResponse{Accepted: true})
 }
 
-// reportedCapabilities returns the last capability report for a target, for
-// tests.
+// capabilityKey is what the server keeps a target's observations under: the
+// host, and the port when it is not SSH's default — two sshd on one host are
+// two targets, with two key exchanges.
+func capabilityKey(target string, port int) string {
+	if port == 0 || port == 22 {
+		return target
+	}
+	return net.JoinHostPort(target, strconv.Itoa(port))
+}
+
+// handleDebugCapabilities returns every target's merged observations, keyed as
+// capabilityKey keys them.
+func (s *server) handleDebugCapabilities(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	out := make(map[string]*control.TargetCapabilities, len(s.capabilities))
+	for key, caps := range s.capabilities {
+		out[key] = caps.Clone()
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, out)
+}
+
+// reportedCapabilities returns what the server holds about a target, keyed as
+// capabilityKey keys it, for tests.
 func (s *server) reportedCapabilities(target string) (*control.TargetCapabilities, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -380,19 +380,21 @@ func (a *EphemeralAuthenticator) Provision(ctx context.Context, id *identity.Ide
 			tgt.SessionID, strings.Join(names, ", "))
 	}
 
+	// Restricted to the route's algorithms (phase 0043); the other axes are
+	// applied by the engine when it dials.
+	auth, pubkeyAlgorithms := sshalg.PublicKeys(signer, tgt.Algorithms)
 	return &ProvisionedAccess{
 		ClientConfig: &ssh.ClientConfig{
 			User: principal,
-			// Restricted to the route's profile (phase 0043); the other axes
-			// are applied by the engine when it dials.
-			Auth: []ssh.AuthMethod{ssh.PublicKeys(sshalg.Signer(signer, tgt.Algorithms))},
+			Auth: []ssh.AuthMethod{auth},
 			// HostKeyCallback is the proxy's to set (D7), as on every
 			// implementation of this interface.
 		},
-		Enforcement: enforcement,
-		AccountUID:  uid,
-		UIDLease:    plan.lease,
-		UIDMarked:   marked,
+		Enforcement:         enforcement,
+		AccountUID:          uid,
+		UIDLease:            plan.lease,
+		UIDMarked:           marked,
+		PublicKeyAlgorithms: pubkeyAlgorithms,
 		Teardown: func(ctx context.Context) error {
 			return a.teardown(ctx, tgt, hostKey, principal, home)
 		},

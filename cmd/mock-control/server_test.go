@@ -1414,9 +1414,23 @@ func TestTheVersionGateIsAnsweredPerRoute(t *testing.T) {
 // one revision behind with policy it refuses; one that tiered it without the
 // bump would refuse the proxy that can read it.
 func TestTheMocksHighestTierIsTheClientsVocabulary(t *testing.T) {
-	if vocabularyBrokeredCertificate != control.PolicyVersion {
+	if vocabularyAlgorithmFloor != control.PolicyVersion {
 		t.Errorf("the mock's highest tier is %d and the client declares %d; tier the new vocabulary in vocabularyVersion",
-			vocabularyBrokeredCertificate, control.PolicyVersion)
+			vocabularyAlgorithmFloor, control.PolicyVersion)
+	}
+	// A floor or a ban needs the floor vocabulary, whatever else the route
+	// says — and an EMPTY ban object is not sent at all (fixture wire()), so
+	// only a present one counts.
+	for name, resp := range map[string]*control.AuthorizeResponse{
+		"a floor": {AlgorithmFloor: control.AlgorithmFloorModernKEX},
+		"a ban":   {AlgorithmBans: &control.AlgorithmBans{Ciphers: []string{"aes128-cbc"}}},
+		"a ban with brokered-certificate": {AlgorithmBans: &control.AlgorithmBans{MACs: []string{"hmac-sha1"}},
+			TargetAuthLadder: &control.TargetAuthLadder{
+				{Method: control.TargetAuthBrokeredCertificate, Params: map[string]string{control.ParamUsername: "netadmin"}}}},
+	} {
+		if got := vocabularyVersion(resp); got != vocabularyAlgorithmFloor {
+			t.Errorf("%s needs vocabulary %d, got %d", name, vocabularyAlgorithmFloor, got)
+		}
 	}
 	if baselineVocabulary >= control.PolicyVersion {
 		t.Errorf("baselineVocabulary = %d is not below the client's %d; the tiering would refuse nothing",

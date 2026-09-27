@@ -26,8 +26,16 @@ and nothing outside this repository.
 | `proxy-nexthop` | an edge proxy that reaches the target ONLY by chaining, and the relay hub | edge, relay |
 | `proxy-zone` | a proxy in a protected zone: no inbound listener at all, reached over the relay registration it opens (D11) | core, relay |
 | `proxy-stranger` | a proxy whose **chain identity the fleet does not recognise**, so the next hop it dials refuses it (phase 0033) | edge |
-| `target` | a real `sshd` with the prerequisites both credential methods need (D6, D6a) | core |
+| `target` | a real `sshd` with the prerequisites both credential methods need (D6, D6a) — and a second one on port 2222 offering only classical key exchanges (phase 0045) | core |
 | `device` | a fake FortiOS appliance (`cmd/fake-device`): a CLI over SSH with no `useradd` and no `authorized_keys`, which is what `ephemeral-account` exists for (D13) | core |
+
+The second `sshd` on `target:2222` was added by phase 0045. It is the same host,
+accounts, keys and settings as the one on 22 with one difference, its
+`KexAlgorithms`, which name no hybrid post-quantum exchange
+(`target/entrypoint.sh`): it is the target a route's `pq-hybrid-kex` floor
+cannot meet, and that a route with no floor still reaches — so a scenario that
+fails on it can only have failed on the floor. `test/topology` pins that the
+list stays hybrid-free.
 
 The `device` node was added by phase 0014. There is no way to put real network
 gear in CI, and without a stand-in the device credential method would be the one

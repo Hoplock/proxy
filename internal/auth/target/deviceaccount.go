@@ -138,6 +138,17 @@ type AccountMapping struct {
 	// session this record is the only one there is, so it is where an operator
 	// learns that a route runs on SHA-1.
 	AlgorithmProfile control.AlgorithmProfile
+	// AlgorithmFloor and AlgorithmBans are the rest of the policy in force on
+	// those connections (phase 0045): the floor omitted from the record when
+	// there is none, and one attribute per banned axis.
+	AlgorithmFloor control.AlgorithmFloor
+	AlgorithmBans  *control.AlgorithmBans
+	// KexAlgorithm is the key exchange the driver's OWN privileged connection
+	// negotiated to create the account — read off the established connection,
+	// never what was offered (phase 0045). Empty when the dialer could not say.
+	// It is the target_kex_algorithm of the only connection this record can
+	// speak for: the session leg's is on the session's own records.
+	KexAlgorithm string
 	// Enforcement is the rung actually IN FORCE on each axis, never the one the
 	// route asked for (PLAN §6.5, phase 0019). On a device it also carries the
 	// driver's caveat: vendor RBAC is coarse and named, so a record that says
@@ -197,7 +208,12 @@ type SweepFailure struct {
 	// first is how the first stops being believed.
 	ObjectKind string
 	Reason     string
-	At         time.Time
+	// AlgorithmAxis and AlgorithmsOffered are set when the sweep could not
+	// agree an algorithm with the device under the policy it was provisioned
+	// under (phase 0045): the axis, and what the device offers there now.
+	AlgorithmAxis     string
+	AlgorithmsOffered []string
+	At                time.Time
 }
 
 // DeviceConfigChange is one configuration change this proxy made on a device —
@@ -663,14 +679,18 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 	// cancelled: an account left behind because a DIFFERENT component was down
 	// is the failure this watching prevents.
 	watcher := &hostKeyWatcher{inner: tgt.HostKeyCallback}
+	negotiated := &negotiationWatcher{}
 	ep := device.Endpoint{
 		Host:            tgt.Host,
 		Port:            tgt.Port,
 		SessionID:       tgt.SessionID,
 		HostKeyCallback: watcher.callback(),
 		// The route's algorithms, on every connection this session causes to
-		// the device — this one, teardown's, and the reaper's (phase 0043).
+		// the device — this one, teardown's, and the reaper's (phase 0043),
+		// already narrowed by its floor and bans (phase 0045).
 		Algorithms: tgt.Algorithms.Clone(),
+		// What the driver's connection negotiated, for the mapping event.
+		Negotiated: negotiated.record,
 	}
 	account, name, err := a.create(ctx, r, ep, r.profile)
 	if err != nil {
@@ -679,7 +699,7 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 	a.reaper.observe(ep, r)
 	a.reaper.pinHostKey(ep, watcher.key())
 
-	auth, cleanup, err := a.installCredential(ctx, r, ep, name)
+	auth, pubkeyAlgorithms, cleanup, err := a.installCredential(ctx, r, ep, name)
 	if err != nil {
 		// Whatever was created is removed now, on the driver that created it,
 		// so a denied session leaves the device exactly as it found it.
@@ -703,6 +723,9 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 		Method:               MethodEphemeralAccount,
 		Rung:                 tgt.Rung,
 		AlgorithmProfile:     tgt.AlgorithmProfile.Resolve(),
+		AlgorithmFloor:       tgt.AlgorithmFloor,
+		AlgorithmBans:        tgt.AlgorithmBans.Clone(),
+		KexAlgorithm:         negotiated.keyExchange(),
 		Enforcement:          r.enforcementResult(),
 		ExpiryPosture:        string(r.posture),
 		ExpiryMechanism:      r.expiryMechanism(),
@@ -727,9 +750,10 @@ func (a *DeviceAccountAuthenticator) Provision(ctx context.Context, id *identity
 			Auth: []ssh.AuthMethod{auth},
 			// HostKeyCallback is the proxy's to set (D7).
 		},
-		Method:      MethodEphemeralAccount,
-		Rung:        tgt.Rung,
-		Enforcement: r.enforcementResult(),
+		Method:              MethodEphemeralAccount,
+		Rung:                tgt.Rung,
+		Enforcement:         r.enforcementResult(),
+		PublicKeyAlgorithms: pubkeyAlgorithms,
 		Teardown: func(ctx context.Context) error {
 			cleanup()
 			return a.teardown(ctx, r, ep, name)
@@ -800,7 +824,8 @@ func (a *DeviceAccountAuthenticator) create(ctx context.Context, r *deviceRoute,
 }
 
 // installCredential generates this session's credential and puts it on the
-// account, returning the SSH auth method and the function that zeroes it.
+// account, returning the SSH auth method, the signature algorithms it offers
+// (nil for a password), and the function that zeroes it.
 //
 // PLAN §5.2's rule, generalised: a generated password never touches disk, never
 // appears in a log, an error, or a configuration file this proxy writes, and is
@@ -808,12 +833,12 @@ func (a *DeviceAccountAuthenticator) create(ctx context.Context, r *deviceRoute,
 // the device's AAA logs — that is the device's record, it is outside this
 // system's control, and pretending otherwise would be the dishonest half of an
 // otherwise true claim.
-func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *deviceRoute, ep device.Endpoint, name string) (ssh.AuthMethod, func(), error) {
+func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *deviceRoute, ep device.Endpoint, name string) (ssh.AuthMethod, []string, func(), error) {
 	switch r.kind {
 	case control.CredentialKindPassword:
 		secret, err := generatePassword(generatedPasswordLen)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		changes, err := r.driver.InstallCredential(ctx, device.CredentialRequest{
 			Endpoint: ep, Name: name, Kind: r.kind, Password: string(secret),
@@ -821,7 +846,7 @@ func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *d
 		a.recordChanges(r.platform, ep, r.fields, changes)
 		if err != nil {
 			zero(secret)
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		// A callback rather than ssh.Password: the material this process HOLDS
 		// between provisioning and teardown is then the byte slice, which
@@ -836,20 +861,20 @@ func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *d
 			}
 			return string(secret), nil
 		})
-		return auth, func() { spent = true; zero(secret) }, nil
+		return auth, nil, func() { spent = true; zero(secret) }, nil
 
 	case control.CredentialKindPublicKey:
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
-			return nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
+			return nil, nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
 		}
 		signer, err := ssh.NewSignerFromKey(priv)
 		if err != nil {
-			return nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
+			return nil, nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
 		}
 		sshPub, err := ssh.NewPublicKey(pub)
 		if err != nil {
-			return nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
+			return nil, nil, nil, fmt.Errorf("auth/target: generate a session key: %w", err)
 		}
 		line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
 		changes, err := r.driver.InstallCredential(ctx, device.CredentialRequest{
@@ -857,15 +882,16 @@ func (a *DeviceAccountAuthenticator) installCredential(ctx context.Context, r *d
 		})
 		a.recordChanges(r.platform, ep, r.fields, changes)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return ssh.PublicKeys(sshalg.Signer(signer, ep.Algorithms)), func() {}, nil
+		auth, offered := sshalg.PublicKeys(signer, ep.Algorithms)
+		return auth, offered, func() {}, nil
 
 	default:
 		// Unreachable while resolve holds its invariant; kept because the
 		// alternative to an explicit refusal is a substitution, and the server
 		// chose the kind.
-		return nil, nil, fmt.Errorf("%w: %s=%q", ErrInvalidParam, ParamCredentialKind, r.kind)
+		return nil, nil, nil, fmt.Errorf("%w: %s=%q", ErrInvalidParam, ParamCredentialKind, r.kind)
 	}
 }
 
@@ -1014,4 +1040,25 @@ func (w *hostKeyWatcher) key() ssh.PublicKey {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.seen
+}
+
+// negotiationWatcher keeps what the driver's privileged connection last
+// negotiated, for the mapping event (phase 0045). It is locked because the
+// endpoint it is attached to is the session's, and teardown dials through it
+// on another goroutine.
+type negotiationWatcher struct {
+	mu   sync.Mutex
+	last sshalg.Negotiated
+}
+
+func (w *negotiationWatcher) record(n sshalg.Negotiated) {
+	w.mu.Lock()
+	w.last = n
+	w.mu.Unlock()
+}
+
+func (w *negotiationWatcher) keyExchange() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.last.KeyExchange
 }

@@ -18,6 +18,7 @@ package sshalg
 import (
 	"io"
 	"slices"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 
@@ -81,21 +82,8 @@ func Signer(s ssh.Signer, a control.Algorithms) ssh.Signer {
 	if s == nil {
 		return nil
 	}
-	allowed := Complete(a).PublicKeyAuths
-	var permitted []string
-	// Everything below is in the space of UNDERLYING signature algorithms:
-	// that is what the auth list names, and what ssh.NewSignerWithAlgorithms
-	// takes for a certificate signer as well as for a plain key.
 	format := underlying(s.PublicKey().Type())
-	for _, algo := range signatureAlgorithms(format) {
-		if slices.Contains(allowed, algo) {
-			permitted = append(permitted, algo)
-		}
-	}
-	// Preference order is the route's, not the key format's.
-	slices.SortStableFunc(permitted, func(x, y string) int {
-		return slices.Index(allowed, x) - slices.Index(allowed, y)
-	})
+	permitted := Permitted(format, a)
 	if as, ok := s.(ssh.AlgorithmSigner); ok && len(permitted) > 0 {
 		if restricted, err := ssh.NewSignerWithAlgorithms(as, permitted); err == nil {
 			return restricted
@@ -107,6 +95,29 @@ func Signer(s ssh.Signer, a control.Algorithms) ssh.Signer {
 		return s
 	}
 	return &refusingSigner{Signer: s}
+}
+
+// Permitted is the signature algorithms a key of this format (a key type or a
+// certificate type) may authenticate with under a, in a's preference order —
+// empty when the route permits it none. It is Signer's rule, exported so that
+// a failure can be traced to the step of a route's policy that left the key
+// nothing to sign with (phase 0045).
+func Permitted(keyFormat string, a control.Algorithms) []string {
+	allowed := Complete(a).PublicKeyAuths
+	var permitted []string
+	// Everything below is in the space of UNDERLYING signature algorithms:
+	// that is what the auth list names, and what ssh.NewSignerWithAlgorithms
+	// takes for a certificate signer as well as for a plain key.
+	for _, algo := range signatureAlgorithms(underlying(keyFormat)) {
+		if slices.Contains(allowed, algo) {
+			permitted = append(permitted, algo)
+		}
+	}
+	// Preference order is the route's, not the key format's.
+	slices.SortStableFunc(permitted, func(x, y string) int {
+		return slices.Index(allowed, x) - slices.Index(allowed, y)
+	})
+	return permitted
 }
 
 // signatureAlgorithms is the set of signature algorithms a key of this
@@ -167,3 +178,94 @@ func (e sshalgError) Error() string { return string(e) }
 const errNoPermittedAlgorithm = sshalgError("sshalg: the route's algorithm profile permits no signature algorithm for this key")
 
 var _ ssh.MultiAlgorithmSigner = (*refusingSigner)(nil)
+
+// PublicKeys is ssh.PublicKeys over s restricted to a (Signer), together with
+// the signature algorithms the restricted signer OFFERS, in its preference
+// order (phase 0045).
+//
+// The list is for the record: the library does not say which of them public-key
+// authentication actually used, so what a session can verify against a ban on
+// that axis is what the proxy offered, and the record names it as that. It is
+// empty for a key the route permits nothing for.
+func PublicKeys(s ssh.Signer, a control.Algorithms) (ssh.AuthMethod, []string) {
+	restricted := Signer(s, a)
+	return ssh.PublicKeys(restricted), SignerAlgorithms(restricted)
+}
+
+// SignerAlgorithms is what a signer will sign a public-key authentication with,
+// in order: a multi-algorithm signer's own list, or else its key's format.
+func SignerAlgorithms(s ssh.Signer) []string {
+	if s == nil {
+		return nil
+	}
+	if multi, ok := s.(ssh.MultiAlgorithmSigner); ok {
+		return slices.Clone(multi.Algorithms())
+	}
+	return []string{underlying(s.PublicKey().Type())}
+}
+
+// Negotiated is what one SSH handshake on the proxy→target leg actually agreed,
+// axis by axis, in the words the record uses (phase 0045). It is read from the
+// ESTABLISHED connection, never from what was offered: a record names what was
+// in force (PLAN §6.5).
+//
+// Out is proxy→target and In is target→proxy. A MAC is empty in a direction
+// whose cipher is AEAD, where the cipher authenticates and no MAC is
+// negotiated at all.
+type Negotiated struct {
+	KeyExchange string
+	HostKey     string
+	CipherOut   string
+	CipherIn    string
+	MACOut      string
+	MACIn       string
+}
+
+// NegotiatedOn reads what conn negotiated, from a CLIENT connection's point of
+// view. ok is false for a connection that does not expose it, which every
+// connection the library itself builds does.
+func NegotiatedOn(conn ssh.Conn) (Negotiated, bool) {
+	meta, ok := conn.(ssh.AlgorithmsConnMetadata)
+	if !ok {
+		return Negotiated{}, false
+	}
+	algs := meta.Algorithms()
+	// On a client connection Write is client→server — this proxy to the
+	// target — and Read the other way.
+	return Negotiated{
+		KeyExchange: algs.KeyExchange,
+		HostKey:     algs.HostKey,
+		CipherOut:   algs.Write.Cipher,
+		CipherIn:    algs.Read.Cipher,
+		MACOut:      algs.Write.MAC,
+		MACIn:       algs.Read.MAC,
+	}, true
+}
+
+// noCommonSignature is x/crypto's wording for the ONE algorithm failure it
+// reports without a type (client_auth.go, pickSignatureAlgorithm): the key can
+// sign with no algorithm the server accepts. On this proxy that happens because
+// a route's policy restricted the signer (Signer) — a public_key_auth ban, or a
+// profile against a server that sends no server-sig-algs — so it is an unmet
+// algorithm policy on the public-key axis rather than the network fault it
+// would otherwise read as (phase 0045).
+//
+// It is a text match because there is no type to match, like reject.go's in
+// internal/auth/target, and for the same reason it has a tripwire that drives a
+// real handshake (TestASignatureFailureIsRecognisedOnARealHandshake); it must
+// never become a comparison against a literal.
+const noCommonSignature = "ssh: no common public key signature algorithm"
+
+// SignatureUnmet reports whether err is that failure, and the key type the
+// library names in it (empty if it names none). It names algorithms and a key
+// type, never material, which is what makes it safe to carry out of an
+// otherwise opaque login error.
+func SignatureUnmet(err error) (keyType string, ok bool) {
+	if err == nil || !strings.Contains(err.Error(), noCommonSignature) {
+		return "", false
+	}
+	if _, rest, found := strings.Cut(err.Error(), `for key type "`); found {
+		keyType, _, _ = strings.Cut(rest, `"`)
+	}
+	return keyType, true
+}

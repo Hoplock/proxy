@@ -139,7 +139,7 @@ func (a *BrokeredKeyAuthenticator) Provision(ctx context.Context, id *identity.I
 	}
 
 	held := &heldCredential{cred: cred}
-	auth, err := authMethodFor(cred, tgt.Algorithms)
+	auth, pubkeyAlgorithms, err := authMethodFor(cred, tgt.Algorithms)
 	if err != nil {
 		held.zero()
 		return nil, err
@@ -149,7 +149,8 @@ func (a *BrokeredKeyAuthenticator) Provision(ctx context.Context, id *identity.I
 		id.Subject, tgt, username, a.source.Name(), refForLog(ref))
 
 	return &ProvisionedAccess{
-		Enforcement: enforcement,
+		Enforcement:         enforcement,
+		PublicKeyAlgorithms: pubkeyAlgorithms,
 		ClientConfig: &ssh.ClientConfig{
 			User: username,
 			Auth: []ssh.AuthMethod{auth},
@@ -186,7 +187,11 @@ func (h *heldCredential) zero() {
 // remains is the parsed key inside the signer, which x/crypto owns and which
 // goes away with the session; a password has no parsed form and is held, and
 // zeroed, by the caller's heldCredential.
-func authMethodFor(cred *Credential, algs control.Algorithms) (ssh.AuthMethod, error) {
+//
+// For a key it also returns the signature algorithms the restricted signer
+// offers, for the record (ProvisionedAccess.PublicKeyAlgorithms); a password
+// offers none.
+func authMethodFor(cred *Credential, algs control.Algorithms) (ssh.AuthMethod, []string, error) {
 	switch {
 	case len(cred.PrivateKey) > 0:
 		var (
@@ -205,19 +210,20 @@ func authMethodFor(cred *Credential, algs control.Algorithms) (ssh.AuthMethod, e
 		if err != nil {
 			// x/crypto's parse errors describe the encoding, never the key
 			// material, which is what makes this safe to return.
-			return nil, fmt.Errorf("auth/target: parse brokered credential: %w", err)
+			return nil, nil, fmt.Errorf("auth/target: parse brokered credential: %w", err)
 		}
-		// Restricted to the route's profile (phase 0043).
-		return ssh.PublicKeys(sshalg.Signer(signer, algs)), nil
+		// Restricted to the route's algorithms (phase 0043).
+		auth, offered := sshalg.PublicKeys(signer, algs)
+		return auth, offered, nil
 	case len(cred.Password) > 0:
 		return ssh.PasswordCallback(func() (string, error) {
 			if len(cred.Password) == 0 {
 				return "", errors.New("auth/target: the brokered credential was already released")
 			}
 			return string(cred.Password), nil
-		}), nil
+		}), nil, nil
 	default:
-		return nil, fmt.Errorf("%w: it carries neither a key nor a password", ErrNoCredential)
+		return nil, nil, fmt.Errorf("%w: it carries neither a key nor a password", ErrNoCredential)
 	}
 }
 

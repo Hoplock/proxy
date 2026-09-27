@@ -58,6 +58,14 @@ type fakeHost struct {
 // an SSH front end on it.
 func startFakeHost(t *testing.T) *fakeHost {
 	t.Helper()
+	return startFakeHostNegotiating(t, sshtest.Negotiation{})
+}
+
+// startFakeHostNegotiating is startFakeHost with an SSH front end that
+// negotiates only what n allows — a host whose sshd a floor or a ban cannot
+// meet (phase 0045).
+func startFakeHostNegotiating(t *testing.T, n sshtest.Negotiation) *fakeHost {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the provisioning scripts are POSIX shell")
 	}
@@ -103,7 +111,7 @@ func startFakeHost(t *testing.T) *fakeHost {
 		}
 	}
 
-	target, err := sshtest.StartTarget(sshtest.Options{Exec: h.exec})
+	target, err := sshtest.StartTarget(sshtest.Options{Exec: h.exec, Negotiation: n})
 	if err != nil {
 		t.Fatalf("StartTarget: %v", err)
 	}

@@ -71,8 +71,16 @@ func fullPolicyResponse() *AuthorizeResponse {
 			MaxHops:     3,
 			HopTrail:    []string{"proxy-1"},
 		},
-		DecisionID: "decision-1",
-		Cache:      &CacheHint{Key: "authz:alice:deep", TTLSeconds: 60},
+		DecisionID:     "decision-1",
+		Cache:          &CacheHint{Key: "authz:alice:deep", TTLSeconds: 60},
+		AlgorithmFloor: AlgorithmFloorModernKEX,
+		AlgorithmBans: &AlgorithmBans{
+			KeyExchanges:   []string{"diffie-hellman-group14-sha256"},
+			Ciphers:        []string{"aes128-ctr"},
+			MACs:           []string{"hmac-sha1"},
+			HostKeys:       []string{"ecdsa-sha2-nistp521"},
+			PublicKeyAuths: []string{"ecdsa-sha2-nistp521"},
+		},
 	}
 }
 
@@ -128,6 +136,11 @@ func TestCloneIsolatesEveryMutableField(t *testing.T) {
 	c.Hop.HopTrail[0] = "mutated"
 	c.Hop.NextProxyID = "mutated"
 	c.Cache.Key = "mutated"
+	c.AlgorithmBans.KeyExchanges[0] = "mutated"
+	c.AlgorithmBans.Ciphers[0] = "mutated"
+	c.AlgorithmBans.MACs[0] = "mutated"
+	c.AlgorithmBans.HostKeys[0] = "mutated"
+	c.AlgorithmBans.PublicKeyAuths[0] = "mutated"
 
 	if !reflect.DeepEqual(original, pristine) {
 		t.Errorf("mutating the clone changed the original:\n got %+v\nwant %+v", original, pristine)

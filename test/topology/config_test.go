@@ -687,3 +687,54 @@ func TestTheCertificateAuthorityIsWiredEndToEnd(t *testing.T) {
 		t.Error("the target entrypoint reads the CA's PRIVATE half; only the mock Control may")
 	}
 }
+
+// TestTheAlgorithmFloorRoutesTheScenariosDependOn pins the fixture routes and
+// the second sshd phase 0045's scenarios are written against. The pq-classical
+// scenario is only evidence of anything if port 2222 really offers no hybrid:
+// against an sshd that did, the floor would be met and the scenario asserting a
+// refusal would fail minutes into the e2e job with a message about the proxy.
+func TestTheAlgorithmFloorRoutesTheScenariosDependOn(t *testing.T) {
+	t.Parallel()
+
+	fixtures, err := os.ReadFile(filepath.Join(deployDir, "control", "fixtures.template.yaml"))
+	if err != nil {
+		t.Fatalf("read the fixture template: %v", err)
+	}
+	for _, want := range []string{
+		"target: pq.company.com",
+		"target: pq-classical.company.com",
+		"target: classical.company.com",
+		"target: banned.company.com",
+		"algorithm_floor: pq-hybrid-kex",
+		"ciphers: [aes128-gcm@openssh.com]",
+	} {
+		if !bytes.Contains(fixtures, []byte(want)) {
+			t.Errorf("the fixtures no longer carry %q, which an algorithm-floor scenario needs", want)
+		}
+	}
+	if got := bytes.Count(fixtures, []byte("algorithm_floor: pq-hybrid-kex")); got != 2 {
+		t.Errorf("%d routes carry the pq floor, want 2 (the target that meets it and the one that does not)", got)
+	}
+
+	entrypoint, err := os.ReadFile(filepath.Join(deployDir, "target", "entrypoint.sh"))
+	if err != nil {
+		t.Fatalf("read the target entrypoint: %v", err)
+	}
+	var kex string
+	for _, line := range strings.Split(string(entrypoint), "\n") {
+		if strings.Contains(line, "KexAlgorithms=") && strings.Contains(string(entrypoint), "-p 2222") {
+			kex = line
+		}
+	}
+	if kex == "" {
+		t.Fatal("the target no longer starts a classical-only sshd on 2222")
+	}
+	for _, hybrid := range []string{"mlkem", "sntrup"} {
+		if strings.Contains(kex, hybrid) {
+			t.Errorf("the classical sshd offers a %s hybrid: %s", hybrid, kex)
+		}
+	}
+	if !strings.Contains(kex, "curve25519-sha256") {
+		t.Errorf("the classical sshd offers no curve25519-sha256, which the no-floor scenario negotiates: %s", kex)
+	}
+}

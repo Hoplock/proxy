@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/hoplock/proxy/internal/auth/target"
 	"github.com/hoplock/proxy/internal/auth/user"
 	"github.com/hoplock/proxy/internal/control"
 )
@@ -177,7 +178,7 @@ func outageDetail(err error) string {
 		// route's allowed algorithms do not meet — and nothing about which
 		// algorithms, which profile, or what the target offered: those are the
 		// operator's, on the record (PLAN §4.3).
-		return "the target does not support the algorithms this route allows"
+		return algorithmPolicyDetail(err)
 	case stageTargetWithheld:
 		// The same non-disclosure, plus the one thing that distinguishes it:
 		// nothing was attempted. An operator who reads "refused" and finds no
@@ -364,6 +365,72 @@ func writeUserTo(w io.Writer, text string) {
 func sendExitStatus(ch ssh.Channel, status uint32) {
 	payload := ssh.Marshal(struct{ Status uint32 }{Status: status})
 	_, _ = ch.SendRequest(requestExitStatus, false, payload)
+}
+
+// algorithmPolicyError is a target that could not meet the route's algorithm
+// policy, classified against the policy the connection was dialled under
+// (phases 0043, 0045). It carries what the user's message is chosen from and
+// nothing more; the offered list and the policy itself are the record's.
+type algorithmPolicyError struct {
+	failure target.AlgorithmFailure
+	floor   control.AlgorithmFloor
+	err     error
+}
+
+func (e *algorithmPolicyError) Error() string { return e.err.Error() }
+
+func (e *algorithmPolicyError) Unwrap() error { return e.err }
+
+// algorithmPolicyDetail is the outage text for an unmet algorithm policy.
+//
+// It is the OUTAGE branch of §4.3 and never the deny: nothing was refused to
+// the user, the target could not meet policy, and "access denied" would send
+// them to file an access request no approval can fix. So it is specific — a
+// floor names the requirement, a ban names the axis — and it discloses nothing
+// `ssh -vv` against the target would not: never which algorithms were banned,
+// which profile the route runs, or what the target offered.
+func algorithmPolicyDetail(err error) string {
+	var unmet *algorithmPolicyError
+	if errors.As(err, &unmet) {
+		switch unmet.failure.Cause {
+		case control.AlgorithmPolicyCauseFloor:
+			return "this route requires " + floorRequirement(unmet.floor) + ", and the target does not support one"
+		case control.AlgorithmPolicyCauseBan:
+			if unmet.failure.Axis == target.AlgorithmAxisPublicKeyAuth {
+				return "this route permits no signature algorithm the proxy's key for this target can use"
+			}
+			return "the target offers no " + axisNoun(unmet.failure.Axis) + " this route permits"
+		}
+	}
+	return "the target does not support the algorithms this route allows"
+}
+
+// floorRequirement names what a floor level requires, in words a user can
+// repeat to whoever runs the target. A level without its own words is still
+// named as a key-exchange requirement rather than as nothing.
+func floorRequirement(level control.AlgorithmFloor) string {
+	switch level {
+	case control.AlgorithmFloorPQHybridKEX:
+		return "a post-quantum key exchange"
+	case control.AlgorithmFloorModernKEX:
+		return "a key exchange without SHA-1"
+	}
+	return "a stronger key exchange"
+}
+
+// axisNoun is how the user's message names an axis.
+func axisNoun(axis string) string {
+	switch axis {
+	case target.AlgorithmAxisKeyExchange:
+		return "key exchange"
+	case target.AlgorithmAxisHostKey:
+		return "host-key algorithm"
+	case target.AlgorithmAxisCipher:
+		return "cipher"
+	case target.AlgorithmAxisMAC:
+		return "MAC"
+	}
+	return "algorithm"
 }
 
 // failedAt reports whether err came from the named setup stage.

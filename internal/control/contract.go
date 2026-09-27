@@ -51,13 +51,18 @@ const (
 // tiered above this baseline there is one an older proxy is answered a 500 for
 // rather than policy it would refuse.
 //
-// 5 is the first revision since the collapse to one vocabulary (phase 0037),
-// and it adds an ENUM VALUE rather than a field: TargetAuthBrokeredCertificate
+// 5 was the first revision since the collapse to one vocabulary (phase 0037),
+// and it added an ENUM VALUE rather than a field: TargetAuthBrokeredCertificate
 // (phase 0044). A method this client does not know refuses the whole response
 // (validate.go), so a method is vocabulary exactly as a field is. The endpoint
 // its certificates are issued through, PathIssueCertificate, is outside the
 // number — it governs /v1/authorize and nothing else.
-const PolicyVersion = 5
+//
+// 6 adds two FIELDS, algorithm_floor and algorithm_bans (phase 0045), in one
+// revision. What a proxy declares on the REQUEST — the floor levels and
+// algorithms in ProxyCapabilities — is outside the number, which governs what
+// the response may contain.
+const PolicyVersion = 6
 
 // QueryLastEventID is the query parameter carrying the last event the proxy
 // processed, so the server can replay the gap after a reconnect (PLAN §6.4).
@@ -303,7 +308,21 @@ type AuthorizeResponse struct {
 	// Empty means AlgorithmProfileDefault: the library's secure set.
 	// Anything else is a weakening and is audited as one.
 	AlgorithmProfile AlgorithmProfile `json:"algorithm_profile,omitempty"`
-	FilterPolicy     FilterPolicy     `json:"filter_policy"`
+	// AlgorithmFloor is the MINIMUM key-exchange level the proxy→target leg
+	// must negotiate (phase 0045). Empty means no floor. A target that cannot
+	// meet it fails the session as an outage and never falls back; a floor
+	// with a profile that widens the key-exchange axis (legacy-device) is
+	// refused by Validate. It rides a reusable decision like everything here
+	// (PLAN §6.4), and a replayed floor is the same floor.
+	AlgorithmFloor AlgorithmFloor `json:"algorithm_floor,omitempty"`
+	// AlgorithmBans are identifiers the proxy must never offer on the
+	// proxy→target leg, per axis, applied after the profile and the floor so a
+	// ban always wins (phase 0045). Nil means nothing is banned. It rides a
+	// reusable decision too, which is why the emergency runbook's second step
+	// is cache_invalidate: a cached decision keeps the old policy until its
+	// TTL, and the proxy never overrides a decision (D2).
+	AlgorithmBans *AlgorithmBans `json:"algorithm_bans,omitempty"`
+	FilterPolicy  FilterPolicy   `json:"filter_policy"`
 	// Enforcement is WHERE this connection's policy is enforced, on each of the
 	// two axes (PLAN §6.5, rendered by phase 0019). NIL MEANS BOTH AXES TAKE
 	// THEIR DEFAULT, which is exactly today's behaviour: the proxy decides at
@@ -401,6 +420,17 @@ func (r *AuthorizeResponse) Profile() AlgorithmProfile {
 		return AlgorithmProfileDefault
 	}
 	return r.AlgorithmProfile
+}
+
+// AlgorithmPolicy returns everything this route says about its proxy→target
+// algorithms — profile, floor and bans — as one deep-copied value, the absent
+// profile resolved. Its Algorithms is the one expansion every connection to the
+// target dials with.
+func (r *AuthorizeResponse) AlgorithmPolicy() AlgorithmPolicy {
+	if r == nil {
+		return AlgorithmPolicy{Profile: AlgorithmProfileDefault}
+	}
+	return AlgorithmPolicy{Profile: r.Profile(), Floor: r.AlgorithmFloor, Bans: r.AlgorithmBans.Clone()}
 }
 
 // EnforcedExecution returns the execution rung in force for this route,

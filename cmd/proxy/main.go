@@ -240,11 +240,20 @@ func run(configPath string, logger *log.Logger) error {
 		logger.Printf("proxy: accepting relay registrations on %s", hubListener.Addr())
 	}
 
+	// What each target handshake showed about the target's key exchange,
+	// reported when it is news (phase 0045): what lets Hoplock Control show
+	// which targets raising a route's algorithm floor would break. REST and not
+	// the caching client, for the capability probe's reason above — it is an
+	// observation, and a decorator answering it from memory would be reporting
+	// the past — and never on a session's path.
+	kexReports := target.NewKexReporter(target.KexReporterOptions{Reporter: rest, Logger: logger})
+
 	server, err := proxy.New(proxy.Options{
 		HostKey:         hostKey,
 		Authenticator:   userAuth,
 		Resolver:        resolver,
 		TargetAuth:      targetAuth,
+		KexObserver:     kexReports,
 		Client:          cache,
 		ProxyID:         cfg.Proxy.ID,
 		TargetDelimiter: cfg.Routing.TargetDelimiter,

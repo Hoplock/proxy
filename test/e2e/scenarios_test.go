@@ -56,6 +56,11 @@ func TestTopology(t *testing.T) {
 	t.Run("chain identity rejection", testChainIdentityRejection)
 	t.Run("device credentials", testDeviceCredentials)
 	t.Run("target-side enforcement", testEnforcement)
+	// The algorithm floor and bans (phase 0045). Hoplock Control has to be up
+	// for it — it reads its sessions' records and the capability reports the
+	// proxy made — and it provisions an ephemeral account, so it runs before
+	// the outage scenario and the leak check.
+	t.Run("algorithm floor and bans", testAlgorithmFloor)
 	t.Run("denial disclosure", testDenialDisclosure)
 	// Next to the disclosure scenario, because half of it is the same claim on
 	// a second axis: a denial must not say WHICH FACTOR failed any more than it

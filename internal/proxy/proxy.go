@@ -85,6 +85,13 @@ type Options struct {
 	// Hoplock Control log destination run with; every capture point is a no-op
 	// then rather than a branch in the transport.
 	Recorder *logging.Shipper
+	// KexObserver is told what each target leg's handshake showed about the
+	// target's key exchange (phase 0045): the report that lets Hoplock Control
+	// show which targets raising a route's algorithm floor would break. It is
+	// called for every credential method, on success and on a failed
+	// key-exchange negotiation, and it must not block — the engine calls it on
+	// the session path, and the report is made off it. Nil observes nothing.
+	KexObserver KexObserver
 	// Inspectors is the channel inspection pipeline's registry (PLAN §6.2,
 	// D5): channel types mapped to their ordered inspector chains. Nil
 	// registers nothing, which is the pure passthrough this engine ships with
@@ -139,6 +146,7 @@ type Server struct {
 	hopSigner   ssh.Signer
 	relay       RelayOpener
 	recorder    *logging.Shipper
+	kexObserver KexObserver
 	inspectors  *channel.Registry
 	maxHops     int
 	dialTimeout time.Duration
@@ -164,6 +172,15 @@ type Server struct {
 }
 
 var _ control.SessionRegistry = (*Server)(nil)
+
+// KexObserver receives one target's key-exchange observation per handshake
+// (phase 0045). internal/auth/target's KexReporter is the production one: it
+// keeps an observation per target while it is fresh and reports only what is
+// news, on a detached context, so a session never waits on Hoplock Control for
+// it.
+type KexObserver interface {
+	ObserveKex(host string, port int, observation *control.KexObservation)
+}
 
 // New validates opts and returns a Server.
 func New(opts Options) (*Server, error) {
@@ -195,6 +212,7 @@ func New(opts Options) (*Server, error) {
 		hopSigner:     opts.HopSigner,
 		relay:         opts.RelayOpener,
 		recorder:      opts.Recorder,
+		kexObserver:   opts.KexObserver,
 		inspectors:    opts.Inspectors,
 		maxHops:       opts.MaxHops,
 		dialTimeout:   opts.DialTimeout,

@@ -253,13 +253,14 @@ func (a *BrokeredCertificateAuthenticator) certify(ctx context.Context, tgt Targ
 		// x/crypto is the authority on what it will sign with.
 		return nil, &certificateError{check: "the certificate cannot be used with the session key", cause: err}
 	}
+	// Restricted to the route's algorithms like every session-leg signer since
+	// phase 0043; a certificate signer is restricted by its underlying key's
+	// algorithms.
+	auth, pubkeyAlgorithms := sshalg.PublicKeys(signer, tgt.Algorithms)
 	return &ProvisionedAccess{
 		ClientConfig: &ssh.ClientConfig{
 			User: username,
-			// Restricted to the route's profile like every session-leg signer
-			// since phase 0043; a certificate signer is restricted by its
-			// underlying key's algorithms.
-			Auth: []ssh.AuthMethod{ssh.PublicKeys(sshalg.Signer(signer, tgt.Algorithms))},
+			Auth: []ssh.AuthMethod{auth},
 			// HostKeyCallback is the proxy's to set (D7).
 		},
 		// There is no remote state to undo (PLAN §5.2): teardown destroys the
@@ -268,7 +269,8 @@ func (a *BrokeredCertificateAuthenticator) certify(ctx context.Context, tgt Targ
 			key.zero()
 			return nil
 		},
-		CertificateSerial: resp.Serial,
+		CertificateSerial:   resp.Serial,
+		PublicKeyAlgorithms: pubkeyAlgorithms,
 	}, nil
 }
 

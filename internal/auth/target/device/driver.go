@@ -13,6 +13,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // Driver performs the ephemeral-account lifecycle on one platform (PLAN §5.3,
@@ -168,7 +169,16 @@ type Endpoint struct {
 	// reaper keeps it on the endpoint it sweeps from — a sweep that cannot dial
 	// leaves a standing administrator on a customer's firewall. Zero means the
 	// dialer's own SSHShellOptions, and failing those the default profile.
+	// Phase 0045's floor and bans are already applied to these lists, so they
+	// reach the sweep the same way.
 	Algorithms control.Algorithms
+	// Negotiated, when set, is told what each privileged connection to the
+	// device actually negotiated, once its handshake completes (phase 0045).
+	// The provisioner sets it to put the key exchange on the account-mapping
+	// event — on a constrained device session the only record there is. It is
+	// an observer: a dialer that cannot say leaves it uncalled, and nothing
+	// here decides anything from it.
+	Negotiated func(sshalg.Negotiated)
 }
 
 // CreateRequest asks a driver to create one short-lived administrator.

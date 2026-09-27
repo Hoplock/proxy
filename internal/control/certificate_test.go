@@ -341,8 +341,11 @@ func TestCloneIsolatesABrokeredCertificateRung(t *testing.T) {
 // sent it, and only the number can tell a server so. The ENDPOINT did not: the
 // number governs /v1/authorize and nothing else.
 func TestTheCertificateMethodMovedTheVocabularyAndTheEndpointDidNot(t *testing.T) {
-	if PolicyVersion != 5 {
-		t.Errorf("PolicyVersion = %d, want 5: brokered-certificate is vocabulary, and it is the revision that made it 5", PolicyVersion)
+	// 5 since this method, 6 since phase 0045's algorithm_floor and
+	// algorithm_bans — each revision updates the pin with its own reason.
+	if PolicyVersion != 6 {
+		t.Errorf("PolicyVersion = %d, want 6: brokered-certificate is vocabulary, and it is the revision that made it 5 "+
+			"(algorithm_floor and algorithm_bans made it 6)", PolicyVersion)
 	}
 	// A proxy one vocabulary behind refuses the method outright, which is the
 	// failure the bump prevents a server from causing.

@@ -219,6 +219,11 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 		{"AuthorizeResponse", "algorithm_profile", []string{
 			string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
 			string(AlgorithmProfileLegacyDevice)}},
+		// The floor ladder (phase 0045), in both places a level is spelled, and
+		// the report's floor_met, which adds "none" below the ladder.
+		{"AuthorizeResponse", "algorithm_floor", floorNames()},
+		{"AlgorithmFloorCapability", "level", floorNames()},
+		{"KexObservation", "floor_met", append([]string{KexFloorNone}, floorNames()...)},
 		{"FilterPolicy", "exec_mode", []string{
 			string(ExecModeFiltered), string(ExecModeRestricted)}},
 		{"RestrictedCommand", "form", []string{
@@ -500,6 +505,16 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		"heartbeat_interval_seconds",
 		// Brokered certificates (phase 0044).
 		"valid_before", "ca_public_keys", "credential_certificate_serial",
+		// The floor and the bans (phase 0045): the fields, the levels, the
+		// declarations and the report, and the names the records carry.
+		"algorithm_floor", string(AlgorithmFloorModernKEX), string(AlgorithmFloorPQHybridKEX),
+		"algorithm_bans", "key_exchanges", "ciphers", "macs", "host_keys", "public_key_auth",
+		"algorithm_floors", "floor_met", "negotiated", KexFloorNone, KeyExchangeMLKEM768X25519,
+		"target_kex_algorithm", "target_host_key_algorithm", "target_cipher_out", "target_cipher_in",
+		"target_mac_out", "target_mac_in", "target_public_key_algorithms_offered",
+		"algorithm_policy_cause", "algorithm_bans_unmatched", "algorithm_axis", "target_algorithms_offered",
+		"target.algorithm_policy_unmet", "target.algorithms_negotiated",
+		string(AlgorithmPolicyCauseProfile), string(AlgorithmPolicyCauseFloor), string(AlgorithmPolicyCauseBan),
 		// Fleet configuration (PLAN D18, phase 0042).
 		string(EventTypeConfigChanged), "running_version", "desired_version",
 		"restart_required", "last_error", "If-None-Match",
@@ -555,4 +570,57 @@ func jsonFields(v any) []string {
 		}
 	}
 	return names
+}
+
+// floorNames is every level, as the contract spells it.
+func floorNames() []string {
+	var out []string
+	for _, level := range AlgorithmFloors() {
+		out = append(out, string(level))
+	}
+	return out
+}
+
+// TestSpecDocumentsTheAlgorithmSchemas keeps phase 0045's schemas and the Go
+// struct tags in step, field by field, and pins the two shape decisions a
+// server author is most likely to undo: a key-exchange-only report must be
+// valid (so observed_at is no longer required of every report), and a floor's
+// report must say when it was made.
+func TestSpecDocumentsTheAlgorithmSchemas(t *testing.T) {
+	doc := loadSpec(t)
+
+	for schema, fields := range map[string][]string{
+		"AlgorithmBans":            jsonFields(Algorithms{}),
+		"OfferableAlgorithms":      jsonFields(Algorithms{}),
+		"AlgorithmFloorCapability": jsonFields(AlgorithmFloorCapability{}),
+		"ProxyCapabilities":        jsonFields(ProxyCapabilities{}),
+		"TargetCapabilities":       jsonFields(TargetCapabilities{}),
+		"KexObservation":           jsonFields(KexObservation{}),
+	} {
+		for _, field := range fields {
+			ref := "#/components/schemas/" + schema + "/properties/" + field
+			if _, ok := resolveRef(doc, ref); !ok {
+				t.Errorf("%s does not document %q, which the Go type sends or reads", schema, field)
+			}
+		}
+	}
+
+	for ref, want := range map[string]string{
+		"#/components/schemas/AuthorizeResponse/properties/algorithm_bans/$ref": "#/components/schemas/AlgorithmBans",
+		"#/components/schemas/ProxyCapabilities/properties/algorithms/$ref":     "#/components/schemas/OfferableAlgorithms",
+		"#/components/schemas/TargetCapabilities/properties/kex/$ref":           "#/components/schemas/KexObservation",
+	} {
+		if got, ok := resolveRef(doc, ref); !ok || got != want {
+			t.Errorf("%s = %v, want %s", ref, got, want)
+		}
+	}
+
+	if required, ok := resolveRef(doc, "#/components/schemas/TargetCapabilities/required"); ok {
+		t.Errorf("TargetCapabilities requires %v; a key-exchange-only report carries no rung observation", required)
+	}
+	required, ok := resolveRef(doc, "#/components/schemas/KexObservation/required")
+	list, _ := required.([]any)
+	if !ok || len(list) != 2 || list[0] != "floor_met" || list[1] != "observed_at" {
+		t.Errorf("KexObservation.required = %v, want [floor_met observed_at]", required)
+	}
 }

@@ -205,10 +205,18 @@ func (r *deviceReaper) Sweep(ctx context.Context, ep device.Endpoint, route *dev
 		// A device that cannot be enumerated is the case D13 warns about: on a
 		// platform with no expiry there is no other removal path, so this is
 		// reported rather than logged and forgotten.
-		r.auth.reportSweepFailure(SweepFailure{
+		failure := SweepFailure{
 			Target: addrOf(ep), Platform: route.platform,
 			Reason: fmt.Sprintf("the device could not be enumerated: %v", err), At: r.auth.now(),
-		})
+		}
+		if reason, axis, offered, changed := changedUnderTheProxy(err); changed {
+			// The sweep dialled under the lists the device was provisioned
+			// under, so this is the DEVICE having changed, not the route
+			// (phase 0045).
+			failure.Reason = "the device could not be enumerated: " + reason
+			failure.AlgorithmAxis, failure.AlgorithmsOffered = axis, offered
+		}
+		r.auth.reportSweepFailure(failure)
 		return nil, err
 	}
 

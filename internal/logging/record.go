@@ -152,9 +152,53 @@ const (
 	// (key_exchange, host_key, cipher, mac, compression) the route's profile
 	// allowed nothing on, and the comma-separated list the TARGET offered
 	// there — which is what an operator reads to choose the profile the route
-	// needs (phase 0043).
+	// needs (phase 0043). Phase 0045 adds public_key_auth: the proxy's own key
+	// left no signature algorithm the target accepts, where no offered list
+	// is known and the attribute is absent.
 	AttrAlgorithmAxis           = "algorithm_axis"
 	AttrTargetAlgorithmsOffered = "target_algorithms_offered"
+	// AttrAlgorithmFloor is the route's algorithm floor IN FORCE on the target
+	// leg (phase 0045), stamped wherever AttrAlgorithmProfile is. Unlike the
+	// profile it is OMITTED when there is none: "no floor" is the absence of a
+	// constraint, not a value the leg was dialled under, and an absent key is
+	// the one spelling of it.
+	AttrAlgorithmFloor = "algorithm_floor"
+	// AttrAlgorithmBansPrefix namespaces the route's bans, one attribute per
+	// banned axis (`algorithm_bans.ciphers` and the like), each the sorted,
+	// comma-joined identifiers (phase 0045). One per axis for the device-field
+	// reason: "which sessions ran under a ban on X" is then a filter, not a
+	// substring search. An axis with no ban has no attribute.
+	AttrAlgorithmBansPrefix = "algorithm_bans."
+	// AttrAlgorithmBansUnmatched lists the banned names that match nothing this
+	// build could offer, as `<axis>:<name>`, comma-joined (phase 0045). A ban
+	// on an unknown name is accepted — it is already satisfied — and this is
+	// what keeps a typo in one from looking exactly like a working ban.
+	AttrAlgorithmBansUnmatched = "algorithm_bans_unmatched"
+	// AttrAlgorithmPolicyCause is which step of the route's algorithm policy
+	// left the failing axis with nothing the target offered — `profile`,
+	// `floor` or `ban` (phase 0045) — on a `target.algorithm_policy_unmet`
+	// record. It is what says which thing to change.
+	AttrAlgorithmPolicyCause = "algorithm_policy_cause"
+	// What a target leg actually NEGOTIATED, axis by axis, read from the
+	// established connection and never from what was offered (phase 0045):
+	// the key exchange, the host-key algorithm, the cipher and MAC in each
+	// direction — out is proxy→target, in is target→proxy — with a MAC omitted
+	// where an AEAD cipher makes it implicit. They are the `target_`-prefixed
+	// facts of the proxy→target leg, because a record here can describe three
+	// SSH legs; the key exchange is `target_kex_algorithm` and not
+	// `kex_algorithm` for that reason. They are what a ban is verified against
+	// per session, and what the emergency runbook finds open sessions by.
+	AttrTargetKexAlgorithm     = "target_kex_algorithm"
+	AttrTargetHostKeyAlgorithm = "target_host_key_algorithm"
+	AttrTargetCipherOut        = "target_cipher_out"
+	AttrTargetCipherIn         = "target_cipher_in"
+	AttrTargetMACOut           = "target_mac_out"
+	AttrTargetMACIn            = "target_mac_in"
+	// AttrTargetPublicKeyAlgorithmsOffered is the one axis the library does not
+	// report after a handshake: which signature algorithm public-key
+	// authentication used. The record names what the proxy OFFERED instead, in
+	// preference order, and says so in the name.
+	AttrTargetPublicKeyAlgorithmsOffered = "target_public_key_algorithms_offered"
 	// AttrPersistsAcrossReload and AttrPersistenceReason carry a driver's
 	// persistence declaration onto the session it served, so a standing-account
 	// risk is recorded where the risk is taken (D13).
@@ -273,10 +317,16 @@ const (
 	// device: the drift reconciliation feed's producer (PLAN §5.3, §12). It
 	// is a `provisioning` record at `info`, on the BATCH path.
 	EventDeviceConfigChange = "device.config.change"
-	// EventAlgorithmPolicyUnmet is a target the route's algorithm profile
-	// allows nothing on some axis for. It is a `warn` error record, on the
-	// batch path: an outage, not a security event.
+	// EventAlgorithmPolicyUnmet is a target the route's algorithm policy —
+	// its profile, its floor, or a ban (phase 0045) — allows nothing on some
+	// axis for. It is a `warn` error record, on the batch path: an outage, not
+	// a security event.
 	EventAlgorithmPolicyUnmet = "target.algorithm_policy_unmet"
+	// EventAlgorithmsNegotiated is a target leg that came up, with what it
+	// negotiated on every axis beside the policy it was dialled under (phase
+	// 0045): a `provisioning` record at `info`, on the BATCH path, one per
+	// session whose target leg came up.
+	EventAlgorithmsNegotiated = "target.algorithms_negotiated"
 )
 
 // CaptureFormatRawChunk is the value of AttrCaptureFormat on every stream

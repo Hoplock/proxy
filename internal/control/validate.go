@@ -39,7 +39,7 @@ func (r *AuthorizeResponse) Validate() error {
 	if err := r.validateTargetAuth(); err != nil {
 		return err
 	}
-	if err := r.AlgorithmProfile.validate(); err != nil {
+	if err := r.validateAlgorithmPolicy(); err != nil {
 		return err
 	}
 	if err := r.FilterPolicy.validate(); err != nil {
@@ -582,6 +582,90 @@ func (p AlgorithmProfile) validate() error {
 		// choose.
 		return fmt.Errorf("algorithm_profile %q is not a profile this proxy knows", p)
 	}
+}
+
+// validateAlgorithmPolicy checks the three fields that decide the proxy→target
+// leg's algorithms, and the combinations of them that describe a leg that can
+// never connect (phase 0045).
+//
+// Every refusal here is a CONTRACT VIOLATION, ErrProtocol and outage-class:
+// Hoplock Control sent policy that cannot be obeyed, and the server MUST NOT
+// send it. None of them is a deny — nothing was refused to the user.
+func (r *AuthorizeResponse) validateAlgorithmPolicy() error {
+	if err := r.AlgorithmProfile.validate(); err != nil {
+		return err
+	}
+	if r.AlgorithmFloor.Rank() < 0 {
+		// Refused, never coerced, for the profile's reason: coercing an unknown
+		// floor to "no floor" silently drops a restriction.
+		return fmt.Errorf("algorithm_floor %q is not a level this proxy enforces", r.AlgorithmFloor)
+	}
+	if r.AlgorithmFloor != "" && ProfileWidensKeyExchange(r.Profile()) {
+		// The rule is the AXIS, not the word "legacy": this profile adds key
+		// exchanges the floor then excludes, so the pair describes a leg that
+		// can never connect. A profile that changes only signatures
+		// (legacy-rsa-sha1) is a different axis and is accepted with a floor.
+		return fmt.Errorf("algorithm_profile %q widens the key-exchange axis that algorithm_floor %q narrows; the pair is refused",
+			r.Profile(), r.AlgorithmFloor)
+	}
+	if err := r.AlgorithmBans.validate(); err != nil {
+		return err
+	}
+
+	// What the policy leaves to offer. A ban naming something this build does
+	// not implement is ACCEPTED — banning what the proxy never offers is
+	// already satisfied, and refusing it would turn a same-day ban issued after
+	// an advisory into an outage — so only what the bans REMOVE is judged.
+	policy := r.AlgorithmPolicy()
+	_, floored, final := policy.stages()
+	if r.AlgorithmFloor != "" {
+		if len(floored.KeyExchanges) == 0 {
+			return fmt.Errorf("algorithm_floor %q leaves algorithm_profile %q no key exchange to offer",
+				r.AlgorithmFloor, r.Profile())
+		}
+		if len(final.KeyExchanges) == 0 {
+			return fmt.Errorf("algorithm_bans.key_exchanges removes every key exchange algorithm_floor %q accepts, "+
+				"which describes a leg that can never connect", r.AlgorithmFloor)
+		}
+	}
+	for _, axis := range []struct {
+		name string
+		left []string
+	}{
+		{"key_exchanges", final.KeyExchanges},
+		{"ciphers", final.Ciphers},
+		{"macs", final.MACs},
+		{"host_keys", final.HostKeys},
+		{"public_key_auth", final.PublicKeyAuths},
+	} {
+		if len(axis.left) == 0 {
+			return fmt.Errorf("algorithm_bans.%s leaves the route nothing to offer on that axis", axis.name)
+		}
+	}
+	return nil
+}
+
+// validate checks the SHAPE of the bans: each identifier present and listed
+// once per axis. A duplicate is refused rather than collapsed because it is
+// almost always a list assembled wrongly, and the record is meant to show the
+// ban exactly as it was issued.
+func (b *AlgorithmBans) validate() error {
+	if b == nil {
+		return nil
+	}
+	for _, axis := range BanAxes(*b) {
+		seen := make(map[string]bool, len(axis.Names))
+		for i, name := range axis.Names {
+			if name == "" {
+				return fmt.Errorf("algorithm_bans.%s[%d] is empty", axis.Name, i)
+			}
+			if seen[name] {
+				return fmt.Errorf("algorithm_bans.%s lists %q twice", axis.Name, name)
+			}
+			seen[name] = true
+		}
+	}
+	return nil
 }
 
 func (p FilterPolicy) validate() error {

@@ -336,10 +336,12 @@ func (s *session) setup() {
 		// The route's enforcement choice, deep-copied: the decision may be a
 		// cached one shared with other sessions (PLAN §6.4).
 		Enforcement: target.EnforcementFrom(route.Enforcement, route.Filter),
-		// The route's algorithm profile and its expansion, so every connection
+		// The route's algorithm policy and its expansion, so every connection
 		// the credential plane opens to this target offers what the session
-		// leg below offers (phase 0043).
+		// leg below offers (phase 0043) — floor and bans included (phase 0045).
 		AlgorithmProfile: route.AlgorithmProfile.Resolve(),
+		AlgorithmFloor:   route.AlgorithmFloor,
+		AlgorithmBans:    route.AlgorithmBans.Clone(),
 		Algorithms:       route.Algorithms(),
 	})
 	if err != nil {
@@ -357,6 +359,47 @@ func (s *session) setup() {
 
 	s.logf("proxy: session=%s target leg up target=%s route=%s permissions=%s channels=%v",
 		s.id, s.route.Addr(), s.route.Type, s.route.Permissions, s.route.PermittedChannels)
+}
+
+// algorithmPolicyUnmet classifies, records and reports a target that could not
+// meet the route's algorithm policy on some axis (phases 0043, 0045), wherever
+// the connection that found out was dialled: the session leg, or the
+// credential plane's own login.
+//
+// It is one failure class with one stage and one record. The classification is
+// against the policy the connection was dialled under, so the record — and the
+// one requirement the user's message names — says whether the profile, the
+// floor or a ban is what the target could not meet. A key-exchange failure also
+// reveals the target's whole key-exchange list, which is an exact observation
+// of its level, so it is reported like a success would be.
+func (s *session) algorithmPolicyUnmet(err error) *setupError {
+	policy := s.route.AlgorithmPolicy()
+	failure, _ := target.AlgorithmPolicyFailure(err, policy)
+	s.recordAlgorithmPolicyUnmet(failure, policy)
+	if failure.Axis == target.AlgorithmAxisKeyExchange {
+		s.observeKex("", failure.Offered)
+	}
+	return &setupError{stage: stageAlgorithmPolicy,
+		err: &algorithmPolicyError{failure: failure, floor: policy.Floor, err: err}}
+}
+
+// observeKex hands one handshake's key-exchange observation to the observer,
+// when the handshake IS one (control.AlgorithmPolicy.FloorMet decides). It
+// returns at once: the report is the observer's to make, off the session path.
+func (s *session) observeKex(negotiated string, targetOffered []string) {
+	if s.srv.kexObserver == nil {
+		return
+	}
+	floorMet, ok := s.route.AlgorithmPolicy().FloorMet(negotiated, targetOffered)
+	if !ok {
+		return
+	}
+	s.srv.kexObserver.ObserveKex(s.route.Host, s.route.Port, &control.KexObservation{
+		FloorMet:   floorMet,
+		Negotiated: negotiated,
+		Offered:    append([]string(nil), targetOffered...),
+		ObservedAt: s.srv.now(),
+	})
 }
 
 // provisionError classifies a failure to obtain credentials for the target.
@@ -382,12 +425,12 @@ func (s *session) provisionError(err error) error {
 	if target.IsAlgorithmPolicyUnmet(err) {
 		// The credential plane's own connection to the target — the ephemeral
 		// method's management login, a device driver's privileged CLI — could
-		// not agree an algorithm under the route's profile (phase 0043). On a
+		// not agree an algorithm under the route's policy (phase 0043). On a
 		// device route that is where a stranded target is found, before any
-		// session leg exists, and it is the same failure with the same fix as
-		// the one dialTarget classifies: the route's profile.
-		s.recordAlgorithmPolicyUnmet(err)
-		return &setupError{stage: stageAlgorithmPolicy, err: err}
+		// session leg exists — and where a floor or a ban the device cannot
+		// meet is found too (phase 0045) — and it is the same failure with the
+		// same classification as the one dialTarget makes.
+		return s.algorithmPolicyUnmet(err)
 	}
 	return &setupError{stage: stageProvision, err: err}
 }
@@ -516,15 +559,17 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 			// been.
 			return &setupError{stage: stageHostKey, err: hostKeyErr}
 		}
-		// Second: the target and the route's profile have no algorithm in
-		// common on some axis (phase 0043). Authentication was never reached,
-		// so this is never scored against the credential (0025) — it is
-		// classified before DialOutcome, which would not score it either, so
-		// that the two cannot come apart. It sends the operator to the route's
-		// profile rather than to the network.
+		// Second: the target and the route's algorithm policy — its profile,
+		// its floor or a ban — have no algorithm in common on some axis (phases
+		// 0043, 0045). Authentication was never reached, so this is never
+		// scored against the credential (0025) — it is classified before
+		// DialOutcome, which would not score it either, so that the two cannot
+		// come apart. It never falls back either: no retry with a wider list,
+		// and no walk to the next rung, which would dial the same target under
+		// the same policy. It sends the operator to the route's policy rather
+		// than to the network.
 		if target.IsAlgorithmPolicyUnmet(err) {
-			s.recordAlgorithmPolicyUnmet(err)
-			return &setupError{stage: stageAlgorithmPolicy, err: err}
+			return s.algorithmPolicyUnmet(err)
 		}
 		// The credential plane is told what the handshake did and decides
 		// whether it was a refusal; the engine asks the same package which it
@@ -541,6 +586,15 @@ func (s *session) dialTarget(access *target.ProvisionedAccess) error {
 	// CONSECUTIVE rejections, and this credential has just had none.
 	access.DialOutcome(nil)
 	_ = conn.SetDeadline(time.Time{})
+
+	// What the leg actually negotiated, on every axis, beside the policy it
+	// was dialled under — read off the established connection, never what was
+	// offered (phase 0045). It is how a floor or a ban is verified per
+	// session, and what the target's key-exchange report is made from.
+	if negotiated, ok := sshalg.NegotiatedOn(legConn); ok {
+		s.recordNegotiated(access, negotiated)
+		s.observeKex(negotiated.KeyExchange, nil)
+	}
 
 	s.setLeg(legConn)
 

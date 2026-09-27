@@ -58,6 +58,9 @@ type e2eStack struct {
 	// device is the FortiGate stand-in behind the `alice#localhost` route,
 	// when e2eOptions.device asked for one (phase 0043).
 	device *sshtest.FakeFortiOS
+	// kexReports is the target key-exchange reporter, wired to the mock, when
+	// e2eOptions.kexReports asked for one (phase 0045).
+	kexReports *target.KexReporter
 }
 
 // e2eOptions configure the stack. The zero value is the direct-route session
@@ -80,6 +83,9 @@ type e2eOptions struct {
 	// legacy-device algorithm profile — the path whose records carry device
 	// configuration changes (phase 0043), wired to the same recorder.
 	device bool
+	// kexReports wires the proxy's key-exchange reporter to the mock, so each
+	// target's observed level reaches it as a capability report (phase 0045).
+	kexReports bool
 }
 
 // startE2E builds the whole path: fixtures naming this test's key and target,
@@ -224,11 +230,19 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 		credentialPlane = deviceCredentialPlane(t, targetAuth, recorder)
 	}
 
+	var kexReports *target.KexReporter
+	var kexObserver proxy.KexObserver
+	if opts.kexReports {
+		kexReports = target.NewKexReporter(target.KexReporterOptions{Reporter: m.client})
+		kexObserver = kexReports
+	}
+
 	server, err := proxy.New(proxy.Options{
 		HostKey:         sshtest.MustGenerateSigner(),
 		Authenticator:   userAuth,
 		Resolver:        resolver,
 		TargetAuth:      credentialPlane,
+		KexObserver:     kexObserver,
 		Client:          m.client,
 		ProxyID:         "proxy-e2e",
 		TargetDelimiter: config.DefaultTargetDelimiter,
@@ -259,15 +273,16 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 	})
 
 	return &e2eStack{
-		mock:      m,
-		target:    tgt,
-		proxy:     server,
-		addr:      listener.Addr().String(),
-		clientKe:  clientKey,
-		recorder:  recorder,
-		bufferDir: bufferDir,
-		gate:      gate,
-		device:    dev,
+		mock:       m,
+		target:     tgt,
+		proxy:      server,
+		addr:       listener.Addr().String(),
+		clientKe:   clientKey,
+		recorder:   recorder,
+		bufferDir:  bufferDir,
+		gate:       gate,
+		device:     dev,
+		kexReports: kexReports,
 	}
 }
 
