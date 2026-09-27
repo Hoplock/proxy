@@ -421,6 +421,16 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				needed, req.PolicyVersion))
 		return
 	}
+	// The per-level form of the same rule (phase 0045): a floor level this
+	// proxy did not declare in capabilities.algorithm_floors is one this BUILD
+	// may not enforce — a level added in a later build — and the version cannot
+	// say so. Refused for the version's reason, never sent without the floor.
+	if !req.Capabilities.DeclaresFloor(resp.AlgorithmFloor) {
+		writeError(w, http.StatusInternalServerError, "algorithm_floor",
+			fmt.Sprintf("this route needs algorithm_floor %q; the proxy did not declare that level in capabilities.algorithm_floors",
+				resp.AlgorithmFloor))
+		return
+	}
 	// A decision naming brokered-certificate is what a later issuance cites.
 	// It is remembered only once it is actually answered.
 	if grant, ok := grantFor(resp, route.CertificateFault); ok {
@@ -474,13 +484,20 @@ func (s *server) handleReportHostKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleReportCapabilities records what a target can enforce.
+// handleReportCapabilities records what a target can enforce, and what its key
+// exchange was seen to be.
 //
 // A real Control accumulates these per target and constrains policy authoring
-// by them. The mock keeps the last report per target so a test can assert the
-// proxy reported at all, and answers `accepted` — there is nothing to decide,
-// which is the point: a capability report is an observation, not a request for
-// a decision.
+// by them. The mock keeps the latest of each observation per target so a test
+// can assert the proxy reported at all, and answers `accepted` — there is
+// nothing to decide, which is the point: a capability report is an
+// observation, not a request for a decision.
+//
+// It MERGES, exactly as the contract says a server must (TargetCapabilities,
+// phase 0045): the rung observation and the key-exchange observation are
+// replaced independently, each only by a report that carries it, so a
+// key-exchange report never reads as "this target can take no rungs" and a
+// probe never erases a target's key-exchange level.
 func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeProxy(w, r) {
 		return
@@ -493,16 +510,38 @@ func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_request", "target is required")
 		return
 	}
-	if req.Capabilities.ObservedAt.IsZero() {
-		// An undated record is a stale one by contract, so a server that stored
-		// it would be storing something nobody may use.
+	if req.Capabilities.UndatedRungs() {
+		// An undated rung observation cannot be placed against the one the
+		// server holds, and a stale record is one nobody may use anyway.
 		writeError(w, http.StatusBadRequest, "invalid_request",
-			"capabilities.observed_at is required")
+			"capabilities.observed_at is required with execution, reach or detail")
+		return
+	}
+	carriesRungs, carriesKex := req.Capabilities.CarriesRungs(), req.Capabilities.Kex != nil
+	if !carriesRungs && !carriesKex {
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"the report carries neither a rung observation (observed_at) nor a key-exchange observation (kex)")
+		return
+	}
+	if k := req.Capabilities.Kex; k != nil && (k.FloorMet == "" || k.ObservedAt.IsZero()) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "capabilities.kex requires floor_met and observed_at")
 		return
 	}
 
 	s.mu.Lock()
-	s.capabilities[req.Target] = req.Capabilities.Clone()
+	stored := s.capabilities[req.Target]
+	if stored == nil {
+		stored = &control.TargetCapabilities{}
+	}
+	merged := stored.Clone()
+	if carriesRungs {
+		merged.Execution, merged.Reach = req.Capabilities.Execution, req.Capabilities.Reach
+		merged.ObservedAt, merged.Detail = req.Capabilities.ObservedAt, req.Capabilities.Detail
+	}
+	if carriesKex {
+		merged.Kex = req.Capabilities.Kex
+	}
+	s.capabilities[req.Target] = merged.Clone()
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, control.CapabilityReportResponse{Accepted: true})

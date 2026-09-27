@@ -264,6 +264,33 @@ routes:
         - match: "show version"
           action: allow_and_log
 
+  # A FLOOR and a BAN (phase 0045). The route must negotiate a hybrid
+  # post-quantum key exchange — today exactly mlkem768x25519-sha256, which in
+  # practice means OpenSSH 9.9 or later on the target — and must never offer
+  # the CBC ciphers or hmac-sha1, whatever the profile would. A target that
+  # cannot meet either fails the session as an OUTAGE, never a deny and never a
+  # fallback, and leaves a `target.algorithm_policy_unmet` record naming the
+  # cause. `3des-cbc` is not something `default` offers at all: banning it is
+  # already satisfied and changes nothing on the wire.
+  #
+  # Both fields are vocabulary 6, so a proxy declaring 5 is answered a 500 for
+  # this route; and a proxy whose request does not declare `pq-hybrid-kex` in
+  # `capabilities.algorithm_floors` is answered a 500 too.
+  - login: alice
+    target: pq-host.company.com
+    route_type: direct
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    algorithm_floor: pq-hybrid-kex
+    algorithm_bans:
+      ciphers: [aes128-cbc, 3des-cbc]
+      macs: [hmac-sha1]
+    filter_policy:
+      mode: blacklist
+      rules:
+        - match: "shutdown*"
+          action: block_command
+
   # A DEVICE, reached with the credential ladder (D14). The server
   # authors the degradation and the proxy never invents it: a short-lived
   # administrator created through the `fortios` driver first, and the standing

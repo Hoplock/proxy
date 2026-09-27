@@ -93,6 +93,14 @@ type Route struct {
 	// the lists every connection offers through Algorithms, never by expanding
 	// the name at a call site: phase 0045 narrows them there.
 	AlgorithmProfile control.AlgorithmProfile
+	// AlgorithmFloor is the minimum key-exchange level the leg must negotiate,
+	// empty for none, and AlgorithmBans what it must never offer, nil for
+	// nothing (phase 0045). Like the profile they reach a connection only
+	// through Algorithms, which applies them in the one fixed order; they are
+	// kept on the route as well because the records name the policy IN FORCE
+	// and a failure has to say which part of it the target could not meet.
+	AlgorithmFloor control.AlgorithmFloor
+	AlgorithmBans  *control.AlgorithmBans
 	// SessionDeadline is when this session must end, as an ABSOLUTE INSTANT
 	// (D16, enforced by phase 0024). Nil means the server set no deadline, which
 	// is not the same as zero: absent leaves the session unbounded.
@@ -259,11 +267,22 @@ func (r *Route) EnforcedReach() control.ReachRung { return r.Enforcement.ReachRu
 
 // Algorithms is what every connection this route causes to its target may
 // offer (phase 0043): the session leg, the management login, the driver's
-// privileged CLI, and the teardown and sweeps after them. It is a fresh copy
-// per call, because a decision may be cached and shared across sessions
-// (PLAN §6.4).
+// privileged CLI, and the teardown and sweeps after them. It is the policy's
+// one expansion — the profile, then the floor, then the bans (phase 0045) —
+// and a fresh copy per call, because a decision may be cached and shared
+// across sessions (PLAN §6.4).
 func (r *Route) Algorithms() control.Algorithms {
-	return r.AlgorithmProfile.Resolve().Algorithms()
+	return r.AlgorithmPolicy().Algorithms()
+}
+
+// AlgorithmPolicy is everything the route says about its target leg's
+// algorithms, deep-copied: the profile, the floor and the bans.
+func (r *Route) AlgorithmPolicy() control.AlgorithmPolicy {
+	return control.AlgorithmPolicy{
+		Profile: r.AlgorithmProfile.Resolve(),
+		Floor:   r.AlgorithmFloor,
+		Bans:    r.AlgorithmBans.Clone(),
+	}
 }
 
 // ExecMode reports which tier decides an exec request on this connection (D12,
@@ -384,6 +403,8 @@ func (r *Resolver) Resolve(ctx context.Context, req Request) (*Route, error) {
 		Filter:                  resp.FilterPolicy.Clone(),
 		Enforcement:             resp.Enforcement.Clone(),
 		AlgorithmProfile:        resp.Profile(),
+		AlgorithmFloor:          resp.AlgorithmFloor,
+		AlgorithmBans:           resp.AlgorithmBans.Clone(),
 		SessionDeadline:         cloneInstant(resp.SessionDeadline),
 		RequireSessionCapture:   resp.RequireSessionCapture,
 		Concurrency:             resp.Concurrency.Clone(),

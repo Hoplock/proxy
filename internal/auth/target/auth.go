@@ -97,6 +97,19 @@ type Target struct {
 	// library's client defaults.
 	AlgorithmProfile control.AlgorithmProfile
 	Algorithms       control.Algorithms
+	// AlgorithmFloor and AlgorithmBans are the rest of the route's algorithm
+	// policy (phase 0045). Algorithms is already narrowed by both — nothing
+	// dials by these — and they travel beside it for the profile's reason:
+	// the device mapping event names the policy in force, and a sweep that can
+	// no longer reach a device has to be able to say why.
+	AlgorithmFloor control.AlgorithmFloor
+	AlgorithmBans  *control.AlgorithmBans
+}
+
+// AlgorithmPolicy is the route's whole algorithm policy as this target carries
+// it, deep-copied.
+func (t Target) AlgorithmPolicy() control.AlgorithmPolicy {
+	return control.AlgorithmPolicy{Profile: t.AlgorithmProfile.Resolve(), Floor: t.AlgorithmFloor, Bans: t.AlgorithmBans.Clone()}
 }
 
 // Addr is the "host:port" to dial.
@@ -197,6 +210,12 @@ type ProvisionedAccess struct {
 	// credential without being one, and the certificate itself never leaves
 	// the ClientConfig.
 	CertificateSerial string
+	// PublicKeyAlgorithms are the signature algorithms the session leg's
+	// public-key authentication OFFERS, in preference order, or nil for a
+	// credential that is not a key (phase 0045). The library does not say which
+	// one authentication used, so this is what a session can check a
+	// public_key_auth ban against, and the record names it as offered.
+	PublicKeyAlgorithms []string
 
 	breaker *RejectionBreaker
 	once    sync.Once

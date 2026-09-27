@@ -168,6 +168,13 @@ func (d *sshShellDialer) Shell(ctx context.Context, ep Endpoint) (Shell, error) 
 		return nil, fmt.Errorf("auth/target/device: management login to %s failed", addr)
 	}
 	_ = conn.SetDeadline(time.Time{})
+	if ep.Negotiated != nil {
+		// What this connection agreed, read off the established connection —
+		// never what was offered (phase 0045).
+		if negotiated, ok := sshalg.NegotiatedOn(sshConn); ok {
+			ep.Negotiated(negotiated)
+		}
+	}
 
 	client := ssh.NewClient(sshConn, chans, reqs)
 	sess, err := client.NewSession()

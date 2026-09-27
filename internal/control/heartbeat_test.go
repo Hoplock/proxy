@@ -231,15 +231,18 @@ func TestHeartbeatCeilingLeavesRoomForALostHeartbeat(t *testing.T) {
 // peer harmlessly, exactly as HostKeyReportResponse.cache does, and bumping the
 // number would force a fleet-wide upgrade for nothing.
 //
-// The number has moved once since, and for a different kind of change: 4 when
+// The number has moved twice since, and for a different kind of change: 4 when
 // this field landed, 5 since phase 0044 added the brokered-certificate METHOD —
 // an enum value inside the strictly decoded response, which is vocabulary
-// exactly as a field is (certificate_test.go). A revision after that updates
-// this pin with its own reason, which is the point of pinning it.
+// exactly as a field is (certificate_test.go) — and 6 since phase 0045 added
+// algorithm_floor and algorithm_bans, two fields on that response. A revision
+// after that updates this pin with its own reason, which is the point of
+// pinning it.
 func TestHeartbeatIntervalDidNotMoveThePolicyVersion(t *testing.T) {
-	if PolicyVersion != 5 {
-		t.Errorf("PolicyVersion = %d, want 5 (4 when heartbeat_interval_seconds landed, 5 since brokered-certificate): "+
-			"adding heartbeat_interval_seconds is not a vocabulary revision", PolicyVersion)
+	if PolicyVersion != 6 {
+		t.Errorf("PolicyVersion = %d, want 6 (4 when heartbeat_interval_seconds landed, 5 since brokered-certificate, "+
+			"6 since algorithm_floor and algorithm_bans): adding heartbeat_interval_seconds is not a vocabulary revision",
+			PolicyVersion)
 	}
 
 	// The structural half of the same claim: the field is not on the strictly

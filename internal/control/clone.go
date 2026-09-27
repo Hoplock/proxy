@@ -244,6 +244,16 @@ func (c *ProxyCapabilities) Clone() *ProxyCapabilities {
 	if c.Reach != nil {
 		out.Reach = append([]ReachRung(nil), c.Reach...)
 	}
+	if c.AlgorithmFloors != nil {
+		out.AlgorithmFloors = make([]AlgorithmFloorCapability, len(c.AlgorithmFloors))
+		for i, f := range c.AlgorithmFloors {
+			out.AlgorithmFloors[i] = AlgorithmFloorCapability{Level: f.Level, KeyExchanges: cloneStrings(f.KeyExchanges)}
+		}
+	}
+	if c.Algorithms != nil {
+		a := c.Algorithms.Clone()
+		out.Algorithms = &a
+	}
 	return out
 }
 
@@ -265,6 +275,17 @@ func (c *TargetCapabilities) Clone() *TargetCapabilities {
 			out.Detail[k] = v
 		}
 	}
+	out.Kex = c.Kex.Clone()
+	return &out
+}
+
+// Clone deep-copies a key-exchange observation.
+func (k *KexObservation) Clone() *KexObservation {
+	if k == nil {
+		return nil
+	}
+	out := *k
+	out.Offered = cloneStrings(k.Offered)
 	return &out
 }
 
@@ -320,6 +341,7 @@ func (r *AuthorizeResponse) Clone() *AuthorizeResponse {
 	out.PermittedForwards = r.PermittedForwards.Clone()
 	out.PermittedGlobalRequests = r.PermittedGlobalRequests.Clone()
 	out.TargetAuthLadder = r.TargetAuthLadder.Clone()
+	out.AlgorithmBans = r.AlgorithmBans.Clone()
 	out.FilterPolicy = r.FilterPolicy.Clone()
 	out.Enforcement = r.Enforcement.Clone()
 	out.SessionDeadline = cloneTime(r.SessionDeadline)

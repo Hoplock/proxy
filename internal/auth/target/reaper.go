@@ -209,7 +209,11 @@ func (r *Reaper) sweepOnce(ctx context.Context, tgt Target) {
 	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
 	defer cancel()
 	removed, err := r.Sweep(ctx, tgt)
-	if err != nil {
+	if reason, _, _, changed := changedUnderTheProxy(err); changed {
+		// Dialled under the lists the target was provisioned under, so the
+		// target changed, not the route (phase 0045).
+		r.auth.logf("auth/target: ephemeral-user orphan sweep of %s failed: %s", tgt, reason)
+	} else if err != nil {
 		r.auth.logf("auth/target: ephemeral-user orphan sweep of %s failed: %v", tgt, err)
 	}
 	if len(removed) > 0 {
@@ -369,7 +373,11 @@ func (r *Reaper) observe(tgt Target, hostKey ssh.PublicKey) {
 	// The route's algorithms survive the copy (phase 0043): a target the route
 	// needed a legacy profile to reach is a target the sweep's management
 	// login needs it for too.
-	bare := Target{Host: tgt.Host, Port: tgt.Port, AlgorithmProfile: tgt.AlgorithmProfile, Algorithms: tgt.Algorithms.Clone()}
+	// So does the rest of the policy (phase 0045): the lists are already
+	// narrowed by the floor and the bans, and a sweep dialled under anything
+	// wider would be the silent downgrade PLAN §6.5 forbids.
+	bare := Target{Host: tgt.Host, Port: tgt.Port, AlgorithmProfile: tgt.AlgorithmProfile,
+		AlgorithmFloor: tgt.AlgorithmFloor, AlgorithmBans: tgt.AlgorithmBans.Clone(), Algorithms: tgt.Algorithms.Clone()}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -378,6 +386,7 @@ func (r *Reaper) observe(tgt Target, hostKey ssh.PublicKey) {
 			seen.hostKey = hostKey
 		}
 		seen.tgt.AlgorithmProfile, seen.tgt.Algorithms = bare.AlgorithmProfile, bare.Algorithms
+		seen.tgt.AlgorithmFloor, seen.tgt.AlgorithmBans = bare.AlgorithmFloor, bare.AlgorithmBans
 		return
 	}
 	r.seen[key] = &seenTarget{tgt: bare, hostKey: hostKey}

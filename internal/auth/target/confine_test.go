@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -695,5 +696,20 @@ func TestProxyCapabilitiesNameEveryAppliedRungThisBuildRenders(t *testing.T) {
 	// And nothing this build does NOT render.
 	if caps.ProvidesExecution("account-hardened") || caps.ProvidesReach("account-firewalled") {
 		t.Error("a build must not advertise a rung it has never heard of")
+	}
+
+	// Every algorithm-floor level, each with exactly the key exchanges the leg
+	// offers under it, and everything the build can offer (phase 0045) — built
+	// from the same expansion, asserted equal rather than trusted.
+	if !reflect.DeepEqual(caps.AlgorithmFloors, control.AlgorithmFloorCapabilities()) {
+		t.Errorf("declared floors %+v, the expansion gives %+v", caps.AlgorithmFloors, control.AlgorithmFloorCapabilities())
+	}
+	for _, level := range control.AlgorithmFloors() {
+		if !caps.DeclaresFloor(level) {
+			t.Errorf("floor level %q is not declared", level)
+		}
+	}
+	if offerable := control.OfferableAlgorithms(); caps.Algorithms == nil || !reflect.DeepEqual(*caps.Algorithms, offerable) {
+		t.Errorf("declared algorithms %+v, the expansion gives %+v", caps.Algorithms, offerable)
 	}
 }

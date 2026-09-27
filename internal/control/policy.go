@@ -569,6 +569,114 @@ const (
 	AlgorithmProfileLegacyDevice AlgorithmProfile = "legacy-device"
 )
 
+// AlgorithmProfiles returns every profile this contract defines, the default
+// first. It is what the build's capability declaration is computed over
+// (OfferableAlgorithms), so a profile added here is declared without anybody
+// having to remember to.
+func AlgorithmProfiles() []AlgorithmProfile {
+	return []AlgorithmProfile{AlgorithmProfileDefault, AlgorithmProfileLegacyRSASHA1, AlgorithmProfileLegacyDevice}
+}
+
+// AlgorithmFloor is the MINIMUM the proxy→target leg must negotiate for this
+// route (phase 0045): a level on an ordered ladder of key exchanges, named by
+// the server per route.
+//
+// It is a SIBLING of AlgorithmProfile and not a value inside it, because the
+// two answer different questions. A profile is a named WEAKENING preset — what
+// the leg may additionally offer to reach old firmware — and a floor is a
+// minimum. A route may legitimately want the default profile AND a floor, which
+// one field could not express. Like the profile it is a named value and never an
+// algorithm list: it cannot be tuned one identifier at a time, and a reviewer
+// reads a word rather than decoding one.
+//
+// The levels form a TOTAL ORDER, lowest first, and each is defined by the set of
+// key exchanges it accepts (AlgorithmFloor.KeyExchanges). The invariant that
+// makes the ladder a dial rather than a switch — and the contract's rule for
+// adding a level — is NESTING: every key exchange a level accepts is accepted by
+// every level below it. So raising the floor can only shrink what the leg may
+// offer and lowering it can only grow it, and two levels are compared by Rank
+// alone. Every comparison in this code uses Rank, never a string compare.
+//
+// A regime whose accepted set does not nest with the others (FIPS forbids
+// curve25519-sha256, which modern-kex accepts, and sits neither above nor below
+// pq-hybrid-kex) is not a level and cannot be squeezed onto this ladder.
+//
+// The empty value is NO FLOOR, which is the absent-value default and exactly
+// the behaviour of a route before the field existed. An unknown value is
+// refused by Validate rather than coerced, for the profile's reason: coercing
+// it to "no floor" would silently drop a restriction.
+type AlgorithmFloor string
+
+const (
+	// AlgorithmFloorModernKEX accepts every key exchange the proxy's SSH
+	// library implements except the SHA-1 ones. Under the default and
+	// legacy-rsa-sha1 profiles that is already exactly what the leg offers, so
+	// on those routes the level changes nothing on the wire; what it adds is a
+	// commitment that holds under policy change (a route on this level can
+	// never be moved onto legacy-device — Validate refuses the pair), a rung
+	// for the target report, and a promise defined by this contract as "no
+	// SHA-1 key exchange" rather than by the library's classification.
+	AlgorithmFloorModernKEX AlgorithmFloor = "modern-kex"
+	// AlgorithmFloorPQHybridKEX requires a HYBRID POST-QUANTUM key exchange
+	// that this proxy implements. Today that is exactly mlkem768x25519-sha256:
+	// golang.org/x/crypto/ssh does not implement sntrup761x25519-sha512, so a
+	// target offering only that hybrid (OpenSSH 9.0–9.8's default) does NOT
+	// meet this level, and in practice it needs OpenSSH 9.9 or later on the
+	// target. Widening the set when the library gains sntrup761 keeps the
+	// value's meaning and is not a vocabulary revision.
+	AlgorithmFloorPQHybridKEX AlgorithmFloor = "pq-hybrid-kex"
+)
+
+// AlgorithmFloors returns every level this build defines, in RANK ORDER,
+// lowest first. The order is defined here and nowhere else.
+func AlgorithmFloors() []AlgorithmFloor {
+	return []AlgorithmFloor{AlgorithmFloorModernKEX, AlgorithmFloorPQHybridKEX}
+}
+
+// Rank places f on the ladder: 0 for no floor, then 1, 2, … in the order
+// AlgorithmFloors lists the levels. An unknown value ranks -1 — it is refused
+// by Validate before anything could compare it, and a negative rank cannot be
+// mistaken for "no floor", which is the one reading that would widen a leg.
+func (f AlgorithmFloor) Rank() int {
+	if f == "" {
+		return 0
+	}
+	for i, level := range AlgorithmFloors() {
+		if level == f {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// AlgorithmBans are SSH algorithm identifiers the proxy MUST NOT OFFER on the
+// proxy→target leg of this route, one list per axis, spelled exactly as SSH
+// spells them (phase 0045).
+//
+// It is the one algorithm LIST the contract admits, and the rule that admits it
+// is written into PLAN §4.2: a list may NARROW a route, never widen it. The
+// objection to lists — that a route could be widened one identifier at a time
+// by someone who does not know what they are enabling — is an objection to
+// lists that ADD. A ban can only remove, applied after the profile and the
+// floor, so it can never be used to weaken a route; and it names exactly the
+// fact an auditor wants to see. It is how an administrator gets a vulnerable
+// algorithm off every route the day an advisory lands, without waiting for a
+// proxy release.
+//
+// It is per axis rather than one flat list because some identifiers live on
+// more than one axis — `ssh-rsa` is both a host-key and a public-key algorithm,
+// and an administrator may want to ban it for one and not the other. It is the
+// SERVER'S policy, per route (D2): a ban "everywhere" is Hoplock Control applying
+// it to every route it serves, and there is no proxy-side knob that could lift
+// one.
+//
+// It shares Algorithms' shape — and therefore its field names and wire keys —
+// because it is a list per axis of the same identifiers; the two types exist
+// so that "what a connection offers" and "what it must never offer" cannot be
+// passed for one another. Absent, and present with every axis empty, both mean
+// nothing is banned.
+type AlgorithmBans Algorithms
+
 // TargetAuth is ONE ENTRY of TargetAuthLadder: a credential method the server
 // named for this route, and its parameters (D6a, D14).
 //

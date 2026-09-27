@@ -132,12 +132,14 @@ func (a *StaticKeyAuthenticator) Provision(_ context.Context, id *identity.Ident
 	a.logf("auth/target: static-key provisioned subject=%s target=%s login=%s",
 		id.Subject, tgt, username)
 
+	// Restricted to the route's algorithms (phase 0043).
+	auth, pubkeyAlgorithms := sshalg.PublicKeys(a.signer, tgt.Algorithms)
 	return &ProvisionedAccess{
-		Enforcement: enforcement,
+		Enforcement:         enforcement,
+		PublicKeyAlgorithms: pubkeyAlgorithms,
 		ClientConfig: &ssh.ClientConfig{
 			User: username,
-			// Restricted to the route's profile (phase 0043).
-			Auth: []ssh.AuthMethod{ssh.PublicKeys(sshalg.Signer(a.signer, tgt.Algorithms))},
+			Auth: []ssh.AuthMethod{auth},
 			// HostKeyCallback is intentionally nil: the proxy sets the
 			// trust-on-first-use callback that reports keys to the management
 			// server (D7). x/crypto refuses to dial without one, so forgetting

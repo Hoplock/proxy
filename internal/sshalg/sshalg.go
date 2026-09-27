@@ -167,3 +167,66 @@ func (e sshalgError) Error() string { return string(e) }
 const errNoPermittedAlgorithm = sshalgError("sshalg: the route's algorithm profile permits no signature algorithm for this key")
 
 var _ ssh.MultiAlgorithmSigner = (*refusingSigner)(nil)
+
+// PublicKeys is ssh.PublicKeys over s restricted to a (Signer), together with
+// the signature algorithms the restricted signer OFFERS, in its preference
+// order (phase 0045).
+//
+// The list is for the record: the library does not say which of them public-key
+// authentication actually used, so what a session can verify against a ban on
+// that axis is what the proxy offered, and the record names it as that. It is
+// empty for a key the route permits nothing for.
+func PublicKeys(s ssh.Signer, a control.Algorithms) (ssh.AuthMethod, []string) {
+	restricted := Signer(s, a)
+	return ssh.PublicKeys(restricted), SignerAlgorithms(restricted)
+}
+
+// SignerAlgorithms is what a signer will sign a public-key authentication with,
+// in order: a multi-algorithm signer's own list, or else its key's format.
+func SignerAlgorithms(s ssh.Signer) []string {
+	if s == nil {
+		return nil
+	}
+	if multi, ok := s.(ssh.MultiAlgorithmSigner); ok {
+		return slices.Clone(multi.Algorithms())
+	}
+	return []string{underlying(s.PublicKey().Type())}
+}
+
+// Negotiated is what one SSH handshake on the proxy→target leg actually agreed,
+// axis by axis, in the words the record uses (phase 0045). It is read from the
+// ESTABLISHED connection, never from what was offered: a record names what was
+// in force (PLAN §6.5).
+//
+// Out is proxy→target and In is target→proxy. A MAC is empty in a direction
+// whose cipher is AEAD, where the cipher authenticates and no MAC is
+// negotiated at all.
+type Negotiated struct {
+	KeyExchange string
+	HostKey     string
+	CipherOut   string
+	CipherIn    string
+	MACOut      string
+	MACIn       string
+}
+
+// NegotiatedOn reads what conn negotiated, from a CLIENT connection's point of
+// view. ok is false for a connection that does not expose it, which every
+// connection the library itself builds does.
+func NegotiatedOn(conn ssh.Conn) (Negotiated, bool) {
+	meta, ok := conn.(ssh.AlgorithmsConnMetadata)
+	if !ok {
+		return Negotiated{}, false
+	}
+	algs := meta.Algorithms()
+	// On a client connection Write is client→server — this proxy to the
+	// target — and Read the other way.
+	return Negotiated{
+		KeyExchange: algs.KeyExchange,
+		HostKey:     algs.HostKey,
+		CipherOut:   algs.Write.Cipher,
+		CipherIn:    algs.Read.Cipher,
+		MACOut:      algs.Write.MAC,
+		MACIn:       algs.Read.MAC,
+	}, true
+}

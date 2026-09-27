@@ -17,6 +17,7 @@ import (
 	"github.com/hoplock/proxy/internal/control"
 	"github.com/hoplock/proxy/internal/logging"
 	"github.com/hoplock/proxy/internal/routing"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // This file is the telemetry side of the engine: every capture point PLAN §7
@@ -172,33 +173,80 @@ func (s *session) recordCredential(route *routing.Route, access *target.Provisio
 		// softest and tells an honest user nothing they can act on.
 		attrs = attrs.Set(logging.AttrCredentialRung, strconv.Itoa(access.Rung))
 	}
-	// The algorithm profile the target leg is dialled under — the one
+	// The algorithm policy the target leg is dialled under — the one
 	// dialTarget applies from the same route, so the record and the handshake
-	// cannot name different profiles (phase 0043). Stamped always, `default`
-	// included, so absence never has to be read as a value. An audit fact and
-	// not a user-facing one, like the rung above.
-	attrs = attrs.Set(logging.AttrAlgorithmProfile, string(route.AlgorithmProfile.Resolve()))
+	// cannot name different policies (phase 0043). The profile is stamped
+	// always, `default` included, so absence never has to be read as a value;
+	// the floor only when there is one, and each banned axis as its own
+	// attribute (phase 0045). An audit fact and not a user-facing one, like the
+	// rung above.
+	policy := route.AlgorithmPolicy()
+	attrs = logging.AlgorithmPolicyAttrs(attrs, policy)
+	// A banned name this build could never offer is accepted — it is already
+	// satisfied — and named here, because a typo in a ban looks exactly like a
+	// working one (phase 0045).
+	attrs = attrs.Set(logging.AttrAlgorithmBansUnmatched, strings.Join(policy.UnmatchedBans(), ","))
 	s.rec.Provisioning(fmt.Sprintf("target access provisioned by %s", method), attrs)
 }
 
-// recordAlgorithmPolicyUnmet captures a target the route's algorithm profile
-// allows nothing on some axis for (phase 0043).
+// recordAlgorithmPolicyUnmet captures a target the route's algorithm policy
+// allows nothing on some axis for (phase 0043) — whether the profile, the floor
+// or a ban is what it could not meet (phase 0045).
 //
 // It is WARN, on the batch path: an outage and not a security event, for the
-// reason PLAN §7 gives a service outage — though it is the event that finds the
-// devices the default profile no longer reaches. The offered list is what an
-// operator reads to move the route to the right legacy profile. It names
+// reason PLAN §7 gives a service outage. That holds for an unmet floor too: the
+// target's posture is the fact, and an on-path attacker cannot strip a hybrid
+// from the offer without failing host-key verification first, because the key
+// exchange is covered by the exchange hash the host key signs (D7). It is the
+// event that finds the devices the default profile no longer reaches, and the
+// targets a floor excludes; the offered list is what an operator reads to
+// decide between a profile, an OpenSSH upgrade, or a lifted ban. It names
 // algorithms, never material.
-func (s *session) recordAlgorithmPolicyUnmet(err error) {
-	axis, offered, _ := target.AlgorithmPolicyUnmet(err)
+func (s *session) recordAlgorithmPolicyUnmet(failure target.AlgorithmFailure, policy control.AlgorithmPolicy) {
 	attrs := logging.Attrs{}.
 		Set(logging.AttrEvent, logging.EventAlgorithmPolicyUnmet).
 		Set(logging.AttrStage, string(stageAlgorithmPolicy)).
 		Set(logging.AttrTargetAddr, s.route.Addr()).
-		Set(logging.AttrAlgorithmProfile, string(s.route.AlgorithmProfile.Resolve())).
-		Set(logging.AttrAlgorithmAxis, axis).
-		Set(logging.AttrTargetAlgorithmsOffered, strings.Join(offered, ","))
-	s.rec.Failure("the target supports none of the algorithms this route allows", attrs)
+		Set(logging.AttrAlgorithmAxis, failure.Axis).
+		Set(logging.AttrAlgorithmPolicyCause, string(failure.Cause)).
+		Set(logging.AttrTargetAlgorithmsOffered, strings.Join(failure.Offered, ","))
+	attrs = logging.AlgorithmPolicyAttrs(attrs, policy)
+	message := "the target supports none of the algorithms this route allows"
+	switch failure.Cause {
+	case control.AlgorithmPolicyCauseFloor:
+		message = "the target does not meet this route's algorithm floor"
+	case control.AlgorithmPolicyCauseBan:
+		message = "the target offers only algorithms this route bans"
+	}
+	s.rec.Failure(message, attrs)
+}
+
+// recordNegotiated captures what a target leg that came up actually
+// negotiated, on every axis the library reports, beside the policy it was
+// dialled under (phase 0045).
+//
+// It is an `info` `provisioning` record on the batch path, one per session
+// whose target leg came up, floor or no floor. It exists because a ban can be
+// on any axis and a floor is a claim about the key exchange: the only way to
+// verify either per session is to record what was in force, read off the
+// established connection — never what was offered (PLAN §6.5). It is also what
+// the emergency runbook finds open sessions by. The public-key algorithm is the
+// one axis the library does not report, so the record names what the proxy
+// OFFERED there, and says so in the name.
+func (s *session) recordNegotiated(access *target.ProvisionedAccess, n sshalg.Negotiated) {
+	attrs := logging.Attrs{}.
+		Set(logging.AttrEvent, logging.EventAlgorithmsNegotiated).
+		Set(logging.AttrTargetAddr, s.route.Addr()).
+		Set(logging.AttrTargetKexAlgorithm, n.KeyExchange).
+		Set(logging.AttrTargetHostKeyAlgorithm, n.HostKey).
+		Set(logging.AttrTargetCipherOut, n.CipherOut).
+		Set(logging.AttrTargetCipherIn, n.CipherIn).
+		// Empty — and so omitted — in a direction whose cipher is AEAD.
+		Set(logging.AttrTargetMACOut, n.MACOut).
+		Set(logging.AttrTargetMACIn, n.MACIn).
+		Set(logging.AttrTargetPublicKeyAlgorithmsOffered, strings.Join(access.PublicKeyAlgorithms, ","))
+	attrs = logging.AlgorithmPolicyAttrs(attrs, s.route.AlgorithmPolicy())
+	s.rec.Provisioning(fmt.Sprintf("target leg negotiated key exchange %s", n.KeyExchange), attrs)
 }
 
 // recordCredentialRejected captures the TARGET refusing the proxy's own

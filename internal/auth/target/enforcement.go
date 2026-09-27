@@ -172,6 +172,7 @@ type EnforcementResult struct {
 // say so in one obvious place, and a build that loses one should fail a test
 // rather than quietly stop advertising it.
 func ProxyCapabilities() *control.ProxyCapabilities {
+	offerable := control.OfferableAlgorithms()
 	return &control.ProxyCapabilities{
 		Execution: []control.ExecutionRung{
 			// Enforced by the request axis that has shipped since 0006/0009:
@@ -188,6 +189,13 @@ func ProxyCapabilities() *control.ProxyCapabilities {
 			control.ReachAccountEgressRestricted,
 			control.ReachAccountNetworkIsolated,
 		},
+		// The algorithm-floor levels this build enforces and what each accepts
+		// here, and everything it can put in an offer (phase 0045). Unlike the
+		// rungs these are DERIVED rather than written out, and that is the
+		// point: they are built by the expansion every connection dials with,
+		// so the declaration cannot describe anything the proxy does not offer.
+		AlgorithmFloors: control.AlgorithmFloorCapabilities(),
+		Algorithms:      &offerable,
 	}
 }
 
