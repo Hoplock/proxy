@@ -1562,13 +1562,15 @@ These are **not** part of the contract; no production server implements them.
 | `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. It refuses `config_changed`, which only `POST /debug/config` may publish. |
 | `POST /debug/config` | Publishes `{"version","settings"}` as the current document and emits `config_changed` from it. Returns `{"event_id","delivered","version","hash"}`. Stands in for Hoplock Control's publisher. |
 | `GET /debug/config/reports` | The last configuration report per proxy id. |
+| `GET /debug/capabilities` | What the mock holds about each target — the merged rung and key-exchange observations — keyed by host, or `host:port` for a port other than 22. |
 
-The mock also keeps the **last capability report per target** in memory, so
-a test can assert the proxy reported at all, and merges it exactly as the
-contract says a server must: the rung observation and the key-exchange
-observation are replaced independently, each only by a report carrying it. It
-answers `accepted` and decides nothing: a capability report is an observation,
-not a request for a decision.
+The mock also keeps the **last capability report per target** in memory — a
+target being a host and, when it is not 22, a port — so a test can assert the
+proxy reported at all, and merges it exactly as the contract says a server
+must: the rung observation and the key-exchange observation are replaced
+independently, each only by a report carrying it. It answers `accepted` and
+decides nothing: a capability report is an observation, not a request for a
+decision.
 
 With `-log-dir`, ingested records are also mirrored to `batch.jsonl` and
 `priority.jsonl` in that directory, so a scenario can inspect them after the

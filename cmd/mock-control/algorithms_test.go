@@ -218,3 +218,73 @@ func TestACapabilityReportMergesPerObservation(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryMethodsTargetReachesControlWithItsKeyExchange drives the report end
+// to end — a real proxy, the real reporter, the contract as the mock serves it —
+// for an ephemeral-account DEVICE route and a static-key route: the observation
+// is made where the session leg is dialled, which every credential method
+// shares, and it is merged into what Control holds about the target.
+func TestEveryMethodsTargetReachesControlWithItsKeyExchange(t *testing.T) {
+	const password = "alice-e2e-password"
+	stack := startE2E(t, e2eOptions{password: password, device: true, kexReports: true})
+
+	runDeviceSession(t, stack, password)
+	client := stack.dial(t)
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Run("deploy"); err != nil {
+		t.Fatalf("run on the static-key route: %v", err)
+	}
+	stack.kexReports.Wait()
+
+	for _, host := range []string{
+		capabilityKey("localhost", stack.device.Port()),
+		capabilityKey(stack.target.Host(), stack.target.Port()),
+	} {
+		caps, ok := stack.mock.server.reportedCapabilities(host)
+		if !ok || caps.Kex == nil {
+			t.Fatalf("Control holds no key-exchange observation of %s", host)
+		}
+		// Both stand-ins are x/crypto servers, which offer the ML-KEM hybrid;
+		// neither route has a ban, so a success is an exact observation.
+		if caps.Kex.FloorMet != string(control.AlgorithmFloorPQHybridKEX) ||
+			caps.Kex.Negotiated != control.KeyExchangeMLKEM768X25519 || caps.Kex.ObservedAt.IsZero() {
+			t.Errorf("%s: key-exchange observation %+v, want pq-hybrid-kex negotiated on the hybrid", host, caps.Kex)
+		}
+		if caps.CarriesRungs() {
+			t.Errorf("%s: a key-exchange report was stored as a rung observation: %+v", host, caps)
+		}
+	}
+}
+
+// TestABanAloneNeedsTheNewVocabulary: a route with a ban and no floor is refused
+// to a proxy one vocabulary behind — an omitted ban is a dropped restriction —
+// and served, ban intact, to one that reads it with no floor declared at all.
+func TestABanAloneNeedsTheNewVocabulary(t *testing.T) {
+	fx, err := parseFixtures(strings.NewReader("proxy_token: " + proxyToken + "\n" +
+		"users:\n  - login: alice\n    password: pw\n" +
+		"routes:\n  - login: alice\n    target: banned.company.com\n    permitted_channels: [session]\n" +
+		"    filter_policy:\n      mode: blacklist\n    algorithm_bans:\n      ciphers: [aes128-cbc]\n"))
+	if err != nil {
+		t.Fatalf("fixtures: %v", err)
+	}
+	m := startMock(t, fx, serverOptions{})
+
+	if status, body := authorizeWith(t, m, "alice", "banned.company.com", control.PolicyVersion-1, nil); status != http.StatusInternalServerError ||
+		!strings.Contains(string(body), "policy_version") {
+		t.Errorf("a ban to a proxy on vocabulary %d = %d %s, want a 500 naming the version", control.PolicyVersion-1, status, body)
+	}
+	status, body := authorizeWith(t, m, "alice", "banned.company.com", control.PolicyVersion, nil)
+	if status != http.StatusOK {
+		t.Fatalf("a ban to a proxy that reads it = %d %s, want 200", status, body)
+	}
+	var resp control.AuthorizeResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AlgorithmBans == nil || len(resp.AlgorithmBans.Ciphers) != 1 || resp.AlgorithmFloor != "" {
+		t.Errorf("served bans %+v floor %q", resp.AlgorithmBans, resp.AlgorithmFloor)
+	}
+}

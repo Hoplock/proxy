@@ -91,4 +91,20 @@ do
 	fi
 done
 
+# A SECOND sshd, on 2222, that offers CLASSICAL key exchanges only (phase
+# 0045): the target a route's post-quantum algorithm floor cannot meet, and that
+# a route with no floor still reaches. It is the same host with the same
+# accounts, keys and settings — only the key exchange differs — so a scenario
+# that fails on it can only have failed on the floor. The list is written out
+# rather than derived: every OpenSSH this image can carry has all of it, and
+# none of it is a hybrid (mlkem768x25519-sha256, sntrup761x25519-sha512).
+#
+# Started before the main sshd and fatal if it will not start (`set -e`): the
+# floor scenarios assert against it, and a missing listener would fail them as
+# "the target could not be reached", which reads like a network fault.
+/usr/sbin/sshd -p 2222 \
+	-o "KexAlgorithms=curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group16-sha512,diffie-hellman-group14-sha256" \
+	-o PidFile=/run/sshd-classical.pid \
+	-E /var/log/sshd-classical.log
+
 exec /usr/sbin/sshd -D -e

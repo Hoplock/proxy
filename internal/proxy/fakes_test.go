@@ -212,6 +212,14 @@ type harnessOptions struct {
 	// algorithmProfile is the route's algorithm profile (phase 0043). Empty is
 	// the contract's absent value, which is the default profile.
 	algorithmProfile control.AlgorithmProfile
+	// algorithmFloor and algorithmBans are the rest of the route's algorithm
+	// policy (phase 0045); empty and nil are the contract's absent values.
+	algorithmFloor control.AlgorithmFloor
+	algorithmBans  *control.AlgorithmBans
+	// kexInitTarget, when set, replaces the stand-in target with one that only
+	// advertises these name-lists (sshtest.KexInitTarget) — for a target
+	// offering what x/crypto cannot, sntrup761 above all.
+	kexInitTarget *sshtest.KexInitOptions
 	// targetAuthLadder is the route's credential ladder (D14). Nil is the
 	// contract's absent value: the proxy's locally configured method.
 	targetAuthLadder *control.TargetAuthLadder
@@ -238,10 +246,13 @@ type harnessOptions struct {
 type harness struct {
 	t      *testing.T
 	target *sshtest.Target
-	client *fakeClient
-	server *Server
-	addr   string
-	logs   *syncBuffer
+	// kexTarget is the advertising-only target, when the harness has one
+	// instead (harnessOptions.kexInitTarget).
+	kexTarget *sshtest.KexInitTarget
+	client    *fakeClient
+	server    *Server
+	addr      string
+	logs      *syncBuffer
 	// shipper is the telemetry pipeline the engine records into (PLAN §7). It
 	// is a real one, wired to fakeClient, so a test asserting "the record
 	// exists" is asserting about the same path production uses.
@@ -258,7 +269,16 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		err     error
 		cleanup = func() {}
 	)
-	if !opts.noTarget {
+	var kexTarget *sshtest.KexInitTarget
+	switch {
+	case opts.kexInitTarget != nil:
+		kexTarget, err = sshtest.StartKexInitTarget(sshtest.KexInitDefaults(*opts.kexInitTarget))
+		if err != nil {
+			t.Fatalf("StartKexInitTarget: %v", err)
+		}
+		host, port = kexTarget.Host(), kexTarget.Port()
+		cleanup = func() { _ = kexTarget.Close() }
+	case !opts.noTarget:
 		tgt, err = sshtest.StartTarget(opts.targetOptions)
 		if err != nil {
 			t.Fatalf("StartTarget: %v", err)
@@ -305,6 +325,8 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 				Concurrency:             opts.concurrency,
 				GrantContext:            opts.grantContext,
 				AlgorithmProfile:        opts.algorithmProfile,
+				AlgorithmFloor:          opts.algorithmFloor,
+				AlgorithmBans:           opts.algorithmBans,
 				TargetAuthLadder:        opts.targetAuthLadder,
 				Cache:                   opts.cache,
 				DecisionID:              "decision-1",
@@ -389,13 +411,14 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	})
 
 	return &harness{
-		t:       t,
-		target:  tgt,
-		client:  client,
-		server:  server,
-		addr:    listener.Addr().String(),
-		logs:    logs,
-		shipper: shipper,
+		t:         t,
+		target:    tgt,
+		kexTarget: kexTarget,
+		client:    client,
+		server:    server,
+		addr:      listener.Addr().String(),
+		logs:      logs,
+		shipper:   shipper,
 	}
 }
 
@@ -467,6 +490,9 @@ func (h *harness) recordOfKind(kind control.LogKind) control.LogRecord {
 // targetHostPort is the stand-in target as a route would name it.
 func (h *harness) targetHostPort() (string, int) {
 	h.t.Helper()
+	if h.kexTarget != nil {
+		return h.kexTarget.Host(), h.kexTarget.Port()
+	}
 	return h.target.Host(), h.target.Port()
 }
 

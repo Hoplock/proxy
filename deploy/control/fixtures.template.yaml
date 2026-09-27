@@ -783,6 +783,108 @@ routes:
     filter_policy:
       mode: blacklist
 
+  # ------------------------------------ algorithm floor and bans (0045) ---
+  # A FLOOR the target meets. The target's OpenSSH (Debian stable's, 10.0 or
+  # later) offers mlkem768x25519-sha256 by default, so a route requiring a
+  # hybrid post-quantum key exchange connects — and every connection the route
+  # causes, the ephemeral-user provisioning login included, dials under it.
+  # Scenarios: the floor is met, and the negotiated record names the hybrid.
+  - login: alice
+    target: pq.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    algorithm_floor: pq-hybrid-kex
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: alice
+          key_type: ed25519
+          lifetime_seconds: "900"
+    filter_policy:
+      mode: blacklist
+
+  # The same floor against the target's SECOND sshd, on 2222, which offers
+  # classical key exchanges only (deploy/target/entrypoint.sh). The floor cannot
+  # be met, so the session fails at the provisioning login — before anything is
+  # created — as the algorithm-policy OUTAGE: never a deny, never a fallback to a
+  # wider list, never a walk down the ladder.
+  # Scenarios: an unmet floor is an outage naming the requirement.
+  - login: alice
+    target: pq-classical.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 2222
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    algorithm_floor: pq-hybrid-kex
+    target_auth_ladder:
+      - method: ephemeral-user
+        params:
+          username: alice
+          key_type: ed25519
+          lifetime_seconds: "900"
+    filter_policy:
+      mode: blacklist
+
+  # The same classical sshd with NO floor: nothing that connected before the
+  # floor existed stops connecting, and the record names the classical exchange.
+  # Scenarios: no floor, classical target, still connects.
+  - login: alice
+    target: classical.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 2222
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    target_auth_ladder:
+      - method: brokered-key
+        params:
+          username: netadmin
+          credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
+  # A BAN. aes128-gcm@openssh.com is the first cipher this proxy offers and one
+  # the target accepts, so without the ban it is what every leg negotiates;
+  # banned, the leg negotiates the next cipher both have. The ban is subtracted
+  # from what the route would otherwise offer, and nothing else changes.
+  # Scenarios: the negotiated record shows the other cipher, and the ban.
+  - login: alice
+    target: banned.company.com
+    proxy_id: proxy-direct
+    route_type: direct
+    resolved_target: target
+    target_port: 22
+    permissions: readOnlyGroup
+    permitted_channels: [session]
+    permitted_requests:
+      types: [exec]
+      subsystems: []
+    algorithm_bans:
+      ciphers: [aes128-gcm@openssh.com]
+    target_auth_ladder:
+      - method: brokered-key
+        params:
+          username: netadmin
+          credential_ref: appliance-fleet
+    filter_policy:
+      mode: blacklist
+
   # --------------------------------------------------------------- nexthop ---
   # Chained in `dial` mode: the edge proxy opens the leg to the next hop, which
   # therefore needs an inbound rule. Both hops run the whole flow for

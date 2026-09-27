@@ -4,7 +4,11 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -626,5 +630,30 @@ func TestADeclarationRoundTrips(t *testing.T) {
 	rc.Kex.Offered[0] = "mutated"
 	if report.Kex.Offered[0] == "mutated" {
 		t.Error("TargetCapabilities.Clone shares the key-exchange observation")
+	}
+}
+
+// TestAnUnreadableAlgorithmPolicyIsAProtocolError is the refusal as the proxy
+// experiences it: through the REST client, the refused profile × floor pair, an
+// unknown floor and a ban that empties an axis are each ErrProtocol — an
+// outage, never a deny — and never a response with the restriction dropped.
+func TestAnUnreadableAlgorithmPolicyIsAProtocolError(t *testing.T) {
+	for name, body := range map[string]string{
+		"legacy-device with a floor": `"algorithm_profile":"legacy-device","algorithm_floor":"modern-kex"`,
+		"an unknown floor":           `"algorithm_floor":"pq-only-kex"`,
+		"a ban that empties an axis": `"algorithm_bans":{"public_key_auth":["ssh-ed25519","sk-ssh-ed25519@openssh.com",` +
+			`"sk-ecdsa-sha2-nistp256@openssh.com","ecdsa-sha2-nistp256","ecdsa-sha2-nistp384","ecdsa-sha2-nistp521",` +
+			`"rsa-sha2-256","rsa-sha2-512"]}`,
+	} {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"route_type":"direct","target":"h","permitted_channels":["session"],`+
+				`"filter_policy":{"mode":"blacklist"},`+body+`}`)
+		})
+		_, err := c.Authorize(context.Background(), &AuthorizeRequest{
+			Identity: &Identity{Subject: "alice@example.com", Login: "alice"}, Target: "h", Conn: testConn()})
+		if !errors.Is(err, ErrProtocol) || IsUnauthorized(err) {
+			t.Errorf("%s: error = %v, want ErrProtocol and never a deny", name, err)
+		}
 	}
 }

@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,11 @@ const (
 	// — stopping the whole server instead would stop the session being authorized
 	// at all, so the check under test would never run.
 	pathDebugLogSink = "/debug/logs/sink"
+	// pathDebugCapabilities returns what the server holds about each target —
+	// the merged rung and key-exchange observations (phase 0045) — so the e2e
+	// topology can assert that a proxy reported a target's key exchange, for
+	// every credential method, without the two observations clobbering.
+	pathDebugCapabilities = "/debug/capabilities"
 )
 
 // serverOptions are the knobs main passes to the server.
@@ -49,10 +56,13 @@ type serverOptions struct {
 // remembers — MFA challenges, seen host keys, ingested logs — lives here, in
 // memory, for the lifetime of the process.
 type server struct {
-	fx     *fixtures
-	logDir string
-	logger *log.Logger
-	now    func() time.Time
+	fx *fixtures
+	// routesMu guards fx.Routes, the one part of the fixtures a test edits
+	// while the server runs (editRoute).
+	routesMu sync.RWMutex
+	logDir   string
+	logger   *log.Logger
+	now      func() time.Time
 
 	mu       sync.Mutex
 	mfa      map[string]*mfaChallenge
@@ -198,6 +208,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
 	mux.HandleFunc("POST "+pathDebugLogSink, s.handleDebugLogSink)
+	mux.HandleFunc("GET "+pathDebugCapabilities, s.handleDebugCapabilities)
 	return mux
 }
 
@@ -383,8 +394,13 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	s.recordAuthorize(&req)
 
+	// Routes are read under routesMu because a test may edit one while the
+	// server runs — the emergency runbook's first step is exactly that — and
+	// the response is built from the route before the lock is released.
+	s.routesMu.RLock()
 	route, ok := s.fx.route(req.Identity.Login, req.Target, req.Conn.ProxyID)
 	if !ok {
+		s.routesMu.RUnlock()
 		writeError(w, http.StatusUnauthorized, "unauthorized", "no route permits this identity to reach the target")
 		return
 	}
@@ -404,6 +420,8 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// contract carries an absolute instant and a fixture cannot hold one that
 	// is still in the future tomorrow.
 	resp.SessionDeadline = route.deadline(s.now())
+	certificateFault := route.CertificateFault
+	s.routesMu.RUnlock()
 
 	// A proxy declaring an older vocabulary must not be answered with fields it
 	// cannot read: it fails such a response closed, by contract. A real server
@@ -433,7 +451,7 @@ func (s *server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	// A decision naming brokered-certificate is what a later issuance cites.
 	// It is remembered only once it is actually answered.
-	if grant, ok := grantFor(resp, route.CertificateFault); ok {
+	if grant, ok := grantFor(resp, certificateFault); ok {
 		s.rememberCertificateGrant(decisionID, grant)
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -528,8 +546,9 @@ func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	key := capabilityKey(req.Target, req.TargetPort)
 	s.mu.Lock()
-	stored := s.capabilities[req.Target]
+	stored := s.capabilities[key]
 	if stored == nil {
 		stored = &control.TargetCapabilities{}
 	}
@@ -541,14 +560,36 @@ func (s *server) handleReportCapabilities(w http.ResponseWriter, r *http.Request
 	if carriesKex {
 		merged.Kex = req.Capabilities.Kex
 	}
-	s.capabilities[req.Target] = merged.Clone()
+	s.capabilities[key] = merged.Clone()
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, control.CapabilityReportResponse{Accepted: true})
 }
 
-// reportedCapabilities returns the last capability report for a target, for
-// tests.
+// capabilityKey is what the server keeps a target's observations under: the
+// host, and the port when it is not SSH's default — two sshd on one host are
+// two targets, with two key exchanges.
+func capabilityKey(target string, port int) string {
+	if port == 0 || port == 22 {
+		return target
+	}
+	return net.JoinHostPort(target, strconv.Itoa(port))
+}
+
+// handleDebugCapabilities returns every target's merged observations, keyed as
+// capabilityKey keys them.
+func (s *server) handleDebugCapabilities(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	out := make(map[string]*control.TargetCapabilities, len(s.capabilities))
+	for key, caps := range s.capabilities {
+		out[key] = caps.Clone()
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, out)
+}
+
+// reportedCapabilities returns what the server holds about a target, keyed as
+// capabilityKey keys it, for tests.
 func (s *server) reportedCapabilities(target string) (*control.TargetCapabilities, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
