@@ -165,7 +165,11 @@ func changedUnderTheProxy(err error) (reason, axis string, offered []string, ok 
 	if !ok {
 		return "", "", nil, false
 	}
-	return fmt.Sprintf("the target no longer offers any %s algorithm the route's algorithm policy allows (it offered: %s); "+
-		"it was provisioned under the same policy, so the target has changed under the proxy",
-		axis, strings.Join(offered, ",")), axis, offered, true
+	what := fmt.Sprintf("the target no longer offers any %s algorithm the route's algorithm policy allows (it offered: %s)",
+		axis, strings.Join(offered, ","))
+	if axis == AlgorithmAxisPublicKeyAuth {
+		// No list to quote: the library does not say what the target accepts.
+		what = "the target no longer accepts any signature algorithm the route's algorithm policy lets the proxy's key use"
+	}
+	return what + "; it was provisioned under the same policy, so the target has changed under the proxy", axis, offered, true
 }

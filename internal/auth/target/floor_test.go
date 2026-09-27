@@ -5,6 +5,8 @@ package target
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -174,5 +176,29 @@ func TestTheDriverAndTheSweepDialUnderTheFloor(t *testing.T) {
 
 	if err := access.Close(ctx); err != nil {
 		t.Fatalf("teardown under the floor: %v", err)
+	}
+}
+
+// TestASweepSaysWhatChangedOnEitherKindOfAxis: the sweep's reason quotes what
+// the target offers on a negotiated axis, and on the public-key axis — where
+// the library reports no list — says what it no longer accepts instead of
+// quoting an empty one.
+func TestASweepSaysWhatChangedOnEitherKindOfAxis(t *testing.T) {
+	negotiated := fmt.Errorf("dial: %w", &ssh.AlgorithmNegotiationError{
+		What: "key exchange", RequestedAlgorithms: []string{"curve25519-sha256", "ext-info-s"}})
+	reason, axis, offered, ok := changedUnderTheProxy(negotiated)
+	if !ok || axis != AlgorithmAxisKeyExchange || !slices.Equal(offered, []string{"curve25519-sha256"}) ||
+		!strings.Contains(reason, "(it offered: curve25519-sha256)") {
+		t.Errorf("key exchange: %q %q %q %v", reason, axis, offered, ok)
+	}
+
+	signing := errors.New(`ssh: handshake failed: ssh: no common public key signature algorithm, server only supports ["ssh-ed25519"] for key type "ssh-rsa", signer only supports [rsa-sha2-256]`)
+	reason, axis, offered, ok = changedUnderTheProxy(signing)
+	if !ok || axis != AlgorithmAxisPublicKeyAuth || offered != nil {
+		t.Fatalf("public key: %q %q %q %v", reason, axis, offered, ok)
+	}
+	if strings.Contains(reason, "it offered") || !strings.Contains(reason, "signature algorithm") ||
+		!strings.Contains(reason, "has changed under the proxy") {
+		t.Errorf("public key reason = %q, want what the target no longer accepts, and no empty list", reason)
 	}
 }
