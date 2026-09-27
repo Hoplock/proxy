@@ -6,6 +6,8 @@ package logging
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +24,18 @@ type fakeControl struct {
 	priority []control.LogRecord
 	down     bool
 	batchErr error
+	// refuse makes the server refuse a request carrying any record it
+	// matches, with a 400 that stores none of the request — the contract's
+	// answer to a record it will not take (phase 0046).
+	refuse func(control.LogRecord) bool
+	// failBatch, when it returns an error, answers that batch request with it
+	// instead: a 5xx partway through an isolation, say. n counts the batch
+	// requests so far, this one included.
+	failBatch func(n int, recs []control.LogRecord) error
+	// batchRequests and priorityRequests count every request received,
+	// answered or not.
+	batchRequests    int
+	priorityRequests int
 }
 
 var _ control.Client = (*fakeControl)(nil)
@@ -35,14 +49,53 @@ func (f *fakeControl) setDown(down bool) {
 	f.mu.Unlock()
 }
 
+func (f *fakeControl) setRefuse(refuse func(control.LogRecord) bool) {
+	f.mu.Lock()
+	f.refuse = refuse
+	f.mu.Unlock()
+}
+
+// refusedError is the error the real REST client returns for a 400, carrying
+// the server's code and a message naming the record, as Control's does.
+func refusedError(op string, index int, rec control.LogRecord) error {
+	return &control.APIError{
+		Op: op, StatusCode: http.StatusBadRequest, Code: "invalid_record",
+		Message: fmt.Sprintf("records[%d] (record_id %s) is not accepted", index, rec.RecordID),
+		Cause:   control.ErrBadRequest,
+	}
+}
+
+// statusError is the error the real REST client returns for any other status.
+func statusError(op string, status int) error {
+	cause := control.ErrBadRequest
+	switch {
+	case status == http.StatusUnauthorized:
+		cause = control.ErrUnauthorized
+	case status >= 500:
+		cause = control.ErrServer
+	}
+	return &control.APIError{Op: op, StatusCode: status, Code: "status", Message: http.StatusText(status), Cause: cause}
+}
+
 func (f *fakeControl) IngestLogBatch(_ context.Context, req *control.LogBatchRequest) (*control.LogBatchResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.batchRequests++
 	if f.down {
 		return nil, errDown
 	}
 	if f.batchErr != nil {
 		return nil, f.batchErr
+	}
+	if f.failBatch != nil {
+		if err := f.failBatch(f.batchRequests, req.Records); err != nil {
+			return nil, err
+		}
+	}
+	for i, rec := range req.Records {
+		if f.refuse != nil && f.refuse(rec) {
+			return nil, refusedError("IngestLogBatch", i, rec)
+		}
 	}
 	f.batches = append(f.batches, append([]control.LogRecord(nil), req.Records...))
 	return &control.LogBatchResponse{Accepted: len(req.Records)}, nil
@@ -51,11 +104,21 @@ func (f *fakeControl) IngestLogBatch(_ context.Context, req *control.LogBatchReq
 func (f *fakeControl) IngestPriorityLog(_ context.Context, req *control.LogPriorityRequest) (*control.LogPriorityResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.priorityRequests++
 	if f.down {
 		return nil, errDown
 	}
+	if f.refuse != nil && f.refuse(req.Record) {
+		return nil, refusedError("IngestPriorityLog", 0, req.Record)
+	}
 	f.priority = append(f.priority, req.Record)
 	return &control.LogPriorityResponse{Accepted: true, ReceiptID: "receipt"}, nil
+}
+
+func (f *fakeControl) requests() (batch, priority int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.batchRequests, f.priorityRequests
 }
 
 // delivered is every record the server holds, batch records first, in the order

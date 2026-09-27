@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,7 +88,21 @@ type e2eOptions struct {
 	// kexReports wires the proxy's key-exchange reporter to the mock, so each
 	// target's observed level reaches it as a capability report (phase 0045).
 	kexReports bool
+	// uniqueSessionIDs gives each session its own id — sess-e2e-1, -2, ... —
+	// for tests that tell one session's records from another's.
+	uniqueSessionIDs bool
+	// captureRoute adds a second route to the same target, `alice#localhost`,
+	// that carries require_session_capture: a session on it is pinned in the
+	// disk buffer (phase 0046). It cannot be combined with device.
+	captureRoute bool
 }
+
+// floodCommand is what the stand-in target answers with floodBytes of output:
+// enough stream capture to fill a small buffer window many times over.
+const (
+	floodCommand = "flood"
+	floodBytes   = 2 << 20
+)
 
 // startE2E builds the whole path: fixtures naming this test's key and target,
 // the mock server, the real management client, the authentication planes, and
@@ -105,8 +121,11 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 
 	tgt, err := sshtest.StartTarget(sshtest.Options{
 		Exec: func(command string) ([]byte, []byte, uint32) {
-			if command == "deploy" {
+			switch command {
+			case "deploy":
 				return []byte("deployed\n"), nil, 0
+			case floodCommand:
+				return bytes.Repeat([]byte("0123456789abcdef"), floodBytes/16), nil, 0
 			}
 			return nil, []byte("unknown command\n"), 3
 		},
@@ -143,6 +162,21 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 			FilterPolicy:      filterPolicy,
 		}},
 		HostKeys: fixtureHostKeys{Decision: string(control.HostKeyAccept)},
+	}
+	if opts.captureRoute {
+		if opts.device {
+			t.Fatal("captureRoute and device both claim alice#localhost")
+		}
+		fx.Routes = append(fx.Routes, fixtureRoute{
+			Login:                 "alice",
+			Target:                "localhost",
+			RouteType:             string(control.RouteTypeDirect),
+			TargetPort:            tgt.Port(),
+			Permissions:           "deployGroup",
+			PermittedChannels:     permittedChannels,
+			FilterPolicy:          filterPolicy,
+			RequireSessionCapture: true,
+		})
 	}
 	var dev *sshtest.FakeFortiOS
 	if opts.device {
@@ -247,7 +281,7 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 		ProxyID:         "proxy-e2e",
 		TargetDelimiter: config.DefaultTargetDelimiter,
 		Recorder:        recorder,
-		NewSessionID:    func() string { return e2eSessionID },
+		NewSessionID:    sessionIDs(opts.uniqueSessionIDs),
 	})
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
@@ -284,6 +318,32 @@ func startE2E(t *testing.T, opts e2eOptions) *e2eStack {
 		device:     dev,
 		kexReports: kexReports,
 	}
+}
+
+// sessionIDs is the stack's session id source: the one fixed id most tests
+// assert against, or a fresh one per session.
+func sessionIDs(unique bool) func() string {
+	if !unique {
+		return func() string { return e2eSessionID }
+	}
+	var n atomic.Int64
+	return func() string { return fmt.Sprintf("%s-%d", e2eSessionID, n.Add(1)) }
+}
+
+// dialAs connects to the proxy as alice, asking for target.
+func (s *e2eStack) dialAs(t *testing.T, target string) *ssh.Client {
+	t.Helper()
+	client, err := ssh.Dial("tcp", s.addr, &ssh.ClientConfig{
+		User:            "alice" + config.DefaultTargetDelimiter + target,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(s.clientKe)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("dial the proxy for %s: %v", target, err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
 }
 
 // deviceCredentialPlane is the credential plane of a proxy that also serves

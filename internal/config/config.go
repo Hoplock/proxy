@@ -204,6 +204,16 @@ type Logging struct {
 	// the honest reading of "no buffer" and it is why the example config sets
 	// a path.
 	BufferDir string `yaml:"buffer_dir"`
+	// BufferMaxBytes is the buffer's window: the most it holds on disk, every
+	// file counted (phase 0046, D8 as amended). Past it the oldest records
+	// that are not pinned are evicted in class order, and every eviction is
+	// reported to Hoplock Control. Zero means the package default, 1 GiB; a
+	// value below MinLogBufferBytes is refused, and there is no unbounded
+	// setting — an unbounded buffer is the defect the window fixes.
+	//
+	// It is BOOTSTRAP, not fleet-owned (D18): it budgets this host's own disk,
+	// the material buffer_dir names.
+	BufferMaxBytes int64 `yaml:"buffer_max_bytes"`
 	// BatchSize is how many records accumulate before a batch is shipped.
 	// Zero means the package default.
 	BatchSize int `yaml:"batch_size"`
@@ -953,7 +963,19 @@ func (c *Config) validateLogging(v *ValidationError) {
 	if c.Logging.RetryMin > 0 && c.Logging.RetryMax > 0 && c.Logging.RetryMax < c.Logging.RetryMin {
 		v.add("logging.retry_max", ErrInvalid, "must not be shorter than logging.retry_min")
 	}
+	// Zero is the default window. Anything else below a few segments would
+	// evict on every spill: one segment of 64 stream records at the default
+	// payload cap is about 3 MiB once base64 and JSON are added.
+	if n := c.Logging.BufferMaxBytes; n < 0 || (n > 0 && n < MinLogBufferBytes) {
+		v.add("logging.buffer_max_bytes", ErrInvalid,
+			fmt.Sprintf("must be at least %d bytes (16 MiB), or 0 for the default of 1 GiB", MinLogBufferBytes))
+	}
 }
+
+// MinLogBufferBytes is the smallest window logging.buffer_max_bytes accepts. It
+// protects operators rather than the telemetry package, which takes any window a
+// test hands it.
+const MinLogBufferBytes int64 = 16 << 20
 
 func (c *Config) validateChain(v *ValidationError) {
 	if c.Chain.MaxHops < 0 {

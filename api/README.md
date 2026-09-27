@@ -1183,6 +1183,73 @@ conformance harness takes that path as an input rather than deriving it from
 this document. `cmd/mock-control`'s `GET /debug/logs` is the reference shape and
 is documented below as mock-only, which is exactly what it stays.
 
+### When records do not arrive
+
+A proxy loses a record to the server in exactly two ways, and it reports both
+in the affected session's own timeline, so a server can show where a proxy's
+stream has a hole and why. What follows is what a server builds that view
+against.
+
+**The window.** While the server is unreachable a proxy buffers to its local
+disk and drains in order when it returns. The buffer is bounded — by bytes, set
+per host as `logging.buffer_max_bytes`, default 1 GiB — so an outage costs
+latency until the window fills and, past it, the oldest records that are not
+pinned. Whole buffered files are evicted, taking the first class that has one
+and the oldest within it:
+
+1. records the server refused, which the proxy keeps only for an operator;
+2. stream capture — bulky, and serving replay only;
+3. every other batch record;
+4. priority records, last.
+
+A flood of terminal output during an outage therefore costs capture, never
+another session's commands or decisions. **Never evicted:** the records of a
+*pinned* session — one whose route carries `require_session_capture`, or whose
+device account can be attributed only by its account-mapping event — the
+`logging.gap` records themselves, and the file being delivered. A proxy whose
+window is full of pinned records refuses new routes that need pinning, as the
+outage they already are; every other route keeps running.
+
+**A refusal.** A `400` from either log endpoint — or a `413` from anything in
+the path — means the server will never store the record, and it stores none of
+the request that carried it. The proxy isolates the refused records by resending
+halves of the batch, delivers everything else, and sets aside each record
+refused on its own: never resent, kept only until the window evicts it (first of
+all classes), and reported. Every other failure — `429`, any other `4xx`, any
+`5xx`, a timeout, a transport failure — keeps the records and retries, and `401`
+is unchanged. So a refusal costs exactly the refused record and never the records
+behind it; and a server that answers `400` for a condition that passes, such as
+overload, costs a proxy the records rather than their latency.
+
+**The `logging.gap` record** is how both are reported. It is `kind: error`, with
+`event: logging.gap`, and `critical` when anything it reports was critical — a
+blocked command missing from the store is itself a security fact — `warn`
+otherwise. There is one per affected session and cause, carrying that session's
+`session_id` (`""` for records that belonged to no session) and the `subject`,
+`login` and `target` of the first missing record that has them. Its attributes,
+all query surface:
+
+| Key | Value |
+| --- | --- |
+| `gap_cause` | `evicted`: the server never received these records. `refused`: the server received and refused them |
+| `gap_records` | how many records are missing |
+| `gap_bytes` | their size on the proxy's disk |
+| `gap_first_at`, `gap_last_at` | the earliest and latest `timestamp` among them, RFC 3339 UTC to the nanosecond |
+| `gap_kinds` | their distinct `kind`s, sorted, comma-joined |
+| `gap_critical` | how many of them were `critical` |
+| `gap_record_ids` | refused only: their `record_id`s, comma-joined, at most 64 |
+| `gap_record_ids_truncated` | `true` when there were more than 64; absent otherwise |
+| `refusal_code`, `refusal_message` | refused only: the server's `ErrorResponse` for the last single-record refusal, verbatim |
+
+An `evicted` report reaches the server once delivery resumes, after the records
+that survived; a `refused` one is sent when the refusal happens. A report is
+written to the proxy's disk before the records it counts are removed, so a crash
+cannot make a reported gap silent. Until it is first sent a proxy coalesces later
+evictions into it; after that it never changes a report under its `record_id` —
+the server de-duplicates on it — so a session can have a second report for the
+same cause. A report is never evicted, and one the server refuses is set aside
+and reported by nothing: a gap record never begets another.
+
 ## Caching and the latency budget
 
 Where the round trips are for one session, before any caching:
@@ -1563,7 +1630,9 @@ These are **not** part of the contract; no production server implements them.
 | Path | Purpose |
 | --- | --- |
 | `GET /debug/logs` | Returns `{"batched":[…],"priority":[…]}` — everything ingested so far, for assertions. |
-| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, configuration reports, and the retained event history. The published configuration document is kept. |
+| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, configuration reports, and the retained event history, brings the log destination back, and clears the log refusal set. The published configuration document is kept. |
+| `POST /debug/logs/sink` | Takes the log destination down (`{"accepting":false}`) or brings it back (`{"accepting":true}`). Down, both log endpoints answer `503` while everything else keeps working — an outage, so a proxy keeps the records and retries. |
+| `POST /debug/logs/refuse` | Makes both log endpoints refuse matching records: `{"kinds":[…],"events":[…],"record_ids":[…]}`, a record matching any entry of any list. A batch containing one is refused whole with `400 invalid_record`, the message naming its index and `record_id`, and nothing of it stored; a matching priority record is refused the same way. Empty lists clear it. |
 | `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. It refuses `config_changed`, which only `POST /debug/config` may publish. |
 | `POST /debug/config` | Publishes `{"version","settings"}` as the current document and emits `config_changed` from it. Returns `{"event_id","delivered","version","hash"}`. Stands in for Hoplock Control's publisher. |
 | `GET /debug/config/reports` | The last configuration report per proxy id. |

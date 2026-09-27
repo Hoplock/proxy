@@ -4,6 +4,7 @@
 package logging
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -285,6 +286,42 @@ const (
 	AttrTerm          = "term"           // the replay header's terminal type
 	AttrWidth         = "width"          //
 	AttrHeight        = "height"         //
+
+	// What the pipeline could not deliver, on a logging.gap record (phase
+	// 0046, gap.go). Each one is query surface: Hoplock Control builds its
+	// view of a hole in a proxy's stream from exactly these.
+	AttrGapCause   = "gap_cause"   // GapCauseEvicted or GapCauseRefused
+	AttrGapRecords = "gap_records" // how many records are missing
+	AttrGapBytes   = "gap_bytes"   // their size on the proxy's disk
+	// AttrGapFirstAt and AttrGapLastAt are the earliest and latest timestamp
+	// among the missing records, RFC 3339 UTC to the nanosecond, so a record
+	// the server does hold can be placed inside or outside the hole exactly.
+	AttrGapFirstAt  = "gap_first_at"
+	AttrGapLastAt   = "gap_last_at"
+	AttrGapKinds    = "gap_kinds"    // their distinct kinds, sorted, comma-joined
+	AttrGapCritical = "gap_critical" // how many of them were critical
+	// AttrGapRecordIDs names the records a REFUSED gap is made of, at most
+	// maxGapRecordIDs of them, comma-joined; AttrGapRecordIDsTruncated is
+	// "true" when there were more. An evicted gap names none: the server never
+	// saw those records, so their ids would mean nothing to it.
+	AttrGapRecordIDs          = "gap_record_ids"
+	AttrGapRecordIDsTruncated = "gap_record_ids_truncated"
+	// AttrRefusalCode and AttrRefusalMessage are the server's own
+	// ErrorResponse for the last single-record refusal, copied verbatim — the
+	// contract already forbids a credential in either.
+	AttrRefusalCode    = "refusal_code"
+	AttrRefusalMessage = "refusal_message"
+)
+
+// The values of AttrGapCause.
+const (
+	// GapCauseEvicted is records the disk buffer's window pushed out before
+	// Hoplock Control could have them: the server never received them.
+	GapCauseEvicted = "evicted"
+	// GapCauseRefused is records the server received and refused. The proxy
+	// sets them aside rather than resending them, and keeps them only until the
+	// window evicts them — set-aside records are the first class to go.
+	GapCauseRefused = "refused"
 )
 
 // The values of AttrEndReason: why a session stopped, on the session_end
@@ -327,6 +364,13 @@ const (
 	// 0045): a `provisioning` record at `info`, on the BATCH path, one per
 	// session whose target leg came up.
 	EventAlgorithmsNegotiated = "target.algorithms_negotiated"
+	// EventLoggingGap is records the pipeline could not deliver, reported in
+	// the affected session's own timeline (phase 0046, gap.go): one record per
+	// session and cause, `kind: error` because the server refuses a kind it
+	// does not know, `critical` when anything missing was critical and `warn`
+	// otherwise. It describes the pipeline, not something the session did, so a
+	// session recorder never builds it and it carries no grant context.
+	EventLoggingGap = "logging.gap"
 )
 
 // CaptureFormatRawChunk is the value of AttrCaptureFormat on every stream
@@ -499,6 +543,27 @@ func (r *SessionRecorder) Deliverable() bool {
 		return false
 	}
 	return r.shipper.Deliverable()
+}
+
+// Pin makes this session's records ones the disk buffer never evicts — the
+// records it already spilled (the handshake and the authentication, made before
+// anyone knew the route needed them), its set-aside records, and everything
+// after (phase 0046, buffer.go).
+//
+// It is what keeps D16's "recorded, not even to its disk buffer" true under a
+// bounded buffer: a session whose route requires capture is bounded by its
+// record, and a record the window could push out would make that claim
+// "recorded, unless the outage outlasts the window".
+//
+// It never refuses on window grounds — Deliverable is the gate, and it is asked
+// first. It fails only when the pin cannot be made durable, which a caller
+// treats as the outage an unrecordable session already is. A nil recorder's Pin
+// fails, as its Deliverable answers false.
+func (r *SessionRecorder) Pin() error {
+	if r == nil {
+		return errors.New("logging: this proxy has no telemetry pipeline to pin a session in")
+	}
+	return r.shipper.pin(r.SessionID())
 }
 
 // Records is how many records this session has produced. It exists for tests

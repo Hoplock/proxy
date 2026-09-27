@@ -2191,8 +2191,9 @@ func holdTheOnlySlot(t *testing.T, s session, what string) func() []result {
 // that read as an outage would tell them the estate is broken when it is busy.
 func testSessionBounds(t *testing.T) {
 	t.Run("a route that must be recorded runs while the log destination is down", func(t *testing.T) {
-		// The proxy's disk buffer is a logging path (PLAN §7), so a proxy
-		// spooling to it satisfies the bound. Refusing these sessions would turn
+		// The proxy's disk buffer is a logging path while its window has room
+		// for a pinned session (PLAN §7), so a proxy spooling to it satisfies the
+		// bound, and pins the session. Refusing these sessions would turn
 		// every log-destination outage into an outage of the estate, for exactly
 		// the routes that are watched most closely.
 		const marker = "capture-while-buffering"

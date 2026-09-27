@@ -53,7 +53,20 @@ func (d *deviceSink) Deliverable() bool { return d.shipper.Deliverable() }
 // in a batch. That is not a severity judgement about the event's contents: it is
 // that on a constrained platform this record is the only attribution that
 // exists, and a batch is a thing a crash loses.
+//
+// For the same reason a CONSTRAINED session is pinned before the event is
+// written (phase 0046): nothing of it is ever evicted from the disk buffer, the
+// event included, because evicting the only attribution there is would be the
+// silent loss PLAN §5.3's fail-closed rule exists to prevent. The provisioner
+// asked Deliverable before it created anything; a pin that then cannot be made
+// durable is logged, and the event is still written — the administrator exists,
+// and a record of it that might be evicted beats none.
 func (d *deviceSink) AccountMapping(ev target.AccountMapping) {
+	if ev.Constrained {
+		if err := d.shipper.pin(ev.SessionID); err != nil {
+			d.shipper.logf("logging: the account-mapping event of session %s is not pinned: %v", ev.SessionID, err)
+		}
+	}
 	attrs := Attrs{}.
 		Set(AttrEvent, "device.account.mapping").
 		Set(AttrTargetAccount, ev.Account).

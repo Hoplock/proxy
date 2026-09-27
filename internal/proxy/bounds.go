@@ -38,6 +38,11 @@ import (
 // Control outage on a proxy that is recording faithfully would be fail-closed
 // against the wrong failure. It is the same rule, and the same predicate, as
 // target.ErrNoLoggingPath — which PLAN §5.3 reaches from the other direction.
+//
+// Since the buffer is bounded (phase 0046) a disk buffer is a logging path
+// WHILE ITS WINDOW HAS ROOM FOR A PINNED SESSION: one full of records it may
+// not evict cannot promise this session its record, and neither can one that
+// cannot make the session's pin durable. Both are this error.
 var ErrCaptureUnavailable = errors.New("proxy: this route requires the session to be recorded and this proxy has no logging path")
 
 // concurrencyScope names which of D16's two independent ceilings refused a
@@ -72,7 +77,15 @@ func (e *capExceeded) Error() string {
 func (e *capExceeded) Unwrap() error { return control.ErrUnauthorized }
 
 // requireCapture refuses a route that may only run recorded when this proxy has
-// nowhere to put the records (D16, PLAN §6.5).
+// nowhere to put the records (D16, PLAN §6.5), and pins the session when it
+// does.
+//
+// The pin is what makes the answer true for the session's whole life: a pinned
+// session's records are never evicted from the disk buffer (phase 0046) — the
+// handshake and authentication spilled before this check included — so a
+// session admitted here is recorded however long the outage lasts, rather than
+// recorded unless the outage outlasts the window. It is taken here, before the
+// target leg is dialled, so nothing the session does on the target predates it.
 //
 // A route without the field changes nothing here: absent means capture happens
 // if it is configured and its absence stops nothing, which is what every v3
@@ -81,10 +94,13 @@ func (s *session) requireCapture(route *routing.Route) error {
 	if !route.RequireSessionCapture {
 		return nil
 	}
-	if s.rec.Deliverable() {
-		return nil
+	if !s.rec.Deliverable() {
+		return fmt.Errorf("%w (session %s)", ErrCaptureUnavailable, s.id)
 	}
-	return fmt.Errorf("%w (session %s)", ErrCaptureUnavailable, s.id)
+	if err := s.rec.Pin(); err != nil {
+		return fmt.Errorf("%w (session %s): %w", ErrCaptureUnavailable, s.id, err)
+	}
+	return nil
 }
 
 // enforceConcurrency counts this session against the route's ceilings and, if

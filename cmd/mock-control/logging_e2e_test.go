@@ -34,7 +34,8 @@ import (
 // It asserts the four things PLAN §7 and D8 promise and nothing else can:
 // a session can be reconstructed from what arrives, a batch leaves on a flush,
 // a blocked command does NOT wait for one, and an outage costs latency rather
-// than records.
+// than records while the buffer's window has room. What happens past the window,
+// and to a record the server refuses, is logging_gap_e2e_test.go's (phase 0046).
 
 // controlGate makes Hoplock Control unreachable on demand.
 //

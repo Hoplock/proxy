@@ -191,26 +191,23 @@ func TestAnUnreadableSegmentIsDiscardedRatherThanBlockingTheDrain(t *testing.T) 
 // carry: lexical order is delivery order, across sessions as well as within
 // one.
 func TestSegmentsSortIntoTheOrderTheyWereWritten(t *testing.T) {
-	buffer, err := newDiskBuffer(t.TempDir())
+	buffer, err := newDiskBuffer(bufferOptions{dir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("newDiskBuffer: %v", err)
 	}
 	for i := range 12 {
 		session := fmt.Sprintf("sess-%d", i%3)
-		if err := buffer.append(session, kindBatch, []control.LogRecord{record(session, fmt.Sprintf("%d", i))}); err != nil {
+		if _, err := buffer.appendSegment(session, tagBatch, []control.LogRecord{record(session, fmt.Sprintf("%d", i))}); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
-	segs, err := buffer.segments()
-	if err != nil {
-		t.Fatalf("segments: %v", err)
+	seqs, _ := buffer.owedFiles()
+	if len(seqs) != 12 {
+		t.Fatalf("got %d segments, want 12", len(seqs))
 	}
-	if len(segs) != 12 {
-		t.Fatalf("got %d segments, want 12", len(segs))
-	}
-	for i, seg := range segs {
-		if seg.seq != uint64(i) {
-			t.Fatalf("segment %d has sequence %d, want %d: the drain order is wrong", i, seg.seq, i)
+	for i, seq := range seqs {
+		if seq != uint64(i) {
+			t.Fatalf("segment %d has sequence %d, want %d: the drain order is wrong", i, seq, i)
 		}
 	}
 }

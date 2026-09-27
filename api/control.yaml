@@ -82,7 +82,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.5.0
+  version: 4.6.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -586,6 +586,23 @@ paths:
 
         Records carry a client-assigned `record_id` so a retried batch (after a
         timeout or a drained disk buffer) can be de-duplicated by the server.
+
+        **A `400` is a refusal, and it refuses the whole request:** the server
+        stores none of it. The proxy then isolates the records the server
+        refuses by resending halves of the batch, delivers everything else,
+        and SETS ASIDE any record refused on its own. A set-aside record is
+        never resent; the proxy counts it and reports it in a `logging.gap`
+        record (see "When records do not arrive" in `api/README.md`). A `413`
+        from anything in the path — a middlebox in front of the server, which
+        is not a response this contract defines — is handled the same way,
+        because splitting the batch is what cures it.
+
+        Every other failure keeps the records and retries them: a `429`, any
+        other `4xx`, any `5xx`, a timeout or a transport failure. A `401` is
+        unchanged. A server must therefore answer `400` only for a record it
+        will never store, and never for a condition that passes — a `400` for
+        overload costs the proxy the records, where a `503` costs it only
+        latency.
       requestBody:
         required: true
         content:
@@ -600,7 +617,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/LogBatchResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            A record in the batch is refused, and so is the whole request: the
+            server stores none of it. `message` should name the refused record
+            by its index and `record_id`; the proxy does not parse it, but an
+            operator reading the proxy's report will.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -621,6 +646,12 @@ paths:
         Unlike the batch endpoint this responds `200`: the acknowledgement means
         the record is durable, so the proxy can act (e.g. kill the session)
         knowing the event was recorded.
+
+        **A `400` refuses the record, and the proxy sets it aside:** it is
+        never resent, and the proxy reports it in a `logging.gap` record —
+        itself `critical`, because a security event missing from the server's
+        store is a security fact. Every other failure keeps the record and
+        retries it, exactly as on the batch endpoint.
       requestBody:
         required: true
         content:
@@ -635,7 +666,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/LogPriorityResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: |
+            The record is refused and not stored. The proxy sets it aside and
+            does not retry it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '500':
@@ -3243,7 +3280,16 @@ components:
             retried batches.
         session_id:
           type: string
-          description: Ties the record to a session; matches `ConnMeta.session_id`.
+          description: |
+            Ties the record to a session; matches `ConnMeta.session_id`.
+
+            `""` means the record belongs to NO session: an orphan sweep's
+            records (`device.config.change`, `device.account.sweep_failed`),
+            and a `logging.gap` record reporting on them. **A server MUST
+            accept `""` on any `kind`.** Refusing it fails the request, and the
+            proxy then sets the record aside and never delivers it — which, for
+            a sweep failure, is the one record that says a privileged account
+            was left standing on a device.
         timestamp:
           type: string
           format: date-time

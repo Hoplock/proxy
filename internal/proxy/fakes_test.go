@@ -257,6 +257,9 @@ type harness struct {
 	// is a real one, wired to fakeClient, so a test asserting "the record
 	// exists" is asserting about the same path production uses.
 	shipper *logging.Shipper
+	// bufferDir is that pipeline's disk buffer, where a pinned session's
+	// marker is (phase 0046).
+	bufferDir string
 }
 
 func newHarness(t *testing.T, opts harnessOptions) *harness {
@@ -355,11 +358,12 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	// A long flush interval on purpose: a test that sees a record on the
 	// priority path saw it because it was critical, not because a tick
 	// happened to fire.
+	bufferDir := t.TempDir()
 	shipper, err := logging.New(logging.Options{
 		Client:        client,
 		BatchSize:     testBatchSize,
 		FlushInterval: time.Minute,
-		BufferDir:     t.TempDir(),
+		BufferDir:     bufferDir,
 		Logf:          logs.logger().Printf,
 	})
 	if err != nil {
@@ -419,6 +423,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		addr:      listener.Addr().String(),
 		logs:      logs,
 		shipper:   shipper,
+		bufferDir: bufferDir,
 	}
 }
 

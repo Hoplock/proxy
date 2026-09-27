@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,13 @@ const (
 	// — stopping the whole server instead would stop the session being authorized
 	// at all, so the check under test would never run.
 	pathDebugLogSink = "/debug/logs/sink"
+	// pathDebugLogRefuse makes the log endpoints REFUSE matching records with
+	// a 400, storing none of the request, while everything else goes on
+	// working (phase 0046). It is what lets a test show a proxy isolating a
+	// record the server will never take — setting it aside, reporting it, and
+	// delivering everything around it — which before that phase stopped all of
+	// the proxy's delivery.
+	pathDebugLogRefuse = "/debug/logs/refuse"
 	// pathDebugCapabilities returns what the server holds about each target —
 	// the merged rung and key-exchange observations (phase 0045) — so the e2e
 	// topology can assert that a proxy reported a target's key exchange, for
@@ -91,7 +99,9 @@ type server struct {
 	// logSinkDown makes both log endpoints answer 503 (pathDebugLogSink). It is
 	// a property of the mock and of nothing in the contract.
 	logSinkDown bool
-	seenLogs    map[string]bool // record_id -> stored, for de-duplication
+	// logRefusal is what both log endpoints refuse (pathDebugLogRefuse).
+	logRefusal logRefusal
+	seenLogs   map[string]bool // record_id -> stored, for de-duplication
 	// subs are the open revocation streams; events are the retained history a
 	// reconnecting proxy replays from, trimmed to the fixture's buffer size.
 	subs           map[*subscriber]bool
@@ -208,6 +218,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
 	mux.HandleFunc("POST "+pathDebugLogSink, s.handleDebugLogSink)
+	mux.HandleFunc("POST "+pathDebugLogRefuse, s.handleDebugLogRefuse)
 	mux.HandleFunc("GET "+pathDebugCapabilities, s.handleDebugCapabilities)
 	return mux
 }
@@ -612,12 +623,23 @@ func (s *server) handleIngestLogBatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "records must not be empty")
 		return
 	}
+	// session_id "" is a record that belongs to no session — a sweep's, or
+	// the report of a gap in one — and the contract requires it be accepted
+	// on any kind.
 	for i, rec := range req.Records {
-		if rec.RecordID == "" || rec.SessionID == "" {
+		if rec.RecordID == "" {
 			writeError(w, http.StatusBadRequest, "invalid_request",
-				fmt.Sprintf("records[%d] needs record_id and session_id", i))
+				fmt.Sprintf("records[%d] needs record_id", i))
 			return
 		}
+	}
+	// A refusal refuses the whole request and stores none of it, which is
+	// what the contract promises of a 400 and what a proxy isolating the
+	// refused record by bisection relies on.
+	if i, rec, refused := s.refusedRecord(req.Records); refused {
+		writeError(w, http.StatusBadRequest, "invalid_record",
+			fmt.Sprintf("records[%d] (record_id %s) is not accepted", i, rec.RecordID))
+		return
 	}
 
 	accepted := 0
@@ -647,8 +669,13 @@ func (s *server) handleIngestPriorityLog(w http.ResponseWriter, r *http.Request)
 	if !decode(w, r, &req) {
 		return
 	}
-	if req.Record.RecordID == "" || req.Record.SessionID == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "record needs record_id and session_id")
+	if req.Record.RecordID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "record needs record_id")
+		return
+	}
+	if _, rec, refused := s.refusedRecord([]control.LogRecord{req.Record}); refused {
+		writeError(w, http.StatusBadRequest, "invalid_record",
+			fmt.Sprintf("record (record_id %s) is not accepted", rec.RecordID))
 		return
 	}
 
@@ -704,6 +731,56 @@ func (s *server) handleDebugLogSink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// logRefusal is the body of POST /debug/logs/refuse: a record matching any
+// entry of any list is refused. Every list empty refuses nothing.
+type logRefusal struct {
+	Kinds     []string `json:"kinds"`
+	Events    []string `json:"events"`
+	RecordIDs []string `json:"record_ids"`
+}
+
+func (r logRefusal) matches(rec control.LogRecord) bool {
+	if slices.Contains(r.Kinds, string(rec.Kind)) || slices.Contains(r.RecordIDs, rec.RecordID) {
+		return true
+	}
+	event := rec.Attributes["event"]
+	return event != "" && slices.Contains(r.Events, event)
+}
+
+// refusedRecord is the first record the refusal set matches, if any.
+func (s *server) refusedRecord(recs []control.LogRecord) (int, control.LogRecord, bool) {
+	s.mu.Lock()
+	refusal := s.logRefusal
+	s.mu.Unlock()
+	for i, rec := range recs {
+		if refusal.matches(rec) {
+			return i, rec, true
+		}
+	}
+	return 0, control.LogRecord{}, false
+}
+
+// handleDebugLogRefuse sets what the log endpoints refuse: records of the
+// given kinds, carrying the given event names, or with the given ids. It
+// replaces the previous set, so a body of empty lists clears it — as POST
+// /debug/reset does.
+//
+// A 400 is deliberate: it is the contract's answer to a record the server will
+// not store, and so what makes a proxy set the record aside rather than retry
+// it (phase 0046).
+func (s *server) handleDebugLogRefuse(w http.ResponseWriter, r *http.Request) {
+	var body logRefusal
+	if !decode(w, r, &body) {
+		return
+	}
+	s.mu.Lock()
+	s.logRefusal = body
+	s.mu.Unlock()
+	s.logger.Printf("mock-control: refusing log records kinds=%v events=%v record_ids=%v",
+		body.Kinds, body.Events, body.RecordIDs)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // logSinkUnavailable answers a log endpoint while the sink is down, and reports
 // whether it did.
 func (s *server) logSinkUnavailable(w http.ResponseWriter) bool {
@@ -720,6 +797,7 @@ func (s *server) logSinkUnavailable(w http.ResponseWriter) bool {
 func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	s.logSinkDown = false
+	s.logRefusal = logRefusal{}
 	s.batched = nil
 	s.priority = nil
 	s.authorizations = nil

@@ -75,7 +75,7 @@ three times and you only learn that several hundred words in.
 | **D6** | Ephemeral just-in-time target users, created and removed per session | live | §5.1 |
 | **D6a** | Two credential methods, chosen by the **server** per route | amends D6 (0006), **amended by D14**; its "a Control that mints credentials slots in as another method" is **rendered, not amended**, by 0044's `brokered-certificate` | §5.1, §5.2, §5.4 |
 | **D7** | Host-key policy comes from the server; TOFU in the prototype, every new key reported | live | §6.4 |
-| **D8** | Logs batch to Control; security events go on a **priority path**; disk is a buffer only | live | §7 |
+| **D8** | Logs batch to Control; security events go on a **priority path**; disk is a buffer only | live, **amended by 0046**: bounded, and reports what it could not deliver | §7 |
 | **D9** | Go ≥1.26, `x/crypto/ssh`, YAML bootstrap, JSON/HTTPS API | live | §8 |
 | **D10** | Proprietary, all rights reserved; per-file SPDX headers | live | §8 |
 | **D11** | A hop is reached over a connection the **downstream** proxy opened | new (0008) | §6.1 |
@@ -205,6 +205,29 @@ decision's status is worse than no index.
   security events are sent immediately** (flush the in-flight batch or use a
   dedicated priority channel). Local disk is only a **resilience buffer** for
   when the network is unavailable; logs drain to the server when it recovers.
+
+  **Amended by phase 0046, on an upstream request from `hoplock/control`.** As
+  first built, the disk had no bound and the shipper had one failure branch, so
+  a single record the server refused was resent forever while every record
+  behind it waited — critical ones included — and the disk filled. So:
+
+  - **Disk is a BOUNDED buffer.** Past its window (`logging.buffer_max_bytes`,
+    bytes, bootstrap under D18) it evicts whole files in class order: records
+    the server refused, then stream capture, then other batch records, then
+    priority records, oldest first within each.
+  - **A record the server refuses** — a `400`, or a middlebox's `413`, never
+    "any 4xx" — **is set aside, not retried**: isolated by bisection, kept only
+    until the window evicts it, and never resent.
+  - **Every eviction and every refusal is reported** as a `logging.gap` record
+    in the affected session's own timeline (§7).
+  - **A session whose record is a bound (D16) or the only attribution there is
+    (§5.3) is pinned and never evicted**, which is what keeps D16's "recorded,
+    not even to its disk buffer" true under a bound: a buffered capture still
+    counts as recorded, while the window has room for a pinned session.
+
+  This trades fidelity for liveness past the window, and that is the owner's
+  decision, taken in 0046; it is still D8's question — where logs go and what the
+  disk is for — so there is no new `D`.
 - **D9 — Tech choices.** Go (min **1.26**, target latest stable). SSH plumbing:
   `golang.org/x/crypto/ssh`. Proxy bootstrap config: **YAML**. API + policy +
   log payloads: **JSON over HTTPS (REST)** for the prototype; a streaming/gRPC
@@ -1478,7 +1501,7 @@ The route names the platform; nothing is inferred from a banner.
 
 #### What is true today — read this before the layers below
 
-The rest of this section is **append-only**: eleven `As <verb> (phase N)` blocks
+The rest of this section is **append-only**: twelve `As <verb> (phase N)` blocks
 recording what each phase established, several of which supersede parts of
 earlier ones. Composing them costs ~8k tokens and is how a session ends up
 building against a rule that was overturned two phases later. This block is the
@@ -1519,9 +1542,11 @@ deliberately.
 **Attribution is the log.** On a constrained platform the name carries no login,
 so the account-mapping event on D8's **priority path** is the only attribution
 there is — and a route whose driver declares a constrained limit is **refused**
-if the proxy has no logging path at all, including its disk buffer. Route
-fields, the declared caveats, the route's algorithm policy in force and the key
-exchange the driver's own connection negotiated ride on that record too.
+if the proxy has no logging path at all, including its disk buffer, **or if that
+buffer's window is full of records it may not evict**. The event **pins** its
+session, so nothing of it is ever evicted from the bounded buffer. Route fields,
+the declared caveats, the route's algorithm policy in force and the key exchange
+the driver's own connection negotiated ride on that record too.
 
 **Scope, and what a route may name.** A `device_field.<name>` names a
 **partition** of the endpoint device — never a different device
@@ -1569,13 +1594,14 @@ wherever a platform persists accounts and cannot expire them — and a failed
 sweep is an event on D8's priority path. `device.ResidueSweeper` is an
 **optional** driver interface for the second object, swept after the account
 pass under the same prefix scoping and first-seen grace period. The reaper
-sweeps a device it reaches from an **endpoint**, keyed on `host:port`, and that
-endpoint keeps the route's **algorithm lists** as it keeps the host key: every
-connection to a device — provisioning, teardown, sweep — offers what the
-route's `algorithm_profile`, `algorithm_floor` and `algorithm_bans` expand to
-(§4.2), never the library's defaults. A sweep that can no longer agree an
-algorithm reports that the device **changed under the proxy**, naming the axis
-and what the device offers now.
+sweeps a device it reaches from an **endpoint**, keyed on `host:port` — its
+records belong to no session, `session_id: ""`, which a server must accept on
+any kind — and that endpoint keeps the route's **algorithm lists** as it keeps
+the host key: every connection to a device — provisioning, teardown, sweep —
+offers what the route's `algorithm_profile`, `algorithm_floor` and
+`algorithm_bans` expand to (§4.2), never the library's defaults. A sweep that can
+no longer agree an algorithm reports that the device **changed under the
+proxy**, naming the axis and what the device offers now.
 
 **Every change is a record.** Each mutating driver operation **returns** the
 changes it completed (`device.Change`); the provisioner and the reaper emit one
@@ -2302,6 +2328,26 @@ sweep that cannot agree an algorithm is a device that changed under the proxy.**
 It was provisioned under the same policy, so the sweep failure (still the
 priority path) says so and names the axis and what the device offers now, rather
 than reading as an unreachable device or a route to fix.
+
+**As bounded (phase 0046): attribution needs room in the log, and a sweep's
+records need a server that takes them.** The disk buffer is bounded (D8 as
+amended, §7), so "a logging path" now means one with room to keep a record it may
+never evict. The account-mapping event of a **constrained-naming** session pins
+that session in the buffer before the event is written, so nothing of it — the
+event, the session's other records, its set-aside records — is ever evicted,
+however long an outage lasts. `Deliverable()`, the predicate `ErrNoLoggingPath`
+turns on, is false once pinned records fill the window, so a constrained-naming
+route is then **refused** as the outage it already is, while a route whose
+account name carries its login keeps running. A pin that cannot be made durable
+is logged and the event still written: by then the administrator exists, and a
+record that might be evicted beats none. The configuration-change feed is
+unchanged — not attribution, never pinned, never a reason to refuse a route. And
+a sweep's records carry `session_id: ""`, which the contract now requires a
+server to accept on any kind: before, Hoplock Control refused the sweep failure
+itself on the priority path (it accepted `""` only on `error`), and this
+repository's own mock refused both the failure and the sweep's
+`device.config.change`, so one sweep that changed something stalled the proxy's
+delivery.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -3125,7 +3171,7 @@ would have cost Control a third sync for no gain.
 | Field | What it is | Absent means |
 | --- | --- | --- |
 | `session_deadline` | An **absolute instant** the **proxy enforces locally**, so it holds when the revocation stream is down — which is exactly when an immortal root session is least acceptable, and the reason this is not "just use revocation". An instant rather than a duration because a duration re-anchors on every hop of a chained route, silently multiplying the window. Applies to any route | No deadline (today's behaviour) |
-| `require_session_capture` | The route runs only if the session is recorded, checked **before the target leg is dialled**. **Buffering to local disk counts** (§7's buffer is a resilience path, not a degraded mode), so the refusal is outage-class and triggers only when there is no path at all | Capture happens if configured, and its absence stops nothing |
+| `require_session_capture` | The route runs only if the session is recorded, checked **before the target leg is dialled**. **Buffering to local disk counts** (§7's buffer is a resilience path, not a degraded mode): a disk buffer is a logging path **while its window has room for a pinned session**, and the admitted session is pinned — never evicted (phase 0046) — so the refusal is outage-class and triggers only when there is no path at all, or no room left to promise one | Capture happens if configured, and its absence stops nothing |
 | `grant_context` | Why access was granted: the external system, its reference, the window it asserted, and an `additional_context` admitting a string or an object. **Opaque to the proxy** — copied to every log record, never parsed, never matched against, never the basis of a proxy-side decision (D2, D15), and never shown to the user | No external grant context |
 | `concurrency` | A per-subject and/or per-target ceiling on live sessions, enforced by the proxy against its own registry because the live count is knowable only there. Exceeding it is a **policy denial** (vague, §4.3), never an outage | Uncapped |
 
@@ -3183,7 +3229,7 @@ already happened. What each one is, in the class §4.3 assigns it:
 
 | Bound | Where | Class | Absent |
 | --- | --- | --- | --- |
-| `require_session_capture` | Before the target leg, against the telemetry pipeline's own `Deliverable()` — **a disk buffer is a logging path**, so only a proxy with no path at all refuses | **Outage**, naming the session id: the estate cannot record, nothing the user has would help | Capture happens if configured, and its absence stops nothing |
+| `require_session_capture` | Before the target leg, against the telemetry pipeline's own `Deliverable()` — **a disk buffer is a logging path while its window has room for a pinned session** — and then **pins** the session, so none of its records is ever evicted (phase 0046). Only a proxy with no path at all, one whose window is full of pinned records, or one that cannot make the pin durable refuses | **Outage**, naming the session id: the estate cannot record, nothing the user has would help | Capture happens if configured, and its absence stops nothing |
 | `concurrency` | Against the proxy's own live-session registry, counted and admitted in **one critical section** so two arrivals cannot both take the last slot | **Policy denial**, deliberately vague: the cap, the live count and the session id are all withheld and live only on the audit record | Uncapped, on both scopes independently |
 | `grant_context` | Stamped by the session recorder onto every record the session makes after the decision | Refuses nothing | No external grant context |
 
@@ -3238,7 +3284,13 @@ seam between them is what makes each testable alone:
   it records over a channel and never block on the network, which is what lets a
   recorder sit inside the decision that blocked a command.
 - A **disk buffer** catches what could not be delivered, one directory per
-  session, and drains it in order on recovery.
+  session, and drains it in order on recovery. Since phase 0046 it is
+  **bounded** by a window of bytes (`logging.buffer_max_bytes`, default 1 GiB,
+  bootstrap), past which it evicts by class and reports every eviction; it has a
+  **set-aside area** for records the server refused, kept for an operator and
+  never resent; and it holds the **`logging.gap` records** that report both,
+  pinned, one per session and cause. `internal/logging/buffer.go`'s header
+  comment is the on-disk layout specification.
 
 **Severity decides the endpoint.** `critical` takes `/v1/logs/priority`;
 everything else rides a batch. That is the whole rule, and it is why no capture
@@ -3254,13 +3306,110 @@ exactly the signal a SOC wants now (D12). A service outage is `warn`, not
 `critical`: an unreachable target is not a security event, and putting every
 network blip on the priority path would make the path meaningless.
 
-**The buffer is a buffer.** While anything is owed to the server, new records
-join it on disk rather than overtaking it — an outage costs latency, never
-fidelity or ordering. Segments are named by a global sequence, so lexical order
+**The buffer is a buffer, and a bounded one (phase 0046, D8 as amended).** While
+anything is owed to the server, new records join it on disk rather than
+overtaking it. An outage costs latency — and, past the buffer's window, the
+oldest records that are not pinned, in class order, each eviction reported. A
+record the server refuses costs only itself, reported. **Neither ever costs the
+records behind it.** Segments are named by a global sequence, so lexical order
 is delivery order across sessions as well as within one; a priority segment
 drains to the priority endpoint, because an outage must not downgrade a blocked
 command to ordinary telemetry. A previous run's segments are adopted on start,
-which is the crash case the buffer exists for.
+which is the crash case the buffer exists for — the byte count recomputed from
+the disk, and a window lowered since enforced at once.
+
+**What the window evicts, and what it never does.** The window is **bytes, not
+age**: disk exhaustion is the failure a bound exists for, and an age bound would
+delete records during an outage while the disk still had room, trading fidelity
+for no liveness at all (the age of what was lost is on the gap record, where it
+tells an operator something). Every byte on disk counts. An append that would
+cross the window evicts **whole files**, the first class that has one and the
+oldest within it: (1) records the server refused, (2) stream capture, (3) other
+batch records, (4) priority records, last, because D8 exists to keep them. The
+append counts as the newest file of its class, so when everything ranked below it
+cannot make the room it is evicted itself — counted and reported like any other
+eviction — rather than displacing a record ranked above it; a file never holds
+more than a batch, so no single file outgrows the window. **Never evicted:** a
+pinned session's files (below), a gap record, and the file the drain is
+delivering at that moment — eviction runs on whichever goroutine appends, a
+capture point spilling past a full queue included, so it coordinates with the
+drain under the buffer's lock.
+
+**Ordering, narrowed in exactly one place.** Eviction by class needs files of
+one class, so a spill writes a session's stream capture and its other records as
+two files, in the order their first records appeared. That gives up ordering
+*between the two classes within one spill*, and only there: a chunk's position is
+its `seq` and `offset_ms`, and a metadata record's is its `timestamp`, so a
+reader loses nothing it needs. Within a class, and across spills, order is
+unchanged.
+
+**The flood the classes exist for.** During an outage anyone with a session can
+flood their terminal and fill the window. Without classes that flood would evict
+other sessions' commands and policy decisions, and the blocked commands on the
+priority path last of all. With them it can evict only stream capture, oldest
+first, until none is left: other sessions' *replay* can still be lost, and the
+gap record names each session that lost some. Evicting the **largest** session
+first would make a flood evict its own capture instead; it was considered and not
+built, because the request asked for oldest-first — the owner's alternative,
+recorded in the 0046 learnings.
+
+**Pinned records, and how far over the window they go.** A session whose record
+is a bound (D16's `require_session_capture`, pinned by the capture check before
+the target leg is dialled) or the only attribution there is (§5.3's constrained
+naming, pinned by the account-mapping event) is **never evicted** — its records
+from before the pin, its set-aside records and everything after. The pin is a
+marker in the session's buffer directory, written and synced before the pin is
+granted, so it survives a restart; it goes when the session has ended and
+nothing of it is left on disk. `Deliverable()` — the predicate both rules turn on
+— is true while the pinned bytes are **below the window**, so a full window
+refuses new pinned sessions as the outage they already are and every other route
+keeps running. Pinned records therefore take the buffer over its window only as
+far as the sessions admitted while it had room, and only for as long as they run;
+the host disk stays the hard limit, and a write that fails is counted in
+`Dropped`. Ending a running pinned session whose records no longer fit is a
+follow-up.
+
+**A refusal, and the risk that remains.** A refusal is **exactly a `400`, or a
+middlebox's `413`** — never `errors.Is(err, control.ErrBadRequest)`, which covers
+every 4xx but 401 and would read a 404 from a wrong base URL as "discard these
+records". The proxy isolates the refused records by bisection — at most `2n−1`
+requests, about `2·log2(n)` for one bad record — with **no contract field**
+naming them: it must bisect for a server that sends none anyway, and bisection
+only ever sets aside a record the server refused on its own. A set-aside record
+is never resent and never drained; it is kept until the window evicts it, first
+of all classes, unless its session is pinned. The drain goes on past a refused
+file and still **stops** at the first failure of any other kind, which keeps the
+ordering promise for an outage. What remains, stated rather than hidden: a server
+that refuses **everything** — a regression, a validation change after an upgrade
+— used to halt the stream with every record retained, and now has every record
+set aside and retained only up to the window. The change is visible (`Logf`,
+`Stats.Refused`, the gap records), but it is a change, and replaying the
+set-aside area is the follow-up that closes it. No heuristic guesses
+"server-wide" from a refusal rate: a quiet batch made entirely of one kind the
+server refuses looks exactly like that, and it is the case the request exists
+for. And a `5xx` that recurs for one record cannot be told from an outage from
+the proxy's side; the window is what eventually frees it, unless its session is
+pinned.
+
+**What the pipeline could not deliver is a record: `logging.gap`.** One record
+per affected session and cause (`gap_cause`: `evicted`, never received;
+`refused`, received and refused), carrying that session's `session_id` — `""` for
+records that belonged to none — so "what happened to session X" returns "N
+records evicted between T1 and T2" from an ordinary session query. It is `kind:
+error`, because Control refuses a kind it does not know, and `critical` exactly
+when a critical record is among the missing — a security event absent from the
+store is a security fact — `warn` otherwise. Its keys (`gap_records`,
+`gap_bytes`, `gap_first_at`/`gap_last_at`, `gap_kinds`, `gap_critical`, and for a
+refusal `gap_record_ids` and the server's `refusal_code`/`refusal_message`) are
+query surface, specified in `api/README.md`, "When records do not arrive". An
+eviction's report is written and synced **before** the files it counts are
+removed, so a crash cannot turn a reported gap into a silent one; it is rewritten
+in place by later evictions until it is first sent, and never changed under its
+`record_id` after that, because the server de-duplicates on it. The drain sends
+reports last in each pass, after the records they report on, so a report is
+never the probe sent into an outage. A gap record is never evicted, and one the
+server refuses is set aside and reported by nothing: a gap record never begets
+another.
 
 **Capture is observation.** The stream recorder attaches to the `session`
 channel only — a forward's audit value is its destination, recorded when the
@@ -3287,7 +3436,9 @@ not an oversight: an account-mapping event carries its session id as a field and
 sweep failure belongs to no session at all, so neither is built by a session
 recorder, and the alternative — teaching `internal/auth/target` to carry the grant
 — would put a policy payload in the credential plane, which is exactly what §6.5
-keeps it out of.
+keeps it out of. The `logging.gap` record (phase 0046) is the third, for a
+simpler reason: it describes the pipeline, not something the session did, so the
+shipper and the buffer build it and it carries no grant context.
 
 **Every session says how it ended.** The `session_end` record carries
 `end_reason`, and it takes exactly one of four values — `client_close`,
@@ -3999,7 +4150,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0043 | The record says what the proxy actually did | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0010 in [Hoplock/control#32](https://github.com/Hoplock/control/pull/32) — the phase that built its tamper-evident audit store (its **M8**). Three shapes on the records this repository emits, and the surface is `internal/logging`'s attributes rather than `api/` (`attributes` is an open map, so none of it is a schema change). **`algorithm_profile` on the record** — and the request asks for less than it needs: nothing here *applies* the profile today, so the phase carries it onto `routing.Route`, expands the preset in one place, applies it to the session leg, the management login, the driver's privileged CLI connection and the reaper's sweep, and only then stamps it; a record naming a weakening the proxy never performed is the silent downgrade §6.5 forbids, and the sentence `api/control.yaml` already publishes — an operator learns a route runs on SHA-1 from the record — is true of nothing until this lands. **`device.config.change`** — the producer §12 already promises for the drift feed, emitted by the provisioner and the reaper from what a driver RETURNS (D13: a driver reports data, it does not hold a sink), on the batch path at `info` so the mapping event's priority path keeps its meaning. **One name per field** — `credential_method`/`credential_rung` against Control's `target_auth_*`; this repository owns what it emits, so it settles it and Control is told. **Amended by PR #64's review (the owner's decision):** `default` becomes the library's **secure set** as an explicit list on every axis. It had been x/crypto's client default, which offers SHA-1 key exchange, `hmac-sha1-96` and `ssh-rsa`/`ssh-dss` host keys. The legacy profiles add exactly what they say, and `legacy-device` also gains `ssh-dss` host keys; no finer presets are added, since bans trim a preset instead. That is a tightening announced as a break (`info.version` minor, `policy_version` unchanged, 0028's precedent), and a target it strands fails visibly as `target.algorithm_policy_unmet`, naming what the target offered. Carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the profile is carried on `routing.Route`, expanded once (`control.AlgorithmProfile.Algorithms`), applied through `internal/sshalg` to the session leg, the management login, the driver's CLI and both reapers' sweeps (signers restricted for the public-key axis), then stamped as `algorithm_profile` on the provisioning record and the mapping event — always, `default` included; `default` is the pinned secure set, `info.version` **4.3.0**, `policy_version` still **4**; `stageAlgorithmPolicy` + `target.algorithm_policy_unmet` (warn, batch) on the session leg and at provisioning. Drivers return `[]device.Change` and `recordChanges` emits one `device.config.change` (info, batch) per completed change on every path, sweeps with no session id. **Naming verdict:** keep `credential_method`/`credential_rung`; the contract text that had published `target_auth_*` (0-based) was the source of the split and is corrected |
 | 0044 | Brokered certificates: a credential Control mints per session | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0011 in [Hoplock/control#35](https://github.com/Hoplock/control/pull/35) — the phase that built a complete per-tenant SSH **certificate authority** and could not reach a proxy with it: the ladder's `method` enum names four values and none of them is a certificate, so Control shipped the authority behind a seam that refuses on purpose and a tripwire that fires the day this method lands in its vendored copy. D6a's own closing sentence is what this phase makes true — a Control that mints credentials "slots in as another method rather than another breaking change" — so there is **no new `D`**. Two parts: the `brokered-certificate` method, and `POST /v1/credentials/certificate`, which signs a public key **the proxy generated for this session** (no private key travels, and `AuthorizeRequest` has nowhere to carry a public key). The request asked for the certificate, its serial and the CA bundle as **route parameters**, and that is the one part that changes: `target_auth_ladder` rides a **reusable** decision (D2, §6.4), so a certificate on it is replayed past its own expiry — the argument `POST /v1/uids/lease` already makes about a uid floor — and the value does not exist when the route is decided. The entry carries policy (`username` **required**, `key_type`, `lifetime_seconds`); the issuance response carries the artifacts, and the proxy still records the serial. Provisions nothing, so only **attested** rungs are reachable (§6.5); a failed issuance is **outage-class and never a walk to the next rung**. First `policy_version` revision since 0037: **4 → 5** for the enum value, while the endpoint is outside the number entirely. Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the method (`TargetAuthBrokeredCertificate`; `username` required, `key_type` and `lifetime_seconds` permitted; `Provisions()` false as its own case) and `POST /v1/credentials/certificate` (`{session_id, decision_id, target, username, public_key}` → `{certificate, serial (a decimal string), valid_before, ca_public_keys}`); `policy_version` **5** and `info.version` **4.4.0**, with the mock tiering the method so a v4 proxy is refused only the routes naming it. `BrokeredCertificateAuthenticator` generates a key per session, checks what it is issued (parses, user certificate, over the submitted key, stated expiry true, not expired, not forever, within the route's bound plus 30s of clock skew) and zeroes the key on teardown; every failure — a `401` from issuance included — is an outage and never a walk down the ladder, while a build with no issuer skips the rung. `CachingClient` implements no `CertificateIssuer`. The serial rides the provisioning record as `credential_certificate_serial`. `CredentialSource` was **not** widened: §5.2's promise that a minting Control would implement it is corrected there, with the reasoning, and the method has its own seam. The mock is a minimal CA (ed25519 key from the material directory, the route's username as sole principal, a rising serial, deliberate faults per route) and the e2e target trusts it via `TrustedUserCAKeys` |
 | 0045 | A floor under the target leg: `algorithm_floor` | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#36](https://github.com/Hoplock/control/pull/36) while it queued its post-quantum posture phase. `algorithm_profile` can only **weaken** the proxy→target leg, so policy can say a route may use SHA-1 and cannot say a route must negotiate a hybrid post-quantum key exchange. Taken as asked: `algorithm_floor`, a **sibling** of the profile (a floor is a minimum, a profile a weakening preset, and a route may want `default` and a floor), refused rather than coerced, and vocabulary — so `policy_version` moves to the next number above 0044's. Three corrections the requester could not see: the request's `sntrup761x25519-sha512` is **not implemented by `x/crypto/ssh`** (D9), so the floor is defined as a property whose one member this proxy offers today is `mlkem768x25519-sha256`; the attribute is `target_kex_algorithm`, because a record here describes three SSH legs and target-leg facts carry the `target_` prefix; and the profile × floor refusal is by **axis** — `legacy-device` (widens key exchange) is refused, `legacy-rsa-sha1` (signatures only) is accepted. **Amended in review** so an administrator can turn the floor like a dial: it is an **ordered ladder** `modern-kex` < `pq-hybrid-kex`, where each level accepts a subset of the one below, and that nesting is the contract's rule for adding a level (FIPS-like regimes that don't nest are not rungs). Each proxy **declares** the levels and per-build key exchanges it enforces on `AuthorizeRequest.capabilities`, and the server must not send an undeclared level. Proxies **report** the highest level each target was seen to meet on `TargetCapabilities.kex`, from every credential method, off the session path, merged without overwriting the rung observation. That gives Control an impact preview before it raises a floor. **Amended again:** `algorithm_bans`, per route and per axis, lets an administrator remove a vulnerable algorithm without waiting for a release. It is a list, but it can only narrow, and §4.2 gains the rule that a list may narrow a route but never widen it. Bans are applied last, subtracted from what the route would otherwise offer (never from the library's "supported" set, which would add algorithms), and pinned by a KEXINIT test. They are recorded per negotiated axis, and the emergency runbook is ban → `cache_invalidate` → `session_kill`. The review also found that x/crypto's client **default** offers a SHA-1 key exchange, `hmac-sha1-96`, and `ssh-rsa`/`ssh-dss` host keys, none of which this repository overrides today. **The owner decided** that `default` means the library's secure set, which 0043 builds as a break; 0045 extends 0043's `target.algorithm_policy_unmet` classifier to floors and bans. An unmet floor is the **outage** branch of §4.3, not a deny, never a ladder walk (D14) and never scored against the credential (0025). Depends on **0043**, which carries and expands the profile on every connection the floor must also reach. Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** `algorithm_floor` (`modern-kex` < `pq-hybrid-kex`, compared by rank, nesting pinned by a test; `pq-hybrid-kex` is `mlkem768x25519-sha256` alone) and `algorithm_bans` (per axis, applied last, a ban always wins, unmatched names accepted and recorded) expand once in `control.AlgorithmPolicy` and reach the session leg, the management login, the driver's CLI and both sweeps; `policy_version` **6**, `info.version` **4.5.0**, mock tier `vocabularyAlgorithmFloor`; capabilities declare `algorithm_floors` and `algorithms`; `TargetCapabilities.kex` is reported per target off the session path (`target.KexReporter`) as its own report, merged beside the rung observation by which object is present; `target.algorithms_negotiated` records what each leg negotiated; `target.algorithm_policy_unmet` gains `algorithm_policy_cause` and the `public_key_auth` axis; the emergency runbook is an integration test against the mock. Register unchanged |
-| 0046 | A bounded log buffer, and a refused record that no longer blocks the rest | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#39](https://github.com/Hoplock/control/pull/39) by the sync that followed 0043. The shipper has one failure branch: any error spills, and the drain retries the oldest segment until the server takes it, so one record Control refuses with a `400` stops all of a proxy's delivery, critical records included, while nothing bounds the disk. The request asks for a window that evicts the oldest records, with every eviction reported, and for a refused record to be set aside instead of retried. **Taken as asked:** the window, reported eviction, priority records evicted after batch ones, isolation by splitting the batch, and `5xx`/transport/`401` unchanged. **Corrected:** the window is **bytes, not age**. Eviction goes by class (set-aside, then stream, then other batch, then priority, oldest first within each), because a flooded terminal must not push other sessions' metadata out. A session under `require_session_capture`, and one whose constrained mapping event is its only attribution, is **pinned and never evicted**, which keeps D16's "recorded, not even to its disk buffer" true, and `Deliverable()` goes false only when pinned records fill the window. A refusal is exactly `400` (or a middlebox's `413`), never `ErrBadRequest`, which covers every 4xx but `401`. Isolation is by bisection and adds no contract field. The report is one `logging.gap` record (`kind: error`, because Control refuses unknown kinds) per affected session. **Two more triggers the request could not see:** Control's ingest accepts `session_id: ""` only on `error`, which refuses this proxy's `policy_decision` sweep failure on the priority path, and this repository's own mock refuses `""` on both endpoints. So the contract states that `""` means no session and MUST be accepted on any kind. **D8 amended in place**, D16 not amended; the window setting is bootstrap under D18; `info.version` next minor, `policy_version` unchanged. Contract change: carries a cross-repo obligation **back to the repository that raised it** |
+| 0046 | A bounded log buffer, and a refused record that no longer blocks the rest | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#39](https://github.com/Hoplock/control/pull/39) by the sync that followed 0043. The shipper has one failure branch: any error spills, and the drain retries the oldest segment until the server takes it, so one record Control refuses with a `400` stops all of a proxy's delivery, critical records included, while nothing bounds the disk. The request asks for a window that evicts the oldest records, with every eviction reported, and for a refused record to be set aside instead of retried. **Taken as asked:** the window, reported eviction, priority records evicted after batch ones, isolation by splitting the batch, and `5xx`/transport/`401` unchanged. **Corrected:** the window is **bytes, not age**. Eviction goes by class (set-aside, then stream, then other batch, then priority, oldest first within each), because a flooded terminal must not push other sessions' metadata out. A session under `require_session_capture`, and one whose constrained mapping event is its only attribution, is **pinned and never evicted**, which keeps D16's "recorded, not even to its disk buffer" true, and `Deliverable()` goes false only when pinned records fill the window. A refusal is exactly `400` (or a middlebox's `413`), never `ErrBadRequest`, which covers every 4xx but `401`. Isolation is by bisection and adds no contract field. The report is one `logging.gap` record (`kind: error`, because Control refuses unknown kinds) per affected session. **Two more triggers the request could not see:** Control's ingest accepts `session_id: ""` only on `error`, which refuses this proxy's `policy_decision` sweep failure on the priority path, and this repository's own mock refuses `""` on both endpoints. So the contract states that `""` means no session and MUST be accepted on any kind. **D8 amended in place**, D16 not amended; the window setting is bootstrap under D18; `info.version` next minor, `policy_version` unchanged. Contract change: carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** `logging.buffer_max_bytes` (bytes; absent or 0 is 1 GiB, below 16 MiB refused, bootstrap) bounds `internal/logging`'s buffer. An append past it evicts whole files by class, oldest first, and counts as the newest file of its own class, so one ranked below everything left is evicted itself rather than displacing a record ranked above it; no file holds more than a batch, so none outgrows the window. A session is **pinned** by the capture check (right after `Deliverable()`, before the target leg) and by a constrained mapping event: a `.pinned` marker in its buffer directory, synced before the pin is granted, adopted after a restart, and gone once its `session_end` has shipped and nothing of it is left. `Deliverable()` is true while pinned bytes are below the window. A refusal is exactly `400`/`413`; bisection stays within `2·⌈log2 n⌉+1` requests for one bad record; set-aside records are `<seq>.refused.jsonl`, never resent, and an older binary ignores them. `logging.gap` is written and synced before its victims are removed; it is coalesced in place until first sent and never rewritten after, because the server de-duplicates on `record_id`; the drain sends reports last in each pass. `Stats` gains `Evicted`, `EvictedBytes`, `Refused`, `BufferedBytes`, `PinnedBytes`. The mock accepts `""` on both endpoints and gains `POST /debug/logs/refuse`. `info.version` **4.6.0**, `policy_version` still **6**. D8's register row updated; §5.3 gains "As bounded (phase 0046)" |
 | 0047 | Declare what each algorithm profile offers, per axis | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#41](https://github.com/Hoplock/control/pull/41) by the sync that followed 0045. `Validate` refuses a ban that leaves an axis nothing to offer, and the contract says a server must not send what the proxy refuses. But whether a ban empties an axis depends on what the route's **profile** offers on that axis in that build, which the wire does not carry: `algorithm_floors` settles the key-exchange axis and `algorithms` (the union, which is `legacy-device`'s offer) settles `legacy-device`, so a ban that empties `ciphers`, `macs`, `host_keys` or `public_key_auth` under `default` or `legacy-rsa-sha1` alone can only be "unknown" downstream, and an author who saves one is stopped only at connect time, as an outage. **Taken as asked, shape included:** `capabilities.algorithm_profiles`, one flat `AlgorithmProfileCapability` per accepted profile (`profile` beside the five axis lists, every axis required), pre-floor and pre-ban, alias-complete, **derived** from the expansion every connection dials with (as `algorithm_floors` is). Per profile rather than per profile × floor, because a floor narrows only key exchanges and each level's set is already declared. The request's alternative, narrowing Control's MUST NOT to what the wire can judge, is declined: the proxy would still refuse the route, so it would only make the outage compliant. One addition to the request's composition: the two curve25519 spellings are one exchange, or a server under-refuses a ban naming one of them. A test proves the declaration **sufficient**: a judgement built only from the wire declaration and the composition rule `api/README.md` states agrees with `Validate` on every accepted profile × floor × ban case. Request data, so `info.version` next minor and `policy_version` unchanged; no profile becomes gated on the declaration; register unchanged. Contract change: carries a cross-repo obligation **back to the repository that raised it** |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
