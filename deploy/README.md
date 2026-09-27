@@ -235,7 +235,8 @@ curl -sS -X POST http://127.0.0.1:18080/debug/logs/sink -d '{"accepting":false}'
 That makes both log endpoints answer 503 while everything else stays up, which
 is how the session-bounds scenarios stage a proxy whose records are
 undeliverable and whose decisions still arrive — the condition D16's
-`require_session_capture` is satisfied by (the proxy spools to its disk buffer;
+`require_session_capture` is satisfied by (the proxy spools to its disk buffer,
+a logging path while its window has room for a pinned session;
 `docs/PLAN.md` §6.5, §7). Stopping the whole server instead would stop the
 session being authorized at all, so the check under test would never run. Send
 `{"accepting":true}` to bring it back; a scenario that sets it always restores
