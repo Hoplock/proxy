@@ -524,3 +524,35 @@ func brokeredHarness(t *testing.T, options func(*Options)) *harness {
 			Params: map[string]string{control.ParamUsername: "netadmin", "credential_ref": "core-switch"},
 		}}})
 }
+
+// TestAPublicKeyBanIsTheAlgorithmPolicyOutage: a ban that leaves the proxy's
+// key no signature algorithm fails as the same stage and record as every other
+// axis — not as "the target could not be reached" — and is never scored
+// against the credential it could not use.
+func TestAPublicKeyBanIsTheAlgorithmPolicyOutage(t *testing.T) {
+	auth, breaker, static, ladder := breakerAuth(t)
+	h := newHarness(t, harnessOptions{
+		// The static key is ed25519; the ban leaves it nothing to sign with.
+		algorithmBans:    &control.AlgorithmBans{PublicKeyAuths: []string{"ssh-ed25519"}},
+		targetAuth:       auth,
+		targetAuthLadder: ladder,
+	})
+	for i := 0; i < 2; i++ {
+		text, status := runAndCollect(t, h, "uptime")
+		rec := assertPolicyUnmet(t, h, text, status,
+			"this route permits no signature algorithm the proxy's key for this target can use",
+			target.AlgorithmAxisPublicKeyAuth, "ban", "")
+		if strings.Contains(text, "could not be reached") {
+			t.Errorf("user saw %q; the target answered", text)
+		}
+		if rec.Attributes[logging.AttrAlgorithmBansPrefix+"public_key_auth"] != "ssh-ed25519" {
+			t.Errorf("algorithm_bans.public_key_auth = %q", rec.Attributes[logging.AttrAlgorithmBansPrefix+"public_key_auth"])
+		}
+	}
+	host, port := h.targetHostPort()
+	key := target.RejectionKey{Target: target.Target{Host: host, Port: port}.Addr(), Method: target.MethodStaticKey,
+		Handle: static.CredentialHandle(target.Target{})}
+	if st := breaker.State(key); st.Consecutive != 0 || st.Open {
+		t.Fatalf("breaker state = %+v, want untouched", st)
+	}
+}

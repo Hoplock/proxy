@@ -396,6 +396,9 @@ func algorithmPolicyDetail(err error) string {
 		case control.AlgorithmPolicyCauseFloor:
 			return "this route requires " + floorRequirement(unmet.floor) + ", and the target does not support one"
 		case control.AlgorithmPolicyCauseBan:
+			if unmet.failure.Axis == target.AlgorithmAxisPublicKeyAuth {
+				return "this route permits no signature algorithm the proxy's key for this target can use"
+			}
 			return "the target offers no " + axisNoun(unmet.failure.Axis) + " this route permits"
 		}
 	}

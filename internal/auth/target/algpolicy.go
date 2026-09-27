@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/hoplock/proxy/internal/control"
+	"github.com/hoplock/proxy/internal/sshalg"
 )
 
 // This file is reject.go's sibling (phase 0043): the one place that knows how
@@ -32,6 +33,9 @@ const (
 	AlgorithmAxisCipher      = control.AlgorithmAxisCipher
 	AlgorithmAxisMAC         = control.AlgorithmAxisMAC
 	AlgorithmAxisCompression = control.AlgorithmAxisCompression
+	// AlgorithmAxisPublicKeyAuth is the one axis a signature, not KEXINIT,
+	// decides (phase 0045): see signatureUnmet.
+	AlgorithmAxisPublicKeyAuth = control.AlgorithmAxisPublicKeyAuth
 )
 
 // algorithmAxes maps AlgorithmNegotiationError.What — the strings x/crypto's
@@ -61,8 +65,16 @@ var algorithmAxes = map[string]string{
 // against one (phase 0025).
 func IsAlgorithmPolicyUnmet(err error) bool {
 	var neg *ssh.AlgorithmNegotiationError
-	return errors.As(err, &neg)
+	if errors.As(err, &neg) {
+		return true
+	}
+	_, unmet := signatureUnmet(err)
+	return unmet
 }
+
+// signatureUnmet is sshalg.SignatureUnmet: the one algorithm failure x/crypto
+// reports without a type, recognised in one place (phase 0045).
+func signatureUnmet(err error) (keyType string, ok bool) { return sshalg.SignatureUnmet(err) }
 
 // AlgorithmPolicyUnmet returns the axis that could not be agreed and the list
 // the TARGET offered on it, from an error IsAlgorithmPolicyUnmet accepts.
@@ -73,6 +85,11 @@ func IsAlgorithmPolicyUnmet(err error) bool {
 func AlgorithmPolicyUnmet(err error) (axis string, offered []string, ok bool) {
 	var neg *ssh.AlgorithmNegotiationError
 	if !errors.As(err, &neg) {
+		if _, unmet := signatureUnmet(err); unmet {
+			// Public-key signing is not negotiated in KEXINIT, and the library
+			// does not say what the target accepts: the list is unknown.
+			return AlgorithmAxisPublicKeyAuth, nil, true
+		}
 		return "", nil, false
 	}
 	axis, known := algorithmAxes[neg.What]
@@ -125,6 +142,14 @@ func AlgorithmPolicyFailure(err error, policy control.AlgorithmPolicy) (Algorith
 	axis, offered, ok := AlgorithmPolicyUnmet(err)
 	if !ok {
 		return AlgorithmFailure{}, false
+	}
+	if keyType, signing := signatureUnmet(err); signing {
+		// The step that left the proxy's key nothing to sign with; a key that
+		// still had something is the target refusing it, the profile's case.
+		cause := policy.CauseWhere(func(a control.Algorithms) bool {
+			return keyType == "" || len(sshalg.Permitted(keyType, a)) > 0
+		})
+		return AlgorithmFailure{Axis: axis, Cause: cause}, true
 	}
 	return AlgorithmFailure{Axis: axis, Offered: offered, Cause: policy.Cause(axis, offered)}, true
 }

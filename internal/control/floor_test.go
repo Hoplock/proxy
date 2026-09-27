@@ -657,3 +657,21 @@ func TestAnUnreadableAlgorithmPolicyIsAProtocolError(t *testing.T) {
 		}
 	}
 }
+
+// TestCauseWhereNamesTheStepThatLeftTheKeyNothing: the public-key axis is
+// attributed by whether the proxy's key had anything left to sign with.
+func TestCauseWhereNamesTheStepThatLeftTheKeyNothing(t *testing.T) {
+	signsWith := func(algo string) func(Algorithms) bool {
+		return func(a Algorithms) bool { return slices.Contains(a.PublicKeyAuths, algo) }
+	}
+	if got := (AlgorithmPolicy{}).CauseWhere(signsWith("ssh-dss")); got != AlgorithmPolicyCauseProfile {
+		t.Errorf("a key the profile never permits: %q, want profile", got)
+	}
+	banned := AlgorithmPolicy{Bans: &AlgorithmBans{PublicKeyAuths: []string{"ssh-ed25519"}}}
+	if got := banned.CauseWhere(signsWith("ssh-ed25519")); got != AlgorithmPolicyCauseBan {
+		t.Errorf("a key a ban left nothing: %q, want ban", got)
+	}
+	if got := (AlgorithmPolicy{}).CauseWhere(signsWith("ssh-ed25519")); got != AlgorithmPolicyCauseProfile {
+		t.Errorf("a key every step permits, refused by the target: %q, want profile", got)
+	}
+}

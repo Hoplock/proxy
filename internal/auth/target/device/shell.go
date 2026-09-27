@@ -165,6 +165,12 @@ func (d *sshShellDialer) Shell(ctx context.Context, ep Endpoint) (Shell, error) 
 		if errors.As(err, &neg) {
 			return nil, fmt.Errorf("auth/target/device: management login to %s failed: %w", addr, neg)
 		}
+		// The same for the proxy's key finding no signature algorithm the route
+		// permits and the device accepts (phase 0045): it names algorithms and a
+		// key type, never the credential.
+		if _, unmet := sshalg.SignatureUnmet(err); unmet {
+			return nil, fmt.Errorf("auth/target/device: management login to %s failed: %w", addr, err)
+		}
 		return nil, fmt.Errorf("auth/target/device: management login to %s failed", addr)
 	}
 	_ = conn.SetDeadline(time.Time{})

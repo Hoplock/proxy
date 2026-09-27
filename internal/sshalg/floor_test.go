@@ -240,3 +240,50 @@ func TestNegotiatedIsReadOffTheConnection(t *testing.T) {
 		t.Errorf("an ed25519 key offers %q", offered)
 	}
 }
+
+// TestASignatureFailureIsRecognisedOnARealHandshake is the tripwire for the
+// one algorithm failure x/crypto reports as text (SignatureUnmet): a route
+// whose policy leaves the proxy's key nothing to sign with, driven through a
+// real handshake, must be recognised — with the key type — and a plain refusal
+// of an acceptable key must not be.
+func TestASignatureFailureIsRecognisedOnARealHandshake(t *testing.T) {
+	signer := sshtest.MustGenerateSigner() // ed25519
+	dial := func(t *testing.T, opts sshtest.Options, a control.Algorithms) error {
+		t.Helper()
+		tgt, err := sshtest.StartTarget(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tgt.Close() }()
+		var cfg ssh.ClientConfig
+		Apply(&cfg, a)
+		auth, _ := PublicKeys(signer, a)
+		cfg.User, cfg.Auth, cfg.Timeout = "probe", []ssh.AuthMethod{auth}, 5*time.Second
+		cfg.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // a test target
+		client, err := ssh.Dial("tcp", net.JoinHostPort(tgt.Host(), strconv.Itoa(tgt.Port())), &cfg)
+		if err == nil {
+			_ = client.Close()
+		}
+		return err
+	}
+
+	banned := control.AlgorithmPolicy{Bans: &control.AlgorithmBans{PublicKeyAuths: []string{ssh.KeyAlgoED25519}}}.Algorithms()
+	err := dial(t, sshtest.Options{}, banned)
+	keyType, ok := SignatureUnmet(err)
+	if !ok || keyType != ssh.KeyAlgoED25519 {
+		t.Fatalf("a key the route permits nothing for failed with %v; SignatureUnmet = %q, %v — x/crypto's wording moved", err, keyType, ok)
+	}
+
+	// A key that CAN sign, refused by the target, is a rejection and not this.
+	other := sshtest.MustGenerateSigner()
+	err = dial(t, sshtest.Options{AuthorizedKeys: []ssh.PublicKey{other.PublicKey()}}, control.Algorithms{})
+	if err == nil {
+		t.Fatal("the target accepted a key it does not authorize")
+	}
+	if _, ok := SignatureUnmet(err); ok {
+		t.Errorf("a refused key was read as a signature-algorithm failure: %v", err)
+	}
+	if _, ok := SignatureUnmet(nil); ok {
+		t.Error("nil is not a failure")
+	}
+}

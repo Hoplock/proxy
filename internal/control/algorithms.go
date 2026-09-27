@@ -49,6 +49,11 @@ const (
 	AlgorithmAxisCipher      = "cipher"
 	AlgorithmAxisMAC         = "mac"
 	AlgorithmAxisCompression = "compression"
+	// AlgorithmAxisPublicKeyAuth is the proxy's own key finding no signature
+	// algorithm the route permits and the target accepts (phase 0045). It is
+	// not negotiated in KEXINIT, so the target's list is never known; what is
+	// known is which step of the policy left the key nothing to sign with.
+	AlgorithmAxisPublicKeyAuth = "public_key_auth"
 )
 
 // Axis returns the list a carries for one of the negotiated axes above, and
@@ -64,6 +69,8 @@ func (a Algorithms) Axis(axis string) ([]string, bool) {
 		return a.Ciphers, true
 	case AlgorithmAxisMAC:
 		return a.MACs, true
+	case AlgorithmAxisPublicKeyAuth:
+		return a.PublicKeyAuths, true
 	}
 	return nil, false
 }
@@ -505,6 +512,25 @@ func (p AlgorithmPolicy) Cause(axis string, offered []string) AlgorithmPolicyCau
 		if !overlaps(list, offered) {
 			return step.cause
 		}
+	}
+	return AlgorithmPolicyCauseProfile
+}
+
+// CauseWhere is Cause for a question the target's list cannot answer: it
+// names the first step of the expansion after which permits(lists) no longer
+// holds, and the profile when every step still holds — which is the target
+// refusing everything the route permitted. It is how a public-key failure is
+// attributed, where the question is whether the proxy's own key had anything
+// left to sign with.
+func (p AlgorithmPolicy) CauseWhere(permits func(Algorithms) bool) AlgorithmPolicyCause {
+	profile, floored, final := p.stages()
+	switch {
+	case !permits(profile):
+		return AlgorithmPolicyCauseProfile
+	case !permits(floored):
+		return AlgorithmPolicyCauseFloor
+	case !permits(final):
+		return AlgorithmPolicyCauseBan
 	}
 	return AlgorithmPolicyCauseProfile
 }

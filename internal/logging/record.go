@@ -152,7 +152,9 @@ const (
 	// (key_exchange, host_key, cipher, mac, compression) the route's profile
 	// allowed nothing on, and the comma-separated list the TARGET offered
 	// there — which is what an operator reads to choose the profile the route
-	// needs (phase 0043).
+	// needs (phase 0043). Phase 0045 adds public_key_auth: the proxy's own key
+	// left no signature algorithm the target accepts, where no offered list
+	// is known and the attribute is absent.
 	AttrAlgorithmAxis           = "algorithm_axis"
 	AttrTargetAlgorithmsOffered = "target_algorithms_offered"
 	// AttrAlgorithmFloor is the route's algorithm floor IN FORCE on the target

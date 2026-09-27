@@ -751,13 +751,18 @@ fallback, never scored against the proxy's credential. The record is a `warn`
 carrying:
 
 - `algorithm_axis` — the axis that could not be agreed (`key_exchange`,
-  `host_key`, `cipher`, `mac`, `compression`);
+  `host_key`, `cipher`, `mac`, `compression`), or `public_key_auth` when the
+  route's policy left the proxy's own key no signature algorithm the target
+  accepts — a `public_key_auth` ban, say, on the only algorithm the key can sign
+  with;
 - `algorithm_policy_cause` — **which step** of the expansion removed the last
   algorithm the target offered there: `profile`, `floor` or `ban`, which is the
   thing to change;
 - `target_algorithms_offered` — what the **target** offered on that axis,
   comma-joined (public protocol metadata, never credential material; it says
-  whether the fix is an OpenSSH upgrade or a change on the target);
+  whether the fix is an OpenSSH upgrade or a change on the target). It is absent
+  for `public_key_auth`, which is not negotiated in the key-exchange init and
+  whose accepted list the SSH library does not report;
 - the policy in force: `algorithm_profile`, `algorithm_floor` when there is one,
   and `algorithm_bans.<axis>` for each banned axis; and `target_addr`.
 
