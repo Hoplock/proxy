@@ -133,6 +133,7 @@ func run(configPath string, logger *log.Logger) error {
 		FlushInterval:   cfg.Logging.FlushInterval,
 		QueueSize:       cfg.Logging.QueueSize,
 		BufferDir:       cfg.Logging.BufferDir,
+		BufferMaxBytes:  cfg.Logging.BufferMaxBytes,
 		SendTimeout:     cfg.Logging.SendTimeout,
 		RetryMin:        cfg.Logging.RetryMin,
 		RetryMax:        cfg.Logging.RetryMax,

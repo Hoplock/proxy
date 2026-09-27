@@ -4,7 +4,10 @@
 package proxy
 
 import (
+	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,6 +96,144 @@ func TestARouteThatMustBeRecordedRunsWhileOnlyTheNetworkIsDown(t *testing.T) {
 	if logins := h.target.Logins(); len(logins) != 1 {
 		t.Errorf("the target was logged into as %v, want exactly one login", logins)
 	}
+}
+
+// TestARouteThatMustBeRecordedPinsTheSession: the buffer is bounded (phase
+// 0046), and a capture-bound session's records are what D16 bounds it by, so the
+// session is pinned — never evicted — from the capture check on, the handshake
+// and authentication it spilled before the check included.
+func TestARouteThatMustBeRecordedPinsTheSession(t *testing.T) {
+	h := newHarness(t, harnessOptions{requireSessionCapture: true})
+	// Everything goes to the buffer, where the pin can be seen.
+	h.client.ingestDown.Store(true)
+
+	text, status := runAndCollect(t, h, "uptime")
+	if status != 0 {
+		t.Fatalf("the session failed with %q (exit %d); a buffering proxy satisfies the capture bound", text, status)
+	}
+	settleRecords(h)
+
+	area := filepath.Join(h.bufferDir, testSessionID)
+	if _, err := os.Stat(filepath.Join(area, ".pinned")); err != nil {
+		t.Fatalf("the admitted session is not pinned: %v", err)
+	}
+	// Pinning covers the whole session: its first record, made long before
+	// anyone knew the route would require capture, is in the pinned area.
+	if !areaHolds(t, area, control.LogKindSessionStart) {
+		t.Error("the session's pre-admission records are not under its pin")
+	}
+}
+
+// TestARouteThatMustBeRecordedIsRefusedWhileTheWindowIsFullOfPinnedRecords: a
+// buffer whose window is full of records it may not evict cannot promise a new
+// session its record, so the capture bound refuses — as the outage it always
+// was — and every route without the bound keeps running.
+func TestARouteThatMustBeRecordedIsRefusedWhileTheWindowIsFullOfPinnedRecords(t *testing.T) {
+	bounded := newHarness(t, harnessOptions{requireSessionCapture: true, options: pinnedFullRecorder(t)})
+
+	text, status := runAndCollect(t, bounded, "uptime")
+	if !strings.Contains(text, "not a permissions problem") || !strings.Contains(text, testSessionID) {
+		t.Errorf("user saw %q, want the outage wording with the session id", text)
+	}
+	if status == 0 {
+		t.Error("a refused session exited 0")
+	}
+	if logins := bounded.target.Logins(); len(logins) != 0 {
+		t.Errorf("the target was logged into as %v; the check must run before the target leg", logins)
+	}
+
+	unbounded := newHarness(t, harnessOptions{options: pinnedFullRecorder(t)})
+	if text, status := runAndCollect(t, unbounded, "uptime"); status != 0 {
+		t.Errorf("a route without the capture bound failed with %q (exit %d) on a full window", text, status)
+	}
+}
+
+// TestARouteThatMustBeRecordedIsRefusedWhenItsPinCannotBeMadeDurable: a pin
+// that a crash could undo is no pin, so a failure to write it refuses the
+// session as the same outage.
+func TestARouteThatMustBeRecordedIsRefusedWhenItsPinCannotBeMadeDurable(t *testing.T) {
+	h := newHarness(t, harnessOptions{requireSessionCapture: true})
+	// Where the session's directory would go, something that is not one.
+	if err := os.WriteFile(filepath.Join(h.bufferDir, testSessionID), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	text, status := runAndCollect(t, h, "uptime")
+	if !strings.Contains(text, "not a permissions problem") || !strings.Contains(text, testSessionID) {
+		t.Errorf("user saw %q, want the outage wording with the session id", text)
+	}
+	if status == 0 {
+		t.Error("a refused session exited 0")
+	}
+	if logins := h.target.Logins(); len(logins) != 0 {
+		t.Errorf("the target was logged into as %v with no durable pin", logins)
+	}
+}
+
+// pinnedFullRecorder swaps in a telemetry pipeline whose buffer a previous run
+// left full of a pinned session's records: its window cannot promise anyone
+// else a pin.
+func pinnedFullRecorder(t *testing.T) func(*Options) {
+	t.Helper()
+	dir := t.TempDir()
+	old := filepath.Join(dir, "sess-previous-run")
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(old, ".pinned"), nil, 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	line := `{"record_id":"rec-old","session_id":"sess-previous-run","timestamp":"2026-09-27T12:00:00Z","kind":"command","severity":"info"}` + "\n"
+	if err := os.WriteFile(filepath.Join(old, "00000000000000000000.batch.jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatalf("write segment: %v", err)
+	}
+	return func(o *Options) {
+		shipper, err := logging.New(logging.Options{
+			Client: o.Client, BatchSize: testBatchSize, FlushInterval: time.Minute,
+			BufferDir: dir, BufferMaxBytes: int64(len(line)), // exactly full
+		})
+		if err != nil {
+			t.Fatalf("logging.New: %v", err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shipper.Close(ctx)
+		})
+		o.Recorder = shipper
+	}
+}
+
+// settleRecords waits until every record the session made has been handed on —
+// delivered or spilled. The drain's own error is not the point: the log sink
+// is down on purpose.
+func settleRecords(h *harness) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = h.shipper.Flush(ctx)
+}
+
+// areaHolds reports whether a session's buffer directory holds a record of the
+// given kind.
+func areaHolds(t *testing.T, area string, kind control.LogKind) bool {
+	t.Helper()
+	entries, err := os.ReadDir(area)
+	if err != nil {
+		t.Fatalf("read %s: %v", area, err)
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(area, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		if strings.Contains(string(data), `"kind":"`+string(kind)+`"`) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestARouteWithoutTheCaptureBoundIsUnaffected keeps the absent-value default

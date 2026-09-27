@@ -106,6 +106,14 @@ logging:
   # returns. It is a buffer and never the destination. Leaving it empty means
   # an outage loses records.
   buffer_dir: "/var/lib/hoplock/proxy/logbuf"
+  # The most the buffer holds on disk, in bytes; every record in it counts.
+  # Past it the oldest records are evicted, in class order — records Hoplock
+  # Control refused, then stream capture, then other records, then priority
+  # ones — and every eviction is reported to Hoplock Control. A session under
+  # require_session_capture, or whose device account only its mapping event
+  # attributes, is never evicted. Optional; 0 means 1 GiB, and the minimum is
+  # 16 MiB (16777216). Not fleet-owned: it budgets this host's own disk.
+  buffer_max_bytes: 1073741824
   # How many records accumulate before a batch is shipped. Optional.
   # [fleet: restart]
   batch_size: 64
