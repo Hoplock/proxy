@@ -53,8 +53,8 @@
     route nothing to offer on that axis". **This is the refusal the declaration
     must let a server reproduce exactly.**
   - `internal/control/clone.go`: `ProxyCapabilities.Clone`.
-  - `internal/control/contract_test.go`: `TestEnumsMatchContract` and
-    `TestSpecDocumentsTheAlgorithmSchemas`.
+  - `internal/control/contract_test.go`: `TestEnumsMatchContract`,
+    `TestSpecDocumentsTheAlgorithmSchemas` and its helper `jsonFields`.
   - `internal/control/floor_test.go`, around `AlgorithmFloorCapabilities`.
   - `internal/auth/target/enforcement.go`: `ProxyCapabilities()`, the one place
     this build's declaration is assembled.
@@ -85,7 +85,7 @@ An **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md`
 docs sync that followed this repository's #69 (phase 0045). The sync put the
 work into Control's own phase **0014**, which builds the authoring-time checks
 for `algorithm_floor` and `algorithm_bans` against its capability store (its
-**M17**: warn, never refuse, on what the fleet declares).
+**M17**).
 
 **The gap, in this repository's words.** `Validate` refuses a route whose bans
 leave any axis nothing to offer. The contract says a server **must not send**
@@ -112,24 +112,60 @@ legacy additions only in part. Instead it builds one seam named for this
 missing declaration. The seam answers what the wire answers and reports
 "unknown" for the rest. An unknown is never a refusal and never a silent pass.
 
-**The shape requested**, in the requester's words from #41's commit message and
-its 0014 text: *"an exact 'ban empties an axis' check needs each build's offer
-per profile and per axis, which the wire does not carry"*. The missing
-declaration is *"each build's offer per profile and per axis"*.
+**The shape requested**, quoted from #41's `## Upstream request`:
 
-**What downstream cannot do until this lands.** Control cannot refuse, at
-authoring time, a ban that leaves a `default` or `legacy-rsa-sha1` route no
-cipher, MAC, host-key algorithm or public-key signature algorithm to offer. It
-can only report it as "unknown". An author who saves such a ban is not
-stopped. Every proxy then refuses that route **at connect time**, as a
-contract violation and an outage (§4.3's outage branch). That happens during
-exactly the emergency the ban was meant for: an advisory, and the runbook's
-ban → `cache_invalidate` → `session_kill`. Control built the seam unwired and
+> ```yaml
+> # On ProxyCapabilities (AuthorizeRequest.capabilities), beside algorithm_floors
+> # and algorithms. It rides the request, so policy_version does not govern it.
+> algorithm_profiles:
+>   type: array
+>   description: |
+>     What each algorithm_profile offers on the proxy→target leg in THIS build,
+>     per axis, before any floor or ban: the profile stage of the expansion every
+>     connection dials with. Lists are alias-complete, as algorithm_floors is.
+>   items:
+>     $ref: '#/components/schemas/AlgorithmProfileCapability'
+>
+> AlgorithmProfileCapability:
+>   type: object
+>   required: [profile, key_exchanges, ciphers, macs, host_keys, public_key_auth]
+>   properties:
+>     profile:         {type: string, enum: [default, legacy-rsa-sha1, legacy-device]}
+>     key_exchanges:   {type: array, items: {type: string}}
+>     ciphers:         {type: array, items: {type: string}}
+>     macs:            {type: array, items: {type: string}}
+>     host_keys:       {type: array, items: {type: string}}
+>     public_key_auth: {type: array, items: {type: string}}
+> ```
+>
+> With it, the server computes each axis exactly as the proxy does. It takes the
+> profile's list, narrows the key exchanges to the declared level's set,
+> subtracts the bans, and refuses an empty axis. If upstream prefers to narrow
+> the server's MUST NOT to what the declarations let it judge instead, that is a
+> real answer too.
+
+**What downstream cannot do until this lands.** In the request's words:
+
+> A ban that empties the cipher, MAC, host-key or public-key-auth axis of a
+> `default` or `legacy-rsa-sha1` route passes Control's authoring checks with
+> only an advisory. Every proxy then refuses that route at its first authorize
+> as a contract violation. The route has an outage (fail-closed, never a
+> widening), found at connect time rather than at publish time.
+
+A contract violation is §4.3's **outage** branch. So the failure lands in
+exactly the emergency the ban was meant for: an advisory, and the runbook's ban
+→ `cache_invalidate` → `session_kill`. Control built the seam unwired and
 approximated nothing.
 
-**Taken as asked.** The request is right, in the form requested, and nothing
-here contradicts a D decision:
+**Taken as asked, shape included.** The request is right, in the form
+requested, and nothing here contradicts a D decision:
 
+- **The shape as sketched.** Each entry is flat: `profile` beside the five axis
+  lists, with every axis **required**. The flat form mirrors
+  `AlgorithmFloorCapability`'s `{level, key_exchanges}`. The axis keys are the
+  five this contract already spells one way. `required` is what makes the
+  judgement exact, because a server never has to decide what a missing axis
+  means.
 - A **declaration**, not a check this proxy performs for Control. The proxy is
   a client of Control and exposes nothing Control could call to ask "would you
   refuse this?". The facts must ride a request the proxy already makes, and
@@ -146,6 +182,26 @@ here contradicts a D decision:
   drifts is the failure the request exists to avoid, whether the copy is here
   or in Control.
 
+**The alternative the request offers, declined.** The request would also accept
+narrowing Control's MUST NOT to what the declarations already let it judge.
+That changes nothing the proxy does. The proxy still refuses the route, so the
+only effect would be to make the outage contract-compliant rather than
+prevent it, and the outage arrives exactly when a ban is issued in a hurry.
+The declaration costs one derived list per profile, on a request that already
+carries two derived declarations. So the gap is closed at its source.
+
+**One addition the request's composition sentence leaves out.** A server that
+subtracts bans from alias-complete lists by plain set difference judges wrong.
+`curve25519-sha256` and `curve25519-sha256@libssh.org` are **one exchange**
+(`AlgorithmBans` already says so), and a ban on either spelling removes both.
+Take a ban that removes every other exchange the route offers (under its floor,
+if it has one), and names `curve25519-sha256` but not its alias. Plain
+subtraction leaves the `@libssh.org` spelling and judges the axis non-empty.
+The proxy leaves nothing and refuses the route. The server would then
+under-refuse, which is the outage this phase exists to prevent. So
+`api/README.md`'s composition rule states the one-exchange rule as a step, and
+the sufficiency test below covers this case for each spelling.
+
 **Settled by existing decisions, not re-opened here.** The declaration makes no
 profile widenable and introduces no finer preset. It is a report, not a list a
 server sends (§4.2, "A list may narrow a route, never widen it"). It is request
@@ -156,16 +212,18 @@ precedent), so it moves `info.version` and not the vocabulary number.
 
 Add `capabilities.algorithm_profiles` to `AuthorizeRequest`. It declares, for
 every `algorithm_profile` this build accepts, what that profile offers on each
-axis before any floor or ban. It is built by the function every connection
-dials with. Prove in a test that these lists and `algorithm_floors` are enough
-to reproduce `Validate`'s axis-emptiness refusal exactly.
+axis before any floor or ban, in the flat shape the request sketched, with
+every axis required. It is built by the function every connection dials with.
+Prove in a test that these lists and `algorithm_floors` are enough to
+reproduce `Validate`'s axis-emptiness refusal exactly.
 
 ## The shape
 
 ### Contract (`api/control.yaml`)
 
-`ProxyCapabilities` gains one property, beside `algorithm_floors`, with the
-same list-of-objects pattern:
+Take the request's sketch as the schema, with its descriptions written out.
+`ProxyCapabilities` gains one property, beside `algorithm_floors` and
+`algorithms`:
 
 ```yaml
         algorithm_profiles:
@@ -174,8 +232,9 @@ same list-of-objects pattern:
             Every `algorithm_profile` this build accepts, one entry per
             profile, each with what that profile offers on the proxy→target
             leg **in this build**, per axis, before any `algorithm_floor`
-            narrows it and before any `algorithm_bans` subtract from it. Key
-            exchanges are in the wire form, as in `algorithm_floors`.
+            narrows it and before any `algorithm_bans` subtract from it: the
+            profile stage of the expansion every connection dials with. Lists
+            are alias-complete, as `algorithm_floors` is.
 
             It is what lets a server refuse exactly what the proxy refuses.
             With each level's key exchanges from `algorithm_floors`, it
@@ -194,33 +253,53 @@ same list-of-objects pattern:
 
     AlgorithmProfileCapability:
       type: object
-      description: One `algorithm_profile` a proxy build accepts, and what it offers.
-      required: [profile, algorithms]
+      description: |
+        One `algorithm_profile` a proxy build accepts, and what it offers on
+        each axis before any floor or ban. Every axis is present.
+      required: [profile, key_exchanges, ciphers, macs, host_keys, public_key_auth]
       properties:
         profile:
           type: string
           enum: [default, legacy-rsa-sha1, legacy-device]
-        algorithms:
-          $ref: '#/components/schemas/OfferableAlgorithms'
+        key_exchanges:
+          type: array
+          items:
+            type: string
+        ciphers:
+          type: array
+          items:
+            type: string
+        macs:
+          type: array
+          items:
+            type: string
+        host_keys:
+          type: array
+          items:
+            type: string
+        public_key_auth:
+          type: array
+          items:
+            type: string
 ```
 
-`OfferableAlgorithms` is reused as the per-axis shape, as is. There is one
-spelling per axis in this contract (`Algorithms`' doc comment), and the axis
-keys are `key_exchanges`, `ciphers`, `macs`, `host_keys` and `public_key_auth`.
-Update `OfferableAlgorithms`' description so it no longer claims to be only the
-build-wide union. The wording is yours. Its fields do not change.
+The five axis keys are the ones `AlgorithmBans` and `OfferableAlgorithms`
+already use. `OfferableAlgorithms` itself does not change: it stays the
+build-wide union.
 
 Update the `info.description` paragraph that lists what a proxy **declares**
-on the request as outside `policy_version`, so it names `algorithm_profiles`
-as well.
+on the request as outside `policy_version`, so that it names
+`algorithm_profiles` too.
 
-`api/README.md`'s "**Capability advertisement**" per-proxy bullet names the
-new declaration and what it is for: an exact authoring-time refusal. It also
-states the composition rule a server applies. That rule is:
+In `api/README.md`, the per-proxy bullet of "**Capability advertisement**"
+names the new declaration and what it is for: an exact authoring-time refusal.
+It also states the composition rule a server applies:
 
 1. start from the profile's list on each axis;
 2. under a floor, intersect key exchanges with that level's declared list;
-3. subtract the bans, treating both curve25519 spellings as one.
+3. subtract the bans, treating `curve25519-sha256` and
+   `curve25519-sha256@libssh.org` as one exchange: a ban on either removes
+   both.
 
 An axis left empty is refused. **Write the rule once, in the README, in terms
 of the declared lists. Do not restate the lists themselves anywhere in prose.**
@@ -230,13 +309,36 @@ of the declared lists. Do not restate the lists themselves anywhere in prose.**
 ```go
 // enforcement.go, beside AlgorithmFloorCapability
 type AlgorithmProfileCapability struct {
-	Profile    AlgorithmProfile `json:"profile"`
-	Algorithms Algorithms       `json:"algorithms"`
+	// Profile is the algorithm_profile value.
+	Profile AlgorithmProfile `json:"profile"`
+	// Algorithms is what the profile offers, per axis, before any floor or
+	// ban. It is embedded, so the five axis keys sit beside `profile` on the
+	// wire and are spelled by the one type that spells them.
+	Algorithms
 }
 
 // ProxyCapabilities gains, beside AlgorithmFloors:
 	AlgorithmProfiles []AlgorithmProfileCapability `json:"algorithm_profiles,omitempty"`
 ```
+
+Embedding keeps the rule in `Algorithms`' doc comment, that an axis is spelled
+one way. Update that comment, which says a list per axis travels in two places,
+to say three. Embedding has three consequences, and each is owed a test or a
+line:
+
+- **`required` rests on an invariant.** `Algorithms`' fields are `omitempty`,
+  and the contract makes every axis required. That holds only because no
+  profile offers an empty axis (0043: `default` is the library's secure set on
+  every axis). Pin it: marshal every entry `AlgorithmProfileCapabilities()`
+  returns, and assert that all five keys are present and non-empty.
+- **`jsonFields` must see the embedded fields.** In `contract_test.go` it reads
+  only tagged fields, so it would see `profile` and silently skip the five
+  axes. Teach it to descend into an anonymous struct field, so
+  `TestSpecDocumentsTheAlgorithmSchemas` checks every key the type sends.
+- **The promoted `Clone` is not the entry's.** It returns only the embedded
+  `Algorithms`. `ProxyCapabilities.Clone` copies each entry as
+  `AlgorithmProfileCapability{Profile: e.Profile, Algorithms: e.Algorithms.Clone()}`,
+  beside the `AlgorithmFloors` loop.
 
 ```go
 // algorithms.go, beside AlgorithmFloorCapabilities
@@ -244,21 +346,16 @@ func AlgorithmProfileCapabilities() []AlgorithmProfileCapability
 ```
 
 - One entry per `AlgorithmProfiles()`, in that order.
-- Each entry's `Algorithms` is `AlgorithmPolicy{Profile: p}`'s expansion: no
-  floor and no bans. Key exchanges come from `WireKeyExchanges()`, so they are
-  in wire form, alias included, as in `AlgorithmFloorCapabilities`. Every other
-  axis comes from `Algorithms()`.
+- Each entry is `AlgorithmPolicy{Profile: p}` expanded with no floor and no
+  bans. Key exchanges come from `WireKeyExchanges()`, so they are
+  alias-complete, exactly as in `AlgorithmFloorCapabilities`. Every other axis
+  comes from `Algorithms()`.
 - Nothing is written out by hand. The doc comment says why, in the words
   `OfferableAlgorithms` and `AlgorithmFloorCapabilities` already use.
 
-`ProxyCapabilities.Clone` deep-copies the new slice, including each entry's
-lists. `internal/auth/target.ProxyCapabilities()` sets
+`internal/auth/target.ProxyCapabilities()` sets
 `AlgorithmProfiles: control.AlgorithmProfileCapabilities()` beside
 `AlgorithmFloors`, and the comment above it covers both.
-
-**Decide, and say in your learnings, whether `ProxyCapabilities.Declares()`
-should count a profiles-only declaration.** 0045 left the same question open
-for floors. Answer it the same way unless you find a reason not to.
 
 ### Mock (`cmd/mock-control`)
 
@@ -270,12 +367,12 @@ time.
 
 ## In scope
 
-- `api/control.yaml`: the property, the schema, both description updates, and
-  `info.version` one minor up.
+- `api/control.yaml`: the property, the schema, the `info.description`
+  update, and `info.version` one minor up.
 - `api/README.md`: the "Capability advertisement" bullet and the composition
   rule.
-- `internal/control`: the type, the builder, the `Clone` change, and the tests
-  below.
+- `internal/control`: the type, the builder, the `Clone` change, `Algorithms`'
+  doc comment, `jsonFields`, and the tests below.
 - `internal/auth/target/enforcement.go`: sending the declaration.
 - `cmd/mock-control`: an accept test.
 - `docs/PLAN.md`:
@@ -305,7 +402,8 @@ time.
 
 - An authorize request from this build carries `capabilities.algorithm_profiles`
   with one entry per profile in `AlgorithmProfiles()`. Each entry equals that
-  profile's no-floor, no-ban expansion, with key exchanges in wire form.
+  profile's no-floor, no-ban expansion, with alias-complete key exchanges, and
+  all five axes are present and non-empty on the wire.
 - **The declaration is sufficient, and this is the test that proves the
   request is met.** A reference judgement is written in a test, using **only**
   the wire declaration (`algorithm_profiles` and `algorithm_floors`, decoded
@@ -314,8 +412,10 @@ time.
   - for every accepted profile × floor pair (absent, `modern-kex`,
     `pq-hybrid-kex`; `legacy-device` × floor is refused and is excluded);
   - for a ban set that, on each axis in turn, removes: everything; everything
-    but one; one; both curve25519 spellings; each curve25519 spelling alone;
-    and a name no build offers.
+    but one; one; and a name no build offers. On the key-exchange axis, add
+    each curve25519 spelling alone, both together, and every other exchange
+    plus one spelling. The last is the case plain set subtraction gets
+    wrong.
 
   Every disagreement fails with the case named. If the two ever disagree, the
   declaration is not enough, and Control's check built on it would refuse more
@@ -328,8 +428,11 @@ time.
   judgement's verdict for a ban on the remaining cipher changes with it. The
   judgement must read the declaration, not the build.
 - `TestEnumsMatchContract` covers `AlgorithmProfileCapability.profile`.
-  `TestSpecDocumentsTheAlgorithmSchemas` covers the new schema and the
-  `$ref` from `AlgorithmProfileCapability.algorithms` to `OfferableAlgorithms`.
+  `TestSpecDocumentsTheAlgorithmSchemas`, with `jsonFields` descending into
+  the embedded `Algorithms`, covers all six properties of
+  `AlgorithmProfileCapability`. It also pins the schema's `required` list as
+  all six, and the `$ref` from `ProxyCapabilities.algorithm_profiles.items` to
+  `AlgorithmProfileCapability`.
 - `ProxyCapabilities.Clone` deep-copies the new field. Mutating the clone's
   lists leaves the original intact, and this is tested.
 - The mock accepts an authorize request carrying the field.
@@ -340,7 +443,9 @@ time.
 
 - `internal/control`:
   - `AlgorithmProfileCapabilities` matches `AlgorithmPolicy{Profile: p}` per
-    profile, in wire form, in `AlgorithmProfiles()` order;
+    profile, alias-complete, in `AlgorithmProfiles()` order;
+  - every entry marshals with all five axis keys present and non-empty. This is
+    the invariant `required` rests on;
   - the union test;
   - the **sufficiency** test and the cross-build fixture test above;
   - the `Clone` test;
@@ -372,11 +477,15 @@ from and what it touches:
   obligations:
   - **Re-vendor** the contract at the new `info.version` (its M1).
     `policy_version` is unchanged.
-  - **Wire Control's 0014 seam** (the one named for "each build's offer per
-    profile and per axis") to `capabilities.algorithm_profiles`. Use the
-    composition rule in `api/README.md`, so that "unknown" remains only for a
-    proxy whose declaration omits the profile, or omits
-    `algorithm_profiles` altogether.
+  - **Wire Control's seam to `capabilities.algorithm_profiles`.** The seam is
+    named for "each build's offer per profile and per axis". It is in Control's
+    0014 item 4, which was still queued when this prompt was written and
+    already expects this: "If the declaration has landed and been synced, wire
+    it in place of 'unknown'". Land the wiring there. If 0014 has been
+    implemented by the time of the sync, land it in the queued prompt that owns
+    the seam. Use the composition rule in `api/README.md`, the curve25519 step
+    included, so that "unknown" remains only for a proxy whose declaration
+    omits the profile or omits `algorithm_profiles` altogether.
   - **Refuse exactly what the proxy refuses**, and apply the refusal per
     proxy. The declarations are per build, so during a rolling upgrade one ban
     can empty an axis on one build and not on another. A proxy whose own
@@ -386,12 +495,16 @@ from and what it touches:
     forbids.
   - Record the declaration per proxy within its M5 budget, beside
     `algorithm_floors`, if its fleet view shows per-build offers.
-  - Update its PLAN, where #41 recorded this as a named cross-repo dependency,
-    to say it is met, citing this repository's PR.
+  - Its 0014 item 2 asks whether a floor-only declaration counts for
+    `ProxyCapabilities.Declares()`. A profiles-only declaration raises the same
+    question. Answer it there, the same way.
+  - Update its PLAN §5.2 and §10's 0014 row, which record this as a named
+    cross-repo dependency, to say it is met, citing this repository's PR.
 - **The learnings summary** names:
   - the field, the type and the builder;
-  - that the lists are pre-floor and pre-ban, with key exchanges in wire form;
-  - the composition rule, and the test that proves it sufficient;
-  - the `Declares()` decision;
+  - that the lists are pre-floor and pre-ban, alias-complete, with every axis
+    required;
+  - the composition rule, the curve25519 step included, and the test that
+    proves it sufficient;
   - the new `info.version`;
   - what Control must change. That last item is what the sync session reads.
