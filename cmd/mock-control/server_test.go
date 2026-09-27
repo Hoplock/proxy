@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -971,6 +973,20 @@ func (m *mock) debugLogSink(t *testing.T, accepting bool) {
 	}
 }
 
+// debugLogRefuse sets what the mock's log endpoints refuse
+// (pathDebugLogRefuse).
+func (m *mock) debugLogRefuse(t *testing.T, body string) {
+	t.Helper()
+	resp, err := http.Post(m.srv.URL+pathDebugLogRefuse, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", pathDebugLogRefuse, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST %s: status %d", pathDebugLogRefuse, resp.StatusCode)
+	}
+}
+
 // debugReset clears the mock's stored state.
 func (m *mock) debugReset(t *testing.T) {
 	t.Helper()
@@ -1776,6 +1792,117 @@ func TestInvalidV4FixturesAreRefusedAtStartup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestALogRecordWithNoSessionIsAccepted: session_id "" is a record that
+// belongs to no session — a sweep's, or the report of a gap in one — and the
+// contract requires a server to accept it on any kind (phase 0046). This mock
+// refused it on both endpoints before that phase, so in this repository's own
+// topology one sweep that changed a device stalled a proxy's whole delivery.
+func TestALogRecordWithNoSessionIsAccepted(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	ctx := context.Background()
+
+	var batch []control.LogRecord
+	for i, kind := range []control.LogKind{
+		control.LogKindProvisioning, control.LogKindPolicyDecision, control.LogKindError, control.LogKindCommand,
+	} {
+		batch = append(batch, control.LogRecord{
+			RecordID: fmt.Sprintf("sweep-%d", i), SessionID: "", Timestamp: testConn().Timestamp,
+			Kind: kind, Severity: control.SeverityInfo,
+			Attributes: map[string]string{"event": "device.config.change"},
+		})
+	}
+	if _, err := m.client.IngestLogBatch(ctx, &control.LogBatchRequest{Records: batch}); err != nil {
+		t.Fatalf("a batch of session-less records was refused: %v", err)
+	}
+	// The sweep failure: critical, policy_decision, no session — the record
+	// that is the only way anybody finds a standing administrator (D13).
+	if _, err := m.client.IngestPriorityLog(ctx, &control.LogPriorityRequest{Record: control.LogRecord{
+		RecordID: "sweep-failed", SessionID: "", Timestamp: testConn().Timestamp,
+		Kind: control.LogKindPolicyDecision, Severity: control.SeverityCritical,
+		Attributes: map[string]string{"event": "device.account.sweep_failed"},
+	}}); err != nil {
+		t.Fatalf("a session-less critical record was refused: %v", err)
+	}
+
+	stored := m.debugLogs(t)
+	if len(stored.Batched) != len(batch) || len(stored.Priority) != 1 {
+		t.Fatalf("stored %d batched and %d priority records, want %d and 1", len(stored.Batched), len(stored.Priority), len(batch))
+	}
+	for _, rec := range append(stored.Batched, stored.Priority...) {
+		if rec.SessionID != "" {
+			t.Errorf("record %s was stored under session %q", rec.RecordID, rec.SessionID)
+		}
+	}
+}
+
+// TestTheRefusalSetRefusesARequestWhole: what POST /debug/logs/refuse matches
+// is refused with a 400 naming the record — and the whole request with it,
+// nothing stored — on both endpoints, until empty lists or a reset clear it.
+func TestTheRefusalSetRefusesARequestWhole(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	ctx := context.Background()
+	rec := func(id string, kind control.LogKind, event string) control.LogRecord {
+		r := control.LogRecord{RecordID: id, SessionID: "session-1", Timestamp: testConn().Timestamp,
+			Kind: kind, Severity: control.SeverityInfo}
+		if event != "" {
+			r.Attributes = map[string]string{"event": event}
+		}
+		return r
+	}
+	refusedWith := func(t *testing.T, err error, fragments ...string) {
+		t.Helper()
+		var apiErr *control.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Code != "invalid_record" {
+			t.Fatalf("got %v, want a 400 invalid_record", err)
+		}
+		for _, f := range fragments {
+			if !strings.Contains(apiErr.Message, f) {
+				t.Errorf("the refusal %q does not name %q", apiErr.Message, f)
+			}
+		}
+	}
+
+	m.debugLogRefuse(t, `{"kinds":["stream"],"events":["logging.gap"],"record_ids":["r9"]}`)
+
+	_, err := m.client.IngestLogBatch(ctx, &control.LogBatchRequest{Records: []control.LogRecord{
+		rec("r1", control.LogKindCommand, ""), rec("r2", control.LogKindStream, ""), rec("r3", control.LogKindCommand, ""),
+	}})
+	refusedWith(t, err, "records[1]", "r2")
+	_, err = m.client.IngestLogBatch(ctx, &control.LogBatchRequest{Records: []control.LogRecord{
+		rec("r4", control.LogKindError, "logging.gap"),
+	}})
+	refusedWith(t, err, "records[0]", "r4")
+	_, err = m.client.IngestPriorityLog(ctx, &control.LogPriorityRequest{Record: rec("r9", control.LogKindPolicyDecision, "")})
+	refusedWith(t, err, "r9")
+	if stored := m.debugLogs(t); len(stored.Batched)+len(stored.Priority) != 0 {
+		t.Fatalf("a refused request stored %d records; a 400 stores none of it", len(stored.Batched)+len(stored.Priority))
+	}
+
+	// What matches nothing is taken as ever.
+	if _, err := m.client.IngestLogBatch(ctx, &control.LogBatchRequest{Records: []control.LogRecord{
+		rec("r1", control.LogKindCommand, ""), rec("r3", control.LogKindCommand, "device.config.change"),
+	}}); err != nil {
+		t.Fatalf("a batch the set does not match was refused: %v", err)
+	}
+
+	// Empty lists clear it.
+	m.debugLogRefuse(t, `{}`)
+	if _, err := m.client.IngestLogBatch(ctx, &control.LogBatchRequest{Records: []control.LogRecord{
+		rec("r2", control.LogKindStream, ""),
+	}}); err != nil {
+		t.Fatalf("empty lists did not clear the refusal set: %v", err)
+	}
+
+	// And so does a reset.
+	m.debugLogRefuse(t, `{"kinds":["command"]}`)
+	m.debugReset(t)
+	if _, err := m.client.IngestLogBatch(ctx, &control.LogBatchRequest{Records: []control.LogRecord{
+		rec("r5", control.LogKindCommand, ""),
+	}}); err != nil {
+		t.Fatalf("a reset did not clear the refusal set: %v", err)
 	}
 }
 
