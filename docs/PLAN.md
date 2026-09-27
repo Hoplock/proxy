@@ -890,6 +890,59 @@ announced as a break** (`info.version` 4.3.0, `policy_version` unchanged, phase
 credential (0025) — with a `target.algorithm_policy_unmet` record naming the
 axis and what the target offered (§7). The record's side is §7's.
 
+**As extended (phase 0045): a floor and bans beside the profile, and the rule
+for lists.** The profile can only weaken, so policy could say a route *may* use
+SHA-1 and never that it *must* negotiate a post-quantum exchange — Hoplock
+Control's request, for its post-quantum posture phase. Two siblings of
+`algorithm_profile` now ride the decision beside it. Neither is a value inside
+it, because a route may want `default` *and* a minimum.
+
+- **`algorithm_floor`** is a minimum on the key-exchange axis: an **ordered
+  ladder**, `modern-kex` < `pq-hybrid-kex`, compared by rank. Each level accepts
+  a subset of the one below, and that nesting is the contract's rule for adding
+  a level. A regime that does not nest (FIPS and its kind) is not a rung and
+  needs a construct of its own. In this build `modern-kex` is
+  `ssh.SupportedAlgorithms().KeyExchanges` and `pq-hybrid-kex` is
+  `mlkem768x25519-sha256` **alone**: x/crypto does not implement
+  `sntrup761x25519-sha512` (D9), so a target offering only that and classical
+  exchanges does not meet it. A floor **intersects** the profile's list and
+  orders what is left highest level first; it never adds. The profile × floor
+  rule is by **axis**: a floor with a profile that widens key exchange
+  (`legacy-device`) is refused as `ErrProtocol`, and one with a profile that
+  widens only signatures (`legacy-rsa-sha1`) is accepted. Each proxy
+  **declares** the levels it enforces on `AuthorizeRequest.capabilities.algorithm_floors`,
+  each with the exact key exchanges its build offers for it, built by the
+  function that dials. The server must not send a level the proxy did not
+  declare.
+- **`algorithm_bans`** is per route and per axis (`key_exchanges`, `ciphers`,
+  `macs`, `host_keys`, `public_key_auth`): identifiers the proxy must not offer,
+  so an advisory is answered without a release. Bans are applied **last** —
+  profile, then floor, then subtract — from what the route would otherwise
+  offer, never from the library's supported set, which would add. A ban always
+  wins, and `curve25519-sha256` and its `@libssh.org` alias are one exchange,
+  banned together. Refused as `ErrProtocol`: a ban that empties an axis, one
+  that removes every key exchange the floor's level accepts, and an empty or
+  duplicated identifier. Accepted but **unmatched**: a name this build cannot
+  offer. It is already satisfied, and the record names it so a typo cannot pass
+  for a working ban. `capabilities.algorithms` declares every identifier any
+  profile or level can offer.
+
+**A list may narrow a route, never widen it.** That is what the argument above
+always meant. Its objection is to lists that widen a route one identifier at a
+time, and a ban can only remove. So the profile stays the one way to widen, and
+the floor and the bans are the two ways to narrow. The expansion is still one
+function (`control.AlgorithmPolicy.Algorithms`) reaching every connection the
+profile reaches, and a KEXINIT test pins what goes on the wire. Both fields are
+vocabulary, so `policy_version` moved **5 → 6** (`info.version` 4.5.0), and the
+mock serves neither to an older proxy. `api/README.md` writes down the rest: the
+per-target report (`TargetCapabilities.kex`, the highest level each target was
+seen to meet, sent from every credential method and off the session path), and
+the emergency runbook. That runbook is ban, then `cache_invalidate` `all`,
+because a cached decision keeps the old policy until its TTL (§6.4), then
+`session_kill` for the sessions found by their negotiated attributes. When the
+target cannot meet the policy, §4.3 covers what the user is told and §7 what
+the record says.
+
 **As collapsed (phase 0037): one live vocabulary, and the mechanism that
 carries the next.** Building the contract in phases meant each revision left the
 *previous* generation working, so the phases already merged kept passing. At
@@ -998,6 +1051,19 @@ the deadline, or how long the route allows. The channel ends with its own exit
 status (253), so a script can tell "time ran out" from the 254 a policy kill
 reports. A session with no channel open is told nothing, which is the
 `SSH_MSG_DISCONNECT` limitation already recorded below and not a new one.
+
+**A target that cannot meet the route's algorithm policy is the outage branch**
+(phases 0043, 0045). Nothing was refused to the user. The route's profile,
+floor or bans left the proxy nothing to agree with the target on some axis, and
+the vague deny would send the user to ask for access that no approval can
+grant. So the message is explicit and carries the session id. For a floor or a
+ban it names the requirement ("this route requires a post-quantum key exchange,
+and the target does not support one"), which discloses nothing `ssh -vv`
+against the target would not. It is one stage, `stageAlgorithmPolicy`,
+whichever part of the policy the target missed. It never retries with a wider
+list and never walks the ladder (D14): every rung dials the same target under
+the same policy. It is never scored against the credential (0025), because the
+target never judged one.
 
 SSH gives four places to speak, and each phase owns the ones it touches:
 
@@ -1412,7 +1478,7 @@ The route names the platform; nothing is inferred from a banner.
 
 #### What is true today — read this before the layers below
 
-The rest of this section is **append-only**: ten `As <verb> (phase N)` blocks
+The rest of this section is **append-only**: eleven `As <verb> (phase N)` blocks
 recording what each phase established, several of which supersede parts of
 earlier ones. Composing them costs ~8k tokens and is how a session ends up
 building against a rule that was overturned two phases later. This block is the
@@ -1453,8 +1519,9 @@ deliberately.
 **Attribution is the log.** On a constrained platform the name carries no login,
 so the account-mapping event on D8's **priority path** is the only attribution
 there is — and a route whose driver declares a constrained limit is **refused**
-if the proxy has no logging path at all, including its disk buffer. Route fields
-and the declared caveats ride on that record too.
+if the proxy has no logging path at all, including its disk buffer. Route
+fields, the declared caveats, the route's algorithm policy in force and the key
+exchange the driver's own connection negotiated ride on that record too.
 
 **Scope, and what a route may name.** A `device_field.<name>` names a
 **partition** of the endpoint device — never a different device
@@ -1505,7 +1572,10 @@ pass under the same prefix scoping and first-seen grace period. The reaper
 sweeps a device it reaches from an **endpoint**, keyed on `host:port`, and that
 endpoint keeps the route's **algorithm lists** as it keeps the host key: every
 connection to a device — provisioning, teardown, sweep — offers what the
-route's `algorithm_profile` expands to (§4.2), never the library's defaults.
+route's `algorithm_profile`, `algorithm_floor` and `algorithm_bans` expand to
+(§4.2), never the library's defaults. A sweep that can no longer agree an
+algorithm reports that the device **changed under the proxy**, naming the axis
+and what the device offers now.
 
 **Every change is a record.** Each mutating driver operation **returns** the
 changes it completed (`device.Change`); the provisioner and the reaper emit one
@@ -2212,6 +2282,26 @@ fallback for a connection with none, and even then an empty axis is the default
 profile, never the library's defaults. A device the route's profile cannot
 reach fails at the management login — before anything is created — as
 `stageAlgorithmPolicy`, the same stage and record as a stranded session leg.
+
+**As floored (phase 0045): the device leg runs under the route's whole
+algorithm policy, and says what it negotiated.** The endpoint's lists are now
+the expansion of the route's profile, floor and bans together (§4.2). So the
+driver's privileged connection, teardown and both sweeps offer exactly what the
+session leg does, and a device that cannot meet the floor, or offers only what
+a ban removed, fails at the privileged login as `stageAlgorithmPolicy` before
+anything is created. What the privileged connection negotiated leaves the
+dialer through `device.Endpoint.Negotiated`, a callback beside the host-key
+callback: the handshake is the dialer's and not the driver's, so no driver
+carries it. The account-mapping event carries it as
+`target_kex_algorithm`, beside the floor and bans in force, because on a
+constrained platform that event is the only record there is. The per-target
+key-exchange report (`TargetCapabilities.kex`) is made from the **session leg**,
+which on a device route is the ephemeral administrator's own connection, so a
+device route feeds Control's impact preview exactly as a POSIX one does. **A
+sweep that cannot agree an algorithm is a device that changed under the proxy.**
+It was provisioned under the same policy, so the sweep failure (still the
+priority path) says so and names the axis and what the device offers now, rather
+than reading as an unreachable device or a route to fix.
 
 **As written down (phase 0013).** The contract half is in §4.2 above: the
 `ephemeral-account` method, its four required parameters, and the ladder that
@@ -3268,6 +3358,48 @@ security event, so it rides that ordinary `info` record on the **batch** path
 logged, or put in an error; the serial is the one fact about the credential that
 leaves the proxy.
 
+**What the leg negotiated, beside the policy it was dialled under (phase
+0045).** A floor is a claim about the key exchange and a ban can be on any axis,
+so the only per-session proof of either is what the connection actually
+negotiated. That is read off the established connection, never from what was
+offered (§6.5). Every name below is query surface.
+
+- **The policy in force** is stamped by one function
+  (`logging.AlgorithmPolicyAttrs`) on every record that names the profile: the
+  `provisioning` record, the device account-mapping event, and the two records
+  below. **`algorithm_floor` is omitted when there is none.** The profile is
+  always stamped, but "no floor" is the absence of a constraint, so an absent
+  key is its one spelling. **`algorithm_bans.<axis>`** is one attribute per
+  banned axis, sorted and comma-joined, so "sessions under a ban on X" is a
+  filter rather than a substring search; an axis with no ban has no key.
+  **`algorithm_bans_unmatched`** (`<axis>:<name>`, comma-joined, on the
+  provisioning record) names the bans this build could never offer.
+- **`target.algorithms_negotiated`** is one `provisioning` record at `info` on
+  the **batch** path per session whose target leg came up, floor or no floor. It
+  carries `target_kex_algorithm`, `target_host_key_algorithm`,
+  `target_cipher_out`/`_in` and `target_mac_out`/`_in`, where out is
+  proxy→target and a MAC is omitted in a direction whose cipher is AEAD. It also
+  carries `target_public_key_algorithms_offered`: the library does not report
+  which signature algorithm authentication used, so the record names what the
+  proxy *offered*, and says so in the name. The `target_` prefix is there because
+  a record here can describe three SSH legs, which is why the key exchange is not
+  the `kex_algorithm` Control asked for. The emergency runbook finds open
+  sessions by these attributes. The mapping event carries `target_kex_algorithm`
+  too, from the driver's privileged connection (§5.3).
+- **`target.algorithm_policy_unmet`** now covers a floor and a ban as well as the
+  profile, and adds **`algorithm_policy_cause`** (`profile` | `floor` | `ban`):
+  the step of the expansion that removed the last algorithm the target offered
+  on that axis, which says which thing to change. `algorithm_axis` gains
+  **`public_key_auth`**, for a policy that left the proxy's own key no signature
+  algorithm the target accepts. `target_algorithms_offered` is absent on that
+  axis because the library does not report the target's list. The record stays
+  `warn` on the batch path, on this section's own rule: it is a target-posture
+  fact, not a security event. KEXINIT is covered by the exchange hash the host
+  key signs, and the host key is verified under D7, so an on-path attacker
+  cannot strip the hybrid without failing host-key verification first. A sweep
+  that meets the same failure is a sweep failure, on the priority path as
+  before, saying the device changed under the proxy.
+
 Still out of scope: tamper-evident/append-only storage at the destination
 (Section 12), and coalescing keystroke-sized chunks into fewer records.
 
@@ -3866,7 +3998,7 @@ One prompt = one PR = one phase (see `prompts/queued/`). Ordering and scope:
 | 0042 | Fleet configuration distribution | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0006 in [Hoplock/control#27](https://github.com/Hoplock/control/pull/27). Control's M6 makes the fleet a graph and its registry now holds a **versioned configuration document** per proxy — immutable versions per zone and per proxy, composed into one effective document, first-class rollback, drift between desired and running visible in its fleet view. The argument is the one §8 already concedes in a word: a proxy's config is a *bootstrap*, and everything above it is a property of the fleet rather than of the host. What Control could not build is the delivery, and it did not invent it — `RevocationEvent.type` enumerates `session_kill`, `cache_invalidate`, `heartbeat`, `resync`, and none can say "your desired configuration moved" — so its publisher seam is defined, defaulted to a no-op, and visibly unwired. This phase answers the need, and the need is the tip of it: the prompt's four questions (which settings are fleet-owned and which stay bootstrap — **wants a new `D`**, since D2 speaks to policy and is silent on configuration; how the document arrives, given that an inline document on a replayable stream would be replayed as if current; how the running version gets back, given that this contract has no proxy→server call that could carry it; and what a proxy does with a document it cannot apply) are all ones Control's session could not answer, because answering them means reading this plan. `info.version` → **4.2.0**; `policy_version` stays **4** (the number governs `/v1/authorize` and nothing else), and the contract already licenses a new event type without a bump at all: "a proxy ignores a type it does not recognise". Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** **D18**. `config_changed` (version + hash, never the document); `GET /v1/proxies/{proxy_id}/config` (`200`, `204` nothing published, `304` on the held hash as `If-None-Match`, `404 not_enrolled`); `POST /v1/proxies/{proxy_id}/config/report` (`running_*`, `desired_*`, `state` of `applied`/`pending_restart`/`rejected`/`fetch_failed`, `restart_required`, `last_error`). Seventeen fleet-owned settings, two live; a document is applied whole or not at all, one naming a bootstrap setting is rejected whole, and one needing a restart applies nothing and is never reported running. The proxy fetches at startup before building anything, on every stream connect and `resync`, and on each new notification; `ConfigSync` retries a failed fetch and never touches a session or cached decision. The mock serves one document whose hash is derived from the bytes it serves and publishes only through `POST /debug/config` |
 | 0043 | The record says what the proxy actually did | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0010 in [Hoplock/control#32](https://github.com/Hoplock/control/pull/32) — the phase that built its tamper-evident audit store (its **M8**). Three shapes on the records this repository emits, and the surface is `internal/logging`'s attributes rather than `api/` (`attributes` is an open map, so none of it is a schema change). **`algorithm_profile` on the record** — and the request asks for less than it needs: nothing here *applies* the profile today, so the phase carries it onto `routing.Route`, expands the preset in one place, applies it to the session leg, the management login, the driver's privileged CLI connection and the reaper's sweep, and only then stamps it; a record naming a weakening the proxy never performed is the silent downgrade §6.5 forbids, and the sentence `api/control.yaml` already publishes — an operator learns a route runs on SHA-1 from the record — is true of nothing until this lands. **`device.config.change`** — the producer §12 already promises for the drift feed, emitted by the provisioner and the reaper from what a driver RETURNS (D13: a driver reports data, it does not hold a sink), on the batch path at `info` so the mapping event's priority path keeps its meaning. **One name per field** — `credential_method`/`credential_rung` against Control's `target_auth_*`; this repository owns what it emits, so it settles it and Control is told. **Amended by PR #64's review (the owner's decision):** `default` becomes the library's **secure set** as an explicit list on every axis. It had been x/crypto's client default, which offers SHA-1 key exchange, `hmac-sha1-96` and `ssh-rsa`/`ssh-dss` host keys. The legacy profiles add exactly what they say, and `legacy-device` also gains `ssh-dss` host keys; no finer presets are added, since bans trim a preset instead. That is a tightening announced as a break (`info.version` minor, `policy_version` unchanged, 0028's precedent), and a target it strands fails visibly as `target.algorithm_policy_unmet`, naming what the target offered. Carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the profile is carried on `routing.Route`, expanded once (`control.AlgorithmProfile.Algorithms`), applied through `internal/sshalg` to the session leg, the management login, the driver's CLI and both reapers' sweeps (signers restricted for the public-key axis), then stamped as `algorithm_profile` on the provisioning record and the mapping event — always, `default` included; `default` is the pinned secure set, `info.version` **4.3.0**, `policy_version` still **4**; `stageAlgorithmPolicy` + `target.algorithm_policy_unmet` (warn, batch) on the session leg and at provisioning. Drivers return `[]device.Change` and `recordChanges` emits one `device.config.change` (info, batch) per completed change on every path, sweeps with no session id. **Naming verdict:** keep `credential_method`/`credential_rung`; the contract text that had published `target_auth_*` (0-based) was the source of the split and is corrected |
 | 0044 | Brokered certificates: a credential Control mints per session | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised by its phase 0011 in [Hoplock/control#35](https://github.com/Hoplock/control/pull/35) — the phase that built a complete per-tenant SSH **certificate authority** and could not reach a proxy with it: the ladder's `method` enum names four values and none of them is a certificate, so Control shipped the authority behind a seam that refuses on purpose and a tripwire that fires the day this method lands in its vendored copy. D6a's own closing sentence is what this phase makes true — a Control that mints credentials "slots in as another method rather than another breaking change" — so there is **no new `D`**. Two parts: the `brokered-certificate` method, and `POST /v1/credentials/certificate`, which signs a public key **the proxy generated for this session** (no private key travels, and `AuthorizeRequest` has nowhere to carry a public key). The request asked for the certificate, its serial and the CA bundle as **route parameters**, and that is the one part that changes: `target_auth_ladder` rides a **reusable** decision (D2, §6.4), so a certificate on it is replayed past its own expiry — the argument `POST /v1/uids/lease` already makes about a uid floor — and the value does not exist when the route is decided. The entry carries policy (`username` **required**, `key_type`, `lifetime_seconds`); the issuance response carries the artifacts, and the proxy still records the serial. Provisions nothing, so only **attested** rungs are reachable (§6.5); a failed issuance is **outage-class and never a walk to the next rung**. First `policy_version` revision since 0037: **4 → 5** for the enum value, while the endpoint is outside the number entirely. Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** the method (`TargetAuthBrokeredCertificate`; `username` required, `key_type` and `lifetime_seconds` permitted; `Provisions()` false as its own case) and `POST /v1/credentials/certificate` (`{session_id, decision_id, target, username, public_key}` → `{certificate, serial (a decimal string), valid_before, ca_public_keys}`); `policy_version` **5** and `info.version` **4.4.0**, with the mock tiering the method so a v4 proxy is refused only the routes naming it. `BrokeredCertificateAuthenticator` generates a key per session, checks what it is issued (parses, user certificate, over the submitted key, stated expiry true, not expired, not forever, within the route's bound plus 30s of clock skew) and zeroes the key on teardown; every failure — a `401` from issuance included — is an outage and never a walk down the ladder, while a build with no issuer skips the rung. `CachingClient` implements no `CertificateIssuer`. The serial rides the provisioning record as `credential_certificate_serial`. `CredentialSource` was **not** widened: §5.2's promise that a minting Control would implement it is corrected there, with the reasoning, and the method has its own seam. The mock is a minimal CA (ed25519 key from the material directory, the route's username as sole principal, a rising serial, deliberate faults per route) and the e2e target trusts it via `TrustedUserCAKeys` |
-| 0045 | A floor under the target leg: `algorithm_floor` | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#36](https://github.com/Hoplock/control/pull/36) while it queued its post-quantum posture phase. `algorithm_profile` can only **weaken** the proxy→target leg, so policy can say a route may use SHA-1 and cannot say a route must negotiate a hybrid post-quantum key exchange. Taken as asked: `algorithm_floor`, a **sibling** of the profile (a floor is a minimum, a profile a weakening preset, and a route may want `default` and a floor), refused rather than coerced, and vocabulary — so `policy_version` moves to the next number above 0044's. Three corrections the requester could not see: the request's `sntrup761x25519-sha512` is **not implemented by `x/crypto/ssh`** (D9), so the floor is defined as a property whose one member this proxy offers today is `mlkem768x25519-sha256`; the attribute is `target_kex_algorithm`, because a record here describes three SSH legs and target-leg facts carry the `target_` prefix; and the profile × floor refusal is by **axis** — `legacy-device` (widens key exchange) is refused, `legacy-rsa-sha1` (signatures only) is accepted. **Amended in review** so an administrator can turn the floor like a dial: it is an **ordered ladder** `modern-kex` < `pq-hybrid-kex`, where each level accepts a subset of the one below, and that nesting is the contract's rule for adding a level (FIPS-like regimes that don't nest are not rungs). Each proxy **declares** the levels and per-build key exchanges it enforces on `AuthorizeRequest.capabilities`, and the server must not send an undeclared level. Proxies **report** the highest level each target was seen to meet on `TargetCapabilities.kex`, from every credential method, off the session path, merged without overwriting the rung observation. That gives Control an impact preview before it raises a floor. **Amended again:** `algorithm_bans`, per route and per axis, lets an administrator remove a vulnerable algorithm without waiting for a release. It is a list, but it can only narrow, and §4.2 gains the rule that a list may narrow a route but never widen it. Bans are applied last, subtracted from what the route would otherwise offer (never from the library's "supported" set, which would add algorithms), and pinned by a KEXINIT test. They are recorded per negotiated axis, and the emergency runbook is ban → `cache_invalidate` → `session_kill`. The review also found that x/crypto's client **default** offers a SHA-1 key exchange, `hmac-sha1-96`, and `ssh-rsa`/`ssh-dss` host keys, none of which this repository overrides today. **The owner decided** that `default` means the library's secure set, which 0043 builds as a break; 0045 extends 0043's `target.algorithm_policy_unmet` classifier to floors and bans. An unmet floor is the **outage** branch of §4.3, not a deny, never a ladder walk (D14) and never scored against the credential (0025). Depends on **0043**, which carries and expands the profile on every connection the floor must also reach. Contract change — carries a cross-repo obligation **back to the repository that raised it** |
+| 0045 | A floor under the target leg: `algorithm_floor` | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#36](https://github.com/Hoplock/control/pull/36) while it queued its post-quantum posture phase. `algorithm_profile` can only **weaken** the proxy→target leg, so policy can say a route may use SHA-1 and cannot say a route must negotiate a hybrid post-quantum key exchange. Taken as asked: `algorithm_floor`, a **sibling** of the profile (a floor is a minimum, a profile a weakening preset, and a route may want `default` and a floor), refused rather than coerced, and vocabulary — so `policy_version` moves to the next number above 0044's. Three corrections the requester could not see: the request's `sntrup761x25519-sha512` is **not implemented by `x/crypto/ssh`** (D9), so the floor is defined as a property whose one member this proxy offers today is `mlkem768x25519-sha256`; the attribute is `target_kex_algorithm`, because a record here describes three SSH legs and target-leg facts carry the `target_` prefix; and the profile × floor refusal is by **axis** — `legacy-device` (widens key exchange) is refused, `legacy-rsa-sha1` (signatures only) is accepted. **Amended in review** so an administrator can turn the floor like a dial: it is an **ordered ladder** `modern-kex` < `pq-hybrid-kex`, where each level accepts a subset of the one below, and that nesting is the contract's rule for adding a level (FIPS-like regimes that don't nest are not rungs). Each proxy **declares** the levels and per-build key exchanges it enforces on `AuthorizeRequest.capabilities`, and the server must not send an undeclared level. Proxies **report** the highest level each target was seen to meet on `TargetCapabilities.kex`, from every credential method, off the session path, merged without overwriting the rung observation. That gives Control an impact preview before it raises a floor. **Amended again:** `algorithm_bans`, per route and per axis, lets an administrator remove a vulnerable algorithm without waiting for a release. It is a list, but it can only narrow, and §4.2 gains the rule that a list may narrow a route but never widen it. Bans are applied last, subtracted from what the route would otherwise offer (never from the library's "supported" set, which would add algorithms), and pinned by a KEXINIT test. They are recorded per negotiated axis, and the emergency runbook is ban → `cache_invalidate` → `session_kill`. The review also found that x/crypto's client **default** offers a SHA-1 key exchange, `hmac-sha1-96`, and `ssh-rsa`/`ssh-dss` host keys, none of which this repository overrides today. **The owner decided** that `default` means the library's secure set, which 0043 builds as a break; 0045 extends 0043's `target.algorithm_policy_unmet` classifier to floors and bans. An unmet floor is the **outage** branch of §4.3, not a deny, never a ladder walk (D14) and never scored against the credential (0025). Depends on **0043**, which carries and expands the profile on every connection the floor must also reach. Contract change — carries a cross-repo obligation **back to the repository that raised it**. **Delivered:** `algorithm_floor` (`modern-kex` < `pq-hybrid-kex`, compared by rank, nesting pinned by a test; `pq-hybrid-kex` is `mlkem768x25519-sha256` alone) and `algorithm_bans` (per axis, applied last, a ban always wins, unmatched names accepted and recorded) expand once in `control.AlgorithmPolicy` and reach the session leg, the management login, the driver's CLI and both sweeps; `policy_version` **6**, `info.version` **4.5.0**, mock tier `vocabularyAlgorithmFloor`; capabilities declare `algorithm_floors` and `algorithms`; `TargetCapabilities.kex` is reported per target off the session path (`target.KexReporter`) as its own report, merged beside the rung observation by which object is present; `target.algorithms_negotiated` records what each leg negotiated; `target.algorithm_policy_unmet` gains `algorithm_policy_cause` and the `public_key_auth` axis; the emergency runbook is an integration test against the mock. Register unchanged |
 | 0046 | A bounded log buffer, and a refused record that no longer blocks the rest | an **upstream request** from `hoplock/control` (`docs/CROSS-REPO-PROTOCOL.md` §3.2), raised in [Hoplock/control#39](https://github.com/Hoplock/control/pull/39) by the sync that followed 0043. The shipper has one failure branch: any error spills, and the drain retries the oldest segment until the server takes it, so one record Control refuses with a `400` stops all of a proxy's delivery, critical records included, while nothing bounds the disk. The request asks for a window that evicts the oldest records, with every eviction reported, and for a refused record to be set aside instead of retried. **Taken as asked:** the window, reported eviction, priority records evicted after batch ones, isolation by splitting the batch, and `5xx`/transport/`401` unchanged. **Corrected:** the window is **bytes, not age**. Eviction goes by class (set-aside, then stream, then other batch, then priority, oldest first within each), because a flooded terminal must not push other sessions' metadata out. A session under `require_session_capture`, and one whose constrained mapping event is its only attribution, is **pinned and never evicted**, which keeps D16's "recorded, not even to its disk buffer" true, and `Deliverable()` goes false only when pinned records fill the window. A refusal is exactly `400` (or a middlebox's `413`), never `ErrBadRequest`, which covers every 4xx but `401`. Isolation is by bisection and adds no contract field. The report is one `logging.gap` record (`kind: error`, because Control refuses unknown kinds) per affected session. **Two more triggers the request could not see:** Control's ingest accepts `session_id: ""` only on `error`, which refuses this proxy's `policy_decision` sweep failure on the priority path, and this repository's own mock refuses `""` on both endpoints. So the contract states that `""` means no session and MUST be accepted on any kind. **D8 amended in place**, D16 not amended; the window setting is bootstrap under D18; `info.version` next minor, `policy_version` unchanged. Contract change: carries a cross-repo obligation **back to the repository that raised it** |
 
 Prompts may add or re-order later phases; any prompt that introduces new queued
