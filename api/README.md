@@ -83,9 +83,9 @@ endpoint its certificates are issued through moved nothing: a proxy that does no
 know the method must never be sent it, and the version is the only thing that can
 tell a server so. `algorithm_floor` and `algorithm_bans` — two fields on the
 response, shipped in one revision — moved it to `6`. What a proxy **declares** on
-the request (`capabilities.algorithm_floors`, `capabilities.algorithms`) and what
-it **reports** (`TargetCapabilities.kex`) are outside it, and moved `info.version`
-only.
+the request (`capabilities.algorithm_floors`, `capabilities.algorithm_profiles`,
+`capabilities.algorithms`) and what it **reports** (`TargetCapabilities.kex`) are
+outside it, and moved `info.version` only.
 
 **A route whose policy carries a floor or a ban MUST NOT be served to a proxy
 declaring an older vocabulary with either omitted.** The server refuses the
@@ -227,6 +227,7 @@ Each field below names the phase that consumes it.
 | `concurrency` | **uncapped** | a per-subject and/or per-target ceiling; exceeding it is a **policy denial**, not an outage | 0019 |
 | `capabilities` (request) | the proxy **declares nothing**, so only rungs needing no capability may be chosen | the rungs this build can provide | — |
 | `capabilities.algorithm_floors` (request) | the proxy **declares no floor level**, so no `algorithm_floor` may be sent | the levels this build enforces, each with its key exchanges in this build | 0045 |
+| `capabilities.algorithm_profiles` (request) | the proxy **declares no profile's offer**; whether a ban empties an axis for it is **unknown**, never proof either way | each profile this build accepts, with what it offers per axis before any floor or ban; every axis present | 0047 |
 | `capabilities.algorithms` (request) | the proxy **declares nothing it can offer**; a ban is judged by the server alone | every identifier this build can put in an offer, per axis | 0045 |
 | `capabilities.kex` (target report) | the report carries **no key-exchange observation**, and the stored one is left untouched | the target's observed key-exchange level | 0045 |
 | `policy_version` (request) | — (**required**; a request without it is refused) | the vocabulary the proxy implements | — |
@@ -701,6 +702,12 @@ proxy's own key authenticates with, on the same mechanism `legacy-rsa-sha1` uses
   that can never connect;
 - an empty identifier, or the same identifier twice on one axis.
 
+Whether a ban does either of the first two depends on what the route's profile
+and floor offer **in the requesting build**, and each proxy declares both
+(`capabilities.algorithm_profiles`, `capabilities.algorithm_floors`). "Capability
+advertisement" below gives the rule that judges a ban against them before it is
+saved.
+
 **Not refused: a name this build does not implement.** Banning what the proxy
 never offers is already satisfied, and refusing it would turn a same-day ban into
 an outage on every build that never had the algorithm. But a typo in a ban looks
@@ -984,13 +991,37 @@ netfilter is reachable, whether it is a Linux host at all.
   implements, beside `policy_version` on the same pattern. Absent declares
   nothing. It also declares the `algorithm_floor` levels this build enforces,
   each with the key exchanges that level accepts **in this build**
-  (`algorithm_floors`), and everything the build can put in an offer, per axis
-  (`algorithms`). The server **MUST NOT** send a floor level the proxy did not
+  (`algorithm_floors`), what each `algorithm_profile` offers per axis in this
+  build before any floor or ban (`algorithm_profiles`), and everything the build
+  can put in an offer, per axis (`algorithms`, the union of the profiles'
+  lists). The server **MUST NOT** send a floor level the proxy did not
   declare — the per-level form of the `policy_version` rule, covering a level
   added in a later build — and the per-build member lists are what a fleet view
   shows while a rolling upgrade has two builds accepting different exchanges for
-  one level. All of this rides the request, which `policy_version` does not
-  govern (it governs the response), so it moved `info.version` and not the
+  one level.
+
+  `algorithm_profiles` is what makes a ban's refusal **exact at authoring
+  time**. The proxy refuses a route whose bans leave any axis nothing to offer,
+  and the server must not send what the proxy refuses; with the per-level lists,
+  the per-profile lists determine what every accepted profile, floor and ban
+  combination leaves. So a server applies this rule to the requesting proxy's
+  declared lists, axis by axis, and refuses the ban before it is saved rather
+  than finding it as an outage at the first authorize:
+
+  1. start from the profile's list on each axis;
+  2. under a floor, intersect key exchanges with that level's declared list;
+  3. subtract the bans, treating `curve25519-sha256` and
+     `curve25519-sha256@libssh.org` as one exchange: a ban on either removes
+     both. Plain set subtraction gets this wrong. A ban naming one spelling
+     and every other exchange the route offers leaves the other spelling, and
+     the proxy leaves nothing.
+
+  An axis left empty is refused. The lists are per build, so the judgement is
+  too: during a rolling upgrade one ban can empty an axis on one build and not
+  on another. A profile the declaration does not list, or a request with no
+  `algorithm_profiles` at all, cannot be judged, and that is "unknown", never
+  proof either way. All of this rides the request, which `policy_version` does
+  not govern (it governs the response), so it moved `info.version` and not the
   vocabulary number.
 - **Per target**: `POST /v1/capabilities/report` — the rungs this *target* can
   take, discovered by probing it. It takes the shape of `/v1/hostkeys/report`

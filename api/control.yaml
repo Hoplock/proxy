@@ -52,8 +52,9 @@ info:
     endpoint it is issued through, `POST /v1/credentials/certificate`, moved
     nothing. `algorithm_floor` and `algorithm_bans`, two fields on the
     response, moved it to `6` in one revision; what a proxy **declares** on the
-    request (`capabilities.algorithm_floors`, `capabilities.algorithms`) and
-    what it **reports** (`TargetCapabilities.kex`) are outside it.
+    request (`capabilities.algorithm_floors`, `capabilities.algorithm_profiles`,
+    `capabilities.algorithms`) and what it **reports**
+    (`TargetCapabilities.kex`) are outside it.
 
     **A route whose policy carries a floor or a ban MUST NOT be served to a
     proxy declaring an older vocabulary with either omitted.** The server
@@ -82,7 +83,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.6.0
+  version: 4.7.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -2167,6 +2168,31 @@ components:
             It rides the request, which `policy_version` does not govern.
           items:
             $ref: '#/components/schemas/AlgorithmFloorCapability'
+        algorithm_profiles:
+          type: array
+          description: |
+            Every `algorithm_profile` this build accepts, one entry per
+            profile, each with what that profile offers on the proxy→target
+            leg **in this build**, per axis, before any `algorithm_floor`
+            narrows it and before any `algorithm_bans` subtract from it: the
+            profile stage of the expansion every connection dials with. Lists
+            are alias-complete, as `algorithm_floors` is.
+
+            It is what lets a server refuse exactly what the proxy refuses.
+            With each level's key exchanges from `algorithm_floors`, it
+            determines what any accepted profile, floor and ban combination
+            leaves on every axis. So a server can tell, before a ban is saved,
+            whether the ban leaves a route nothing to offer, which the proxy
+            refuses as a contract violation. `api/README.md` ("Capability
+            advertisement") states the rule that composes the two. A floor
+            only narrows, so `algorithms` is the union of these lists.
+
+            Absent declares nothing. A server that needs a profile this
+            declaration does not list cannot judge that profile, and it must
+            not treat the missing entry as proof either way. It rides the
+            request, which `policy_version` does not govern.
+          items:
+            $ref: '#/components/schemas/AlgorithmProfileCapability'
         algorithms:
           $ref: '#/components/schemas/OfferableAlgorithms'
 
@@ -2187,6 +2213,41 @@ components:
           items:
             type: string
           example: [mlkem768x25519-sha256]
+
+    AlgorithmProfileCapability:
+      type: object
+      description: |
+        One `algorithm_profile` a proxy build accepts, and what it offers on
+        each axis before any floor or ban. Every axis is present, and none is
+        empty.
+      required: [profile, key_exchanges, ciphers, macs, host_keys, public_key_auth]
+      properties:
+        profile:
+          type: string
+          enum: [default, legacy-rsa-sha1, legacy-device]
+        key_exchanges:
+          type: array
+          description: |
+            Highest level first, including `curve25519-sha256@libssh.org`
+            wherever `curve25519-sha256` is offered (see `AlgorithmBans`).
+          items:
+            type: string
+        ciphers:
+          type: array
+          items:
+            type: string
+        macs:
+          type: array
+          items:
+            type: string
+        host_keys:
+          type: array
+          items:
+            type: string
+        public_key_auth:
+          type: array
+          items:
+            type: string
 
     OfferableAlgorithms:
       type: object
@@ -2258,7 +2319,11 @@ components:
         a ban that removes every key exchange the route's `algorithm_floor`
         accepts (`mlkem768x25519-sha256` under `pq-hybrid-kex` describes a leg
         that can never connect); an empty identifier; the same identifier
-        twice on one axis.
+        twice on one axis. Whether a ban does either of the first two depends
+        on what the route's profile and floor offer in the requesting build,
+        which each proxy declares in `capabilities.algorithm_profiles` and
+        `capabilities.algorithm_floors`, so a server can judge both before it
+        sends anything.
 
         **Not refused: a name this build does not implement.** Banning what the
         proxy never offers is already satisfied, and refusing it would turn a

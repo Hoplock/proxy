@@ -250,6 +250,14 @@ func (c *ProxyCapabilities) Clone() *ProxyCapabilities {
 			out.AlgorithmFloors[i] = AlgorithmFloorCapability{Level: f.Level, KeyExchanges: cloneStrings(f.KeyExchanges)}
 		}
 	}
+	if c.AlgorithmProfiles != nil {
+		out.AlgorithmProfiles = make([]AlgorithmProfileCapability, len(c.AlgorithmProfiles))
+		for i, p := range c.AlgorithmProfiles {
+			// p.Clone is the embedded Algorithms' method, promoted: it copies the
+			// lists and not the profile, which is set beside them.
+			out.AlgorithmProfiles[i] = AlgorithmProfileCapability{Profile: p.Profile, Algorithms: p.Clone()}
+		}
+	}
 	if c.Algorithms != nil {
 		a := c.Algorithms.Clone()
 		out.Algorithms = &a

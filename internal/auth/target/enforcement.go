@@ -190,12 +190,15 @@ func ProxyCapabilities() *control.ProxyCapabilities {
 			control.ReachAccountNetworkIsolated,
 		},
 		// The algorithm-floor levels this build enforces and what each accepts
-		// here, and everything it can put in an offer (phase 0045). Unlike the
-		// rungs these are DERIVED rather than written out, and that is the
-		// point: they are built by the expansion every connection dials with,
-		// so the declaration cannot describe anything the proxy does not offer.
-		AlgorithmFloors: control.AlgorithmFloorCapabilities(),
-		Algorithms:      &offerable,
+		// here, and everything it can put in an offer (phase 0045), and what
+		// each algorithm profile offers before any floor or ban (phase 0047).
+		// Unlike the rungs these are DERIVED rather than written out, and that
+		// is the point: they are built by the expansion every connection dials
+		// with, so the declaration cannot describe anything the proxy does not
+		// offer.
+		AlgorithmFloors:   control.AlgorithmFloorCapabilities(),
+		AlgorithmProfiles: control.AlgorithmProfileCapabilities(),
+		Algorithms:        &offerable,
 	}
 }
 

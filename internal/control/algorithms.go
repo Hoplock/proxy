@@ -21,8 +21,10 @@ import "slices"
 // set this type exists to replace (see AlgorithmProfileDefault).
 //
 // Its wire keys are the five axis names phase 0045's AlgorithmBans and
-// ProxyCapabilities.Algorithms carry: those are the two places a list per axis
-// travels, and they share this shape so an axis is spelled one way.
+// ProxyCapabilities.Algorithms carry, and that phase 0047's
+// AlgorithmProfileCapability carries by embedding this type: those are the
+// three places a list per axis travels, and they share this shape so an axis is
+// spelled one way.
 type Algorithms struct {
 	// KeyExchanges are the key-exchange methods.
 	KeyExchanges []string `json:"key_exchanges,omitempty"`
@@ -657,6 +659,34 @@ func AlgorithmFloorCapabilities() []AlgorithmFloorCapability {
 			Level:        level,
 			KeyExchanges: AlgorithmPolicy{Floor: level}.WireKeyExchanges(),
 		})
+	}
+	return out
+}
+
+// AlgorithmProfileCapabilities is the per-profile half of this build's
+// declaration (`ProxyCapabilities.algorithm_profiles`, phase 0047): every
+// profile it accepts, in AlgorithmProfiles' order, with what that profile offers
+// on each axis before any floor narrows it or any ban subtracts from it — the
+// profile stage of the expansion, key exchanges in the wire form the leg offers.
+// It is built from Algorithms — the function every connection dials with — so
+// it cannot declare anything other than what the proxy offers under that
+// profile. Nothing in it is written out by hand: a copy of the lists drifts
+// from the expansion the first time either changes, which is the failure the
+// declaration exists to prevent, whether the copy is here or in Hoplock
+// Control.
+//
+// With AlgorithmFloorCapabilities it is enough to reproduce Validate's refusal
+// of a ban that leaves an axis nothing to offer, from the wire alone, by the
+// rule api/README.md states; TestTheDeclarationIsEnoughToJudgeEveryBan holds
+// the two to agreement.
+func AlgorithmProfileCapabilities() []AlgorithmProfileCapability {
+	profiles := AlgorithmProfiles()
+	out := make([]AlgorithmProfileCapability, 0, len(profiles))
+	for _, profile := range profiles {
+		policy := AlgorithmPolicy{Profile: profile}
+		offered := policy.Algorithms()
+		offered.KeyExchanges = policy.WireKeyExchanges()
+		out = append(out, AlgorithmProfileCapability{Profile: profile, Algorithms: offered})
 	}
 	return out
 }

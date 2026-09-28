@@ -571,8 +571,8 @@ const (
 
 // AlgorithmProfiles returns every profile this contract defines, the default
 // first. It is what the build's capability declaration is computed over
-// (OfferableAlgorithms), so a profile added here is declared without anybody
-// having to remember to.
+// (OfferableAlgorithms, AlgorithmProfileCapabilities), so a profile added here
+// is declared without anybody having to remember to.
 func AlgorithmProfiles() []AlgorithmProfile {
 	return []AlgorithmProfile{AlgorithmProfileDefault, AlgorithmProfileLegacyRSASHA1, AlgorithmProfileLegacyDevice}
 }
