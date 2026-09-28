@@ -712,4 +712,18 @@ func TestProxyCapabilitiesNameEveryAppliedRungThisBuildRenders(t *testing.T) {
 	if offerable := control.OfferableAlgorithms(); caps.Algorithms == nil || !reflect.DeepEqual(*caps.Algorithms, offerable) {
 		t.Errorf("declared algorithms %+v, the expansion gives %+v", caps.Algorithms, offerable)
 	}
+
+	// Every algorithm profile, in order, each with what it offers before any
+	// floor or ban (phase 0047): the declaration a server judges a ban against.
+	if !reflect.DeepEqual(caps.AlgorithmProfiles, control.AlgorithmProfileCapabilities()) {
+		t.Errorf("declared profiles %+v, the expansion gives %+v", caps.AlgorithmProfiles, control.AlgorithmProfileCapabilities())
+	}
+	if len(caps.AlgorithmProfiles) != len(control.AlgorithmProfiles()) {
+		t.Fatalf("declared %d profiles, the contract defines %d", len(caps.AlgorithmProfiles), len(control.AlgorithmProfiles()))
+	}
+	for i, profile := range control.AlgorithmProfiles() {
+		if got := caps.AlgorithmProfiles[i]; got.Profile != profile || got.IsZero() {
+			t.Errorf("declaration %d is %q with lists %+v, want %q's", i, got.Profile, got.Algorithms, profile)
+		}
+	}
 }

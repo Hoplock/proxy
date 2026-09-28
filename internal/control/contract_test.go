@@ -219,6 +219,9 @@ func TestSpecEnumsMatchGoConstants(t *testing.T) {
 		{"AuthorizeResponse", "algorithm_profile", []string{
 			string(AlgorithmProfileDefault), string(AlgorithmProfileLegacyRSASHA1),
 			string(AlgorithmProfileLegacyDevice)}},
+		// The per-profile declaration (phase 0047) spells a profile too, and
+		// declares every one this build accepts.
+		{"AlgorithmProfileCapability", "profile", profileNames()},
 		// The floor ladder (phase 0045), in both places a level is spelled, and
 		// the report's floor_met, which adds "none" below the ladder.
 		{"AuthorizeResponse", "algorithm_floor", floorNames()},
@@ -510,6 +513,9 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		"algorithm_floor", string(AlgorithmFloorModernKEX), string(AlgorithmFloorPQHybridKEX),
 		"algorithm_bans", "key_exchanges", "ciphers", "macs", "host_keys", "public_key_auth",
 		"algorithm_floors", "floor_met", "negotiated", KexFloorNone, KeyExchangeMLKEM768X25519,
+		// The per-profile declaration (phase 0047), and the second spelling of
+		// the one exchange its judgement rule treats as one.
+		"algorithm_profiles", "curve25519-sha256@libssh.org",
 		"target_kex_algorithm", "target_host_key_algorithm", "target_cipher_out", "target_cipher_in",
 		"target_mac_out", "target_mac_in", "target_public_key_algorithms_offered",
 		"algorithm_policy_cause", "algorithm_bans_unmatched", "algorithm_axis", "target_algorithms_offered",
@@ -559,17 +565,41 @@ func TestSpecDocumentsTheCertificatePayloads(t *testing.T) {
 	}
 }
 
-// jsonFields lists the JSON names a struct's fields travel under.
+// jsonFields lists the JSON names a struct's fields travel under. It descends
+// into an embedded struct with no JSON name of its own, as encoding/json does:
+// its fields sit beside the outer ones on the wire (AlgorithmProfileCapability
+// embeds Algorithms), and skipping them would leave them unchecked.
 func jsonFields(v any) []string {
+	return jsonFieldsOf(reflect.TypeOf(v))
+}
+
+func jsonFieldsOf(rt reflect.Type) []string {
 	var names []string
-	rt := reflect.TypeOf(v)
 	for i := 0; i < rt.NumField(); i++ {
-		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		field := rt.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		embedded := field.Type
+		if embedded.Kind() == reflect.Pointer {
+			embedded = embedded.Elem()
+		}
+		if field.Anonymous && name == "" && embedded.Kind() == reflect.Struct {
+			names = append(names, jsonFieldsOf(embedded)...)
+			continue
+		}
 		if name != "" && name != "-" {
 			names = append(names, name)
 		}
 	}
 	return names
+}
+
+// profileNames is every algorithm profile, as the contract spells it.
+func profileNames() []string {
+	var out []string
+	for _, profile := range AlgorithmProfiles() {
+		out = append(out, string(profile))
+	}
+	return out
 }
 
 // floorNames is every level, as the contract spells it.
@@ -581,21 +611,24 @@ func floorNames() []string {
 	return out
 }
 
-// TestSpecDocumentsTheAlgorithmSchemas keeps phase 0045's schemas and the Go
-// struct tags in step, field by field, and pins the two shape decisions a
+// TestSpecDocumentsTheAlgorithmSchemas keeps phase 0045's and 0047's schemas and
+// the Go struct tags in step, field by field, and pins the shape decisions a
 // server author is most likely to undo: a key-exchange-only report must be
-// valid (so observed_at is no longer required of every report), and a floor's
-// report must say when it was made.
+// valid (so observed_at is no longer required of every report), a floor's
+// report must say when it was made, and a profile's declaration carries every
+// axis, because a server judging a ban must never have to guess what a missing
+// one means.
 func TestSpecDocumentsTheAlgorithmSchemas(t *testing.T) {
 	doc := loadSpec(t)
 
 	for schema, fields := range map[string][]string{
-		"AlgorithmBans":            jsonFields(Algorithms{}),
-		"OfferableAlgorithms":      jsonFields(Algorithms{}),
-		"AlgorithmFloorCapability": jsonFields(AlgorithmFloorCapability{}),
-		"ProxyCapabilities":        jsonFields(ProxyCapabilities{}),
-		"TargetCapabilities":       jsonFields(TargetCapabilities{}),
-		"KexObservation":           jsonFields(KexObservation{}),
+		"AlgorithmBans":              jsonFields(Algorithms{}),
+		"OfferableAlgorithms":        jsonFields(Algorithms{}),
+		"AlgorithmFloorCapability":   jsonFields(AlgorithmFloorCapability{}),
+		"AlgorithmProfileCapability": jsonFields(AlgorithmProfileCapability{}),
+		"ProxyCapabilities":          jsonFields(ProxyCapabilities{}),
+		"TargetCapabilities":         jsonFields(TargetCapabilities{}),
+		"KexObservation":             jsonFields(KexObservation{}),
 	} {
 		for _, field := range fields {
 			ref := "#/components/schemas/" + schema + "/properties/" + field
@@ -606,9 +639,10 @@ func TestSpecDocumentsTheAlgorithmSchemas(t *testing.T) {
 	}
 
 	for ref, want := range map[string]string{
-		"#/components/schemas/AuthorizeResponse/properties/algorithm_bans/$ref": "#/components/schemas/AlgorithmBans",
-		"#/components/schemas/ProxyCapabilities/properties/algorithms/$ref":     "#/components/schemas/OfferableAlgorithms",
-		"#/components/schemas/TargetCapabilities/properties/kex/$ref":           "#/components/schemas/KexObservation",
+		"#/components/schemas/AuthorizeResponse/properties/algorithm_bans/$ref":           "#/components/schemas/AlgorithmBans",
+		"#/components/schemas/ProxyCapabilities/properties/algorithms/$ref":               "#/components/schemas/OfferableAlgorithms",
+		"#/components/schemas/TargetCapabilities/properties/kex/$ref":                     "#/components/schemas/KexObservation",
+		"#/components/schemas/ProxyCapabilities/properties/algorithm_profiles/items/$ref": "#/components/schemas/AlgorithmProfileCapability",
 	} {
 		if got, ok := resolveRef(doc, ref); !ok || got != want {
 			t.Errorf("%s = %v, want %s", ref, got, want)
@@ -622,5 +656,24 @@ func TestSpecDocumentsTheAlgorithmSchemas(t *testing.T) {
 	list, _ := required.([]any)
 	if !ok || len(list) != 2 || list[0] != "floor_met" || list[1] != "observed_at" {
 		t.Errorf("KexObservation.required = %v, want [floor_met observed_at]", required)
+	}
+
+	// Every key the Go type sends is required, and nothing else is: `profile`
+	// and the five axes the embedded Algorithms carries. Six names here is also
+	// what shows jsonFields saw through the embedding.
+	sends := jsonFields(AlgorithmProfileCapability{})
+	want := []string{"profile", "key_exchanges", "ciphers", "macs", "host_keys", "public_key_auth"}
+	if !reflect.DeepEqual(sends, want) {
+		t.Errorf("AlgorithmProfileCapability sends %q, want %q", sends, want)
+	}
+	profileRequired, declared := resolveRef(doc, "#/components/schemas/AlgorithmProfileCapability/required")
+	entries, _ := profileRequired.([]any)
+	var names []string
+	for _, v := range entries {
+		name, _ := v.(string)
+		names = append(names, name)
+	}
+	if !declared || !reflect.DeepEqual(names, want) {
+		t.Errorf("AlgorithmProfileCapability.required = %v, want %q", profileRequired, want)
 	}
 }
