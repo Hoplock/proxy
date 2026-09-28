@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,9 @@ import (
 // This file is the server half of phase 0045: the mock refuses what the client
 // refuses in a floor or a ban, serves either only to a proxy that can read and
 // enforce it, and merges capability reports exactly as the contract says a
-// server must.
+// server must. Phase 0047 adds one thing a server must do and the mock does:
+// accept the per-profile declaration. The mock authors no policy, so it judges
+// nothing against it.
 
 // TestFloorAndBanFixturesAreCheckedLikeTheClientChecksThem: a fixture the proxy
 // would refuse as a contract violation must not start the mock — the refused
@@ -150,6 +153,78 @@ func TestAFloorOrABanIsServedOnlyToAProxyThatReadsIt(t *testing.T) {
 	// vocabulary behind: the gate is per route.
 	if status, body := authorizeWith(t, m, "alice", "host.company.com", control.PolicyVersion-1, nil); status != http.StatusOK {
 		t.Errorf("a route with no floor to an older proxy = %d %s, want 200", status, body)
+	}
+}
+
+// TestAnAuthorizeDeclaringProfilesIsServedAsBefore: a proxy that declares what
+// each algorithm profile offers (phase 0047) is served exactly what it is served
+// without that declaration, on a plain route and on one with a floor and a ban.
+// The declaration grants nothing and gates nothing, so the mock refuses nothing
+// new. What this pins is that the strict decoder knows the field, where it
+// answers a 400 to one it does not.
+func TestAnAuthorizeDeclaringProfilesIsServedAsBefore(t *testing.T) {
+	m := startMock(t, nil, serverOptions{})
+	offerable := control.OfferableAlgorithms()
+	withProfiles := &control.ProxyCapabilities{
+		AlgorithmFloors:   control.AlgorithmFloorCapabilities(),
+		AlgorithmProfiles: control.AlgorithmProfileCapabilities(),
+		Algorithms:        &offerable,
+	}
+	withoutProfiles := withProfiles.Clone()
+	withoutProfiles.AlgorithmProfiles = nil
+
+	// served is one authorize answer, with the two fields that differ per call
+	// by design set aside: the decision id, and a deadline anchored at now.
+	served := func(target string, caps *control.ProxyCapabilities) control.AuthorizeResponse {
+		t.Helper()
+		status, body := authorizeWith(t, m, "alice", target, control.PolicyVersion, caps)
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %s, want 200", target, status, body)
+		}
+		var resp control.AuthorizeResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatal(err)
+		}
+		resp.DecisionID, resp.SessionDeadline = "", nil
+		return resp
+	}
+	for _, target := range []string{"host.company.com", "pq-host.company.com"} {
+		if got, want := served(target, withProfiles), served(target, withoutProfiles); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: declaring the profiles changed what was served:\n got %+v\nwant %+v", target, got, want)
+		}
+	}
+
+	// The field was on the wire, spelled as the contract spells it, and the
+	// decoder that took it is strict: the same request with the key misspelled
+	// is refused.
+	body, err := json.Marshal(control.AuthorizeRequest{
+		Identity:      &control.Identity{Subject: "alice@example.com", Login: "alice"},
+		Target:        "host.company.com",
+		PolicyVersion: control.PolicyVersion,
+		Capabilities:  withProfiles,
+		Conn:          testConn(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const field = `"algorithm_profiles":[{"profile":"default","key_exchanges":[`
+	if !strings.Contains(string(body), field) {
+		t.Fatalf("the request does not carry %s: %s", field, body)
+	}
+	misspelled := strings.Replace(string(body), `"algorithm_profiles"`, `"algorithm_profilez"`, 1)
+	req, err := http.NewRequest(http.MethodPost, m.srv.URL+control.PathAuthorize, strings.NewReader(misspelled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+proxyToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("an unknown capabilities field = %d, want 400: the acceptance above proves nothing about a lax decoder", resp.StatusCode)
 	}
 }
 

@@ -386,6 +386,15 @@ type ProxyCapabilities struct {
 	// shows while a rolling upgrade has two builds accepting different
 	// exchanges for the same level.
 	AlgorithmFloors []AlgorithmFloorCapability `json:"algorithm_floors,omitempty"`
+	// AlgorithmProfiles are the algorithm_profile values this build accepts,
+	// each with what that profile offers per axis BEFORE any floor or ban
+	// (phase 0047; AlgorithmProfileCapabilities builds it). With the per-level
+	// lists above it determines what any accepted profile, floor and ban leave
+	// on every axis, so Hoplock Control can refuse a ban that empties an axis
+	// exactly as Validate does, when the ban is saved rather than as an outage
+	// at the first authorize. It gates nothing: a profile is response
+	// vocabulary, which policy_version governs.
+	AlgorithmProfiles []AlgorithmProfileCapability `json:"algorithm_profiles,omitempty"`
 	// Algorithms is every identifier this build can put in an offer, per axis,
 	// under any profile or floor level (OfferableAlgorithms), so Hoplock
 	// Control can warn about a ban that matches nothing anywhere in the fleet
@@ -400,6 +409,24 @@ type AlgorithmFloorCapability struct {
 	Level AlgorithmFloor `json:"level"`
 	// KeyExchanges are the exchanges the level accepts in this build.
 	KeyExchanges []string `json:"key_exchanges"`
+}
+
+// AlgorithmProfileCapability declares one algorithm_profile a build accepts and
+// what it offers on each axis before any floor or ban, key exchanges in the
+// wire form the leg offers (phase 0047).
+type AlgorithmProfileCapability struct {
+	// Profile is the algorithm_profile value.
+	Profile AlgorithmProfile `json:"profile"`
+	// Algorithms is what the profile offers, per axis, before any floor or
+	// ban. It is embedded, so the five axis keys sit beside `profile` on the
+	// wire and are spelled by the one type that spells them.
+	//
+	// Its fields are omitempty while the contract requires every axis. That
+	// holds because no profile offers an empty axis, which
+	// TestEveryDeclaredProfileCarriesEveryAxis pins. Its Clone is promoted and
+	// copies the lists only, never the profile: copy an entry as
+	// ProxyCapabilities.Clone does.
+	Algorithms
 }
 
 // DeclaresFloor reports whether this build declared that it enforces level f.
