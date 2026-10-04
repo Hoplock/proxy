@@ -4,21 +4,21 @@
 > owns it; `hoplock/control` and `hoplock/enterprise` carry copies. It is a
 > shared surface like any other (Section 1), so a change to it takes the same
 > route: made in the proxy, **merged there first** (Section 2), then mirrored
-> verbatim into the other two by **one dedicated sync session per repository**
-> (Section 3.1).
+> verbatim into the other two by **one sync PR per repository** (Section 3.1),
+> answering the sync the proxy PR queued (Section 4.3).
 >
 > Between that merge and those syncs the copies lag, and pretending otherwise is
 > what an earlier version of this line did — it claimed the mirror happened "in
-> the same change-set", which no session can do, because a session is checked
-> out against one repository at a time. The window is real and is made visible
-> instead: the upstream PR names **both** consuming repositories under
-> `## Cross-repo impact` and hands over a ready-to-run kickoff for each
-> (Section 4), so the lag is a tracked obligation rather than a silent
-> divergence.
+> the same change-set", which no session can do: three repositories merge three
+> PRs, never one, and the proxy's merges first. The window is real and is made
+> visible instead: the upstream PR names **both** consuming repositories under
+> `## Cross-repo impact` and queues a ready-to-run sync for them (Sections 4.1,
+> 4.3), so the lag is a tracked obligation rather than a silent divergence.
 
-Read this **only when your change touches a shared surface** (Section 1). If it
-does not, your repository's own `docs/PROTOCOL.md` is the whole process, and
-this file costs you context you need for the work.
+Read this **only when your change touches a shared surface** (Section 1), or
+when you are answering a queued cross-repo request (Section 4.3). Otherwise your
+repository's own `docs/PROTOCOL.md` is the whole process, and this file costs
+you context you need for the work.
 
 ---
 
@@ -43,6 +43,12 @@ direction is the newer half of this file and the easier one to leave as prose,
 because a session that hits it is mid-phase, has a workaround in reach, and can
 always write the problem down and move on — which reads like diligence and leaves
 the work unowned.
+
+And it gives both directions a **place to wait** (4.3). An obligation that lives
+in a PR body is owned and even runnable, and still listed nowhere: it ran only if
+somebody remembered which merged PR still owed something, and pasted it. So each
+one is now a file in a queue in the repository that raised it, and one kickoff
+answers the oldest of them across all three.
 
 ---
 
@@ -87,9 +93,9 @@ open downstream.
 
 **Nothing is an exception, this file included.** `docs/CROSS-REPO-PROTOCOL.md`
 is owned by the proxy and mirrored downstream, and it travels exactly this
-route — merged here, then one sync session per consuming repository
-(Section 6). It is the one that most invites a "just copy it everywhere at
-once", which is why it is named here.
+route — merged here, then one sync PR per consuming repository (Sections 3.1,
+6). It is the one that most invites a "just copy it everywhere at once", which
+is why it is named here.
 
 The reverse direction is never a dependency: Control does not import Enterprise
 (M15), and the proxy depends on neither. When a downstream repository needs
@@ -102,20 +108,26 @@ something it does not have, that is Section 3.2 — not an exception to this rul
 One per direction. Both are named for where the *work* ends up, not for where it
 was noticed: a downstream sync is work done downstream, and an upstream request
 is work done upstream. Neither is ever done by the session that discovered it was
-owed.
+owed. Both are **queued where they are noticed** and answered where they end up
+(Section 4.3).
 
 ### 3.1 Downstream sync — upstream landed, downstream must catch up
 
-**Owner: whoever merged the upstream change.** Not the next session in the
-downstream repository, which has no way of knowing the change happened.
+**Owner: the upstream change's own PR**, which queues the sync before it merges.
+Not the next session in the downstream repository, which has no way of knowing
+the change happened.
 
 1. Before merging, the upstream PR names every affected repository under a
-   **Cross-repo impact** heading (Section 4).
-2. It merges.
+   **Cross-repo impact** heading (Section 4), and queues the sync in its own
+   `prompts/downstream/queued/` (Section 4.3).
+2. It merges — and that is what puts the queued sync on `main`, where it can be
+   taken.
 3. One **sync PR** per affected repository (Section 5), opened against its
-   `main`, run in a fresh session from the kickoff the upstream PR handed over
-   (Section 4).
-4. Each sync PR names the upstream PR it follows and confirms it is merged.
+   `main` by the session that answers the queued sync (Section 4.3).
+4. Each sync PR names the upstream PR it follows, confirms it is merged, and
+   names the request file it answers.
+5. Once every one of them has merged, the request moves to
+   `prompts/downstream/implemented/` in the upstream repository (Section 4.3).
 
 A sync PR **changes text, not behaviour**. It updates the prompts, plan, and
 protocol of the downstream repository so the next session builds against what is
@@ -144,19 +156,23 @@ repository, which has no way of knowing either.
    your PR under a heading spelled exactly `## Upstream request` (Section 4.2),
    and in your learnings summary as a named cross-repo dependency, so the next
    session in your repository finds it by reading rather than by being blocked.
-4. **Hand over a runnable kickoff** for the upstream repository, already filled
-   in (Section 4.2). This is the step that used to be missing, and it is the
-   whole reason this section is a flow rather than a prohibition.
-5. **The user runs it there.** The change is **normal work in the upstream
-   repository** — its own number, its own prompt, its own PR, its own review —
-   never a favour done in passing on the way to something else, and never done
-   from the session that found it: that session is checked out against the wrong
-   repository and is in the middle of implementing something else (Section 6).
+4. **Queue a runnable kickoff** for the upstream repository, already filled in,
+   in your repository's `prompts/upstream/queued/` (Sections 4.2, 4.3). This is
+   the step that used to be missing, and it is the whole reason this section is
+   a flow rather than a prohibition.
+5. **The session that answers it runs it there** (Section 4.3). The change is
+   **normal work in the upstream repository** — its own number, its own prompt,
+   its own PR, its own review — never a favour done in passing on the way to
+   something else, and never done from the session that found it: that session
+   is checked out against the wrong repository and is in the middle of
+   implementing something else (Section 6).
 6. **The loop closes downward.** When that upstream change merges it is an
    ordinary 3.1, owed to every consuming repository *including the one that
-   asked*. A request is therefore **three legs** — up as a kickoff, across as a
-   phase, back down as a sync — and until this revision only the middle one was
-   written down.
+   asked*. A request is therefore **three legs** — up as a queued request,
+   across as a phase, back down as a queued sync — and each leg waits in a queue
+   of its own: `prompts/upstream/` in the repository that asked, then
+   `prompts/queued/` in the one that answers, then that one's
+   `prompts/downstream/`.
 
 Approximating is one of the two failures this exists to prevent. It makes CI
 green in one repository while the two components quietly stop agreeing, which is
@@ -210,13 +226,16 @@ reader already preferred.
 
 Both flows in Section 3 end the same way: a session in one repository knows
 something a session in another repository needs, and the two never meet. So both
-end with the same duty — **put the obligation in the PR, and hand over a kickoff
-somebody can actually run.** 4.1 is that duty looking downstream, 4.2 looking up.
+end with the same duty — **put the obligation in the PR, and queue a kickoff
+somebody can actually run.** 4.1 is that duty looking downstream, 4.2 looking up,
+and 4.3 is the queue both of them write to.
 
 They are one section because the failure is one failure. An obligation that is
 described but not runnable has to be reconstructed later, from a merged PR body,
 in a repository nobody has opened — and that reconstruction is the step that
-silently does not happen, whichever direction it was owed in.
+silently does not happen, whichever direction it was owed in. A runnable one
+fares little better when it lives only in that PR body and a chat reply: nothing
+lists it, so it runs only if somebody remembers it. That is why it is now a file.
 
 ### 4.1 Looking downstream: what your change obliges a consumer to do
 
@@ -243,30 +262,36 @@ What to actually check, at minimum:
   belongs **in that prompt**, not only in the plan — a session reads its prompt
   closely and skims the plan.
 
-#### Hand over a runnable sync kickoff
+#### Queue a runnable sync kickoff
 
 An obligation that is written down but not runnable is one somebody has to
 reconstruct later, from a merged PR body, in a repository they have not opened.
 That reconstruction is the step that silently does not happen. So the impact
-section does not stop at naming the work — **for each repository with
-obligations it ends with a ready-to-run sync kickoff, already filled in**:
+section does not stop at naming the work — **the PR queues a ready-to-run sync
+kickoff, already filled in**, as a request file in its own
+`prompts/downstream/queued/` (4.3):
 
 - the prompt is the "Downstream sync" block in `docs/KICKOFF.md`, verbatim
   except for its blanks;
 - `<upstream PR URL>` is this PR, and the obligations line carries the
-  obligations just stated above it. There is no branch blank to fill: the sync
-  session uses whatever branch it was given (§5);
-- a repository answered **"None"** gets no kickoff — there is nothing to run.
+  obligations just stated above it — each repository's under its name, when
+  there are two. There is no branch blank to fill: the sync session uses
+  whatever branch it was given (§5);
+- a repository answered **"None"** is left out of it — there is nothing to
+  run — and a PR that answers "None" for every repository queues nothing;
+- the impact section ends by naming the file.
 
-The session that opens the upstream PR **also puts each kickoff in its reply to
-the user**, naming the repository to run it in and saying plainly that it needs
-a **fresh session with that repository checked out**. The PR body is the durable
-copy; the reply is what actually gets pasted, and a sync that is never started
-is indistinguishable from one that was never owed.
+The file replaces both copies this used to ask for — one in the PR body, one in
+the reply to the user — because it is the durable copy and the runnable one at
+once. The reply says in one line that a sync is queued, and nobody pastes
+anything: the "Next cross-repo request" kickoff in `docs/KICKOFF.md` finds the
+file. A sync that is never started is indistinguishable from one that was never
+owed — unless it is queued, where it stays in plain sight until somebody does.
 
-Neither the kickoff nor the reply makes the sync the upstream session's to do.
-The ordering in §2 is unchanged: upstream merges first, and the sync runs
-afterwards, in its own session, against the downstream repository.
+Queueing the sync does not make it the upstream session's to do. The ordering in
+§2 is unchanged — upstream merges first, and the sync runs afterwards, in a
+session of its own — and the queue now enforces it: the file reaches `main` only
+when this PR merges, and nothing that is not on `main` is queued (4.3).
 
 ### 4.2 Looking upstream: what you need that does not exist yet
 
@@ -295,13 +320,14 @@ State, for each thing you need:
   staged but never delivered" is a decision somebody can weigh; "blocked on
   upstream" is not.
 
-#### Hand over a runnable upstream kickoff
+#### Queue a runnable upstream kickoff
 
-Then end the section with a **ready-to-run kickoff for the upstream repository,
-already filled in** — the "Upstream request" block in that repository's
-`docs/KICKOFF.md`, verbatim except for its blanks. And, exactly as 4.1 requires,
-**put it in the reply to the user too**, naming the repository to run it in and
-saying plainly that it needs a **fresh session with that repository checked out**.
+Then queue a **ready-to-run kickoff for the upstream repository, already filled
+in** — the "Upstream request" block in that repository's `docs/KICKOFF.md`,
+verbatim except for its blanks — as a request file in your own
+`prompts/upstream/queued/` (4.3), one file per need, and end the section by
+naming it. Exactly as in 4.1, the file replaces the copies in the PR body and the
+reply: the reply says in one line what is queued.
 
 The kickoff's job is to produce a **queued prompt** upstream, not to produce the
 change: what arrives upstream is a need, and turning a need into a specified
@@ -319,12 +345,127 @@ Two things this obligation is **not**:
   that the seam fails visibly rather than silently — which is what 3.2 step 2
   buys.
 
+### 4.3 The request queues: where a kickoff waits
+
+Every kickoff 4.1 and 4.2 owe is a **file in a queue**, in the repository that
+raised it — never in the repository it is for, which the raising session does
+not have checked out:
+
+```
+prompts/
+  upstream/      needs this repository raised for the one above it (4.2)
+    queued/
+    implemented/
+  downstream/    syncs its merged changes owe the ones below it (4.1)
+    queued/
+    implemented/
+```
+
+All three repositories carry both, so all three are searched the same way, even
+though two of the six folders never hold anything (the table below). Neither is
+part of `prompts/queued/`: nothing in them has a number, and "the lowest-numbered
+queued prompt" never reaches them.
+
+**Name.** `<repository>-PR#<n>-<short-description>.md` — for example
+`control-PR#46-access-context-seam.md`:
+
+- `<repository>` is `proxy`, `control` or `enterprise`: the repository the file
+  is in, which is the one that raised it;
+- `<n>` is the number of the PR whose `## Cross-repo impact` or
+  `## Upstream request` section raised it, unpadded, as GitHub writes it;
+- `<short-description>` is lowercase words joined by hyphens, as in a prompt's
+  name.
+
+The number is the PR's own, so the file is committed **after the PR is opened**:
+open it, then add the file to it. A PR that owes a sync queues one file, covering
+every repository its impact section names obligations for. A PR that raises
+requests queues one file per need, since each need becomes its own prompt
+upstream; two from one PR differ in their descriptions. The file holds the
+filled-in block under a one-line heading that names it —
+`# control-PR#46 — the access-context seam`.
+
+**Target.** Nothing in the file says where the work happens; where the file is
+says it. The repository it is in raised it, and the folder says which way along
+the chain (Section 2) it travels:
+
+| The file is in | The work is done in |
+| --- | --- |
+| `hoplock/proxy`, `prompts/downstream/` | `hoplock/control` — and `hoplock/enterprise` too when the change is to this file, the one proxy surface Enterprise carries (Section 1) |
+| `hoplock/control`, `prompts/upstream/` | `hoplock/proxy` |
+| `hoplock/control`, `prompts/downstream/` | `hoplock/enterprise` |
+| `hoplock/enterprise`, `prompts/upstream/` | `hoplock/control` |
+| `hoplock/proxy`, `prompts/upstream/`; `hoplock/enterprise`, `prompts/downstream/` | nothing, ever: nothing is upstream of the proxy, or downstream of Enterprise |
+
+Enterprise's requests go to Control even when the shape turns out to be the
+proxy's. Nothing in Enterprise talks to a proxy directly (its `docs/PLAN.md`
+§7), so it can name the need but not the contract shape; Control, answering it,
+queues its own request to the proxy if meeting the need takes one.
+
+**Order: oldest first, across all three.** A request waits from the moment its
+file reaches `main` — when the PR that raised it merges — and the oldest is the
+one that has waited longest. Within one repository that is nearly always the
+lowest PR number; across repositories PR numbers do not compare, so time
+decides. Only `main` counts: a file on an unmerged branch is not queued yet,
+which is what keeps a sync from running before the change it follows has merged
+(Section 2). From the directory holding the three clones:
+
+```sh
+for repo in proxy control enterprise; do
+  git -C "$repo" fetch -q origin main
+  git -C "$repo" ls-tree -r --name-only origin/main -- \
+      prompts/upstream/queued prompts/downstream/queued |
+    grep '\.md$' |
+    while read -r f; do
+      printf '%s %s/%s\n' "$(git -C "$repo" log --first-parent --format=%ct \
+          origin/main -- "$f" | tail -n 1)" "$repo" "$f"
+    done
+done | sort -n
+```
+
+Each line starts with when its file reached `main`, in seconds, and the first
+line is the oldest. A shallow clone cannot see that far back — every file older
+than the clone appears to arrive at its edge, all at once — so wherever
+`git rev-parse --is-shallow-repository` says `true`, run
+`git fetch --unshallow origin` first.
+
+**In flight.** A request stays in `queued/` until the PR that moves it merges, so
+one being answered still looks queued. Before taking one, look for an open PR —
+in the repository the work is done in, or in the one that raised it — that names
+its file. If there is one, the request is in flight: leave it, say so, and take
+the next.
+
+**Answering.** One session per request, with all three repositories checked
+out, started from the "Next cross-repo request" kickoff in `docs/KICKOFF.md` —
+the same block in every repository's copy. It is never the session that raised
+the request, which is implementing a phase in one repository (Section 6), and a
+need it turns up on the way is queued (4.2), never answered by it. The file was
+written for a session in its target, so "this repository" in it means the
+target, and every rule it points to — protocol, numbering, branch convention — is
+the target's. What it opens there is what the file asks for: a sync PR per
+repository it names (Section 5), or the one PR that queues a prompt (4.2) — each
+naming the request file.
+
+**Leaving the queue.** Then, in the repository that raised it, the same session
+opens one more PR: the file moved from `queued/` to `implemented/`, same name,
+contents unchanged, naming the PRs that answered it — committed with the scope
+`requests`, e.g. `docs(requests): control-PR#46 answered by enterprise#12`. That
+PR **merges last**, and says so. A request is implemented once what answers it
+has merged and not before, whichever way along the chain that points — it orders
+bookkeeping, not a build, so Section 2 has nothing to say about it. Moved early, a
+request is marked done while nobody has done it, which is the one way this queue
+can lose track of something.
+
+A request answered "not like that, like this" (4.2) leaves the same way, once the
+alternative the user agreed to is queued. One the user withdraws is **deleted**
+rather than moved — nothing was implemented — by a PR in the repository that
+raised it, whose body says why.
+
 ---
 
 ## 5. Sync PR conventions
 
 These exist because a sync PR fits none of the per-repo conventions: with no
-prompt there is no number, and the defaults quietly stop applying.
+numbered prompt there is no number, and the defaults quietly stop applying.
 
 - **Branch:** the one the session was given, whatever it is named. A sync
   session is normally started with a branch already assigned and does not
@@ -333,8 +474,9 @@ prompt there is no number, and the defaults quietly stop applying.
   yours to choose, use `claude/sync-<short-description>` — deliberately not
   `claude/NNNN-…`, because there is no NNNN and inventing one collides with a
   real prompt. Either way what identifies a sync is the PR body naming the
-  upstream change it follows, below, and never the branch: a name that cannot
-  be chosen cannot be relied on to identify anything.
+  upstream change it follows and the request file it answers, below, and never
+  the branch: a name that cannot be chosen cannot be relied on to identify
+  anything.
 - **Commit:** Conventional Commits with the scope `sync`, e.g.
   `docs(sync): follow proxy contract v2`. The body names the upstream change.
 - **One upstream change, one sync PR per repository.** Do not batch two
@@ -345,6 +487,7 @@ prompt there is no number, and the defaults quietly stop applying.
 
 - [ ] Names the upstream PR or commit it follows, and that upstream change is
       **merged**.
+- [ ] Names the request file it answers (4.3).
 - [ ] Every stale reference updated, and the PR says **how you searched** — the
       grep, not the adjective. A reviewer cannot re-derive "I looked carefully".
 - [ ] Every new obligation landed **in the prompt that will implement it**, not
@@ -357,8 +500,10 @@ prompt there is no number, and the defaults quietly stop applying.
 
 ### What a sync PR does not owe
 
-- **No `prompts/queued/` → `prompts/implemented/` move.** It implements no
-  prompt.
+- **No move of its own.** It implements no prompt of its repository's, so
+  nothing in its `prompts/` moves. The request it answers moves in the
+  repository that raised it, in a PR of its own that merges after this one
+  (4.3).
 - **No learnings file.** Learnings are the hand-off for a completed phase and
   are named after one; a learnings file named after nothing is a file nobody
   will find.
@@ -382,16 +527,17 @@ governed by that repository's own `docs/PROTOCOL.md` and nothing here:
 | Prompt | none | one, self-contained, moved to `implemented/` |
 | Learnings | none | one, like any phase |
 | Changes behaviour | never | that is the entire point |
+| Request queue (4.3) | answers a file queued upstream | queues one, in its own `prompts/downstream/` |
 | Owes a sync | it *is* one | **yes — to every consumer, once merged** |
 
 That last row is the one to get right. The phase that closes a request is itself a
 change to a shared surface, so 4.1 binds it in full: it names every consuming
-repository under `## Cross-repo impact` and emits their kickoffs, including one
-back to the repository whose request started it. **The repository that asked is a
-consumer like any other and is easy to forget precisely because it is the one
-already waiting** — it knows what it asked for, so it is tempting to assume it
-needs no telling, and the session there that finally vendors the change is a fresh
-one that knows nothing.
+repository under `## Cross-repo impact` and queues their sync, including the
+part owed back to the repository whose request started it. **The repository that
+asked is a consumer like any other and is easy to forget precisely because it is
+the one already waiting** — it knows what it asked for, so it is tempting to
+assume it needs no telling, and the session there that finally vendors the change
+is a fresh one that knows nothing.
 
 ---
 
@@ -407,8 +553,12 @@ one that knows nothing.
 - **Never do the upstream work from the session that found it needed.** It is
   checked out against the wrong repository and is implementing something else,
   and the upstream change deserves its own prompt, plan reading, and review
-  rather than a corner of a downstream PR (Sections 3.2, 4.2). Hand over the
-  kickoff instead.
+  rather than a corner of a downstream PR (Sections 3.2, 4.2). Queue the
+  kickoff instead (4.3). The session that answers a request is bound the same
+  way: it answers that one, and queues any need it turns up.
+- **Take a request only from `main`, and move it only after what answers it has
+  merged** (4.3). A file on a branch is a request nobody has merged yet; a file
+  moved early is one marked done that nobody did.
 - **A sync PR enforces nothing.** If you find yourself writing code in one, you
   have found a phase rather than a sync — queue it as a prompt.
 - **Do not fold a cross-repo sync into a feature PR.** It is separately
@@ -416,12 +566,14 @@ one that knows nothing.
   second pass.
 - **Changing this file:** it is a shared surface (Section 1) and gets no special
   flow. Change it in `hoplock/proxy`, **merge there first** (Section 2), then
-  mirror it verbatim into the other two through **one dedicated sync session per
-  repository** (Section 3.1) — never a hand-copy folded into some other change.
-  Say in each PR which repository the change originated in.
+  mirror it verbatim into the other two: the proxy PR queues the sync (4.3), and
+  it is answered with **one sync PR per repository** (Section 3.1) — never a
+  hand-copy folded into some other change. Say in each PR which repository the
+  change originated in.
 
   This bullet used to say "in the same change-set". That contradicted Sections 2
-  and 3.1 outright and was not compliable: a session is checked out against one
-  repository at a time, so the instruction could only ever be reported as a
-  deviation. Where the two readings differ, the direction rule wins — upstream
-  merges first, always.
+  and 3.1 outright and was not compliable: three repositories merge three PRs,
+  never one — as true for a session that can reach all three (4.3) as for one
+  checked out against a single repository — so the instruction could only ever
+  be reported as a deviation. Where the two readings differ, the direction rule
+  wins — upstream merges first, always.
