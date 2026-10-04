@@ -475,3 +475,37 @@ func TestQueuedPromptsNameTheirPlanSections(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestQueuesKeepTheirShapes enforces docs/CROSS-REPO-PROTOCOL.md §4.3.
+//
+// The request queues sit outside the numbered sequence: where a file is says
+// where the work is done, and the PR its name carries says how long it has
+// waited. A file named any other way is one the cross-repo kickoff cannot place
+// — and a file in `prompts/upstream/` is a request with nowhere to go, because
+// nothing is upstream of the proxy.
+func TestRequestQueuesKeepTheirShapes(t *testing.T) {
+	t.Parallel()
+	request := regexp.MustCompile(`^proxy-PR#[1-9][0-9]*-[a-z0-9]+(-[a-z0-9]+)*\.md$`)
+	for _, dir := range []string{
+		"prompts/upstream/queued", "prompts/upstream/implemented",
+		"prompts/downstream/queued", "prompts/downstream/implemented",
+	} {
+		entries, err := os.ReadDir(filepath.Join(repoRoot, dir))
+		if err != nil {
+			t.Errorf("%s: %v — every repository carries all four request folders, each with a .gitkeep "+
+				"so git keeps it while it is empty (CROSS-REPO-PROTOCOL §4.3)", dir, err)
+			continue
+		}
+		for _, e := range entries {
+			switch {
+			case e.Name() == ".gitkeep":
+			case strings.HasPrefix(dir, "prompts/upstream/"):
+				t.Errorf("%s/%s: nothing is upstream of the proxy, so it raises no upstream request and this "+
+					"folder stays empty (CROSS-REPO-PROTOCOL §2, §4.3)", dir, e.Name())
+			case e.IsDir() || !request.MatchString(e.Name()):
+				t.Errorf("%s/%s: a request is named proxy-PR#<n>-short-description.md, after the PR that "+
+					"raised it (CROSS-REPO-PROTOCOL §4.3)", dir, e.Name())
+			}
+		}
+	}
+}
