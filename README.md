@@ -301,15 +301,18 @@ per connection (`docs/PLAN.md`, D2).
 | `test/`             | the e2e scenario suite and the topology's config checks       |
 | `load/`             | load scenarios and the raw measurements they produced         |
 | `docs/`             | plan, session protocol, and per-phase learnings               |
-| `prompts/`          | queued and implemented phase prompts                          |
+| `prompts/`          | queued and implemented phase prompts, and the cross-repo request queues (`upstream/`, `downstream/`) |
 
 ## Contributing
 
 **Read [`docs/PROTOCOL.md`](docs/PROTOCOL.md) in full before doing any work.**
 It defines how a session picks up a prompt, branches, what "done" means, and how
 work is handed off to the next session. `docs/KICKOFF.md` has the exact prompts
-to start a session with, including the downstream sync a cross-repo change owes. If your change touches a surface another Hoplock
-repository consumes, `docs/CROSS-REPO-PROTOCOL.md` covers that too.
+to start a session with, including the one that answers queued cross-repo work —
+the downstream syncs a change here owes, queued in `prompts/downstream/`, and
+answered oldest first across all three repositories. If your change touches a
+surface another Hoplock repository consumes, `docs/CROSS-REPO-PROTOCOL.md`
+covers that too.
 
 Every `.go` file must carry the license header in
 [`docs/LICENSE-HEADER.md`](docs/LICENSE-HEADER.md).
