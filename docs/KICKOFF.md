@@ -160,11 +160,20 @@ part of it. The requester could not do this, which is the whole reason the
 request stops at a need.
 
 Write ONE self-contained prompt into prompts/queued/ per docs/PROTOCOL.md §7 —
-lowest unused number, contiguous above the implemented block, a "Read first"
-block naming plan sections by § and decisions by D id, in-scope and out-of-scope
-items, the exact files and shapes, acceptance criteria and required tests. Cite
-the requesting repository's decision ids by id (M* for control, E* for
-enterprise), never restated (docs/CROSS-REPO-PROTOCOL.md §1).
+a "Read first" block naming plan sections by § and decisions by D id, in-scope
+and out-of-scope items, the exact files and shapes, acceptance criteria and
+required tests. Cite the requesting repository's decision ids by id (M* for
+control, E* for enterprise), never restated (docs/CROSS-REPO-PROTOCOL.md §1).
+
+Queue it where it should run, never simply last: the default kickoff takes the
+lowest-numbered prompt, so its number is when it runs. Read the queued prompts
+and put it in the best order to run them in — after everything it depends on,
+before everything that depends on it, and early when nothing queued has a
+better claim, since the requesting repository is waiting on it. Renumber the
+queued prompts after it as docs/PROTOCOL.md §6 says, in this PR. The other
+repositories cite these numbers: grep them, and name every citation the
+renumbering leaves stale under "## Cross-repo impact", with its sync queued
+(docs/CROSS-REPO-PROTOCOL.md §4.1).
 
 Two things the prompt MUST carry, because they are what the request is for:
 - the exact shape asked for, in this repository's own vocabulary, and what
@@ -200,9 +209,10 @@ change that lands here and is never vendored by the repository that asked for it
   prompt. The session ends when its PR is merged (see `docs/PROTOCOL.md`).
 - **Respect dependencies / ordering.** Prompts are numbered in implementation
   order and later ones assume earlier ones are merged (e.g. 0002 needs 0001).
-  A fresh session branches off `main`, so it only sees **merged** work — kick off
-  the next prompt after the previous PR merges. Only run prompts in parallel when
-  they genuinely don't depend on each other.
+  A prompt you add is numbered where it should run, never simply last
+  (`docs/PROTOCOL.md` §6). A fresh session branches off `main`, so it only sees
+  **merged** work — kick off the next prompt after the previous PR merges. Only
+  run prompts in parallel when they genuinely don't depend on each other.
 - **A request is not a phase either, and it produces one rather than being one.**
   An upstream request arrives as a need and leaves as a queued prompt; the phase
   that implements it is a later, separate session. Never let the two collapse —
