@@ -127,7 +127,8 @@ the change happened.
 4. Each sync PR names the upstream PR it follows, confirms it is merged, and
    names the request file it answers.
 5. Once every one of them has merged, the request moves to
-   `prompts/downstream/implemented/` in the upstream repository (Section 4.3).
+   `prompts/downstream/implemented/` in the upstream repository, by a PR
+   opened as a draft alongside them and marked ready only then (Section 4.3).
 
 A sync PR **changes text, not behaviour**. It updates the prompts, plan, and
 protocol of the downstream repository so the next session builds against what is
@@ -446,19 +447,38 @@ repository it names (Section 5), or the one PR that queues a prompt (4.2) — ea
 naming the request file.
 
 **Leaving the queue.** Then, in the repository that raised it, the same session
-opens one more PR: the file moved from `queued/` to `implemented/`, same name,
-contents unchanged, naming the PRs that answered it — committed with the scope
-`requests`, e.g. `docs(requests): control-PR#46 answered by enterprise#12`. That
-PR **merges last**, and says so. A request is implemented once what answers it
-has merged and not before, whichever way along the chain that points — it orders
-bookkeeping, not a build, so Section 2 has nothing to say about it. Moved early, a
-request is marked done while nobody has done it, which is the one way this queue
-can lose track of something.
+opens one more PR, **as a draft**: the file moved from `queued/` to
+`implemented/`, same name, contents unchanged, naming the PRs that answered it —
+committed with the scope `requests`, e.g.
+`docs(requests): control-PR#46 answered by enterprise#12`. That PR **merges
+last**. A request is implemented once what answers it has merged and not before,
+whichever way along the chain that points — it orders bookkeeping, not a build,
+so Section 2 has nothing to say about it. Moved early, a request is marked done
+while nobody has done it, which is the one way this queue can lose track of
+something.
+
+**The draft is what holds that order.** GitHub will not merge a draft, so the
+order no longer depends on whoever merges reading the PR body first. A body that
+said "merge this last" was the whole mechanism before, and it failed the first
+time the two PRs were merged together: enterprise#20, the move, merged 88
+seconds before control#60, the PR that answered it.
+
+- **The body's first line says what it waits on**: every PR it names, and that
+  it stays a draft until each one has merged.
+- **It is marked ready for review only once every PR it names has merged.** An
+  approval or a green CI is not enough. Whoever marks it ready checks each PR
+  first: the session that opened it, if that session is still running when the
+  last one merges, and otherwise the person merging them.
+- **If what it waits on changes, the draft changes with it.** An answering PR
+  closed unmerged leaves the request queued, so the draft is closed. One that
+  merges changed, so that it no longer answers the request as named, means the
+  draft is rewritten to say what did answer it. Neither is ever marked ready as
+  it stands.
 
 A request answered "not like that, like this" (4.2) leaves the same way, once the
 alternative the user agreed to is queued. One the user withdraws is **deleted**
 rather than moved — nothing was implemented — by a PR in the repository that
-raised it, whose body says why.
+raised it, whose body says why. That PR waits on nothing, so it is not a draft.
 
 ---
 
@@ -502,8 +522,8 @@ numbered prompt there is no number, and the defaults quietly stop applying.
 
 - **No move of its own.** It implements no prompt of its repository's, so
   nothing in its `prompts/` moves. The request it answers moves in the
-  repository that raised it, in a PR of its own that merges after this one
-  (4.3).
+  repository that raised it, in a PR of its own that stays a draft until this
+  one has merged (4.3).
 - **No learnings file.** Learnings are the hand-off for a completed phase and
   are named after one; a learnings file named after nothing is a file nobody
   will find.
@@ -558,7 +578,9 @@ is a fresh one that knows nothing.
   way: it answers that one, and queues any need it turns up.
 - **Take a request only from `main`, and move it only after what answers it has
   merged** (4.3). A file on a branch is a request nobody has merged yet; a file
-  moved early is one marked done that nobody did.
+  moved early is one marked done that nobody did. So the PR that moves it opens
+  as a draft and is marked ready only once what it names has merged: a rule
+  that only asks whoever merges to remember has already failed once.
 - **A sync PR enforces nothing.** If you find yourself writing code in one, you
   have found a phase rather than a sync — queue it as a prompt.
 - **Do not fold a cross-repo sync into a feature PR.** It is separately

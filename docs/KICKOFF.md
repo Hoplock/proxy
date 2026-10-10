@@ -55,9 +55,12 @@ the target's.
 Do what the file says, in the target, and open there the PRs it asks for —
 a sync PR per repository it names, or one PR that queues one prompt — each
 naming the request file. Then, in the repository the request came from, open
-one PR that moves the file from queued/ to implemented/ (same name, contents
-unchanged), names the PRs that answered it, and says to merge it last. A
-need you turn up on the way is queued as §4.2 says, never answered here.
+one DRAFT PR that moves the file from queued/ to implemented/ (same name,
+contents unchanged) and names the PRs that answered it. Its first line says it
+stays a draft until every one of them has merged. Mark it ready for review only
+then, after checking each is merged — never before, whatever its approvals or
+CI say (§4.3). A need you turn up on the way is queued as §4.2 says, never
+answered here.
 
 Work on the branch this session was given in each repository, whatever it is
 named.
