@@ -125,12 +125,14 @@ func (s *Shipper) refuse(where string, delivered int, refused []refusal) {
 	if len(refused) == 0 {
 		return
 	}
-	s.refused.Add(uint64(len(refused)))
 	last := refused[len(refused)-1]
 	s.logf("logging: Hoplock Control refused records %s: %d delivered, %d set aside (code %q: %s)",
 		where, delivered, len(refused), last.code, last.message)
 	s.setAside(refused)
 	s.reportRefusals(refused)
+	// Counted last, as spill counts Buffered after the write: whoever sees the
+	// count sees the records kept and their report queued.
+	s.refused.Add(uint64(len(refused)))
 }
 
 // setAside keeps refused records in the buffer's set-aside area, never to be
