@@ -57,7 +57,7 @@ answers the oldest of them across all three.
 | Surface | Owned by | Consumed by | How a change reaches the consumer |
 | --- | --- | --- | --- |
 | `api/control.yaml`, `api/README.md` — the PEP↔PDP wire contract | proxy (D3) | control | vendored read-only into `contract/` and re-synced (control M1) |
-| `ext/` — Control's extension interfaces | control (M15) | enterprise | a pinned, released module version (enterprise E1, E3) |
+| `ext/`, `server/` — Control's public Go API: the extension interfaces, and the package a host starts Control with | control (M15) | enterprise | a pinned, released module version (control M23; enterprise E1, E3) |
 | `docs/CROSS-REPO-PROTOCOL.md` — this file | proxy | control, enterprise | one sync PR per repository, mirroring it verbatim |
 | Decision ids — `D*` proxy, `M*` control, `E*` enterprise | each repository owns its own | cited by the others | cited by id, never restated |
 
@@ -65,11 +65,12 @@ answers the oldest of them across all three.
 repository's internals, prompts, plan, or tests is not a cross-repo change,
 however interesting it is.
 
-Two of those surfaces do not exist yet: `contract/` and `make contract-sync`
-land with Control phase 0002, and `ext/` with Control phase 0004. Until then a
-consuming repository's obligation is to its **prompts and plan** — the text a
-future session will build from. That obligation is exactly as real as a code
-one and considerably easier to miss, because nothing fails to compile.
+A consuming repository's obligation to a surface is to its code and to its
+**prompts and plan** — the text a future session will build from. The second
+is exactly as real as the first and considerably easier to miss, because
+nothing fails to compile: a queued prompt that describes a shape which has
+since changed is wrong in a way no build reports. Where a consumer has no code
+against a surface, its prompts and plan are the whole of the obligation.
 
 ---
 
@@ -82,11 +83,11 @@ hoplock/proxy  ->  hoplock/control  ->  hoplock/enterprise
 ```
 
 **Upstream merges first. Always.** A downstream pull request that describes a
-contract field, an `ext` signature, or a path not yet merged upstream is a
-description of something that does not exist — and it is indistinguishable, to
-a reviewer, from a description of something that does. If the upstream change is
-then revised in review, which is the entire point of review, the downstream
-lands wrong and nothing catches it.
+contract field, a signature in Control's public Go API, or a path not yet merged
+upstream is a description of something that does not exist — and it is
+indistinguishable, to a reviewer, from a description of something that does. If
+the upstream change is then revised in review, which is the entire point of
+review, the downstream lands wrong and nothing catches it.
 
 There is no such thing as a matched pair merged together. Merge upstream, then
 open downstream.
