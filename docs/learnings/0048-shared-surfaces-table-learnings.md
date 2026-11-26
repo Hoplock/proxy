@@ -51,25 +51,10 @@ grep -nw 'ext\|server\|contract\|contract-sync' docs/CROSS-REPO-PROTOCOL.md
 grep -n 'exist' docs/CROSS-REPO-PROTOCOL.md
 ```
 
-| Line | Where | Hit | Done |
-| --- | --- | --- | --- |
-| 59 | §1, first row | `contract/`, the wire contract | unchanged: correct |
-| 60 | §1, second row | `ext/`, `server/` | item 1 |
-| 86–87 | §2 | "Control's public Go API"; "does not exist" about a description | item 3 |
-| 41 | §0 | "does not exist", about a need | unchanged |
-| 179 | §3.2 | "this exists to prevent", the flow's purpose | unchanged |
-| 197 | §3.2 | "step 4 exists to remove", a step's purpose | unchanged |
-| 207 | §3.2 | Control's phase 0002 and "the contract", history | unchanged (out of scope) |
-| 298 | §4.2 heading | "does not exist yet", about a need | unchanged |
-| 403 | §4.3 | "not the contract shape" | unchanged |
-| 488 | §5 | "These exist because" | unchanged |
-| 502 | §5 | the `docs(sync): follow proxy contract v2` example | unchanged |
-| 569 | §6 | "vendoring exists to prevent" | unchanged |
-| 571 | §6 | "in the contract, it does not exist" | unchanged |
-
-Lines 179, 197 and 569 were not on the prompt's list. Each says what something
-is *for*, not whether a surface exists, so none needed a change. The old
-paragraph's `contract-sync` hit is gone with the paragraph.
+The PR lists every hit and what was done about it. Beyond items 1–3, none is
+about which surfaces exist, so none changed. Three were not on the prompt's
+list (§3.2's "this exists to prevent" and "step 4 exists to remove", §6's
+"vendoring exists to prevent"); each says what something is *for*.
 
 ### What was rechecked, and how
 
