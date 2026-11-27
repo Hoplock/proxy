@@ -78,8 +78,8 @@ build its images here (0040's note). CI's `e2e` job runs it.
 
 Owed to `hoplock/control`, including because Control asked
 (`docs/CROSS-REPO-PROTOCOL.md` §5). The PR's `## Cross-repo impact` section
-lists the obligations, and the sync is queued in
-`prompts/downstream/queued/`. `hoplock/enterprise`: **None**. It consumes
+lists the obligations, and the sync is queued as
+`prompts/downstream/queued/proxy-PR#83-relay-registration-report.md`. `hoplock/enterprise`: **None**. It consumes
 Control's public Go API and not `api/`, and nothing in it talks to a proxy
 (`docs/CROSS-REPO-PROTOCOL.md` §4.3). This session could not attach either
 sibling repository, so that rests on the protocol and on the prompt's check at
