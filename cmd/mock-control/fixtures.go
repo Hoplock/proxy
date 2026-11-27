@@ -58,6 +58,9 @@ type fixtures struct {
 	// FleetConfig is the configuration document served to the fleet
 	// (PLAN D18).
 	FleetConfig fixtureFleetConfig `yaml:"fleet_config"`
+	// RelayRegistrations configures the relay-registration report endpoint
+	// (PLAN §6.1, phase 0049).
+	RelayRegistrations fixtureRelayRegistrations `yaml:"relay_registrations"`
 	// CertificateAuthority signs brokered-certificate sessions' public keys
 	// (PLAN §5.4). Absent means this server has no authority, and the issuance
 	// endpoint answers 503.
@@ -751,6 +754,9 @@ func (f *fixtures) validate() error {
 		if id == "" {
 			add("fleet_config.enrolled[%d] is empty", i)
 		}
+	}
+	if f.RelayRegistrations.ReportAfterSeconds < 0 {
+		add("relay_registrations.report_after_seconds must not be negative")
 	}
 
 	if len(problems) > 0 {

@@ -177,6 +177,18 @@ func testRouting(t *testing.T) {
 		wantContains(t, ssh(t, s), "relay shell", "relay-shell-ok")
 	})
 
+	// Phase 0049: Hoplock Control is told the registration exists by the hub
+	// that holds it. Nothing in the fixtures seeds it, so a report naming
+	// proxy-zone can only have come from proxy-nexthop's own reporter.
+	t.Run("the relay hub reports the registration to Hoplock Control", func(t *testing.T) {
+		waitFor(t, "proxy-nexthop to report proxy-zone registered", func() bool {
+			return hubReports(proxyNextHop, proxyZone)
+		})
+		if _, ok := relayRegistrationsOf(proxyZone); ok {
+			t.Error("proxy-zone reported relay registrations; only a hub that accepts them does")
+		}
+	})
+
 	// The route below points at a proxy that IS dialable and would serve the
 	// session happily. A proxy that quietly downgraded a relay hop to a dial
 	// would pass this; refusing it is the point.

@@ -83,7 +83,7 @@ info:
     `policy_version`; see "Changing the contract" in `api/README.md` for the
     recipe. A revision replaces this vocabulary rather than running beside it,
     and consumers move with it.
-  version: 4.7.0
+  version: 4.8.0
   license:
     name: LicenseRef-Proprietary — all rights reserved
 
@@ -119,6 +119,9 @@ tags:
     description: |
       per-session target credentials Hoplock Control mints on request
       (PLAN §5.4).
+  - name: relay
+    description: |
+      the relay registrations a proxy holds (PLAN D11).
 
 paths:
   /v1/auth/cert:
@@ -892,6 +895,107 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No proxy with this id is enrolled (`not_enrolled`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /v1/proxies/{proxy_id}/relay-registrations/report:
+    post:
+      tags: [relay]
+      operationId: reportRelayRegistrations
+      summary: Say which proxies hold a relay registration with this one.
+      description: |
+        The upstream half of D11, told to the party that writes routes. A
+        `relay` hop is reached over a connection the **downstream** proxy
+        opened, and only the server chooses `relay` (`HopMetadata.connection`)
+        — but only the proxy that **accepted** the registration knows it is
+        live. This report is how the server learns it. The registration itself
+        stays proxy-to-proxy plumbing (PLAN §6.1); this endpoint carries only
+        which ids hold one.
+
+        **1. Who sends it.** A proxy that accepts relay registrations (D11's
+        upstream, `chain.accept`) sends it. A proxy that only registers with an
+        upstream sends nothing: the side that opens a
+        `relay-session@hoplock.io` channel when a route says `relay` is the one
+        whose view routing needs, and a downstream's belief that it is
+        registered can be wrong exactly when it matters — a half-open
+        connection still alive on its end after the upstream has dropped it. A
+        proxy that does both, in the middle of a chain, reports only the
+        registrations it accepts.
+
+        **2. What it carries.** `registered_proxy_ids` is the **complete** set
+        of proxy ids with a live registration at the reporting proxy, and it
+        **replaces** the previous one (see `RelayRegistrationReport`).
+
+        **3. When.** When the registration listener starts, so that a
+        restarted proxy clears what its previous process reported; then on
+        every change to the set; and otherwise at least every **20 seconds**.
+        The server may shorten that interval with `report_after_seconds` and
+        can never lengthen it (see `RelayRegistrationReportResponse`). On an
+        orderly shutdown the proxy makes one best-effort report of `[]`.
+
+        **4. What the server may do with it.** A report is an observation and
+        **grants nothing**. A server **MUST NOT** create a relay hop from a
+        report alone: a reported registration only makes **usable** a relay
+        hop the server already models, between those two proxies. The proxy
+        goes on refusing a `relay` hop it holds no registration for as an
+        outage (PLAN §4.3), whatever the server believes, and never dials it
+        instead. A server **SHOULD** stop believing a registration that has not
+        been re-reported within **three** intervals of the one it asks for
+        (60 seconds at the default), so that one lost report is not a dropped
+        relay, and a proxy that has gone silent is not routed through for long.
+
+        **5. Whose report it is.** The server **MUST** attribute a report to
+        the proxy its credential identifies. Where that credential names a
+        proxy, the server **MUST** refuse (`401`) a report whose `proxy_id` is
+        another one: without this rule, one hub could withdraw another hub's
+        relays.
+
+        **6. Not on the data path.** No answer to this call, and no failure to
+        make it, ends a session, drops a registration, refuses a connection or
+        touches a cached decision. `accepted: false` is a contract violation;
+        the proxy reports again on its next attempt.
+
+        **7. Versioning.** This endpoint is outside `policy_version`, which
+        governs `/v1/authorize` and nothing else. It moved `info.version` one
+        minor.
+      parameters:
+        - name: proxy_id
+          in: path
+          required: true
+          description: The proxy making the report — the one accepting registrations.
+          schema:
+            type: string
+          example: proxy-nexthop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayRegistrationReport'
+      responses:
+        '200':
+          description: The report was recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayRegistrationReportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: |
+            The proxy's own credential was rejected, or it names a different
+            proxy than `proxy_id` (rule 5). Not a deny of anything a user asked
+            for: no session is affected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No proxy with this id is enrolled (`not_enrolled`).
           content:
@@ -2975,6 +3079,56 @@ components:
           description: |
             True when the server recorded the report. Anything else is a
             contract violation; the proxy reports again after its next fetch.
+
+    RelayRegistrationReport:
+      type: object
+      description: |
+        The relay registrations a proxy holds (PLAN D11). An observation: it
+        grants nothing, and it never changes what the proxy does with a relay
+        hop that has no live registration.
+      required: [registered_proxy_ids]
+      properties:
+        registered_proxy_ids:
+          type: array
+          uniqueItems: true
+          description: |
+            The **complete** set of proxy ids with a live relay registration at
+            the reporting proxy. Each is the id the registrant was
+            **authenticated** as, which is the id a `relay` hop's
+            `HopMetadata.next_proxy_id` names.
+
+            The set **replaces** the previous one: an id it no longer names has
+            dropped. `[]` means the proxy holds none. The list is **required
+            and never `null`**, so an empty set and a malformed report cannot be
+            confused. Order carries no meaning, and the proxy sends it sorted.
+          items:
+            type: string
+            minLength: 1
+          example: [proxy-zone-b]
+
+    RelayRegistrationReportResponse:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          description: |
+            True when the server recorded the report. Anything else is a
+            contract violation; the proxy reports again on its next attempt.
+        report_after_seconds:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            How soon the server would like the next report, in seconds. The
+            proxy reports at least every **20 seconds** regardless; this value
+            can only **shorten** that interval, never lengthen it. The ceiling
+            is the proxy's: a broken server announcing a long interval would
+            otherwise age every relay out of its own routing without any error
+            being raised. Absent or `0` leaves the proxy on 20 seconds. A server
+            ageing registrations out (rule 4 on the path) answers at most a
+            third of its own ageing window, so three reports fit inside it.
+          example: 20
 
     SessionKillEvent:
       type: object

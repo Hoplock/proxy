@@ -112,6 +112,9 @@ type server struct {
 	// none is; configReports is the last configuration report per proxy.
 	fleetDoc      *control.ProxyConfigDocument
 	configReports map[string]control.ProxyConfigReport
+	// relayReports is the last relay-registration report per hub (phase
+	// 0049).
+	relayReports map[string]relayRegistrationReport
 	// authorizations records every authorize call, so a test can assert that
 	// each hop of a chain asked for its own decision rather than inheriting
 	// one (D2, PLAN §6.1).
@@ -156,6 +159,7 @@ func newServer(fx *fixtures, opts serverOptions) *server {
 		// The fixture document was built once by validate, so a malformed one
 		// never gets this far.
 		configReports: make(map[string]control.ProxyConfigReport),
+		relayReports:  make(map[string]relayRegistrationReport),
 	}
 	s.fleetDoc, _ = buildConfigDocument(fx.FleetConfig.Document)
 	if s.now == nil {
@@ -214,6 +218,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST "+control.PathProxyConfigReport, s.handleProxyConfigReport)
 	mux.HandleFunc("POST "+pathDebugConfig, s.handleDebugConfig)
 	mux.HandleFunc("GET "+pathDebugConfigReports, s.handleDebugConfigReports)
+	mux.HandleFunc("POST "+control.PathRelayRegistrationReport, s.handleRelayRegistrationReport)
+	mux.HandleFunc("GET "+pathDebugRelayRegistrations, s.handleDebugRelayRegistrations)
 	mux.HandleFunc("GET "+pathDebugLogs, s.handleDebugLogs)
 	mux.HandleFunc("POST "+pathDebugReset, s.handleDebugReset)
 	mux.HandleFunc("POST "+pathDebugRevoke, s.handleDebugRevoke)
@@ -809,6 +815,7 @@ func (s *server) handleDebugReset(w http.ResponseWriter, _ *http.Request) {
 	// reset, because rewinding it without an event would leave proxies holding
 	// a document the mock no longer serves and no notification that it moved.
 	s.configReports = make(map[string]control.ProxyConfigReport)
+	s.relayReports = make(map[string]relayRegistrationReport)
 	// THE UID CURSORS ARE NOT RESET, and that is the point of saying so here
 	// beside everything that is. Resetting one would REWIND it, and a rewound
 	// cursor grants a block that overlaps one a proxy is still allocating from —

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -46,6 +47,17 @@ type HubOptions struct {
 	ServerVersion string
 	// Logger receives registration lifecycle events; nil discards them.
 	Logger *log.Logger
+	// OnChange, when set, is called after the SET of registered proxy ids
+	// changes: an id added, an id removed (however its registration ended,
+	// a keepalive lapse included), or every id at shutdown. Replacing the
+	// registration for an id that is already registered does not change the
+	// set and does not call it. It is called outside the hub's lock and must
+	// not block.
+	//
+	// The hub reports a change and decides nothing about it: whoever is told
+	// reads the set back through Registrations (phase 0049 wires it to the
+	// report Hoplock Control receives, PLAN §6.1).
+	OnChange func()
 }
 
 // Hub accepts relay registrations and opens sessions over them (D11).
@@ -61,6 +73,7 @@ type Hub struct {
 	timeout    time.Duration
 	version    string
 	logger     *log.Logger
+	onChange   func()
 
 	mu    sync.Mutex
 	regs  map[string]*registration
@@ -91,6 +104,7 @@ func NewHub(opts HubOptions) (*Hub, error) {
 		timeout:    opts.KeepaliveTimeout,
 		version:    opts.ServerVersion,
 		logger:     opts.Logger,
+		onChange:   opts.OnChange,
 		regs:       make(map[string]*registration),
 	}
 	if h.keepalive == 0 {
@@ -178,15 +192,18 @@ func (h *Hub) Registered(proxyID string) bool {
 	return h.regs[proxyID] != nil
 }
 
-// Registrations lists the proxy ids with a live registration, for logs and
-// operational checks.
+// Registrations lists the proxy ids with a live registration, sorted, so logs,
+// tests and the report Hoplock Control receives are deterministic. Each is the
+// id its registrant was authenticated as — the id a relay hop's next_proxy_id
+// names.
 func (h *Hub) Registrations() []string {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	ids := make([]string, 0, len(h.regs))
 	for id := range h.regs {
 		ids = append(ids, id)
 	}
+	h.mu.Unlock()
+	slices.Sort(ids)
 	return ids
 }
 
@@ -322,19 +339,27 @@ func (h *Hub) register(reg *registration) {
 	h.regs[reg.proxyID] = reg
 	h.mu.Unlock()
 	if previous != nil {
+		// A replacement: the id was registered and still is, so the set did
+		// not change and nobody is told.
 		h.logf("relay: proxy %s re-registered; closing the previous registration from %s",
 			reg.proxyID, previous.remoteAddr)
 		_ = previous.conn.Close()
+		return
 	}
+	h.changed()
 }
 
 // deregister removes reg only if it is still the current registration, so a
 // dying connection cannot evict the reconnect that replaced it.
 func (h *Hub) deregister(reg *registration) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.regs[reg.proxyID] == reg {
+	removed := h.regs[reg.proxyID] == reg
+	if removed {
 		delete(h.regs, reg.proxyID)
+	}
+	h.mu.Unlock()
+	if removed {
+		h.changed()
 	}
 }
 
@@ -354,6 +379,17 @@ func (h *Hub) closeAll() {
 	h.mu.Unlock()
 	for _, reg := range regs {
 		_ = reg.conn.Close()
+	}
+	if len(regs) > 0 {
+		h.changed()
+	}
+}
+
+// changed tells OnChange the set moved. It is only ever called with h.mu
+// released, so a hook that reads Registrations cannot deadlock against it.
+func (h *Hub) changed() {
+	if h.onChange != nil {
+		h.onChange()
 	}
 }
 

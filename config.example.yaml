@@ -188,6 +188,7 @@ chain:
 
   # Accept relay registrations from the proxies below this one. Omit the whole
   # block unless the topology makes this proxy a relay hub.
+  # A hub reports the proxy ids registered with it to Hoplock Control (§6.1).
   accept:
     # host:port the registration listener binds to. Empty (the default) accepts
     # no registrations. It is NOT the SSH listener above: users never reach it.

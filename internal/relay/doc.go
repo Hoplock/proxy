@@ -27,4 +27,10 @@
 // hop.connection (D11), and a relay hop with no live registration is an outage,
 // never a dial: downgrading it would punch through the boundary the mode exists
 // to preserve.
+//
+// The hub reports a change and never decides one. HubOptions.OnChange says the
+// set of registered ids moved, and whoever is told reads it back through
+// Hub.Registrations; cmd/proxy wires it to internal/control's RelayReporter,
+// which tells Hoplock Control (phase 0049). This package imports nothing from
+// internal/control.
 package relay
