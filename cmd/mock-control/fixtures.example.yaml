@@ -696,3 +696,14 @@ fleet_config:
     settings:
       control.cache.max_ttl: 5m
       session.deadline_warning: 2m
+
+# Relay registrations (phase 0049, PLAN §6.1).
+#
+# A relay hub reports the proxy ids registered with it to
+# POST /v1/proxies/{proxy_id}/relay-registrations/report; the mock keeps the
+# last report per hub (GET /debug/relay-registrations) and decides nothing from
+# it. An unenrolled hub (fleet_config.enrolled) is answered 404 not_enrolled.
+relay_registrations:
+  # Answered as report_after_seconds: how soon the next report is wanted. It can
+  # only shorten the proxy's own 20s ceiling. 0 answers none.
+  report_after_seconds: 0

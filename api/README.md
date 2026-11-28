@@ -9,7 +9,7 @@ companion. If the two disagree, the OpenAPI document wins.
   Control (PLAN §3).
 - Reference implementation: `cmd/mock-control` (see "Mock server" below).
 - Architecture and decisions referenced here: `docs/PLAN.md` (D2, D3, D5, D7,
-  D8, D9, D18).
+  D8, D9, D11, D18).
 
 ## Ground rules
 
@@ -137,6 +137,7 @@ mechanism above carries is the **next** vocabulary, not a previous one — see
 | `GET /v1/proxies/{proxy_id}/events` | Subscribe to the revocation stream (NDJSON) | `200` | `StreamEvents` |
 | `GET /v1/proxies/{proxy_id}/config` | Fetch the proxy's desired configuration document | `200`, `204`, `304` | `FetchProxyConfig` |
 | `POST /v1/proxies/{proxy_id}/config/report` | Say which configuration document the proxy is running | `200` | `ReportProxyConfig` |
+| `POST /v1/proxies/{proxy_id}/relay-registrations/report` | Say which proxies hold a relay registration with this one | `200` | `ReportRelayRegistrations` |
 
 Every endpoint can also answer `400` (malformed request), `401` (deny), and
 `500` (server failure).
@@ -796,7 +797,8 @@ The registration itself is **proxy-to-proxy plumbing and not part of this
 contract**: it is an SSH connection the downstream proxy opens to its upstream,
 authenticated with the fleet's own keys or CA (`internal/relay`, PLAN §6.1).
 The server names the direction and the proxy id; how the two proxies then reach
-each other is theirs.
+each other is theirs. What the server **is** told is which registrations exist —
+"Relay registrations" below.
 
 #### What a chained hop sends this API (phase 0008)
 
@@ -818,6 +820,75 @@ The trail travels between proxies as an SSH connection-level request
 authority: every entry in it can only cause a refusal — a loop, or the hop cap
 — so forging one restricts the forger. The authority on a chain leg is the
 previous hop's key, above.
+
+### Relay registrations (D11, phase 0049)
+
+The server chooses `relay`, and it can choose it correctly only over a
+registration that is live. The only party that knows is the proxy that
+**accepted** it, so that proxy says so:
+`POST /v1/proxies/{proxy_id}/relay-registrations/report`, carrying
+`registered_proxy_ids`, answered `accepted` and an optional
+`report_after_seconds`. Seven rules, each stated on the path in `control.yaml`:
+
+1. **Who sends it: the hub, and only the hub.** A proxy that accepts relay
+   registrations (`chain.accept`) reports them. A proxy that only registers
+   with an upstream sends nothing, and one in the middle of a chain reports only
+   the registrations it accepts. The reason is whose view routing needs: the hub
+   is the side that opens a `relay-session@hoplock.io` channel when a route says
+   `relay`, so "this hub holds a registration for X" is exactly "a relay hop from
+   here to X can be opened". The downstream's belief that it is registered can
+   be wrong in the case that matters most — a half-open connection still alive
+   on its end after the hub has dropped it.
+2. **What it carries: the complete set, as a replacement.**
+   `registered_proxy_ids` names every proxy id with a live registration at the
+   reporting proxy — the id each registrant was authenticated as, which is the
+   id a relay hop's `next_proxy_id` names. An id it no longer names has dropped;
+   `[]` means none. The list is required and never `null`, so "holds none" and a
+   malformed report cannot be confused. Order carries no meaning; the proxy
+   sends it sorted.
+3. **When: at start, on every change, and at least every 20 seconds.** At
+   start so that a restarted proxy clears what its previous process reported;
+   on every change so that an arrival or a drop does not wait for the interval;
+   and on the interval so that the server can age out a hub that went silent.
+   The server may **shorten** the interval with `report_after_seconds` and can
+   never lengthen it: the ceiling is the proxy's because a broken server
+   announcing a long interval would otherwise age every relay out of its own
+   routing with no error raised anywhere — the tighten-only idiom of
+   `heartbeat_interval_seconds` and `cache.ttl_seconds`. Absent or `0` leaves the
+   proxy on 20 seconds. On an orderly shutdown the proxy makes one best-effort
+   report of `[]`, bounded at 2 seconds.
+4. **What the server may do with it: make an authored relay hop usable, and
+   nothing more.** A report is an observation and grants nothing. A server
+   **MUST NOT** create a relay hop from a report alone; a reported registration
+   only makes usable a relay hop the server already models between those two
+   proxies. A registration is something a proxy *did*, and an edge in the
+   estate's routing is something an operator *decided* — letting the first
+   create the second would let any proxy that can register redraw the fleet.
+   The proxy goes on refusing a `relay` hop it holds no registration for as an
+   outage (PLAN §4.3), whatever the server believes, and never dials it instead.
+   A server **SHOULD** stop believing a registration not re-reported within
+   **three** intervals of the one it asks for (60 seconds at the default), so
+   one lost report is not a dropped relay and a silent hub is not routed through
+   for long — which is why a server ageing registrations out answers
+   `report_after_seconds` of at most a third of its window.
+5. **Whose report it is.** The server **MUST** attribute a report to the proxy
+   its credential identifies, and where that credential names a proxy it
+   **MUST** refuse (`401`) a report whose `proxy_id` is another one. Without
+   this, one hub could withdraw another hub's relays.
+6. **Not on the data path.** No answer and no failure — transport, `401`,
+   `404 not_enrolled`, `5xx`, `accepted: false` — ends a session, drops a
+   registration, refuses a connection or touches a cached decision.
+   `accepted: false` is a contract violation; the proxy reports again on its
+   next attempt, retrying a failure after 1s, doubling, capped at the interval,
+   and at once on a change. At most one report is in flight, which is what keeps
+   a slow older report from landing after a newer one without a sequence number
+   on the wire.
+7. **Versioning.** A whole new endpoint is outside `policy_version`, so the
+   vocabulary stays where it is; `info.version` moved one minor, to **4.8.0**.
+
+This is not a heartbeat. It carries registrations and nothing else — no session
+count, no last error, no declared capability — and a later field about a
+registration goes beside `registered_proxy_ids`, not inside it.
 
 ### Exec tiers (`filter_policy.exec_mode`, D12, phase 0010)
 
@@ -1634,6 +1705,7 @@ startup, and every problem in a file is reported at once.
 | `host_keys` | `decision` (`accept`/`reject`) applied to keys not seen before, `known[]` (`target` + `fingerprint`) to pre-seed trusted keys, and `cache` (`ttl_seconds`, optional `key`) to authorise reuse of an accepted decision. Only a key already ruled on and accepted is hinted. |
 | `events` | `heartbeat_ms` (interval between heartbeats; negative disables them, to exercise a proxy's missed-heartbeat detection) and `replay_buffer` (events retained for replay; resuming from before them answers `resync`). Every heartbeat advertises `heartbeat_interval_seconds` derived from `heartbeat_ms` itself — rounded **up** to the whole second, so the mock never claims an interval it does not keep — and a fixture that disables heartbeats advertises nothing. |
 | `fleet_config` | `enrolled` (proxy ids; empty means every id is enrolled, anything else is answered `404 not_enrolled`) and `document` (`version` plus `settings`, passed through uninterpreted — which keys a proxy accepts is the proxy's rule). Omit `document` and the fetch answers `204`. The hash is derived from the bytes served, and a new document is published only through `POST /debug/config`, so the mock cannot announce a version it does not serve. |
+| `relay_registrations` | `report_after_seconds`, answered on every relay-registration report (absent or `0`: answer none, leaving the proxy on its 20s ceiling). The fixture key is `relay_registrations.report_after_seconds`. The endpoint refuses an unknown field, a missing or `null` `registered_proxy_ids`, an empty id and a duplicate with `400`, and a hub outside `fleet_config.enrolled` with `404 not_enrolled`, as the configuration endpoints do; it keeps the last report per hub and decides nothing from it. The mock's single `proxy_token` names no proxy, so it attributes a report by its path alone. |
 | `certificate_authority` | `key_path` (an ed25519 private key, OpenSSH format, loaded at startup; empty means **no authority**, and `POST /v1/credentials/certificate` answers `503`) and `lifetime_seconds` (validity when the route names no `lifetime_seconds`; 0 is five minutes — a route's bound always wins when shorter). The mock signs with the route's `username` as the only principal and a serial that only rises, issues only against a decision it made naming `brokered-certificate` and only for that decision's target and account (`401` otherwise), and does not revoke or rotate. The serial is **not reset by `POST /debug/reset`**: a serial issued twice is a join key that joins two sessions. |
 | `uid_leases` | `uid_count` (block size, overriding what the proxy asks for), `term_seconds` (0 leaves the term to the proxy), and `range_min`/`range_max` (0 on either takes that bound from the proxy's own request, which is what a Control with no opinion about a fleet's uid conventions should do). The per-target cursor is in memory and **is not reset by `POST /debug/reset`** — rewinding it would grant a block overlapping one a proxy is still allocating from. |
 
@@ -1661,12 +1733,13 @@ These are **not** part of the contract; no production server implements them.
 | Path | Purpose |
 | --- | --- |
 | `GET /debug/logs` | Returns `{"batched":[…],"priority":[…]}` — everything ingested so far, for assertions. |
-| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, configuration reports, and the retained event history, brings the log destination back, and clears the log refusal set. The published configuration document is kept. |
+| `POST /debug/reset` | Clears ingested logs, MFA challenges, learned host keys, configuration reports, relay-registration reports, and the retained event history, brings the log destination back, and clears the log refusal set. The published configuration document is kept. |
 | `POST /debug/logs/sink` | Takes the log destination down (`{"accepting":false}`) or brings it back (`{"accepting":true}`). Down, both log endpoints answer `503` while everything else keeps working — an outage, so a proxy keeps the records and retries. |
 | `POST /debug/logs/refuse` | Makes both log endpoints refuse matching records: `{"kinds":[…],"events":[…],"record_ids":[…]}`, a record matching any entry of any list. A batch containing one is refused whole with `400 invalid_record`, the message naming its index and `record_id`, and nothing of it stored; a matching priority record is refused the same way. Empty lists clear it. |
 | `POST /debug/revoke` | Publishes a `RevocationEvent` to every subscriber, standing in for an operator action. Returns `{"event_id","delivered"}`, so a test can confirm a subscription was live. It refuses `config_changed`, which only `POST /debug/config` may publish. |
 | `POST /debug/config` | Publishes `{"version","settings"}` as the current document and emits `config_changed` from it. Returns `{"event_id","delivered","version","hash"}`. Stands in for Hoplock Control's publisher. |
 | `GET /debug/config/reports` | The last configuration report per proxy id. |
+| `GET /debug/relay-registrations` | The last relay-registration report per hub: `{"<proxy_id>":{"registered_proxy_ids":[…],"received_at":"<RFC 3339>"}}`. |
 | `GET /debug/capabilities` | What the mock holds about each target — the merged rung and key-exchange observations — keyed by host, or `host:port` for a port other than 22. |
 
 The mock also keeps the **last capability report per target** in memory — a

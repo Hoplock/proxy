@@ -225,20 +225,36 @@ func run(configPath string, logger *log.Logger) error {
 
 	// The relay hub is the upstream half: it holds registrations open for
 	// proxies that cannot be dialled, and the engine opens sessions over them.
-	hub, hubListener, err := startRelayHub(cfg, hostKey, logger)
+	// Its reporter tells Hoplock Control which proxies are registered here, so
+	// that a relay route is chosen over a registration that is live (phase
+	// 0049). REST and not the caching client: the report is an observation, and
+	// nothing about it may be answered from memory.
+	hub, relayReports, hubListener, err := startRelayHub(cfg, hostKey, rest, logger)
 	if err != nil {
 		return err
 	}
-	var hubDone chan struct{}
+	var hubDone, relayReportsDone chan struct{}
 	if hub != nil {
+		// The reporter starts once the listener is bound — its first report
+		// clears whatever a previous process said — and stops only after Serve
+		// has returned, so its final [] follows the last registration closing.
+		// Nothing it does, delivered or not, reaches a session or a
+		// registration.
+		reportCtx, stopReports := context.WithCancel(context.WithoutCancel(ctx))
+		relayReportsDone = make(chan struct{})
+		go func() {
+			defer close(relayReportsDone)
+			relayReports.Run(reportCtx)
+		}()
 		hubDone = make(chan struct{})
 		go func() {
 			defer close(hubDone)
+			defer stopReports()
 			if err := hub.Serve(ctx, hubListener); err != nil {
 				logger.Printf("proxy: relay registrations stopped: %v", err)
 			}
 		}()
-		logger.Printf("proxy: accepting relay registrations on %s", hubListener.Addr())
+		logger.Printf("proxy: accepting relay registrations on %s, reported to Hoplock Control", hubListener.Addr())
 	}
 
 	// What each target handshake showed about the target's key exchange,
@@ -333,6 +349,7 @@ func run(configPath string, logger *log.Logger) error {
 	}
 	if hubDone != nil {
 		<-hubDone
+		<-relayReportsDone
 	}
 	logger.Printf("proxy: stopped")
 	return serveErr
@@ -439,17 +456,19 @@ func loadChainIdentity(cfg config.Chain) (ssh.Signer, error) {
 }
 
 // startRelayHub builds the registration listener, when the topology makes this
-// proxy a relay hub.
-func startRelayHub(cfg *config.Config, hostKey ssh.Signer, logger *log.Logger) (*relay.Hub, net.Listener, error) {
+// proxy a relay hub, together with the reporter that tells Hoplock Control
+// which proxies hold a registration with it (PLAN §6.1, phase 0049). A proxy
+// that accepts no registrations has neither: only the hub reports.
+func startRelayHub(cfg *config.Config, hostKey ssh.Signer, sink control.RelayReportSink, logger *log.Logger) (*relay.Hub, *control.RelayReporter, net.Listener, error) {
 	if !cfg.Chain.AcceptsRegistrations() {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	authorizer, err := relay.NewAuthorizer(relay.AuthorizerOptions{
 		AuthorizedKeysPath: cfg.Chain.Accept.AuthorizedKeysPath,
 		TrustedCAPath:      cfg.Chain.Accept.TrustedCAPath,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// The registration listener may present its own key, but the proxy's host
 	// key is the same identity from a registering proxy's point of view, so it
@@ -458,23 +477,37 @@ func startRelayHub(cfg *config.Config, hostKey ssh.Signer, logger *log.Logger) (
 	if path := cfg.Chain.Accept.HostKeyPath; path != "" {
 		listenerKey, err = loadHostKey(path)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
-	hub, err := relay.NewHub(relay.HubOptions{
+	// The hub pokes the reporter and the reporter reads the hub, so each is
+	// built knowing the other. The closure is first called by Run, which the
+	// caller starts only after hub is set.
+	var hub *relay.Hub
+	reporter, err := control.NewRelayReporter(control.RelayReporterOptions{
+		Sink:          sink,
+		ProxyID:       cfg.Proxy.ID,
+		Registrations: func() []string { return hub.Registrations() },
+		Logger:        logger,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	hub, err = relay.NewHub(relay.HubOptions{
 		HostKey:           listenerKey,
 		Authorizer:        authorizer,
 		KeepaliveInterval: cfg.Chain.Accept.KeepaliveInterval,
 		Logger:            logger,
+		OnChange:          reporter.Changed,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	l, err := net.Listen("tcp", cfg.Chain.Accept.ListenAddr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listen for relay registrations on %s: %w", cfg.Chain.Accept.ListenAddr, err)
+		return nil, nil, nil, fmt.Errorf("listen for relay registrations on %s: %w", cfg.Chain.Accept.ListenAddr, err)
 	}
-	return hub, l, nil
+	return hub, reporter, l, nil
 }
 
 // startRelayRegistrar opens this proxy's outbound registration with its

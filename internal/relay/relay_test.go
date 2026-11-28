@@ -33,6 +33,15 @@ type testHub struct {
 
 func startHub(t *testing.T, authorized map[string]ssh.PublicKey) *testHub {
 	t.Helper()
+	h, _ := startHubWith(t, authorized, nil)
+	return h
+}
+
+// startHubWith is startHub with the options adjusted by tweak. It also returns
+// a function that stops the hub and waits for Serve to return, for a test about
+// what shutdown does; the cleanup tolerates it having been called.
+func startHubWith(t *testing.T, authorized map[string]ssh.PublicKey, tweak func(*HubOptions)) (*testHub, func()) {
+	t.Helper()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "relay_authorized_keys")
@@ -49,12 +58,16 @@ func startHub(t *testing.T, authorized map[string]ssh.PublicKey) *testHub {
 		t.Fatalf("NewAuthorizer: %v", err)
 	}
 	hostKey := sshtest.MustGenerateSigner()
-	hub, err := NewHub(HubOptions{
+	opts := HubOptions{
 		HostKey:           hostKey,
 		Authorizer:        authorizer,
 		KeepaliveInterval: 50 * time.Millisecond,
 		KeepaliveTimeout:  2 * time.Second,
-	})
+	}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	hub, err := NewHub(opts)
 	if err != nil {
 		t.Fatalf("NewHub: %v", err)
 	}
@@ -66,18 +79,22 @@ func startHub(t *testing.T, authorized map[string]ssh.PublicKey) *testHub {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- hub.Serve(ctx, l) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("hub.Serve: %v", err)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("hub.Serve: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("hub.Serve did not return")
 			}
-		case <-time.After(5 * time.Second):
-			t.Error("hub.Serve did not return")
-		}
-	})
-	return &testHub{hub: hub, addr: l.Addr().String(), key: hostKey}
+		})
+	}
+	t.Cleanup(stop)
+	return &testHub{hub: hub, addr: l.Addr().String(), key: hostKey}, stop
 }
 
 // echoHandler serves a relayed connection by echoing it back, which is enough

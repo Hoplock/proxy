@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,8 +61,11 @@ type chainStack struct {
 	enclave   *proxy.Server
 	hub       *chainHub
 	registrar *relay.Registrar
-	addr      string
-	userKey   ssh.Signer
+	// stopRegistrar ends the enclave proxy's registration, as stopping that
+	// proxy would. Relay mode only.
+	stopRegistrar func()
+	addr          string
+	userKey       ssh.Signer
 }
 
 // chainOptions varies the topology per test.
@@ -79,6 +85,12 @@ type chainOptions struct {
 	// 0033). Everything else about the topology is unchanged, which is what
 	// makes the refusal attributable to the key alone.
 	unregisteredEdge bool
+	// reportRelays wires the edge proxy's hub to a RelayReporter speaking the
+	// real client to the mock, exactly as cmd/proxy wires it (phase 0049).
+	reportRelays bool
+	// relayReportToken, when set, is the token that reporter presents instead
+	// of the fixtures' — a wrong one makes every report fail with 401.
+	relayReportToken string
 }
 
 func startChain(t *testing.T, opts chainOptions) *chainStack {
@@ -180,7 +192,18 @@ func startChain(t *testing.T, opts chainOptions) *chainStack {
 	// it, and the edge opens sessions over that registration.
 	var opener proxy.RelayOpener
 	if opts.direction == control.HopConnectionRelay {
-		stack.hub = startChainHub(t, enclaveIdentity.PublicKey())
+		var sink control.RelayReportSink
+		if opts.reportRelays {
+			sink = m.client
+			if opts.relayReportToken != "" {
+				var err error
+				sink, err = control.NewRESTClient(control.Options{BaseURL: m.srv.URL, Token: opts.relayReportToken})
+				if err != nil {
+					t.Fatalf("NewRESTClient: %v", err)
+				}
+			}
+		}
+		stack.hub = startChainHub(t, enclaveIdentity.PublicKey(), sink)
 		opener = stack.hub.hub
 	}
 
@@ -193,7 +216,7 @@ func startChain(t *testing.T, opts chainOptions) *chainStack {
 	})
 
 	if opts.direction == control.HopConnectionRelay {
-		stack.registrar = startChainRegistrar(t, stack.hub, enclaveIdentity, stack.enclave)
+		stack.registrar, stack.stopRegistrar = startChainRegistrar(t, stack.hub, enclaveIdentity, stack.enclave)
 	} else {
 		serveChainProxy(t, stack.enclave, enclaveListener)
 	}
@@ -303,11 +326,34 @@ type chainHub struct {
 	hub     *relay.Hub
 	addr    string
 	hostKey ssh.Signer
+	// reportLog is what the hub's RelayReporter logged, when it has one.
+	reportLog *lockedLog
+}
+
+// lockedLog is a log destination a test reads while a goroutine writes it.
+type lockedLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 // startChainHub runs the edge proxy's registration listener, trusting exactly
-// one key for exactly one proxy id.
-func startChainHub(t *testing.T, enclaveKey ssh.PublicKey) *chainHub {
+// one key for exactly one proxy id. With a sink, it also runs the hub's
+// RelayReporter, wired as cmd/proxy wires it: the hub pokes the reporter, the
+// reporter reads the hub's set, it starts once the listener is bound, and it
+// stops only after Serve has returned.
+func startChainHub(t *testing.T, enclaveKey ssh.PublicKey, sink control.RelayReportSink) *chainHub {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "relay_authorized_keys")
@@ -320,11 +366,29 @@ func startChainHub(t *testing.T, enclaveKey ssh.PublicKey) *chainHub {
 		t.Fatalf("relay.NewAuthorizer: %v", err)
 	}
 	hostKey := sshtest.MustGenerateSigner()
-	hub, err := relay.NewHub(relay.HubOptions{
+	var (
+		hub       *relay.Hub
+		reporter  *control.RelayReporter
+		reportLog = &lockedLog{}
+	)
+	opts := relay.HubOptions{
 		HostKey:           hostKey,
 		Authorizer:        authorizer,
 		KeepaliveInterval: 100 * time.Millisecond,
-	})
+	}
+	if sink != nil {
+		reporter, err = control.NewRelayReporter(control.RelayReporterOptions{
+			Sink:          sink,
+			ProxyID:       proxyEdge,
+			Registrations: func() []string { return hub.Registrations() },
+			Logger:        log.New(reportLog, "", 0),
+		})
+		if err != nil {
+			t.Fatalf("control.NewRelayReporter: %v", err)
+		}
+		opts.OnChange = reporter.Changed
+	}
+	hub, err = relay.NewHub(opts)
 	if err != nil {
 		t.Fatalf("relay.NewHub: %v", err)
 	}
@@ -333,9 +397,22 @@ func startChainHub(t *testing.T, enclaveKey ssh.PublicKey) *chainHub {
 	if err != nil {
 		t.Fatalf("listen for relay registrations: %v", err)
 	}
+	reportsDone := make(chan struct{})
+	reportCtx, stopReports := context.WithCancel(context.Background())
+	if reporter != nil {
+		go func() {
+			defer close(reportsDone)
+			reporter.Run(reportCtx)
+		}()
+	} else {
+		close(reportsDone)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- hub.Serve(ctx, l) }()
+	go func() {
+		defer stopReports()
+		done <- hub.Serve(ctx, l)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -346,13 +423,18 @@ func startChainHub(t *testing.T, enclaveKey ssh.PublicKey) *chainHub {
 		case <-time.After(10 * time.Second):
 			t.Error("hub.Serve did not return")
 		}
+		select {
+		case <-reportsDone:
+		case <-time.After(10 * time.Second):
+			t.Error("RelayReporter.Run did not return after the hub stopped")
+		}
 	})
-	return &chainHub{hub: hub, addr: l.Addr().String(), hostKey: hostKey}
+	return &chainHub{hub: hub, addr: l.Addr().String(), hostKey: hostKey, reportLog: reportLog}
 }
 
 // startChainRegistrar has the enclave proxy register with the edge proxy and
 // serve whatever arrives over that registration.
-func startChainRegistrar(t *testing.T, hub *chainHub, identity ssh.Signer, server *proxy.Server) *relay.Registrar {
+func startChainRegistrar(t *testing.T, hub *chainHub, identity ssh.Signer, server *proxy.Server) (*relay.Registrar, func()) {
 	t.Helper()
 
 	registrar, err := relay.NewRegistrar(relay.RegistrarOptions{
@@ -371,19 +453,23 @@ func startChainRegistrar(t *testing.T, hub *chainHub, identity ssh.Signer, serve
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- registrar.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("Registrar.Run: %v", err)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Registrar.Run: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Error("Registrar.Run did not return")
 			}
-		case <-time.After(10 * time.Second):
-			t.Error("Registrar.Run did not return")
-		}
-	})
+		})
+	}
+	t.Cleanup(stop)
 	waitForChain(t, "the relay registration", func() bool { return hub.hub.Registered(proxyEnclave) })
-	return registrar
+	return registrar, stop
 }
 
 func waitForChain(t *testing.T, what string, cond func() bool) {
@@ -711,4 +797,71 @@ func TestChainIdentityRejectionIsNotAnUnreachableProxy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestChainHubReportsItsRegistrations is phase 0049 end to end: a real hub, a
+// real registrar and the real client, wired as cmd/proxy wires them. Hoplock
+// Control learns the registration exists without anything seeding it, and
+// learns it has gone when the registering proxy stops.
+func TestChainHubReportsItsRegistrations(t *testing.T) {
+	stack := startChain(t, chainOptions{direction: control.HopConnectionRelay, reportRelays: true})
+
+	reported := func(want ...string) func() bool {
+		return func() bool {
+			rep, ok := stack.mock.server.relayReport(proxyEdge)
+			return ok && rep.RegisteredProxyIDs != nil && slices.Equal(rep.RegisteredProxyIDs, append([]string{}, want...))
+		}
+	}
+	waitForChain(t, "the mock to see the enclave proxy registered with the edge", reported(proxyEnclave))
+	if _, ok := stack.mock.server.relayReport(proxyEnclave); ok {
+		t.Error("the enclave proxy reported; only the hub that accepts a registration does")
+	}
+
+	if out := chainDeploy(t, stack); out != "deployed\n" {
+		t.Fatalf("relay session printed %q", out)
+	}
+
+	stack.stopRegistrar()
+	waitForChain(t, "the mock to see the registration drop", reported())
+}
+
+// TestChainRelaySessionSurvivesFailingReports: the report is not on the data
+// path. With every report refused, the registration is held and a relay
+// session over it still succeeds.
+func TestChainRelaySessionSurvivesFailingReports(t *testing.T) {
+	stack := startChain(t, chainOptions{direction: control.HopConnectionRelay, reportRelays: true, relayReportToken: "not-the-token"})
+
+	waitForChain(t, "the reporter to log the failure", func() bool {
+		return strings.Contains(stack.hub.reportLog.String(), "failed (unauthorized, HTTP 401")
+	})
+	if out := chainDeploy(t, stack); out != "deployed\n" {
+		t.Fatalf("a relay session while reports fail printed %q", out)
+	}
+	if !stack.hub.hub.Registered(proxyEnclave) {
+		t.Error("a failing report dropped the registration")
+	}
+	if _, ok := stack.mock.server.relayReport(proxyEdge); ok {
+		t.Error("the mock recorded a report it refused")
+	}
+	if n := strings.Count(stack.hub.reportLog.String(), "\n"); n != 1 {
+		t.Errorf("the reporter logged %d lines while failing, want 1:\n%s", n, stack.hub.reportLog.String())
+	}
+}
+
+// chainDeploy runs the target's "deploy" through the chain and returns what it
+// printed, failing the test if the session did not succeed.
+func chainDeploy(t *testing.T, stack *chainStack) string {
+	t.Helper()
+	session, err := stack.dial(t).NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+	out, err := session.Output("deploy")
+	if err != nil {
+		t.Fatalf("deploy over the chain: %v (stderr %q)", err, stderr.String())
+	}
+	return string(out)
 }

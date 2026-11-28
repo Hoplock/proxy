@@ -70,17 +70,18 @@ func TestSpecDocumentsEveryClientPath(t *testing.T) {
 	// Every path the client dials must be documented, with the pieces a caller
 	// needs: a request body and both the success and the deny response.
 	wantStatus := map[string]string{
-		PathAuthenticateCert:     "200",
-		PathAuthenticatePassword: "200",
-		PathPollMFA:              "200",
-		PathAuthorize:            "200",
-		PathReportHostKey:        "200",
-		PathIngestLogBatch:       "202",
-		PathIngestPriorityLog:    "200",
-		PathReportCapabilities:   "200",
-		PathLeaseUIDs:            "200",
-		PathIssueCertificate:     "200",
-		PathProxyConfigReport:    "200",
+		PathAuthenticateCert:        "200",
+		PathAuthenticatePassword:    "200",
+		PathPollMFA:                 "200",
+		PathAuthorize:               "200",
+		PathReportHostKey:           "200",
+		PathIngestLogBatch:          "202",
+		PathIngestPriorityLog:       "200",
+		PathReportCapabilities:      "200",
+		PathLeaseUIDs:               "200",
+		PathIssueCertificate:        "200",
+		PathProxyConfigReport:       "200",
+		PathRelayRegistrationReport: "200",
 	}
 
 	for path, success := range wantStatus {
@@ -469,6 +470,7 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		PathAuthenticateCert, PathAuthenticatePassword, PathPollMFA, PathAuthorize,
 		PathReportHostKey, PathIngestLogBatch, PathIngestPriorityLog, PathProxyEvents,
 		PathProxyConfig, PathProxyConfigReport, PathLeaseUIDs, PathIssueCertificate,
+		PathRelayRegistrationReport,
 	} {
 		if !strings.Contains(readme, path) {
 			t.Errorf("%s does not document the path %q", readmePath, path)
@@ -531,6 +533,10 @@ func TestReadmeDocumentsTheContract(t *testing.T) {
 		string(ExecutionPlatformAuthorized), string(ExecutionPlatformAttested),
 		string(ReachProxyChannelPolicy), string(ReachAccountEgressRestricted),
 		string(ReachAccountNetworkIsolated),
+		// The relay registrations a hub holds (D11, phase 0049): the section,
+		// the field, and the mock's fixture key and debug endpoint.
+		"Relay registrations (D11, phase 0049)", "registered_proxy_ids",
+		"relay_registrations.report_after_seconds", "/debug/relay-registrations",
 	} {
 		if !strings.Contains(readme, name) {
 			t.Errorf("%s does not document %q", readmePath, name)
@@ -675,5 +681,43 @@ func TestSpecDocumentsTheAlgorithmSchemas(t *testing.T) {
 	}
 	if !declared || !reflect.DeepEqual(names, want) {
 		t.Errorf("AlgorithmProfileCapability.required = %v, want %q", profileRequired, want)
+	}
+}
+
+// TestSpecDocumentsTheRelayRegistrationPayloads keeps the relay-registration
+// report's two payloads and the Go struct tags in step, and pins the two
+// properties the replacement rule rests on: the set is required, and its items
+// are unique non-empty ids (phase 0049).
+func TestSpecDocumentsTheRelayRegistrationPayloads(t *testing.T) {
+	doc := loadSpec(t)
+
+	for schema, fields := range map[string][]string{
+		"RelayRegistrationReport":         jsonFields(RelayRegistrationReport{}),
+		"RelayRegistrationReportResponse": jsonFields(RelayRegistrationReportResponse{}),
+	} {
+		for _, field := range fields {
+			ref := "#/components/schemas/" + schema + "/properties/" + field
+			if _, ok := resolveRef(doc, ref); !ok {
+				t.Errorf("%s does not document %q, which the Go type sends or reads", schema, field)
+			}
+		}
+	}
+
+	required, _ := resolveRef(doc, "#/components/schemas/RelayRegistrationReport/required")
+	if list, ok := required.([]any); !ok || len(list) != 1 || list[0] != "registered_proxy_ids" {
+		t.Errorf("RelayRegistrationReport.required = %v, want [registered_proxy_ids]", required)
+	}
+	if unique, _ := resolveRef(doc, "#/components/schemas/RelayRegistrationReport/properties/registered_proxy_ids/uniqueItems"); unique != true {
+		t.Errorf("registered_proxy_ids.uniqueItems = %v, want true", unique)
+	}
+	if minLen, _ := resolveRef(doc, "#/components/schemas/RelayRegistrationReport/properties/registered_proxy_ids/items/minLength"); minLen != 1 {
+		t.Errorf("registered_proxy_ids.items.minLength = %v, want 1", minLen)
+	}
+	paths, _ := doc["paths"].(map[string]any)
+	item, _ := paths[PathRelayRegistrationReport].(map[string]any)
+	post, _ := item["post"].(map[string]any)
+	responses, _ := post["responses"].(map[string]any)
+	if _, ok := responses["404"]; !ok {
+		t.Errorf("post %s does not document the 404 not_enrolled answer", PathRelayRegistrationReport)
 	}
 }
